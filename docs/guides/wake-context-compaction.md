@@ -1,5 +1,33 @@
 # Handoff notes and wake context
 
+Verified waits choose in-place sleep or hibernation in AQ. Register a condition
+once and end the turn. Wait deadlines belong to policy: workers do not poll,
+renew a wait by heartbeat, or replace an escalated wait. Human waits have no
+automatic timeout; supervisors decide or lift them with explicit evidence.
+
+## Continuation checkpoint and fresh prime
+
+A suspension request names a wait, continuation and generation. Submit
+`aq wait checkpoint --wait-id WAIT_ID --continuation-id CONTINUATION_ID
+--generation GENERATION --summary-file /tmp/summary.txt`, then end the turn.
+The nonblank UTF-8 summary is limited to 8 KiB. Include the goal, completed work,
+next action, constraints, rejected approaches and uncertainties. Agent assertions
+stay separate from AQ's observed claim, branch, HEAD and dirty-worktree facts.
+
+AQ stops the exact process, publishes the branch and detaches the checkout before
+releasing its claim. A failed transition preserves ownership and records a hold.
+On a verified source outcome, a fresh session receives full prime, the saved
+summary and facts, source result reference, and held mail. Ordinary mutations
+remain fenced until `aq wait ack` acknowledges the delivered continuation and
+generation. A missing summary/head or a changed saved branch is a recovery hold,
+never permission to discard work. Facts-only fallback is explicitly degraded.
+See [agent waits](agent-waits.md) and the [cutover runbook](hibernation-cutover-runbook.md).
+
+The general handoff note below remains useful for ordinary compaction. It does
+not replace a continuation checkpoint or its acknowledgement protocol.
+
+## General handoff notes
+
 `aq handoff` accepts legacy positional subject/detail and a structured version 1
 note. The daemon stores agent assertions separately from its observed facts.
 
@@ -27,11 +55,12 @@ labelled facts-only recovery checkpoint. It cannot replace a meaningful agent
 note in prime.
 
 The daemon observes current task, claim, session, branch, HEAD, work directory,
-subtask counts, and dirty paths. It includes at most 20 dirty paths, each with a
+subtask counts, active jobs, waits and retained result pointers, open gates,
+and dirty paths. Failed store reads are labelled unknown. It includes at most
+20 dirty paths, each with a
 256-byte display limit, plus the total observed count. Failed Git reads are
-unknown rather than a claim that the checkout is clean. Job/wait identity lists
-are empty in this independent slice; they require the future authoritative
-JOB/WAIT stores. Note paths are assertions and are never used to read files.
+unknown rather than a claim that the checkout is clean. Continuation prime additionally projects authoritative wait identity,
+source evidence and the retained result reference. Note paths are assertions and are never used to read files.
 
 ## Prime budget
 
@@ -44,11 +73,10 @@ the Messages section is bounded by **16 KiB**:
 | Result summary projections, reserved for JOB/OUTPUT | 6 KiB |
 | Current daemon facts and changed-state pointers | 2 KiB |
 
-This release renders the handoff and current-fact portions. Stored result
-summaries, result pointers in wake delivery, three-summary paging, and baseline
-annotations on stored job results belong to JOB/OUTPUT integration. No log
-excerpt is inlined here. Ordinary inbox messages retain their existing delivery
-behavior and are not classified as job wake results.
+Handoff, current facts and bounded managed-job result projections share this
+budget. Full logs remain behind result pointers. Continuation context has its
+own bounded projection; ordinary inbox messages are held during a wait and
+released with its acknowledged outcome.
 
 The renderer prioritizes next step and uncertainties over older completed-work
 prose. Escaping can expand a valid 8 KiB note; oversized display blocks retain a
@@ -70,8 +98,7 @@ executed. Context archival does not remove already loaded harness conversation.
 named `full-suite-baseline-YYYY-MM-DD.md` at the caller's job-start instant. It
 reads the existing recorded-note format (full source main SHA and a Known
 failures section of exact backtick-quoted node ids), without parsing pytest
-output or writing a baseline. It accepts canonical failure ids from the future
-managed-command parser. Parameter values, including spaces, remain part of
+output or writing a baseline. It accepts canonical failure ids from the managed-command parser. Parameter values, including spaces, remain part of
 identity.
 
 A snapshot records the path, SHA-256 content hash, capture time, source commit,
@@ -97,8 +124,7 @@ profiles and gains a typed command contract; no new grant is needed.
 Tests cover empty hooks, concurrent retries, Unicode and display expansion,
 equal-time ordering, historical notes, changed checkout/claim, immutable baseline
 provenance, and migration upgrade/replay/downgrade. No token savings or native
-harness compaction performance is claimed. Before enabling a future automatic
-resume/compaction policy, perform a real-harness exercise on each enabled harness:
+harness compaction performance is claimed. Before expanding hibernation, perform a real-harness exercise on each enabled harness:
 write a useful note, invoke its supported resume/compact path, verify the next
 action and retained constraints/rejected approaches, and record input tokens and
 redundant commands. That empirical exercise is separate from this deterministic

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
@@ -144,7 +145,7 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
                                         return_exceptions=True)
     repairs = await _waiting_train_repairs(ctx, [
         t.id for t in candidates
-        if t.status is TaskStatus.READY and now - t.updated_at > _TRAIN_REPAIR_CAPACITY_AGE
+        if t.status is TaskStatus.READY
     ])
     findings: list[dict] = []
     completions: dict[str, float | None] = {}
@@ -155,8 +156,42 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
             ctx.incomplete("task_explanation_failed", project_id=task.project_id)
             continue
         reasons = why.get("reasons") or []
+        if task.id in repairs and any(
+            r.get("code") == "frontier_origin_not_materialized" for r in reasons
+        ):
+            findings.append(_finding(
+                "train_repair_off_frontier", task.project_id,
+                f"READY train repair {task.id} is outside the claim frontier; "
+                f"inspect aq integration reserve-owner --task-id {task.id}",
+                task_id=task.id, age_seconds=now-task.updated_at,
+                reasons=reasons, **repairs[task.id],
+            ))
+            continue
         from src.task_graph.readiness import DELIVERY_CODES, readiness_from_reasons
 
+        refresh = [r for r in reasons if r.get("code") == "frontier_epic_refresh_pending"]
+        if refresh:
+            epic_ids = sorted({
+                epic for r in refresh
+                for epic in (r.get("blocking_task_ids") or
+                             [getattr(task, "parent_task_id", None) or r.get("ref")])
+                if epic and epic != task.id
+            })
+            batch_ids = sorted({batch for r in refresh
+                                for batch in (r.get("batch_ids") or [r.get("batch_id")])
+                                if batch})
+            commands = [f"aq integration refresh-epic --task {shlex.quote(epic)} --apply"
+                        for epic in epic_ids]
+            action = "; ".join(commands) or "epic identity unavailable; inspect the child's parent"
+            findings.append(_finding(
+                "epic_refresh_needed", task.project_id,
+                f"{task.id}: epic refresh needed; "
+                + "; ".join(r.get("detail", "") for r in refresh)
+                + f"; next: {action}",
+                task_id=task.id, epic_ids=epic_ids, batch_ids=batch_ids,
+                commands=commands, reasons=reasons,
+            ))
+            continue
         if any(r.get("code") in DELIVERY_CODES for r in reasons):
             readiness = readiness_from_reasons(reasons)
             findings.append(_finding(
@@ -222,16 +257,39 @@ async def _waiting_train_repairs(ctx: DoctorContext, task_ids: list[str]) -> dic
     if not task_ids:
         return {}
     from src.database.queries.claim_queries import active_train_repair_bindings
+    from src.database.tables import integration_batches
+    from src.integration.repair import ordinary_repair_id
 
     bindings = active_train_repair_bindings()
     async with ctx.db._engine.connect() as conn:
         rows = await _mapping_rows(conn, bindings.where(
             bindings.selected_columns.repair_task_id.in_(task_ids),
         ))
-    return {
+        ordinary = await _mapping_rows(conn, select(
+            task_table.c.id.label("repair_task_id"), integration_batches.c.id.label("batch_id"),
+            integration_batches.c.repair_attempt_count,
+        ).select_from(task_table.join(
+            integration_batches, integration_batches.c.id == task_table.c.created_by_id,
+        )).where(
+            task_table.c.id.in_(task_ids),
+            task_table.c.project_id == integration_batches.c.project_id,
+            task_table.c.repo_id == integration_batches.c.repository_id,
+            integration_batches.c.target_ref.is_not(None),
+            integration_batches.c.intent == "open",
+            integration_batches.c.lifecycle != "promoted",
+            integration_batches.c.repair_attempt_count > 0,
+        ))
+    found = {
         row["repair_task_id"]: {"operation_id": row["operation_id"], "batch_id": row["batch_id"]}
         for row in rows
     }
+    found.update({
+        row["repair_task_id"]: {"operation_id": None, "batch_id": row["batch_id"]}
+        for row in ordinary if row["repair_task_id"] == ordinary_repair_id(
+            row["batch_id"], row["repair_attempt_count"],
+        )
+    })
+    return found
 
 
 def _route_findings(tasks: list) -> list[dict]:
@@ -514,6 +572,35 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
     ]
 
 
+async def _delivery_stuck_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    """Generations the delivery watchdog projects as stuck, with its exact reason."""
+    from src.database.tables import wait_records
+
+    async with ctx.db._engine.connect() as conn:
+        rows = await _mapping_rows(conn, select(
+            wait_records.c.project_id, wait_records.c.owner_id, wait_records.c.decision_inputs,
+        ).where(
+            wait_records.c.project_id.in_(active), wait_records.c.origin == "integration",
+            wait_records.c.owner_kind == "scheduler", wait_records.c.outcome == "pending",
+        ).order_by(wait_records.c.created_at, wait_records.c.id).limit(MAX_ROWS))
+    findings = []
+    for row in rows:
+        inputs = row["decision_inputs"] or {}
+        if not inputs.get("delivery_watchdog_projection") or inputs.get("delivery_state") != "stuck":
+            continue
+        redrive = (inputs.get("redrive") or {}).get("task_id")
+        findings.append(_finding(
+            "delivery_stuck", row["project_id"],
+            f"delivery of {row['owner_id']} is stuck ({inputs.get('delivery_reason')}) for "
+            f"{int(inputs.get('age_seconds') or 0)}s"
+            + (f"; landing task {redrive}" if redrive else "")
+            + f"; aq wait explain --task {row['owner_id']}",
+            task_id=row["owner_id"], reason=inputs.get("delivery_reason"),
+            takeover_task_id=redrive, incident_id=inputs.get("incident_id"),
+        ))
+    return findings
+
+
 async def _completed_undelivered_findings(
     ctx: DoctorContext, active: set[str], now: float,
 ) -> list[dict]:
@@ -585,6 +672,40 @@ async def _conversation_findings(ctx: DoctorContext, now: float) -> list[dict]:
     )]
 
 
+async def _activation_findings(ctx: DoctorContext, now: float) -> list[dict]:
+    """Recompute health before another trigger discovers blocked automation."""
+    from src.playbooks.activation import ActivationHealth, load_activation_health
+
+    if not ctx.config.playbooks.enabled:
+        return []
+    if not callable(getattr(ctx.handler, "_v2_lookups", None)):
+        raise ObservationUnavailable("playbook health registries unavailable")
+    contracts, profiles, _events = await ctx.handler._v2_lookups()
+    records = await load_activation_health(ctx.db, contracts=contracts, profiles=profiles)
+    findings = []
+    for record in records:
+        if record.health is ActivationHealth.READY:
+            continue
+        age = max(0, now - record.activated_at) if record.activated_at is not None else None
+        age_text = f"activated {age / 3600:.1f}h ago" if age is not None else "activation age unknown"
+        reasons = "; ".join(
+            f"{reason.code}: {reason.subject or reason.message}" for reason in record.reasons
+        ) or "no health reasons"
+        findings.append(_finding(
+            "playbook_activation_unhealthy",
+            record.scope_identifier if record.scope == "project" else None,
+            f"{record.playbook_id} ({record.scope}:{record.scope_identifier or '-'}) is "
+            f"{record.health.value}, enabled={record.enabled}, {age_text}; {reasons}; "
+            "inspect activation-health, then recompile and reactivate through the reviewed path",
+            activation_id=record.activation_id, playbook_id=record.playbook_id,
+            scope=record.scope, scope_identifier=record.scope_identifier,
+            health=record.health.value, enabled=record.enabled,
+            artifact_sha256=record.active_artifact_sha256, activated_at=record.activated_at,
+            activation_age_seconds=age, reasons=[reason.as_dict() for reason in record.reasons],
+        ))
+    return findings
+
+
 def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> CheckResult:
     summary = (
         f"{len(findings)} stall finding(s) across {active} active project(s)" if findings
@@ -606,12 +727,15 @@ def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> Chec
 # The producer owns every identity mapping. None denotes a scope aggregate,
 # never a guessed task/project reference hidden somewhere in legacy JSON.
 _SUBJECTS = {
+    "playbook_activation_unhealthy": ("playbook_activation", "activation_id"),
     "unclaimed_work": ("task", "task_id"),
     "undelivered_blocker": ("task", "task_id"),
     "WAITING-ON-DELIVERY": ("task", "task_id"),
+    "epic_refresh_needed": ("task", "task_id"),
     "restore_branch": ("task", "dependent_task_id"),
     "worker_relaunch_loop": ("task", "task_id"),
     "train_repair_capacity_wait": ("task", "task_id"),
+    "train_repair_off_frontier": ("task", "task_id"),
     "slot_capacity_short": None, "train_batch_stalled": ("batch", "batch_id"),
     "non_design_expensive_route": ("task", "task_id"),
     "pool_without_claim": ("session", "session_name"),
@@ -621,12 +745,14 @@ _SUBJECTS = {
     "disabled_provider": ("task", "task_id"),
     "unmaterialized_train_pr": ("task", "task_id"),
     "completed_undelivered": ("task", "task_id"), "conversation_unowned": None,
+    "delivery_stuck": ("task", "task_id"),
     "delivery_engine_unavailable": None, "flock_untracked": None,
     "session_authentication": ("session", "session_id"),
     "container_dependency": ("task", "task_id"), "container_dependencies_truncated": None,
     "escalation_undelivered": ("escalation", "escalation_id"),
     "continuous_promotion_lag": ("promotion_step", "step_id"),
     "continuous_promotion_observation_unavailable": None,
+    "stranded_promotion_task": ("task", "task_id"),
     "reviewed_file_guard": ("batch", "batch_id"), "orphaned_pr": ("pull_request", "pr_url"),
     "pr_inventory_failed": None, "unadmitted_parent": ("task", "task_id"),
     "validation_db": ("container", "container"), "stranded_child": ("task", "task_id"),
@@ -692,7 +818,8 @@ async def _probe(ctx, active, kinds, run):
         retained.append(row)
     projects = set(active) | {row["project_id"] for row in retained}
     global_kinds = {kind for kind in kinds if _SUBJECTS[kind] is None
-                    or kind in {"validation_db", "session_authentication"}}
+                    or kind in {"validation_db", "session_authentication",
+                                "playbook_activation_unhealthy"}}
     if global_kinds:
         projects.add(None)
     if not projects:
@@ -762,6 +889,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         failed_projects.update(active)
         tasks = tasks[:MAX_ROWS]
     runs = [
+        _probe(ctx, active, ("playbook_activation_unhealthy",),
+               lambda c: _activation_findings(c, now)),
         _probe(ctx, active, ("flock_untracked", "session_authentication"),
                lambda c: _flock_findings(c, now)),
         _probe(ctx, active, ("conversation_unowned",), lambda c: _conversation_findings(c, now)),
@@ -770,7 +899,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     if active:
         runs.extend([
             _probe(ctx, active, ("unclaimed_work", "undelivered_blocker", "WAITING-ON-DELIVERY",
-                                 "train_repair_capacity_wait"),
+                                 "epic_refresh_needed", "train_repair_capacity_wait",
+                                 "train_repair_off_frontier"),
                    lambda c: _work_findings(c, tasks, now, _Explains(c))),
             _probe(ctx, active, ("container_dependency", "container_dependencies_truncated"),
                    lambda c: _container_dependency_findings(c, active)),
@@ -785,6 +915,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                    lambda c: _unmaterialized_pr_findings(c, active)),
             _probe(ctx, active, ("completed_undelivered",),
                    lambda c: _completed_undelivered_findings(c, active, now)),
+            _probe(ctx, active, ("delivery_stuck",),
+                   lambda c: _delivery_stuck_findings(c, active)),
             _probe(ctx, active, ("unadmitted_parent",),
                    lambda c: _unadmitted_parent_findings(c, active)),
             _probe(ctx, active, ("stranded_child",), lambda c: _stranded_child_findings(c, now)),
@@ -805,6 +937,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
             _probe(ctx, active, ("continuous_promotion_lag",
                                  "continuous_promotion_observation_unavailable"),
                    lambda c: _continuous_promotion_findings(c, active, now)),
+            _probe(ctx, active, ("stranded_promotion_task",),
+                   lambda c: _stranded_promotion_findings(c, active)),
             _probe(ctx, active, ("slot_capacity_short",),
                    lambda c: _slot_capacity_findings(c, active)),
             _probe(ctx, active, ("train_batch_stalled",),
@@ -819,7 +953,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         coverage.extend(partition(CHECK_ID, kind, None, complete=True, total=0)
                         for kind in _SUBJECTS if kind not in {p["kind"] for p in coverage})
     inventory_kinds = {"unclaimed_work", "undelivered_blocker", "worker_relaunch_loop",
-                       "train_repair_capacity_wait", "WAITING-ON-DELIVERY",
+                       "train_repair_capacity_wait", "train_repair_off_frontier", "WAITING-ON-DELIVERY",
+                       "epic_refresh_needed",
                        "pool_without_claim", "idle_worker", "idle_pool", "delivery_stale",
                        "disabled_provider", "publisher_skip", "non_design_expensive_route"}
     coverage.extend(partition(CHECK_ID, "non_design_expensive_route", pid, complete=True)
@@ -929,6 +1064,21 @@ async def _continuous_promotion_findings(ctx, active, now):
                  item["reason"], evidence=item)
         for item in report["unavailable"]
     ]
+
+
+async def _stranded_promotion_findings(ctx, active):
+    from src.integration.promotion_steps import stranded_promotion_tasks
+
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(stranded_promotion_tasks())).mappings().all()
+    return [_finding(
+        "stranded_promotion_task", row["project_id"], f"{row['task_id']} is IN_PROGRESS but "
+        f"promotion intent {row['id']} on {row['target_ref']} is {row['intent']}/"
+        f"{row['lifecycle']}; cleanup fails it, and the next request supersedes it",
+        severity="error", batch_id=row["id"], **{key: row[key] for key in (
+            "task_id", "repository_id", "target_ref", "request_id", "intent", "lifecycle",
+            "human_abort_reason")},
+    ) for row in rows if row["project_id"] in active]
 
 
 async def _worker_relaunch_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
@@ -1105,7 +1255,6 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
     from src.database import tables as t
     from src.database.queries.integration_train_queries import (
         _ACTIVE_BATCH_LIFECYCLES,
-        _root_delivery_receipt_conditions,
     )
     from src.integration.reviews import ReviewEvidenceProducer
     from src.integration.delivery_observer import prerequisite_observer
@@ -1137,10 +1286,6 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
             t.integration_batches, t.integration_batches.c.id == t.integration_batch_members.c.batch_id,
         ).where(t.integration_batch_members.c.task_id == t.tasks.c.id,
                 t.integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES))),
-        (True if observer is not None else ~exists(select(t.task_delivery_receipts.c.id).where(
-            t.task_delivery_receipts.c.source_task_id == t.tasks.c.id,
-            *_root_delivery_receipt_conditions(t.repos.c.id, t.repos.c.default_branch),
-        ))),
     ).order_by(t.tasks.c.updated_at, t.tasks.c.id).limit(100)
     producer = ReviewEvidenceProducer(ctx.db, None)
     findings = []
@@ -1158,6 +1303,8 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
         for index, record in enumerate(rows):
             row = dict(record)
             proof = verified.get(row["task_id"])
+            if proof is not None and proof.lifecycle_exclusion:
+                continue
             if (proof is not None
                     and proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
                     and (not row["checkpoint_sha"] or row["checkpoint_sha"] == proof.source_oid)):

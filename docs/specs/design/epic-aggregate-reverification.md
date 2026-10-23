@@ -11,6 +11,27 @@ must not suppress this observation. Other admission refusals retain authority.
 The full recursive readiness evaluator continues to enforce child
 completion and containment, project/task holds, source identity, checks and reviews.
 
+Branch-based aggregate lookup identifies the unique completed container in the
+target project and repository, including containers with archived children or
+an explicit container flag. Completed repair and role tasks sharing that branch
+do not compete for the epic's identity. Missing or ambiguous container identity
+withholds completion and is logged; it never selects an arbitrary task. The same
+lookup governs closed-epic refresh inputs.
+
+Once a closed epic's required children are contained, aggregate readiness first
+refreshes its private branch from the current default branch when it is behind.
+This also runs immediately after the last child batch publishes and on idle
+visits after a restart. The refresh uses the ordinary immutable epic-refresh
+batch, exact candidate checks, attestation and fenced publication; it never
+certifies the epic itself. An open batch, paused or aborted refresh, missing Git
+evidence or a hold retains its existing authority. Verification resumes on the
+refreshed head and still requires its current checks and tree review. No root PR
+or successful old-head trust lookup is needed to start the refresh.
+Conclusive failing aggregate checks retain the existing bounded baseline-sync
+and repair path rather than starting a second repair through a refresh batch.
+Observe current hosted results before choosing that path; a cached green result
+must not start a refresh after the same exact head has turned red.
+
 Discovery retains completed containers as epic targets even when their child
 origins have retired or the container's own live origin is missing. A root
 container owes the same aggregate visit as a nested one; it never waits for a

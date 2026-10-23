@@ -1,0 +1,752 @@
+{
+  "contracts": {
+    "integration_reserve_owner": {
+      "execution": {
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "capability": "integration_reserve_owner",
+        "effects": [
+          {
+            "fields_arg": null,
+            "kind": "update",
+            "subject": "integration_operation",
+            "when": {
+              "arg_equals": null,
+              "arg_present": null
+            }
+          }
+        ],
+        "idempotency": {
+          "key_field": null,
+          "mode": "natural"
+        },
+        "name": "integration_reserve_owner",
+        "outcomes": [
+          {
+            "classification": "success",
+            "name": "acquired"
+          },
+          {
+            "classification": "success",
+            "name": "already_reserved"
+          },
+          {
+            "classification": "failure",
+            "name": "not_eligible"
+          },
+          {
+            "classification": "failure",
+            "name": "not_found"
+          },
+          {
+            "classification": "success",
+            "name": "running"
+          }
+        ],
+        "receipt_projection": [
+          "id",
+          "head_sha",
+          "recovered_task_id",
+          "source_sha",
+          "manifest",
+          "evidence",
+          "policy",
+          "deliveries",
+          "pending_publications",
+          "parked",
+          "preserved_owners",
+          "released_delegates",
+          "archived_delegates",
+          "project_id",
+          "operation_id",
+          "batch_id",
+          "task_id",
+          "effective_mode",
+          "desired_mode",
+          "mode",
+          "generation",
+          "draining",
+          "ready",
+          "rollout_ready",
+          "blockers",
+          "blocker_digest",
+          "certification",
+          "repository_id",
+          "schedule",
+          "active_batch",
+          "members",
+          "parent_readiness",
+          "ownership",
+          "lease",
+          "repair",
+          "ci_evidence",
+          "promotion",
+          "reconciliation",
+          "cleanup_pending",
+          "release",
+          "legacy_suppression",
+          "waiver_id",
+          "request_id",
+          "request_sequence",
+          "trigger",
+          "requested_at",
+          "next_due_at",
+          "state",
+          "stage",
+          "deadline_at",
+          "reason",
+          "count",
+          "outcomes",
+          "dry_run",
+          "leases",
+          "bound",
+          "unproven",
+          "verifier_task_id",
+          "children",
+          "retire_delegates",
+          "conclusion"
+        ],
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "active_batch": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "archived_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "batch_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "blocker_digest": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "blockers": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "bound": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "certification": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "children": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ci_evidence": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "cleanup_pending": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "conclusion": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "count": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "deadline_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "deliveries": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "desired_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "draining": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "dry_run": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "effective_mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "lease": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "leases": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "legacy_suppression": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "manifest": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "members": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "next_due_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "operation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "outcomes": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ownership": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "parent_readiness": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "parked": {
+              "default": [],
+              "items": {},
+              "type": "array"
+            },
+            "pending_publications": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "preserved_owners": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "promotion": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "ready": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reconciliation": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "recovered_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "release": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "released_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "repair": {
+              "default": [],
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "repository_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "request_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "request_sequence": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "requested_at": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "retire_delegates": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "rollout_ready": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "schedule": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "source_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "stage": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "state": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "trigger": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "unproven": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "verifier_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "waiver_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "retry_safe": true,
+        "schema_generation": 1,
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "side_effect": "update",
+        "supports_preview": false,
+        "timeout_seconds": null
+      },
+      "fingerprint": "sha256:a2871c59c48ab5283af17c6a5a38f0aea0c53a6a71c06a1f5a37f262ca3692c4",
+      "previous_fingerprint": "sha256:16bb17888aaa5174b42aab09c24a69d169a7aef0f4c2721a52d792c2fff91e6b"
+    }
+  },
+  "review_notes": [
+    "quick-journey-79: integration_reserve_owner can outlast the CLI's 30s request timeout while train recovery fetches origin. It now answers within a bounded window and, past it, returns the declared success outcome running with operation_id and a poll command; repeating the request joins the run in flight or collects its result.",
+    "Only the outcome set changes: running is added as a success. Arguments, result model (IntegrationOperationalValue already carries operation_id), effect, principal and resource gates are unchanged, so transport definitions and the CLI catalogue keep their recorded digests.",
+    "No shipped or reviewed playbook references integration_reserve_owner, so no reviewed bundle fingerprint moves."
+  ],
+  "source_base": "908112dce62681fb4761e80a218382c75fc939cf"
+}

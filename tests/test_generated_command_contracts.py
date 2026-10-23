@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import inspect
 import json
 import textwrap
@@ -80,6 +81,101 @@ def test_builtin_audit_is_complete():
             tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(CommandHandler, helper))))
             digest = "sha256:" + hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
             assert digest == expected, (name, helper)
+
+
+@pytest.fixture
+def audit_refresh(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "audit_refresh", ROOT / "scripts/refresh-command-audit-digest.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rows = json.loads(AUDIT.read_text())
+    selected = {name: rows[name] for name in (
+        "explain_task", "get_schema", "task_claim", "task_close",
+    )}
+    for row in selected.values():
+        row["source_digest"] = "sha256:stale"
+        for helper in row.get("helper_producers", {}):
+            row["helper_producers"][helper] = "sha256:stale-helper"
+    audit = tmp_path / "audit.json"
+    audit.write_text(json.dumps(selected, indent=2) + "\n")
+    monkeypatch.setattr(module, "AUDIT", audit)
+
+    def run(*args):
+        monkeypatch.setattr("sys.argv", [str(module.__file__), *args])
+        return module.main()
+
+    return audit, run
+
+
+def test_audit_refresh_requires_explicit_write_and_preserves_review_evidence(audit_refresh):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    before = json.loads(original)
+    assert run("--command", "explain_task") == 1
+    assert audit.read_bytes() == original
+    assert run("--command", "explain_task", "--check") == 1
+    assert audit.read_bytes() == original
+
+    assert run("--command", "explain_task", "--write") == 0
+    after = json.loads(audit.read_text())
+    assert after["explain_task"]["source_digest"] != "sha256:stale"
+    before["explain_task"]["source_digest"] = after["explain_task"]["source_digest"]
+    assert after == before  # All other fields and the unrelated stale row stay untouched.
+    refreshed = audit.read_bytes()
+    assert run("--command", "explain_task", "--check") == 0
+    assert run("--command", "explain_task", "--write") == 0
+    assert audit.read_bytes() == refreshed
+
+
+@pytest.mark.parametrize("args", [[], ["--command", "unknown", "--write"]])
+def test_audit_refresh_refuses_missing_or_unknown_selection(audit_refresh, args):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        run(*args)
+    assert exc.value.code == 2
+    assert audit.read_bytes() == original
+
+
+@pytest.mark.parametrize("command", ["task_claim", "task_close"])
+def test_audit_helper_refresh_preserves_all_other_evidence(audit_refresh, command):
+    audit, run = audit_refresh
+    helper = "_prepare_and_activate_locked"
+    args = ("--command", command, "--helper", helper)
+    original = audit.read_bytes()
+    before = json.loads(original)
+    assert run(*args) == 1
+    assert audit.read_bytes() == original
+    assert run(*args, "--write") == 0
+    after = json.loads(audit.read_text())
+    digest = after[command]["helper_producers"][helper]
+    assert digest != "sha256:stale-helper"
+    before[command]["helper_producers"][helper] = digest
+    assert after == before
+    refreshed = audit.read_bytes()
+    assert run(*args, "--check") == 0
+    assert run(*args, "--write") == 0
+    assert audit.read_bytes() == refreshed
+
+
+@pytest.mark.parametrize("selection", [
+    ["--command", "task_claim", "--helper", ""],
+    ["--command", "task_claim", "--helper", "_unknown"],
+    ["--command", "get_schema", "--helper", "_prepare_and_activate_locked"],
+    ["--command", "task_claim", "--command", "task_close",
+     "--helper", "_prepare_and_activate_locked"],
+    ["--command", "task_claim", "--helper", "_prepare_and_activate_locked",
+     "--helper", "_prepare_and_activate_locked"],
+])
+def test_audit_helper_refresh_refuses_unknown_or_ambiguous_selection(audit_refresh, selection):
+    audit, run = audit_refresh
+    original = audit.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        run(*selection, "--write")
+    assert exc.value.code == 2
+    assert audit.read_bytes() == original
 
 
 @pytest.mark.parametrize(("command", "requirements"), [
@@ -186,6 +282,44 @@ async def test_project_filter_cannot_authorize_a_foreign_task(monkeypatch, gener
 async def test_session_domain_gates_do_not_admit_other_system_resources(generated):
     caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="worker")
     result = await authorize_resources("get_config", {}, caller, db=object(), generated=generated)
+    assert result["error_code"] == "resource_scope_denied"
+
+
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("project_filter", [None, "p", "other"])
+async def test_pool_status_project_supervisor_view_is_pinned(generated, project_filter):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    args = {} if project_filter is None else {"project_id": project_filter}
+    result = await authorize_resources("pool_status", args, caller, db=object(), generated=generated)
+    if project_filter == "other":
+        assert result["error_code"] == "resource_scope_denied"
+    else:
+        assert result is None
+        assert args == {"project_id": "p"}
+
+
+@pytest.mark.parametrize("generated", [False, True])
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.PLAYBOOK])
+async def test_pool_status_project_view_requires_a_supervisor(generated, kind):
+    caller = replace(principal(), kind=kind, session_id="worker")
+    result = await authorize_resources("pool_status", {}, caller, db=object(), generated=generated)
+    assert result["error_code"] == "resource_scope_denied"
+
+
+@pytest.mark.parametrize("generated", [False, True])
+async def test_pool_status_global_supervisor_keeps_unfiltered_view(generated):
+    caller = replace(principal(None), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    args = {}
+    assert await authorize_resources("pool_status", args, caller, db=object(), generated=generated) is None
+    assert args == {}
+
+
+@pytest.mark.parametrize("command", [
+    "pool_scale", "pool_rename", "pool_set_enabled", "pool_set_lifecycle",
+])
+async def test_pool_status_read_does_not_grant_project_supervisors_pool_mutations(command):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="sup", elevated=True)
+    result = await authorize_resources(command, {"project_id": "p"}, caller, db=object())
     assert result["error_code"] == "resource_scope_denied"
 
 

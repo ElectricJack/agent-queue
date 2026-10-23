@@ -30,6 +30,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from src.config_wait_policy import (
+    WaitKindPolicy as WaitKindPolicy,
+    WaitPolicyConfig as WaitPolicyConfig,
+    WaitProjectOverrides as WaitProjectOverrides,
+    parse_wait_policy,
+)
 from src.docs_urls import DEFAULT_DOCS_BASE_URL
 from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
@@ -1063,11 +1069,32 @@ class SupervisorConfig:
     #: The trailing underscore in the attribute name avoids the Python
     #: keyword ``global``. In YAML the section is written as ``global``.
     global_: GlobalSupervisorConfig = field(default_factory=GlobalSupervisorConfig)
+    turn_timeout_seconds: int = 900
+    question_timeout_seconds: int = 900
+    retry_backoff_seconds: int = 60
+    max_turn_retries: int = 2
+    max_session_age_seconds: int = 86400
+    context_ceiling_tokens: int = 160000
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         errors.extend(self.global_.validate())
+        for key in ("turn_timeout_seconds", "question_timeout_seconds", "retry_backoff_seconds",
+                    "max_turn_retries", "max_session_age_seconds", "context_ceiling_tokens"):
+            value = getattr(self, key)
+            if type(value) is not int or value <= 0:
+                errors.append(ConfigError("supervisor", key, "must be a positive integer"))
         return errors
+
+    @classmethod
+    def from_mapping(cls, section: Mapping) -> SupervisorConfig:
+        """Build from the YAML ``supervisor`` section; ``global`` is the nested section."""
+        global_section = section.get("global", {}) or {}
+        kwargs = _dataclass_kwargs(cls, section)
+        kwargs["global_"] = GlobalSupervisorConfig(
+            idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
+        )
+        return cls(**kwargs)
 
 
 LLM_PROVIDER_IDS = frozenset({"anthropic", "google", "openai"})
@@ -2410,9 +2437,17 @@ class GitHubAppConfig:
     app_id: int = field(metadata={"json_schema": {"minimum": 1}})
     installation_id: int = field(metadata={"json_schema": {"minimum": 1}})
     private_key_path: str = field(metadata={"json_schema": _REFERENCE_SCHEMA})
+    actions_permission: str = field(default="read", metadata={"json_schema": {
+        "enum": ["read", "write"],
+    }})
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if not isinstance(self.actions_permission, str) or self.actions_permission not in (
+            "read", "write",
+        ):
+            errors.append(ConfigError("integration", "github_app.actions_permission",
+                                      "must be read or write"))
         if not _is_safe_identity(self.client_id):
             errors.append(
                 ConfigError("integration", "github_app.client_id", "must be a safe identity")
@@ -2437,7 +2472,7 @@ class GitHubAppConfig:
 
 
 _GITHUB_APP_CONFIG_KEYS = frozenset(
-    {"client_id", "app_id", "installation_id", "private_key_path"}
+    {"client_id", "app_id", "installation_id", "private_key_path", "actions_permission"}
 )
 
 _SCRATCH_PROBE_CONFIG_KEYS = frozenset(
@@ -2558,6 +2593,7 @@ def validate_github_app_raw_config(raw: Mapping[str, object]) -> None:
                 "app_id": _is_positive_int,
                 "installation_id": _is_positive_int,
                 "private_key_path": _is_safe_path_or_env,
+                "actions_permission": lambda v: isinstance(v, str) and v in ("read", "write"),
             }
             if name == "github_app"
             else {
@@ -2789,13 +2825,22 @@ class ResourceCgroupConfig:
 
 @dataclass
 class ScriptsConfig:
-    """Ordinary script processes, enabled by default; no isolation prerequisites."""
+    """Ordinary script processes, enabled by default; no isolation prerequisites.
+
+    Empty roots resolve under ``{data_dir}/scripts/`` (see :meth:`resolved`).
+    Without ``runtime_manifest`` a program's executable is an ordinary host
+    file found under ``runtime_root`` or ``search_path``; a manifest opts into
+    digest pinning of the declared runtime files instead.
+    """
 
     enabled: bool = True
     runtime_root: str = ""
     runtime_manifest: str = ""
     input_root: str = ""
     state_root: str = ""
+    search_path: list[str] = field(
+        default_factory=lambda: ["/usr/local/bin", "/usr/bin", "/bin"]
+    )
     env_allowlist: list[str] = field(default_factory=list)
     queue_seconds: int = 300
     wall_seconds: int = 60
@@ -2821,6 +2866,10 @@ class ScriptsConfig:
             if (not isinstance(value, str) or "\0" in value
                     or (value and not value.startswith("/"))):
                 error(name, "must be an absolute path when supplied")
+        if (not isinstance(self.search_path, list)
+                or any(not isinstance(value, str) or "\0" in value or not value.startswith("/")
+                       or ":" in value for value in self.search_path)):
+            error("search_path", "must be a list of absolute directories")
         if not isinstance(self.env_allowlist, list):
             error("env_allowlist", "must be a list of permitted environment names")
         else:
@@ -2839,6 +2888,20 @@ class ScriptsConfig:
             if type(value) is not int or value <= 0:
                 error(name, "must be a positive integer")
         return errors
+
+    def resolved(self, data_dir: str) -> ScriptsConfig:
+        """Copy with every empty root filled in under ``{data_dir}/scripts/``.
+
+        The manifest stays optional: an empty ``runtime_manifest`` selects host
+        executables rather than a default manifest path.
+        """
+        base = os.path.join(os.path.abspath(os.path.expanduser(data_dir)), "scripts")
+        return dataclasses.replace(
+            self,
+            runtime_root=self.runtime_root or os.path.join(base, "runtime"),
+            input_root=self.input_root or os.path.join(base, "inputs"),
+            state_root=self.state_root or os.path.join(base, "state"),
+        )
 
 
 @dataclass
@@ -3944,6 +4007,45 @@ class DeployConfig:
 
 
 @dataclass
+class BuildCacheConfig:
+    """Optional compiler cache on native storage, shared by job checkouts."""
+
+    kind: str = "ccache"
+    dir: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.kind, str) or self.kind not in {"ccache", "sccache"}:
+            errors.append(ConfigError("workspaces", "build_cache.kind", "use ccache or sccache"))
+        if (not isinstance(self.dir, str) or not os.path.isabs(self.dir)
+                or "\x00" in self.dir or self.dir == "/"
+                or re.match(r"^/mnt/[a-z](?:/|$)", os.path.realpath(self.dir))):
+            errors.append(ConfigError(
+                "workspaces", "build_cache.dir", "must be an absolute native Linux directory",
+            ))
+        return errors
+
+
+@dataclass
+class WorkspacesConfig:
+    build_cache: BuildCacheConfig | None = None
+    # Project entries override the installation default, including explicit null.
+    projects: dict[str, BuildCacheConfig | None] = field(default_factory=dict)
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.projects, dict):
+            return [ConfigError("workspaces", "projects", "must be a mapping")]
+        for cache in (self.build_cache, *self.projects.values()):
+            if cache is not None:
+                if isinstance(cache, BuildCacheConfig):
+                    errors.extend(cache.validate())
+                else:
+                    errors.append(ConfigError("workspaces", "build_cache", "must be a mapping"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -3993,9 +4095,11 @@ class AppConfig:
     # -- Framework-overhaul substrate sections (all flags default off) ------
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     worktrees: WorktreesConfig = field(default_factory=WorktreesConfig)
+    workspaces: WorkspacesConfig = field(default_factory=WorkspacesConfig)
     streams: StreamsConfig = field(default_factory=StreamsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     pricing: PricingConfig = field(default_factory=PricingConfig)
+    wait_policy: WaitPolicyConfig = field(default_factory=WaitPolicyConfig)
     messages: MessagesConfig = field(default_factory=MessagesConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     supervisor_agent: SupervisorAgentConfig = field(default_factory=SupervisorAgentConfig)
@@ -4218,10 +4322,12 @@ class AppConfig:
         errors.extend(self.playbooks.validate())
         errors.extend(self.sessions.validate())
         errors.extend(self.worktrees.validate())
+        errors.extend(self.workspaces.validate())
         errors.extend(self.streams.validate())
         errors.extend(self.security.validate())
         errors.extend(self.pricing.validate())
         errors.extend(self.messages.validate())
+        errors.extend(self.wait_policy.validate())
         errors.extend(self.supervisor_agent.validate())
         errors.extend(self.api_auth.validate())
         errors.extend(self.surface.validate())
@@ -4422,11 +4528,13 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
+    "workspaces",  # cache settings apply to the next job/session launch
     "deploy",  # selectors and automatic branch-check cadence are read live
     # Read per use through lambda getters (``orchestrator.core`` knowledge
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.
     "knowledge",
+    "wait_policy",  # read per decision; flags are snapshotted once per registry cycle
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -4923,6 +5031,15 @@ def _present_kwargs(section: dict, spec: dict) -> dict:
     return {name: coerce(section[name]) for name, coerce in spec.items() if name in section}
 
 
+def _load_wait_policy(raw: object) -> WaitPolicyConfig:
+    """Parse and validate the policy before making it visible to runtime consumers."""
+    config = parse_wait_policy(raw)
+    errors = config.validate()
+    if errors:
+        raise ConfigValidationError([str(error) for error in errors])
+    return config
+
+
 def load_config(path: str, profile: str | None = None) -> AppConfig:
     """Load and validate application configuration from a YAML file.
 
@@ -5013,6 +5130,23 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.data_dir = raw["data_dir"]
     if "workspace_dir" in raw:
         config.workspace_dir = raw["workspace_dir"]
+    if "workspaces" in raw:
+        section = raw["workspaces"]
+        if not isinstance(section, dict):
+            raise ConfigValidationError(["[workspaces] must be a mapping"])
+
+        def cache_config(value):
+            if value is None or not isinstance(value, dict):
+                return value
+            return BuildCacheConfig(**_dataclass_kwargs(BuildCacheConfig, value))
+
+        projects = section.get("projects", {})
+        if not isinstance(projects, dict):
+            raise ConfigValidationError(["[workspaces] projects must be a mapping"])
+        config.workspaces = WorkspacesConfig(
+            build_cache=cache_config(section.get("build_cache")),
+            projects={key: cache_config(value) for key, value in projects.items()},
+        )
     if "docs" in raw and isinstance(raw["docs"], dict):
         config.docs = DocsConfig(**_dataclass_kwargs(DocsConfig, raw["docs"]))
     if "deploy" in raw and isinstance(raw["deploy"], dict):
@@ -5240,13 +5374,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.llm = _llm_config_from_mapping(legacy_raw, legacy=True)
 
     if "supervisor" in raw:
-        s = raw["supervisor"]
-        global_section = s.get("global", {}) or {}
-        config.supervisor = SupervisorConfig(
-            global_=GlobalSupervisorConfig(
-                idle_timeout_seconds=global_section.get("idle_timeout_seconds", 2700),
-            ),
-        )
+        config.supervisor = SupervisorConfig.from_mapping(raw["supervisor"])
 
     # hook_engine config section removed (playbooks spec §13 Phase 3).
     # Existing config files with hook_engine section are silently ignored.
@@ -5429,6 +5557,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             )
         config.pricing = PricingConfig(models=entries)
 
+    if "wait_policy" in raw:
+        config.wait_policy = _load_wait_policy(raw["wait_policy"])
+
     if "messages" in raw and isinstance(raw["messages"], dict):
         ms_cfg = raw["messages"]
         config.messages = MessagesConfig(
@@ -5498,6 +5629,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 app_id=github_app_raw.get("app_id"),
                 installation_id=github_app_raw.get("installation_id"),
                 private_key_path=github_app_raw.get("private_key_path", ""),
+                actions_permission=github_app_raw.get("actions_permission", "read"),
             )
         scratch_probe_raw = integ.get("scratch_probe")
         scratch_probe = None

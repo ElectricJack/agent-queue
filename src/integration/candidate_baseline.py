@@ -2,9 +2,10 @@
 
 A red candidate is not automatically the batch's fault.  A required check that
 also fails on the target commit the candidate was built on is a pre-existing
-failure: no change in this batch can turn it green, so a repair filed for it spends
-an attempt and a worker on work the target already owed.  Only a failing check the
-target does not fail is repairable.
+failure. Normally only a failing check the target does not fail is repairable.
+An open batch sealing its own epic subtree is the exception: its retained
+candidate can repair proven inherited failures because the seal prevents ordinary
+target repair. The ordinary repair budget and publication gates still apply.
 
 The target's verdict for its exact sha comes from the same per-commit check cache
 as the candidate's, so the comparison is over rows written by one trusted producer
@@ -47,10 +48,11 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 
+from src.waits.sources import execute_batch_mutation
 from src.task_templates import render_task_template
-from src.database.tables import integration_batches
+from src.database.tables import integration_batch_members, integration_batches, repos, tasks
 from src.integration.batches import candidate_ref
 from src.integration.checks import ChecksResult, ChecksState, Conclusion, ExactChecks
 from src.integration.runtime_contracts import HeadIdentity
@@ -71,6 +73,44 @@ BASELINE_BACKOFF_MAX_SECONDS = 3600.0
 
 #: The blocker a spent bound names instead of filing another repair.
 BASELINE_BLOCKER = "candidate_pre_existing_failure"
+
+
+async def sealed_epic_target(db, batch) -> str | None:
+    """The epic whose subtree this exact open batch prevents from reopening."""
+    from src.database.queries.hierarchy_queries import never_leaseable_container
+
+    async with db._engine.connect() as conn:
+        repo = (await conn.execute(select(repos).where(
+            repos.c.id == batch.repository_id, repos.c.project_id == batch.project_id,
+        ))).mappings().one_or_none()
+        if (repo is None or batch.target_ref.removeprefix("refs/heads/")
+                == repo["default_branch"].removeprefix("refs/heads/")):
+            return None
+        epics = (await conn.execute(select(tasks.c.id).where(
+            tasks.c.project_id == batch.project_id,
+            or_(tasks.c.repo_id == batch.repository_id, tasks.c.repo_id.is_(None)),
+            tasks.c.branch_name.in_((batch.target_ref, batch.target_ref.removeprefix("refs/heads/"))),
+            never_leaseable_container(),
+        ))).scalars().all()
+        if len(epics) != 1:
+            return None
+        (epic,) = epics
+        subtree = await db.subtree_ids(epic, conn=conn)
+        sealed = await conn.scalar(select(integration_batch_members.c.task_id).join(
+            integration_batches, integration_batches.c.id == integration_batch_members.c.batch_id,
+        ).where(
+            integration_batches.c.id == batch.id,
+            integration_batches.c.project_id == batch.project_id,
+            integration_batches.c.repository_id == batch.repository_id,
+            integration_batches.c.target_ref == batch.target_ref,
+            integration_batches.c.intent == "open",
+            integration_batches.c.lifecycle.in_((
+                "sealing", "sealed", "building", "testing", "repairing", "human_blocked",
+                "promoting", "cleanup_pending",
+            )),
+            integration_batch_members.c.task_id.in_(subtree),
+        ).limit(1))
+        return epic if sealed else None
 
 
 def failing(result: ChecksResult) -> tuple[str, ...]:
@@ -236,6 +276,9 @@ class UnrecordedBaseline:
     ) -> Baseline:
         return Baseline(None, "unavailable", failing(candidate), (), (), unavailable=True)
 
+    async def sealed_target(self, batch) -> str | None:
+        return None
+
     async def re_request(
         self, batch, *, candidate: ChecksResult, baseline: Baseline, checks: ExactChecks
     ) -> dict[str, Any]:
@@ -269,6 +312,9 @@ class CandidateBaselineService:
         return await target_baseline(
             batch, candidate=candidate, target_sha=target_sha, checks=checks, target_ref=target_ref,
         )
+
+    async def sealed_target(self, batch) -> str | None:
+        return await sealed_epic_target(self.db, batch)
 
     async def re_request(
         self, batch, *, candidate: ChecksResult, baseline: Baseline, checks: ExactChecks,
@@ -321,7 +367,7 @@ class CandidateBaselineService:
                     self.backoff_seconds * (2 ** reruns), self.backoff_max_seconds
                 )
                 outcome = {"outcome": "requested", "due_at": values["baseline_rerun_at"]}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
                 integration_batches.c.target_ref.is_not(None),
             ).values(**values))
@@ -331,8 +377,9 @@ class CandidateBaselineService:
 
 def red_brief(
     baseline: Baseline, candidate_sha: str, *, candidate: ChecksResult | None = None,
+    sealed_target: str | None = None,
 ) -> str:
-    """Plain-English scope for a repair that owns only this batch's own failures.
+    """Plain-English scope for the candidate's admitted repairs.
 
     Even without a target baseline, the candidate's own failures are known.
     Include the cached job URLs and failing test IDs when the producer has them.
@@ -376,7 +423,10 @@ def red_brief(
     ]
     if baseline.pre_existing:
         lines += [
-            (render_task_template("candidate-baseline-pre-existing")),
+            (f"This batch seals epic {sealed_target}, preventing ordinary target repair. "
+             "Repair these proven pre-existing target failures on the candidate as well. "
+             "Preserve every frozen source; publish only the repair branch."
+             if sealed_target else render_task_template("candidate-baseline-pre-existing")),
             *describe(baseline.pre_existing),
         ]
     if baseline.unproven:

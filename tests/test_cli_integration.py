@@ -20,6 +20,16 @@ def _client(result):
     return client
 
 
+def test_continue_close_forwards_only_operation_identity():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "completed", "operation_id": "op"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "continue-close", "--operation-id", "op"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_continue_close", {"operation_id": "op"})
+
+
 @pytest.mark.parametrize("apply", [False, True])
 def test_redrive_child_explicit_source_adoption(apply):
     from src.cli.app import cli
@@ -622,3 +632,93 @@ def test_clear_retained_recovery_names_the_project_and_optional_incident(inciden
         "integration_clear_retained_recovery",
         {"project_id": "p", **({"incident_id": "abc"} if incident else {})},
     )
+
+
+def test_delegate_publication_preserves_explicit_grantee_and_fences():
+    from src.cli.app import cli
+
+    args = dict(id="grant", project_id="p", repository_id="r", task_id="t", session_id="worker",
+                claim_epoch=7, target_branch="aq/epic", expected_target_oid="a" * 40,
+                expected_owner_fence=3, ttl_seconds=60, reason="aggregate")
+    argv = ["integration", "delegate-publication"]
+    for key, value in args.items():
+        argv += ["--" + key.replace("_", "-"), str(value)]
+    client = _client({"success": True, "outcome": "issued", "delegation_id": "grant"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [*argv, "--json"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_delegate_publication", args)
+
+
+def test_revoke_publication_uses_native_control():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "revoked"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "revoke-publication", "--id", "grant",
+                                         "--project-id", "p", "--reason", "cancel"])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_revoke_publication", dict(
+        id="grant", project_id="p", reason="cancel",
+    ))
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_repair_target_cli_preserves_exact_preview_heads(apply):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "repairing" if apply else "preview"})
+    args = ["integration", "repair-target", "batch", "--candidate-sha", "a" * 40,
+            "--target-sha", "b" * 40, "--reason", "Repair sealed target"]
+    if apply:
+        args.append("--apply")
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("integration_repair_target", {
+        "batch_id": "batch", "expected_candidate_sha": "a" * 40,
+        "expected_target_sha": "b" * 40, "reason": "Repair sealed target", "dry_run": not apply,
+    })
+
+
+@pytest.mark.parametrize("options", [[], ["--candidate-sha", "a" * 40],
+                                     ["--target-sha", "b" * 40, "--reason", "Repair"]])
+def test_repair_target_cli_apply_requires_both_heads_and_reason(options):
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "repair-target", "batch", "--apply",
+                                          *options])
+    assert result.exit_code == 2
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("extra", [[], ["--head", "a" * 40], ["--reason", "adopt"]])
+def test_fast_forward_pr_apply_requires_head_and_reason(extra):
+    from src.cli.app import cli
+
+    client = _client({"success": True})
+    argv = ["integration", "fast-forward-pr", "--task-id", "repair", "--pr", "41", "--apply"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + extra)
+    assert result.exit_code == 2
+    assert "--apply requires --head and --reason" in result.output
+    client.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_fast_forward_pr_defaults_to_a_dry_run(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "would_publish"})
+    argv = ["integration", "fast-forward-pr", "--task-id", "repair", "--pr", "41"]
+    if apply:
+        argv += ["--apply", "--head", "a" * 40, "--reason", "adopt repair"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_fast_forward_pr"
+    assert args == {"task_id": "repair", "pr_number": 41, "dry_run": not apply,
+                    **({"expected_head_sha": "a" * 40, "reason": "adopt repair"} if apply else {})}

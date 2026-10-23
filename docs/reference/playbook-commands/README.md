@@ -82,17 +82,22 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
 | [`integration_backmerge_source`](integration_backmerge_source.md) | Integration Backmerge Source | Author gated back-merge sources and fast-forward intents down the chain. |
+| [`integration_batch_fix`](integration_batch_fix.md) | Integration Batch Fix | Only the bound task-free fixer may inspect or publish its batch. |
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
 | [`integration_clear_retained_recovery`](integration_clear_retained_recovery.md) | Integration Clear Retained Recovery | Authenticated hierarchical integration operational control. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
+| [`integration_continue_close`](integration_continue_close.md) | Integration Continue Close | Authenticated hierarchical integration operational control. |
 | [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
+| [`integration_cutover_containment`](integration_cutover_containment.md) | Prepare strict-containment history | Local operator previews and applies exact historical lifecycle exclusions. |
 | [`integration_cutover_plan`](integration_cutover_plan.md) | Integration Cutover Plan | Authenticated hierarchical integration operational control. |
+| [`integration_delegate_publication`](integration_delegate_publication.md) | Integration Delegate Publication | Authenticated hierarchical integration operational control. |
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
+| [`integration_fast_forward_pr`](integration_fast_forward_pr.md) | Integration Fast Forward Pr | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
@@ -104,6 +109,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
 | [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
+| [`integration_reconcile_git_truth`](integration_reconcile_git_truth.md) | Integration Reconcile Git Truth | Daemon-only repair of Git-derived integration projections. |
 | [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
@@ -122,13 +128,16 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_close_current`](integration_repair_close_current.md) | Resolve exact current repair close | Resolve exact current repair close |
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
+| [`integration_repair_target`](integration_repair_target.md) | Integration Repair Target | Authenticated hierarchical integration operational control. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
+| [`integration_rerequest_check`](integration_rerequest_check.md) | Integration Rerequest Check | Authenticated hierarchical integration operational control. |
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_restore_task_origin`](integration_restore_task_origin.md) | Integration Restore Task Origin | Authenticated hierarchical integration operational control. |
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
 | [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
 | [`integration_reverify_epic`](integration_reverify_epic.md) | Integration Reverify Epic | Authenticated hierarchical integration operational control. |
+| [`integration_revoke_publication`](integration_revoke_publication.md) | Integration Revoke Publication | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_settle_batch`](integration_settle_batch.md) | Integration Settle Batch | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
@@ -429,6 +438,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`profile_reseed`](profile_reseed.md) | Profile Reseed | Restore or repair one vault system profile from its shipped default. |
 | [`project_doctor`](project_doctor.md) | Project Doctor | Diagnose the local-first project authorization gap without changing it. |
 | [`project_ready`](project_ready.md) | Project Ready | Ready frontier for a project + withheld tasks with reasons. |
+| [`project_relocate`](project_relocate.md) | Project Relocate | Execute the project_relocate command. |
 | [`promote_approve`](promote_approve.md) | Promote Approve | Post a pinned GitHub approval using the authenticated human gh login. |
 | [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
 | [`promote_hotfix`](promote_hotfix.md) | Promote Hotfix | File a hotfix based on a promotion target, through ordinary task routing. |
@@ -507,6 +517,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`review_withdraw`](review_withdraw.md) | Review Withdraw | Execute the review_withdraw command. |
 | [`run_playbook`](run_playbook.md) | Run Playbook | Execute the run_playbook command. |
 | [`scan_stub_staleness`](scan_stub_staleness.md) | Scan Stub Staleness | Scan vault reference stubs for staleness by comparing source_hash. |
+| [`scheduler_wait_sync`](scheduler_wait_sync.md) | Scheduler Wait Sync | Scheduler wait sync through verified wait state. |
 | [`search_files`](search_files.md) | Search Files | Execute the search_files command. |
 | [`search_github_repositories`](search_github_repositories.md) | Search Github Repositories | Search GitHub repositories visible to the daemon host's gh session. |
 | [`select_files_for_inspection`](select_files_for_inspection.md) | Select Files For Inspection | Execute the select_files_for_inspection command. |
@@ -584,10 +595,22 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`vibecop_check`](vibecop_check.md) | Vibecop Check | Execute the vibecop_check command. |
 | [`vibecop_scan`](vibecop_scan.md) | Vibecop Scan | Execute the vibecop_scan command. |
 | [`vibecop_status`](vibecop_status.md) | Vibecop Status | Execute the vibecop_status command. |
+| [`wait_ack`](wait_ack.md) | Wait Ack | Wait ack through verified wait state. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
+| [`wait_checkpoint`](wait_checkpoint.md) | Wait Checkpoint | Wait checkpoint through verified wait state. |
+| [`wait_deadline_fire`](wait_deadline_fire.md) | Wait Deadline Fire | Wait deadline fire through verified wait state. |
+| [`wait_decide`](wait_decide.md) | Wait Decide | Wait decide through verified wait state. |
+| [`wait_evict`](wait_evict.md) | Wait Evict | Wait evict through verified wait state. |
+| [`wait_explain`](wait_explain.md) | Wait Explain | Wait explain through verified wait state. |
 | [`wait_get`](wait_get.md) | Wait Get | Read a durable wait, optionally consuming its notification. |
+| [`wait_graph`](wait_graph.md) | Wait Graph | Wait graph through verified wait state. |
+| [`wait_legacy_bridge`](wait_legacy_bridge.md) | Wait Legacy Bridge | Wait legacy bridge through verified wait state. |
+| [`wait_lift`](wait_lift.md) | Wait Lift | Wait lift through verified wait state. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
+| [`wait_resume_dispatch`](wait_resume_dispatch.md) | Wait Resume Dispatch | Wait resume dispatch through verified wait state. |
+| [`wait_sleep_decide`](wait_sleep_decide.md) | Wait Sleep Decide | Wait sleep decide through verified wait state. |
+| [`wait_source_commit`](wait_source_commit.md) | Wait Source Commit | Wait source commit through verified wait state. |
 | [`workflow_pipeline_view`](workflow_pipeline_view.md) | Workflow Pipeline View | Return structured pipeline view data for dashboard rendering of a workflow. |
 | [`workspace_clear_sentinel`](workspace_clear_sentinel.md) | Workspace Clear Sentinel | Clear a slot sentinel that still names a terminal task. |
 | [`workspace_cutover`](workspace_cutover.md) | Workspace Cutover | Execute the workspace_cutover command. |

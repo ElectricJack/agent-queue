@@ -38,7 +38,13 @@ from src.database.tables import (
     tasks as tasks_t,
 )
 from src.models import DepType, Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge, validate_waits_for
+from src.state_machine import (
+    CyclicDependencyError,
+    InvalidTransition,
+    VALID_STATUS_TRANSITIONS,
+    validate_dag_with_new_edge,
+    validate_waits_for,
+)
 
 PROJECT = "p-wg"
 
@@ -531,15 +537,15 @@ class TestConditionalDisposal:
         assert "development_deliveries" not in sql
         from src.database.queries.blocked_state import _blocked_ignoring_conditional
 
-        # ``delivery-of`` adds two: the dependency EXISTS and the nested
-        # landed-receipt EXISTS it negates.
+        # ``delivery-of`` adds one structural completion check. Git delivery
+        # belongs to the request-scoped AdmissionView, outside this SQL.
         assert (
-            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 9
+            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 8
         )
         assert (
             str(sa_select(tasks_t.c.id).where(_blocked_ignoring_conditional()).compile()).count(
                 "EXISTS"
-            ) == 8
+            ) == 7
         )
 
 
@@ -668,12 +674,13 @@ class TestCycleRules:
 
 class TestRecomputeProperty:
     @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
-    async def test_random_dag_mutations_match_full_evaluation(self, db, seed):
+    async def test_random_dag_mutations_match_full_evaluation(self, db, seed, monkeypatch):
         """After every random mutation, the persisted projection must equal a
         full brute-force evaluation of the predicate over all tasks."""
         rng = random.Random(seed)
         statuses = list(TaskStatus)
         dep_types = [d.value for d in DepType]
+        monkeypatch.setattr(db, "_sm_enforce", True, raising=False)
 
         n = 25
         ids = [f"n{i:02d}" for i in range(n)]
@@ -704,10 +711,21 @@ class TestRecomputeProperty:
                 # Change a status.
                 tid = rng.choice(ids)
                 from src.database.queries.task_queries import ManualPauseActive
+                from src.state_machine import InvalidTransition
 
                 previous = await db.get_task(tid)
+                # Generate legal moves across the full lifecycle, including
+                # suspension. Invalid writes have a rollback regression below.
+                targets = [
+                    status for status in statuses
+                    if (previous.status, status) in VALID_STATUS_TRANSITIONS
+                ]
                 try:
-                    await db.transition_task(tid, rng.choice(statuses))
+                    await db.transition_task(tid, rng.choice(targets))
+                except InvalidTransition:
+                    # Suspension is service-owned even while legacy transitions
+                    # are permissive. A rejected mutation must leave projection intact.
+                    assert (await db.get_task(tid)).status == previous.status
                 except ManualPauseActive:
                     # Random automatic transitions cannot override a manual hold.
                     assert previous.status == TaskStatus.PAUSED
@@ -716,6 +734,33 @@ class TestRecomputeProperty:
             persisted = await db.get_blocked_map(ids)
             brute = await db.evaluate_blocked(ids)
             assert persisted == brute, f"drift after mutation (seed={seed})"
+
+    @pytest.mark.parametrize(
+        "source,target",
+        [
+            (TaskStatus.ASSIGNED, TaskStatus.RESUME_PENDING),
+            (TaskStatus.RESUME_PENDING, TaskStatus.ASSIGNED),
+            (TaskStatus.WAITING, TaskStatus.RESUME_PENDING),
+            (TaskStatus.PAUSED, TaskStatus.WAITING),
+            (TaskStatus.WAITING, TaskStatus.BLOCKED),
+        ],
+    )
+    async def test_invalid_suspended_transition_preserves_projection(self, db, source, target):
+        await mktask(db, "source", status=source)
+        await mktask(db, "dependent")
+        await db.add_dependency("dependent", "source", DepType.CONDITIONAL_BLOCKS.value)
+        previous = await db.get_task("source")
+        projection = await db.get_blocked_map(["source", "dependent"])
+        events = await db.get_recent_events(limit=50)
+
+        with pytest.raises(InvalidTransition) as error:
+            await db.transition_task("source", target)
+
+        assert (error.value.from_status, error.value.to_status) == (source, target)
+        assert await db.get_task("source") == previous
+        assert await db.get_blocked_map(["source", "dependent"]) == projection
+        assert await db.evaluate_blocked(["source", "dependent"]) == projection
+        assert await db.get_recent_events(limit=50) == events
 
     async def test_recompute_all_repairs_drift(self, db):
         """A hand-corrupted row is repaired by the full recompute."""
@@ -792,7 +837,7 @@ class TestTerminalBlockedMark:
 
 
 class TestDeliveryOf:
-    """``delivery-of`` is met only by a landed root receipt (held ingestion L1.5)."""
+    """SQL projects completion; AdmissionView separately proves current Git delivery."""
 
     REPO = "repo-wg"
 
@@ -839,61 +884,49 @@ class TestDeliveryOf:
                 )
             )
 
-    async def test_delivery_of_unmet_without_receipt(self, graph):
+    async def test_completed_source_is_structurally_ready_without_receipt(self, graph):
         db = graph
-        # Completion alone is not delivery: the root stays blocked, and
-        # explain names what it waits for.
-        assert await blocked(db, "root")
-        blockers = await db.get_blocking_dependencies("root")
-        assert [(b[0], b[3]) for b in blockers] == [("leaf", DepType.DELIVERY_OF.value)]
-        assert await db.recompute_delivery_dependents(["leaf"]) == set()
-        assert await blocked(db, "root")
-        assert await db.delivery_failures(["leaf"]) == {}
-
-    async def test_delivery_of_met_after_landed(self, graph):
-        db = graph
-        await self.completed(db, "leaf", at=5.0)
-        # A receipt into the epic's branch, or another branch, is no landing.
-        await self.receipt(db, "leaf", target_task_id="epic")
-        await self.receipt(db, "leaf", target_branch="refs/heads/release")
-        assert await db.recompute_delivery_dependents(["leaf"]) == set()
-        assert await blocked(db, "root")
-
-        # The nested leaf lands when its epic does.
-        await self.receipt(db, "epic", created_at=10.0)
-        assert await db.recompute_delivery_dependents(["leaf"]) == {"root"}
         assert not await blocked(db, "root")
         assert await db.get_blocking_dependencies("root") == []
+        assert await db.recompute_delivery_dependents(["leaf"]) == set()
+        assert await db.delivery_failures(["leaf"]) == {}
 
-        # A later generation of the leaf was not carried by that landing.
-        await self.completed(db, "leaf", at=20.0)
+    async def test_receipt_cannot_satisfy_unfinished_source(self, graph):
+        db = graph
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks_t).where(tasks_t.c.id == "leaf").values(
+                status=TaskStatus.IN_PROGRESS.value,
+            ))
         await db.recompute_all_blocked()
+        await self.receipt(db, "leaf")
+        await self.receipt(db, "epic")
+        assert await db.recompute_delivery_dependents(["leaf"]) == set()
         assert await blocked(db, "root")
-        await self.receipt(db, "leaf", disposition="noop", created_at=21.0,
-                           resolution_evidence={"reason": "no change"})
-        await db.recompute_all_blocked()
+        assert [(b[0], b[3]) for b in await db.get_blocking_dependencies("root")] == [
+            ("leaf", DepType.DELIVERY_OF.value),
+        ]
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks_t).where(tasks_t.c.id == "leaf").values(
+                status=TaskStatus.COMPLETED.value,
+            ))
+        assert await db.recompute_delivery_dependents(["leaf"]) == {"root"}
         assert not await blocked(db, "root")
 
-    async def test_delivery_of_failed_stays_blocked(self, graph):
+    async def test_failed_delivery_receipt_is_audit_only(self, graph):
         db = graph
-        await self.completed(db, "leaf", at=5.0)
         await self.receipt(
             db, "leaf", disposition="failed",
             resolution_evidence={"reason": "squash conflict on main"},
         )
         assert await db.recompute_delivery_dependents(["leaf"]) == set()
-        assert await blocked(db, "root")
+        assert not await blocked(db, "root")
         assert await db.delivery_failures(["leaf"]) == {"leaf": "squash conflict on main"}
-        # Ready status is untouched: blocked work never reaches the frontier.
-        assert "root" not in {t.id for t in await db.get_ready_frontier(PROJECT)}
 
-    async def test_observer_recomputes_delivered_dependents(self, graph):
+    async def test_observer_does_not_persist_git_delivery_as_blocked_state(self, graph):
         from src.integration.delivery_observer import DeliveryObserver, DeliveryView
         from src.integration.delivery_truth import DeliveryEvidence, DeliveryState
 
         db = graph
-        await self.receipt(db, "leaf")
-        assert await blocked(db, "root")
 
         class Observer(DeliveryObserver):
             def __init__(self):
@@ -905,11 +938,6 @@ class TestDeliveryOf:
             )
 
         observer = Observer()
-        await observer._admit_delivery_dependents(
-            DeliveryView(db, {"leaf": evidence(DeliveryState.UNKNOWN)})
-        )
-        assert await blocked(db, "root")
-        await observer._admit_delivery_dependents(
-            DeliveryView(db, {"leaf": evidence(DeliveryState.CONTAINED)})
-        )
-        assert not await blocked(db, "root")
+        for state in (DeliveryState.UNKNOWN, DeliveryState.CONTAINED):
+            await observer._admit_delivery_dependents(DeliveryView(db, {"leaf": evidence(state)}))
+            assert not await blocked(db, "root")

@@ -261,7 +261,7 @@ class SurfaceCommandsMixin:
 
         Supported fields: ``description`` (optional ``expected_description`` CAS),
         ``branch``, ``pr_url``, ``work_dir``, ``note``,
-        ``labels_add``, ``labels_remove``, ``meta``.
+        ``labels_add``, ``labels_remove``, ``meta``, ``repair_batch`` (operator assignment).
 
         ``work_dir`` is recorded as task metadata (``task_metadata`` key
         ``"work_dir"``) rather than a proper workspace binding — the
@@ -277,6 +277,8 @@ class SurfaceCommandsMixin:
             return {"success": False, "error": "manual_pause is reserved; use pause_task/resume_task."}
         if "retained_workspace_stop" in (args.get("meta") or {}):
             return {"success": False, "error": "retained_workspace_stop is reserved; use stop_task."}
+        if "integration_batch_repair" in (args.get("meta") or {}):
+            return {"success": False, "error": "integration_batch_repair is reserved; use --repair-batch."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",
@@ -323,6 +325,17 @@ class SurfaceCommandsMixin:
                     )
                 }
         fields_changed: list[str] = []
+        if "repair_batch" in args:
+            from src.git.manager import GitError
+            from src.integration.batch_repair_publication import BatchRepairAssignments
+
+            if self.config.integration.git_first != "active":
+                return {"success": False, "error": "batch repair assignment requires Git-first active mode"}
+            try:
+                await BatchRepairAssignments(self.db).assign(task, args["repair_batch"])
+            except GitError as exc:
+                return {"success": False, "error": str(exc)}
+            fields_changed.append("repair_batch")
         if "description" in args:
             from src.database.queries.task_comment_queries import TaskFindingsConflict
 
@@ -389,6 +402,10 @@ class SurfaceCommandsMixin:
 
         if "description" in fields_changed:
             await self._emit_task_findings_updated(task)
+        else:
+            # Closed work can lose a hold or gain its PR/source metadata without
+            # re-entering the ready frontier. Wake its integration lane too.
+            await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         result = await self._cmd_task_show({"task_id": task_id})
         result["fields_changed"] = fields_changed
         return result
@@ -455,6 +472,11 @@ class SurfaceCommandsMixin:
             )
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
+
+        if any(section.key == "wait_outcome" for section in doc.sections):
+            await self._record_continuation_prime_delivery(
+                scope.get("session_id") or args.get("session_id"),
+            )
 
         from src.commands.principal import current_principal
         from src.knowledge.context import (

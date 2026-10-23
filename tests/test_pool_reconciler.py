@@ -45,7 +45,7 @@ async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch,
         status=TaskStatus.COMPLETED, branch_name="aq/source" if artifact else None,
     ))
     await db.add_dependency("candidate", "source")
-    observer = AsyncMock(return_value=MagicMock(allowed=set()))
+    observer = AsyncMock(return_value=MagicMock(allowed=set(), counts=AsyncMock(return_value={})))
     monkeypatch.setattr(orch, "_delivery_admission", observer)
     measurement = await orch._measure_pools()
     assert measurement.demand[PoolKey("worker")] == int(not artifact)
@@ -172,7 +172,10 @@ async def git_first_frontier(orch, db, tmp_path):
             ))
     await db.add_dependency("second", "first")
     await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
-                            integration_repository_id="repo", repo_url=origin.url)
+                            integration_repository_id="repo", repo_url=origin.url,
+                            hierarchical_integration_policy={
+                                "prerequisite_branches": "wait-for-parent",
+                            })
     await db.save_task_completion(TaskCompletion(
         id="close-first", task_id="first", outcome="pass", commits=[source], completed_at=time.time(),
     ))
@@ -307,54 +310,34 @@ async def test_pool_diagnostics_never_fetch_hierarchy_or_stack_prerequisites(
         call.assert_not_awaited()
 
 
-async def test_git_first_delivery_releases_scheduler_pool_and_claim(
-    orch, db, git_first_frontier, frontier_clock,
-):
-    from sqlalchemy import select
-
-    from src.commands.handler import CommandHandler
-    from src.database.tables import task_delivery_receipts
+async def _frontier(orch, db, env, handler, expected, *, evidence_unavailable=False):
+    """Assert one tick's view through the real scheduler, pool, explain and doctor consumers."""
     from src.doctor.models import DoctorContext
     from src.doctor.task_checks import _check_ready_frontier_exclusions
     from src.integration.delivery_observer import hierarchy_frontier_modes
     from src.scheduler import PoolKey
 
-    env = git_first_frontier
-    handler = CommandHandler(orch, orch.config)
+    modes = await hierarchy_frontier_modes(db)
+    env.observer.prerequisite_view = AsyncMock(wraps=env.observer.prerequisite_view)
+    await orch._schedule(hierarchy_modes=modes)
+    assert ("second" in orch._last_scheduler_state.hierarchy_runnable_task_ids) is expected
+    measurement = await orch._measure_pools(hierarchy_modes=modes)
+    assert measurement.demand[PoolKey("worker")] == int(expected)
+    env.observer.prerequisite_view.assert_not_awaited()
+    assert await db.is_hierarchy_task_runnable("second") is expected
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+               for r in explained["reasons"]) is (not expected and not evidence_unavailable)
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is evidence_unavailable
+    diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
+    assert any(
+        row["task_id"] == "second" and "sibling_prerequisite_not_delivered" in row["reasons"]
+        for row in diagnosis.data.get("tasks", [])
+    ) is not expected
+    return modes
 
-    async def frontier(expected, *, evidence_unavailable=False):
-        # These are the real scheduler/reconciler and pool consumers of one tick's view.
-        modes = await hierarchy_frontier_modes(db)
-        env.observer.prerequisite_view = AsyncMock(wraps=env.observer.prerequisite_view)
-        await orch._schedule(hierarchy_modes=modes)
-        assert ("second" in orch._last_scheduler_state.hierarchy_runnable_task_ids) is expected
-        measurement = await orch._measure_pools(hierarchy_modes=modes)
-        assert measurement.demand[PoolKey("worker")] == int(expected)
-        env.observer.prerequisite_view.assert_not_awaited()
-        assert await db.is_hierarchy_task_runnable("second") is expected
-        explained = await handler._cmd_explain_task({"task_id": "second"})
-        assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
-                   for r in explained["reasons"]) is (not expected and not evidence_unavailable)
-        assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is evidence_unavailable
-        diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
-        assert any(
-            row["task_id"] == "second" and "sibling_prerequisite_not_delivered" in row["reasons"]
-            for row in diagnosis.data.get("tasks", [])
-        ) is not expected
-        return modes
 
-    await frontier(False)
-    await orch._reconcile_pools()
-    await orch.wait_for_pool_launches()
-    assert await db.list_sessions(lifecycle="pool") == []
-
-    await _deliver_first_by_train(db, env)
-    # The old advisory observation may withhold newly delivered work until expiry.
-    await frontier(False, evidence_unavailable=True)
-    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
-    modes = await frontier(True)
-    async with db._engine.connect() as conn:
-        assert not (await conn.execute(select(task_delivery_receipts))).first()
+async def _claim_second(orch, db, handler, modes):
     await orch._reconcile_pools(hierarchy_modes=modes)
     await orch.wait_for_pool_launches()
     [session] = await db.list_sessions(lifecycle="pool")
@@ -364,6 +347,148 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     result = await handler._cmd_task_claim({"next": True, "wait": 5})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
+
+
+@pytest.mark.parametrize("delivery", ["train", "external_fast_forward"])
+async def test_git_first_delivery_releases_scheduler_pool_and_claim(
+    orch, db, git_first_frontier, frontier_clock, delivery,
+):
+    from sqlalchemy import select
+
+    from src.commands.handler import CommandHandler
+    from src.database.tables import task_delivery_receipts
+
+    env = git_first_frontier
+    handler = CommandHandler(orch, orch.config)
+
+    async def frontier(expected, *, evidence_unavailable=False):
+        return await _frontier(orch, db, env, handler, expected,
+                               evidence_unavailable=evidence_unavailable)
+
+    await frontier(False)
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert await db.list_sessions(lifecycle="pool") == []
+
+    if delivery == "train":
+        await _deliver_first_by_train(db, env)
+    else:
+        # An authorized external writer bypasses train receipts and cache invalidation.
+        env.git(env.origin.clone, "push", "origin", "aq/first:aq/epic")
+    # The old advisory observation may withhold newly delivered work until expiry.
+    await frontier(False, evidence_unavailable=True)
+    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
+    modes = await frontier(True)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+    await _claim_second(orch, db, handler, modes)
+
+
+async def _completed_container(db, env, children=("group-a", "group-b")):
+    """A completed organizational sibling of "second": no close of its own; its children
+    each completed with retained provenance on their own branches (bold-zenith-11.21)."""
+    from src.database.tables import task_branch_origins
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import TaskCompletion
+
+    await db.create_task(Task(id="group", project_id=PROJECT_ID, title="group", description="",
+                              status=TaskStatus.READY, repo_id="repo", parent_task_id="epic"))
+    sources = {}
+    for tid in children:
+        sources[tid] = env.origin.work(tid)
+        await db.create_task(Task(id=tid, project_id=PROJECT_ID, title=tid, description="",
+                                  status=TaskStatus.READY, repo_id="repo",
+                                  branch_name=f"aq/{tid}", parent_task_id="group"))
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=f"origin-{tid}", task_id=tid, repository_id="repo", branch_name=f"aq/{tid}",
+                parent_task_id="group", parent_repository_id="repo", parent_ref="aq/epic",
+                base_sha=env.base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+        await db.save_task_completion(TaskCompletion(
+            id=f"close-{tid}", task_id=tid, outcome="pass", commits=[sources[tid]],
+            completed_at=time.time(),
+        ))
+        await GitProvenance(env.observer.git, str(env.origin.clone),
+                            repository_url=env.origin.url).write_completion(CompletedSource(
+            CompletionIdentity(PROJECT_ID, "repo", tid, f"close-{tid}"), sources[tid],
+        ))
+        await db.transition_task(tid, TaskStatus.COMPLETED)
+    await db.transition_task("group", TaskStatus.COMPLETED)
+    await db.add_dependency("second", "group")
+    return sources
+
+
+def _fast_forward_epic(env, *branches):
+    """Someone else's merge, pushed as a fast-forward of the epic: no train, no receipts."""
+    env.git(env.origin.clone, "fetch", "-q", "origin")
+    env.git(env.origin.clone, "checkout", "-q", "-B", "epic-writer", "origin/aq/epic")
+    for branch in branches:
+        env.git(env.origin.clone, "merge", "-q", "--no-ff", "-m", f"merge {branch}",
+                f"origin/{branch}")
+    env.git(env.origin.clone, "push", "-q", "origin", "epic-writer:aq/epic")
+
+
+async def test_container_sibling_contained_by_external_fast_forward_releases_dependent(
+    orch, db, git_first_frontier, frontier_clock,
+):
+    """wise-nexus-33: an epic already containing every child of a completed container
+    sibling by Git releases the dependent, though the container has no close of its own."""
+    from sqlalchemy import select
+
+    from src.commands.handler import CommandHandler
+    from src.database.tables import task_delivery_receipts
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    env = git_first_frontier
+    handler = CommandHandler(orch, orch.config)
+    await _completed_container(db, env)
+
+    async def frontier(expected, *, evidence_unavailable=False):
+        return await _frontier(orch, db, env, handler, expected,
+                               evidence_unavailable=evidence_unavailable)
+
+    await frontier(False)
+    # The leaf sibling and one child are contained; the other child is not.
+    _fast_forward_epic(env, "aq/first", "aq/group-a")
+    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
+    modes = await frontier(False)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first"}
+    _fast_forward_epic(env, "aq/group-b")
+    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
+    modes = await frontier(True)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first", "group"}
+    view = await env.observer.prerequisite_view(PROJECT_ID)
+    assert view.siblings.evidence["group"].reason == "children_contained"
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+    await _claim_second(orch, db, handler, modes)
+    # Reopening a child withdraws the container's proof.
+    await db.transition_task("group-b", TaskStatus.READY)
+    assert (await hierarchy_frontier_modes(db))[PROJECT_ID].delivered_prerequisite_ids == {
+        "first",
+    }
+
+
+async def test_container_sibling_shadow_mode_still_requires_receipts(
+    orch, db, git_first_frontier,
+):
+    """Without a truth-bearing observer the sibling stays excluded as unknown evidence.
+
+    Receipts no longer prove delivery (fast-smooth §3.3), so a missing observer
+    withholds the dependent and explain names the unavailable evidence.
+    """
+    from src.commands.handler import CommandHandler
+    from src.integration.delivery_observer import prerequisite_observer
+
+    env = git_first_frontier
+    await _completed_container(db, env)
+    _fast_forward_epic(env, "aq/first", "aq/group-a", "aq/group-b")
+    db.set_delivery_observer(None)
+    assert prerequisite_observer(db) is None
+    await _frontier(orch, db, env, CommandHandler(orch, orch.config), False,
+                    evidence_unavailable=True)
 
 
 async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
@@ -580,10 +705,14 @@ async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
     assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
     assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
     explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
+    # DB-invalidated identities give a negative result. A rewind invalidates
+    # the bounded advisory cache; display does not fetch a replacement proof.
     assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
-        movement not in {"rewind", "unstable"}
+        movement in {"retarget", "generation"}
     )
-    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (movement == "rewind")
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (
+        movement in {"rewind", "shadow"}
+    )
     if movement == "unstable":
         # The mocked freshness failure checks no refs, so it must not poison
         # otherwise valid cached display evidence. Decisions above still withhold.
@@ -1465,6 +1594,27 @@ async def test_stopped_pool_worker_cannot_take_role_assignment(orch, db, existin
     assert (await db.get_agent(row.agent_id)).profile_id == "worker"
 
 
+async def test_idle_pool_session_uses_push_cap_until_confirmed_stopped(orch, db):
+    await db.update_project(PROJECT_ID, max_concurrent_agents=1)
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    assert row.task_id is None
+    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    await ready(db, "push", profile_id="reviewer", intelligence_class="standard-medium")
+
+    assert await orch._schedule() == []
+    assert orch._last_scheduler_state.project_active_agent_counts == {PROJECT_ID: 1}
+    assert not any(agent.profile_id == "reviewer" for agent in await db.list_agents())
+
+    await orch._terminate_pool_session(row, reason="rotate")
+
+    actions = await orch._schedule()
+    assert [action.task_id for action in actions] == ["push"]
+    assert orch._last_scheduler_state.project_active_agent_counts == {}
+
+
 async def test_repeated_pool_teardown_does_not_steal_new_launch_reservation(orch, db):
     await ready(db, "pooled")
     await orch._reconcile_pools()
@@ -2142,6 +2292,25 @@ async def test_timeout_pool_cleanup_respects_wait_but_operator_stop_wins(orch, d
     assert (await db.get_agent_wait(wait["id"]))["state"] == "cancelled"
 
 
+@pytest.mark.parametrize("status,expected_busy", [
+    (TaskStatus.WAITING, 1), (TaskStatus.HIBERNATED, 0),
+])
+async def test_suspended_status_pool_supply_and_frontier(orch, db, status, expected_busy):
+    from src.scheduler import PoolKey
+
+    await ready(db, "held")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    session = (await db.list_sessions(lifecycle="pool"))[0]
+    await db.transition_task("held", status, force=True)
+    await db.update_session(session.id, task_id="held", claim_phase="active")
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey("worker")] == 0
+    supply = measurement.supply[PoolKey("worker")]
+    assert supply.running_busy == expected_busy
+    assert supply.running_idle == 0
+
+
 async def test_native_demand_launches_matching_workspace_and_counts_supply_once(orch, db, tmp_path):
     from src.scheduler import PoolKey, project_pool_candidates
 
@@ -2166,3 +2335,42 @@ async def test_native_demand_launches_matching_workspace_and_counts_supply_once(
     assert (native.ready, len(native.idle_session_ids)) == (1, 1)
     assert (ordinary.ready, len(ordinary.idle_session_ids)) == (0, 0)
     assert len(project_pool_candidates(measurement.candidates[key])) == 1
+
+
+async def test_admission_view_projects_identical_ids_counts_and_reasons(
+    orch, db, git_first_frontier,
+):
+    from src.database.tables import task_branch_origins
+    from src.models import Task, TaskStatus
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    await db.create_task(Task(
+        id="independent", project_id=PROJECT_ID, title="Independent", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+        repo_id="repo", branch_name="aq/independent",
+    ))
+    async with db.immediate() as conn:
+        await db.set_parent("independent", "epic", conn=conn, integration_authorized=True)
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin-independent", task_id="independent", repository_id="repo",
+            branch_name="aq/independent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.base, creation_generation=0,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    view = await orch._delivery_admission(["second", "independent"])
+    assert view.allowed == {"second", "independent"}
+    assert await view.counts(PROJECT_ID) == {"worker": 2}
+    assert not any(view.reasons.values())
+    assert set(await db.hierarchy_runnable_task_ids(
+        view.candidate_ids, hierarchy_modes=view.hierarchy_modes,
+    )) == view.allowed
+
+    env.observer.truth = None
+    unknown = await orch._delivery_admission(["second", "independent"])
+    assert unknown.allowed == {"independent"}
+    assert await unknown.counts(PROJECT_ID) == {"worker": 1}
+    assert [reason["code"] for reason in unknown.reasons["second"]] == [
+        "delivery_evidence_unavailable",
+    ]
+    assert not unknown.reasons.get("independent")

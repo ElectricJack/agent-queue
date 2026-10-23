@@ -25,10 +25,24 @@ import uuid
 from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import agent_questions, escalations, messages, projects, sessions, tasks
+from src.database.tables import (
+    agent_questions,
+    escalations,
+    messages,
+    projects,
+    sessions,
+    tasks,
+    wait_records,
+)
 from src.escalations.facts import TERMINAL_STATES
 from src.models import Message
-
+from src.waits.holding import (
+    message_is_held,
+    reply_window_start,
+    stale_wait_wake,
+    wake_already_delivered,
+)
+from src.waits.sources import insert_message_with_source_event
 
 GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD = 50
 
@@ -174,7 +188,7 @@ def _reply_covering(msg: Message):
     ).where(or_(reply.c.reply_to_id == msg.id, covered)).limit(1)
 
 
-def _competing_delivery(msg: Message, window: float):
+def _competing_delivery(msg: Message, window: float, *, window_start=None):
     """Select a row from another conversation delivered to *msg*'s recipient
     within *window* seconds either side of *msg*'s delivery.
 
@@ -185,8 +199,8 @@ def _competing_delivery(msg: Message, window: float):
         messages.c.to_kind == msg.to_kind,
         messages.c.to_id == msg.to_id,
         messages.c.id != msg.id,
-        messages.c.delivered_at > msg.delivered_at - window,
-        messages.c.delivered_at < msg.delivered_at + window,
+        reply_window_start() > (window_start or msg.delivered_at) - window,
+        reply_window_start() < (window_start or msg.delivered_at) + window,
         or_(
             messages.c.project_id.is_distinct_from(msg.project_id),
             messages.c.thread_id.is_distinct_from(msg.thread_id),
@@ -197,6 +211,106 @@ def _competing_delivery(msg: Message, window: float):
 
 
 class MessageQueriesMixin:
+    async def supervisor_requests(self, row) -> list[Message]:
+        """Oldest unanswered requests, including consumed worker questions.
+
+        Include prior instance UUIDs: a fresh supervisor inherits obligations
+        sent to an immutable predecessor address as well as its logical mailbox.
+        """
+        prior = select(sessions.c.id).where(
+            sessions.c.name == row.name, sessions.c.profile_id == "supervisor",
+            sessions.c.project_id.is_not_distinct_from(row.project_id),
+        )
+        address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+        reply = messages.alias("supervisor_reply")
+        answered = select(reply.c.id).where(reply.c.reply_to_id == messages.c.id).exists()
+        completed = (row.supervisor_health or {}).get("last_completed_at") or 0
+        # A consumed status report is handled by a successful turn. An
+        # explicit reply wait or native question remains an obligation.
+        waiting = select(wait_records.c.id).where(
+            wait_records.c.condition_kind == "message", wait_records.c.outcome == "pending",
+            wait_records.c.verification_state == "verified",
+            wait_records.c.cleared_at.is_(None),
+            wait_records.c.project_id == messages.c.project_id,
+            wait_records.c.session_id == messages.c.from_id,
+            wait_records.c.condition["thread_id"].astext == messages.c.thread_id,
+        ).correlate(messages).exists()
+        statement = select(messages).where(
+            messages.c.to_kind == "session",
+            or_(messages.c.to_id.in_((address, row.name)), messages.c.to_id.in_(prior)),
+            messages.c.reply_to_id.is_(None), ~answered,
+            ~func.coalesce(_obsolete_notice(), False),
+            or_(and_(messages.c.from_kind == "session", waiting),
+                messages.c.body_kind == "agent_question",
+                messages.c.created_at > completed),
+        ).order_by(messages.c.provenance["supervisor_escalated_at"].is_not(None),
+                   messages.c.created_at, messages.c.id).limit(100)
+        async with self._engine.begin() as conn:
+            return [_row_to_message(item) for item in (await conn.execute(statement)).mappings()]
+
+    async def escalate_supervisor_request(self, msg, row, *, now: float) -> bool:
+        """One global notice per request, without fabricating a worker reply."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(messages).where(
+                messages.c.id == msg.id,
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return False
+            provenance = dict(current["provenance"] or {})
+            if provenance.get("supervisor_escalated_at"):
+                return False
+            if (await conn.execute(_reply_covering(msg))).first() is not None:
+                return False
+            provenance["supervisor_escalated_at"] = now
+            await conn.execute(update(messages).where(messages.c.id == msg.id).values(
+                provenance=provenance,
+            ))
+            await self.create_message_in_transaction(
+                conn, project_id=msg.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                thread_id=msg.thread_id,
+                body=f"Unanswered worker request {msg.id} to {row.name} after "
+                     f"{int(now - msg.created_at)} seconds. Sender: {msg.from_kind}:{msg.from_id}. "
+                     f"Reply explicitly to the original request; its wait remains active.\n{msg.body[:2000]}",
+                body_kind="supervisor_health",
+            )
+        return True
+
+    async def supervisor_recovery_notice(self, row, health, requests, *, reason, now):
+        """Persist handoff and alert atomically with a recovery-attempt fence."""
+        async with self._engine.begin() as conn:
+            current = (await conn.execute(select(sessions).where(
+                sessions.c.id == row.id, sessions.c.instance_token == row.instance_token,
+                sessions.c.desired_state == "running",
+            ).with_for_update())).mappings().first()
+            if current is None:
+                return
+            saved = dict(current["supervisor_health"] or {})
+            if saved.get("notified_attempt") == health["attempts"]:
+                return
+            saved.update(health, notified_attempt=health["attempts"])
+            await conn.execute(update(sessions).where(sessions.c.id == row.id).values(
+                supervisor_health=saved,
+            ))
+            address = "supervisor-global" if row.project_id is None else f"supervisor-{row.project_id}"
+            handoff = (f"Supervisor recovery handoff: {reason}. Previous session {row.id}, "
+                       f"conversation {row.session_key}, harness {row.harness}, model {row.model}. "
+                       f"Last completed turn: {health.get('last_completed_at')}. "
+                       f"Pending request IDs: {', '.join(msg.id for msg in requests)}. "
+                       "Inspect those originals and reply explicitly; do not infer answers from delivery.")
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session", to_id=address, body=handoff, body_kind="supervisor_handoff",
+            )
+            await self.create_message_in_transaction(
+                conn, project_id=row.project_id, from_kind="system", from_id="supervisor-health",
+                to_kind="session" if row.project_id else "user",
+                to_id="supervisor-global" if row.project_id else "dashboard",
+                body=f"Restarting {row.name} fresh after {health['attempts']} recovery attempts. "
+                     + handoff, body_kind="supervisor_health",
+            )
+
     """Query mixin for ``messages``.  Expects ``self._engine``."""
 
     async def _supervisor_recipient(self, conn, to_kind, to_id, project_id):
@@ -349,7 +463,7 @@ class MessageQueriesMixin:
         msg.to_kind, msg.to_id = await self._supervisor_recipient(
             conn, msg.to_kind, msg.to_id, msg.project_id,
         )
-        result = await conn.execute(
+        result = await insert_message_with_source_event(conn,
             insert(messages).values(
                 id=msg.id,
                 project_id=msg.project_id,
@@ -414,6 +528,7 @@ class MessageQueriesMixin:
                     messages.c.delivered_at.is_(None),
                     messages.c.read_at.is_(None),
                     messages.c.archived_at.is_(None),
+                    ~message_is_held(),
                     ~_obsolete_notice(),
                 )
             )
@@ -427,6 +542,7 @@ class MessageQueriesMixin:
         if project_id is not None:
             stmt = stmt.where(messages.c.project_id == project_id)
         if notification_at is not None and notification_delays:
+            stmt = stmt.where(~wake_already_delivered(), ~stale_wait_wake())
             delay = case(
                 *((messages.c.notification_attempts <= index + 1, value)
                   for index, value in enumerate(notification_delays[:-1])),
@@ -460,7 +576,7 @@ class MessageQueriesMixin:
             if backlog is None or backlog["total"] <= GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD:
                 return None
             oldest, count = backlog["id"], backlog["total"]
-            result = await conn.execute(pg_insert(messages).values(
+            result = await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:global-backlog:{oldest}').hex}",
                 project_id=None, from_kind="system", from_id="delivery-engine",
                 to_kind="user", to_id="dashboard", priority=50,
@@ -561,6 +677,7 @@ class MessageQueriesMixin:
                         messages.c.id == message_id,
                         messages.c.delivered_at.is_(None),
                         messages.c.archived_at.is_(None),
+                        ~message_is_held(),
                     )
                 )
                 .values(delivered_at=time.time(), via=via)
@@ -576,6 +693,7 @@ class MessageQueriesMixin:
                     and_(
                         messages.c.id == message_id,
                         messages.c.read_at.is_(None),
+                        ~message_is_held(),
                     )
                 )
                 .values(
@@ -595,6 +713,9 @@ class MessageQueriesMixin:
                 messages.c.delivered_at.is_(None),
                 messages.c.read_at.is_(None),
                 messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                ~wake_already_delivered(),
+                ~stale_wait_wake(),
                 ~_obsolete_notice(),
                 or_(messages.c.last_notified_at.is_(None),
                     messages.c.last_notified_at <= now - retry_delay),
@@ -605,6 +726,26 @@ class MessageQueriesMixin:
             ))
             return result.rowcount > 0
 
+    async def message_held_by_wait(self, message_id: str) -> bool:
+        async with self._engine.connect() as conn:
+            return bool(await conn.scalar(select(message_is_held()).where(
+                messages.c.id == message_id,
+            )))
+
+    async def message_reply_window_start(self, message_id: str) -> float | None:
+        async with self._engine.connect() as conn:
+            return await conn.scalar(select(reply_window_start()).where(
+                messages.c.id == message_id, messages.c.delivered_at.is_not(None),
+            ))
+
+    async def mark_wait_wake_delivered(self, message_id: str, *, now: float) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                "wait:" + wait_records.c.id + ":outcome" == message_id,
+                wait_records.c.outcome != "pending",
+                wait_records.c.wake_delivered_at.is_(None),
+            ).values(wake_delivered_at=now))
+
     async def message_notification_is_pending(self, message_id: str) -> bool:
         """A cold start can inject or settle mail after notification reservation."""
         async with self._engine.connect() as conn:
@@ -613,6 +754,9 @@ class MessageQueriesMixin:
                 messages.c.delivered_at.is_(None),
                 messages.c.read_at.is_(None),
                 messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                ~wake_already_delivered(),
+                ~stale_wait_wake(),
                 ~_obsolete_notice(),
             ).exists())))
 
@@ -642,7 +786,7 @@ class MessageQueriesMixin:
                 # Share the threshold alert's identity: a broken global mailbox
                 # cannot generate one user alert for every unread source row.
                 alert_identity = f"aq:global-backlog:{backlog['id']}"
-            result = await conn.execute(pg_insert(messages).values(
+            result = await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, alert_identity).hex}",
                 project_id=source["project_id"],
                 from_kind="system", from_id="delivery-engine",
@@ -709,7 +853,7 @@ class MessageQueriesMixin:
             return (await conn.execute(_reply_covering(msg))).first() is not None
 
     async def create_transcript_tail_reply(
-        self, request: Message, *, body: str, attribution_window: float,
+        self, request: Message, *, body: str, attribution_window: float, window_start=None,
     ) -> Message | None:
         """Insert *request*'s transcript-tail reply, or ``None`` if none is owed.
 
@@ -740,18 +884,24 @@ class MessageQueriesMixin:
         async with self._engine.begin() as conn:
             locked = (await conn.execute(
                 select(messages.c.delivered_at)
-                .where(messages.c.id == request.id, messages.c.archived_at.is_(None))
+                .where(messages.c.id == request.id, messages.c.archived_at.is_(None),
+                       ~message_is_held())
                 .with_for_update()
             )).first()
             if locked is None or locked.delivered_at != request.delivered_at:
                 return None
+            current_start = await conn.scalar(select(reply_window_start()).where(
+                messages.c.id == request.id,
+            ))
+            if current_start != (window_start or request.delivered_at):
+                return None
             if (await conn.execute(_reply_covering(request))).first() is not None:
                 return None
             if (await conn.execute(
-                _competing_delivery(request, attribution_window)
+                _competing_delivery(request, attribution_window, window_start=window_start)
             )).first() is not None:
                 return None
-            result = await conn.execute(
+            result = await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id=reply.id,
                     project_id=reply.project_id,

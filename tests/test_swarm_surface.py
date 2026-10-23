@@ -780,9 +780,10 @@ async def test_disabled_pool_stays_listed_and_is_sized_to_zero(pool_handler):
     assert (restored["min_active"], restored["max_active"]) == (1, 2)
 
 
-async def test_pool_status_includes_live_instance_detail(pool_handler):
+async def test_pool_status_includes_live_instance_detail(pool_handler, monkeypatch):
     """The dashboard needs the actual worker behind each aggregate row."""
     import time
+    from types import SimpleNamespace
 
     from src.models import SessionRecord
 
@@ -805,6 +806,9 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
         )
     )
 
+    # Database and pool measurement latency must not change the elapsed time
+    # asserted here. Replace only this command module's clock.
+    monkeypatch.setattr("src.commands.ops_commands.time", SimpleNamespace(time=lambda: now))
     result = await pool_handler._cmd_pool_status({"project_id": PROJECT_ID})
     instance = result["pools"][0]["instances"][0]
     assert instance == {
@@ -814,8 +818,8 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
         "state": "running",
         "task_id": None,
         "task_title": None,
-        "idle_seconds": pytest.approx(12, abs=2),
-        "started_at": pytest.approx(now - 30, abs=2),
+        "idle_seconds": 12,
+        "started_at": now - 30,
         "quarantine_reason": None,
     }
 
@@ -1014,7 +1018,8 @@ async def test_pool_status_reports_one_row_per_profile_across_projects(pool_hand
     assert row["min_per_project"] == 0
 
 
-async def test_pool_status_project_id_filters_the_view_not_the_pool(pool_handler):
+@pytest.mark.parametrize("supervisor", [False, True])
+async def test_pool_status_project_id_filters_the_view_not_the_pool(pool_handler, supervisor):
     """``--project-id`` narrows ``projects``/``instances``; bounds stay global."""
     import time
 
@@ -1033,7 +1038,26 @@ async def test_pool_status_project_id_filters_the_view_not_the_pool(pool_handler
             )
         )
 
-    filtered = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
+    if supervisor:
+        pool_handler.config.security.capability_enforcement = "enforce"
+        await pool_handler.db.create_profile(AgentProfile(
+            id="supervisor", name="Supervisor", lifecycle="named", harness="fake",
+            aq_commands=["pool_status"], harness_tools=[], plugin_tools=[],
+        ))
+        await pool_handler.db.create_session(SessionRecord(
+            id="sup", project_id=PROJECT_ID, profile_id="supervisor", harness="fake",
+            provider="fake", name="sup", lifecycle="named", work_dir="/tmp/sup",
+            epoch="test", instance_token="sup-token", started_at=now, state="running",
+        ))
+        # Omit the filter, as direct dispatch and a project patrol may do.
+        result = await pool_handler.execute("pool_status", {"_scope": {
+            "kind": "session", "session_id": "sup", "project_id": PROJECT_ID,
+            "elevated": True,
+        }})
+    else:
+        result = await pool_handler._cmd_pool_status({"project_id": PROJECT_ID})
+    assert result["success"], result
+    filtered = result["pools"][0]
     assert [p["project_id"] for p in filtered["projects"]] == [PROJECT_ID]
     assert [i["session_id"] for i in filtered["instances"]] == ["pool-a"]
     # The pool itself did not shrink to one project: bounds and the supply

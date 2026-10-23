@@ -14,23 +14,34 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait.py`](../../../src/commands/contracts/wait.py) |
-| Contract fingerprint | `sha256:c1c108440614afd2fd5829cb82fc85d5e22422b0243bba7616087917bd6e7c5b` |
+| Contract fingerprint | `sha256:ed72eada93b352853f38e9b933af206660fc05bbce092ad2e96159570b359c97` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `schema_version` | `1 \| 2` | no | `1` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
 | `wait_id` | `string` | yes | — | — |
 | `claim_epoch` | `integer \| null` | no | `null` | — |
+| `owner_kind` | `"scheduler" \| "integration" \| "playbook" \| null` | no | `null` | — |
+| `owner_id` | `string \| null` | no | `null` | — |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
-| `wait` | `AgentWaitRecord` | — |
+| `wait` | `AgentWaitRecord \| object \| null` | — |
+| `wait_id` | `string \| null` | — |
+| `condition` | `object \| null` | — |
+| `evidence` | `object \| null` | — |
+| `decision` | `object \| null` | — |
+| `escalate_at` | `number \| null` | — |
+| `ceiling_at` | `number \| null` | — |
+| `continuation_id` | `string \| null` | — |
+| `warnings` | `string[]` | — |
 | `next_step` | `string \| null` | — |
 
 ## Nested objects
@@ -73,7 +84,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Resolve using project_id, task_id, session_id, wait_id, claim_epoch | — | always |
+| Resolve using schema_version, project_id, task_id, session_id, wait_id, claim_epoch, owner_kind, owner_id | — | always |
 
 <!-- aq:generated:end -->
 

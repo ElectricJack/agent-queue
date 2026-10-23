@@ -303,11 +303,13 @@ def sweep(monkeypatch):
     for name in ("_flock_findings", "_conversation_findings", "_container_dependency_findings",
                  "_branch_findings", "_session_findings", "_delivery_findings", "_provider_findings",
                  "_unmaterialized_pr_findings", "_completed_undelivered_findings",
+                 "_delivery_stuck_findings",
                  "_unadmitted_parent_findings", "_stranded_child_findings",
                  "_reviewed_file_guard_findings", "_orphaned_pr_findings", "_validation_findings",
                  "_subject_unknown_findings", "_object_bootstrap_findings",
                  "_continuous_promotion_findings", "_escalation_delivery_findings",
-                 "_slot_capacity_findings", "_train_batch_findings"):
+                 "_slot_capacity_findings", "_train_batch_findings",
+                 "_stranded_promotion_findings"):
         monkeypatch.setattr(stall, name, AsyncMock(return_value=[]))
     monkeypatch.setattr(stall, "_waiting_train_repairs", AsyncMock(return_value={}))
     monkeypatch.setattr(stall, "_log_findings", lambda *args: [])

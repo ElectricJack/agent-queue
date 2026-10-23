@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select
 
+from src.commands.detached import DetachedOperations
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import (
     ExecutionPrincipal,
@@ -182,3 +184,62 @@ async def test_reserve_owner_control_is_supervisor_scoped(db):
     result = await command._cmd_integration_reserve_owner({"task_id": "producer"})
     assert result["outcome"] == "acquired"
     assert (await _owner(db))["owner_id"] == "producer"
+
+
+async def test_reserve_owner_refusal_names_its_reason(db):
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="other", repository_id="repo", ref="aq/producer", owner_id="other-task",
+                owner_role="worker", fence_token=3, handoff_state="reserved",
+                created_at=time.time(), updated_at=time.time(),
+            )
+        )
+    command = IntegrationCommandsMixin()
+    command.db = db
+
+    result = await command._cmd_integration_reserve_owner({"task_id": "producer"})
+
+    assert (result["success"], result["outcome"]) == (False, "not_eligible")
+    assert result["error"] == (await reserve_canonical_task_branch(db, "producer"))["reason"]
+
+
+async def test_slow_reserve_owner_answers_with_a_poll_handle_and_joins_the_run(db, monkeypatch):
+    import src.integration.canonical_reservation as reservation
+
+    gate, calls = asyncio.Event(), []
+
+    async def slow(database, task_id):
+        calls.append(task_id)
+        await gate.wait()
+        return await reserve_canonical_task_branch(database, task_id)
+
+    monkeypatch.setattr(reservation, "reserve_canonical_task_branch", slow)
+    command = IntegrationCommandsMixin()
+    command.db = db
+    operations = DetachedOperations(response_seconds=0.01)
+    command.orchestrator = SimpleNamespace(_detached_operations=operations)
+
+    first = await command._cmd_integration_reserve_owner({"task_id": "producer"})
+    again = await command._cmd_integration_reserve_owner({"task_id": "producer"})
+
+    assert (first["success"], first["outcome"]) == (True, "running")
+    assert first["poll"] == "aq integration reserve-owner --task-id producer"
+    assert again["operation_id"] == first["operation_id"] and calls == ["producer"]
+    assert await _owner(db) is None
+    gate.set()
+    operations.response_seconds = 30.0  # the poll joins the same run and waits for it
+    collected = await command._cmd_integration_reserve_owner({"task_id": "producer"})
+    assert (collected["success"], collected["outcome"]) == (True, "acquired")
+    assert calls == ["producer"] and (await _owner(db))["owner_id"] == "producer"
+
+
+async def test_detached_failure_propagates_and_is_not_retained():
+    operations = DetachedOperations(response_seconds=1.0)
+
+    async def broken():
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await operations.run("k", broken, poll="retry")
+    assert operations._runs == {}

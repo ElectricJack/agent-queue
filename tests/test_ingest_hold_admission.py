@@ -82,6 +82,9 @@ FRONTIER_CALLERS = {
     ),
     "src/doctor/task_checks.py::_check_ready_frontier_exclusions": "frontier",
     "src/integration/epic_delivery.py::EpicDeliveryProjection._workers_on": "frontier",
+    "src/waits/admission.py::AdmissionReader.observe_task": (
+        "tests/test_wait_admission.py::test_admission_reader_preserves_ingestion_hold"
+    ),
 }
 HELD_ID_CALLERS = {
     "src/database/queries/task_queries.py::TaskQueryMixin._notify_ready": (
@@ -375,3 +378,25 @@ async def test_launch_refuses_member_held_after_assignment(db, tmp_path, caplog)
     assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
     assert await held_batch(db, "held") == "batch-held"
     assert "session launch refused -- ingest_held" in caplog.text
+
+
+async def test_wait_admission_retains_ingestion_hold(db):
+    from types import SimpleNamespace
+
+    from src.integration.admission import observe_admission
+    from src.waits.admission import AdmissionReader
+
+    await mktask(db, "held-wait")
+    await hold(db, "held-wait")
+    orchestrator = SimpleNamespace(
+        db=db, config=AppConfig(), _worktrees_enabled=lambda: False,
+        _pool_quarantine_state=lambda *args: (None, None),
+        _delivery_admission=lambda ids: observe_admission(db, ids, None),
+    )
+    async with db._engine.connect() as conn:
+        observed = await AdmissionReader(orchestrator, clock=lambda: NOW).observe_task(
+            conn, "held-wait",
+        )
+    assert observed.constraints["policy_hold"]["blocked"]
+    assert "ingest_held" in observed.constraints["policy_hold"]["reasons"]
+    assert await held_batch(db, "held-wait") == "batch-held"

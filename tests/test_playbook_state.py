@@ -110,6 +110,41 @@ async def test_transactional_quota_race(db, service, limits):
     assert (await counts(db))[:3] == [1, 1, 1]
 
 
+@pytest.mark.parametrize("limits", [Limits(keys=1), Limits(namespace_bytes=45)])
+async def test_first_write_committed_between_namespace_reads_obeys_quota(
+    db, service, limits, monkeypatch,
+):
+    service.limits = limits
+    absent_read = asyncio.Event()
+    committed = asyncio.Event()
+    original = queries.namespace_row
+
+    async def pause_absent_read(conn, namespace, *, lock=False):
+        row = await original(conn, namespace, lock=lock)
+        if not lock and asyncio.current_task() is delayed and not absent_read.is_set():
+            assert row is None
+            absent_read.set()
+            await committed.wait()
+        return row
+
+    monkeypatch.setattr(queries, "namespace_row", pause_absent_read)
+
+    async def commit_first():
+        await absent_read.wait()
+        try:
+            return await put(service, key="a", operation="a")
+        finally:
+            committed.set()
+
+    async with asyncio.timeout(10):
+        delayed = asyncio.create_task(put(service, key="b", operation="b"))
+        results = await asyncio.gather(commit_first(), delayed, return_exceptions=True)
+    assert isinstance(results[0], dict), results
+    assert isinstance(results[1], StateError), results
+    assert str(results[1]) == "state.quota_exceeded", results
+    assert (await counts(db))[:3] == [1, 1, 1]
+
+
 async def test_journal_quota_and_injected_failure_roll_back_everything(db, service, monkeypatch):
     service.limits = Limits(journal_bytes=1)
     with pytest.raises(StateError, match="quota_exceeded"):

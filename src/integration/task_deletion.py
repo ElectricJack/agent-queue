@@ -308,6 +308,9 @@ async def _branch_plan(orchestrator, plan, captured, project_path):
             / "integration-repositories"
             / (hashlib.sha256(repository_id.encode()).hexdigest() + ".git")
         )
+        from src.projects.storage_binding import repository_path
+
+        retained = await repository_path(orchestrator.db, repository_id, retained)
         candidates = [repo["checkout_base_path"], repo["source_path"], project_path, str(retained)]
         candidates += [row["workspace_path"] for row in captured["workspaces"]]
         candidates += list(owned_paths)
@@ -406,9 +409,15 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
     root = captured["root"]
     now = time.time()
     reason = (reason or "").strip()
+    from src.waits.graph import lock_component_tasks, lock_graph
+
     async with db.immediate() as conn:
+        # Fence wait writers first, then preserve termination's session -> task
+        # row order before locking the remaining wait component.
+        await lock_graph(conn)
         await db.lock_hierarchy_project(conn, root["project_id"])
         await _lock_deletion_rows(conn, ids)
+        await lock_component_tasks(conn, {f"task:{task_id}" for task_id in ids})
         captured["sessions"] = await _rows(conn, t.sessions, t.sessions.c.task_id.in_(ids))
         # These holds are internal to the confirmed delete and prevent fresh claims.
         await _update_ids(
@@ -487,8 +496,10 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
         await _delete_branches(orchestrator, plan, cleanup)
 
     async with db.immediate() as conn:
+        await lock_graph(conn)
         await db.lock_hierarchy_project(conn, root["project_id"])
         await _lock_deletion_rows(conn, ids)
+        await lock_component_tasks(conn, {f"task:{task_id}" for task_id in ids})
         affected = await db._collect_affected(set(ids), conn)
         affected -= set(ids)
         parent_id = root["parent_task_id"]

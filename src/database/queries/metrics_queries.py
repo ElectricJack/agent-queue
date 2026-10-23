@@ -19,10 +19,11 @@ import json
 import time
 from typing import Any
 
-from sqlalchemy import Float, and_, case, delete, func, insert, select, update
+from sqlalchemy import Float, and_, case, delete, func, insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
+    events,
     metrics_samples,
     sessions,
     subagent_events,
@@ -41,7 +42,7 @@ LIVE_SESSION_STATES = ("starting", "running")
 #: Task statuses a live worker can hold.  Mirrors
 #: ``src.agents.subagents._ACTIVE_TASKS`` — kept as strings here because this
 #: layer speaks columns, not enums.
-ACTIVE_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS", "WAITING_INPUT")
+ACTIVE_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING")
 
 #: ``system_config`` key holding the durable daemon-start counter.
 _DAEMON_STARTS_KEY = "metrics.daemon_starts"
@@ -50,6 +51,16 @@ _DAEMON_STARTS_KEY = "metrics.daemon_starts"
 # Statement builders.  Separated from the readers so several can share one
 # connection without each opening its own.
 # ---------------------------------------------------------------------------
+
+
+def _live_task_session_predicate():
+    return ~select(tasks.c.id).where(
+        tasks.c.id == sessions.c.task_id,
+        or_(
+            tasks.c.status == "HIBERNATED",
+            and_(tasks.c.status == "RESUME_PENDING", sessions.c.state != "starting"),
+        ),
+    ).exists()
 
 
 def _live_sessions_stmt():
@@ -61,7 +72,10 @@ def _live_sessions_stmt():
             sessions.c.lifecycle,
             func.count().label("count"),
         )
-        .where(sessions.c.state.in_((*LIVE_SESSION_STATES, "draining")))
+        .where(
+            sessions.c.state.in_((*LIVE_SESSION_STATES, "draining")),
+            _live_task_session_predicate(),
+        )
         .group_by(
             sessions.c.state,
             sessions.c.harness,
@@ -77,7 +91,8 @@ def _task_counts_stmt():
 
 def _live_session_ids_stmt():
     return select(sessions.c.id, sessions.c.name, sessions.c.hooks_provisioned).where(
-        sessions.c.state.in_((*LIVE_SESSION_STATES, "draining"))
+        sessions.c.state.in_((*LIVE_SESSION_STATES, "draining")),
+        _live_task_session_predicate(),
     )
 
 
@@ -228,6 +243,66 @@ class MetricsQueryMixin:
             }
         except Exception:  # noqa: BLE001 - no engine or a foreign pool class is an honest null
             return {"checked_out": None, "overflow": None, "size": None}
+
+    async def metrics_waits_snapshot(self, now: float, window_seconds: float = 3600):
+        """Wait accounting, or null on a database predating verified waits."""
+        from src.database.queries.wait_metrics import wait_metrics_snapshot
+
+        async with self._engine.connect() as conn:
+            return await wait_metrics_snapshot(conn, now=now, window_seconds=window_seconds)
+
+    #: Transition marks kept per process; past the cap they are dropped and
+    #: reloaded from the events table, so a restart never rewrites a sample.
+    DELIVERY_MARK_LIMIT = 50_000
+
+    async def record_delivery_observations(self, view) -> int:
+        """Append one ``delivery.observation`` event per state transition in ``view``.
+
+        Telemetry only: no delivery, claim or cleanup decision reads these rows.
+        Returns the number of events written.
+        """
+        from src.metrics.delivery_latency import EVENT_TYPE, observation_key, observation_rows
+
+        found = observation_rows(view, now=time.time())
+        if not found:
+            return 0
+        marks = self.__dict__.setdefault("_delivery_marks", {})
+        loaded = self.__dict__.setdefault("_delivery_marks_loaded", set())
+        if len(marks) > self.DELIVERY_MARK_LIMIT:
+            marks.clear()
+            loaded.clear()
+        missing = sorted({key[0] for key, _mark, _row in found} - loaded)
+        if missing:
+            projects = sorted({row["project_id"] for _key, _mark, row in found})
+            async with self._engine.connect() as conn:
+                rows = await conn.execute(
+                    select(events.c.task_id, events.c.payload)
+                    .where(events.c.event_type == EVENT_TYPE,
+                           events.c.project_id.in_(projects),
+                           events.c.task_id.in_(missing))
+                    .order_by(events.c.id)
+                )
+                for task_id, raw in rows.all():
+                    try:
+                        key, mark = observation_key(task_id, json.loads(raw or "{}"))
+                    except (TypeError, ValueError, AttributeError):
+                        continue
+                    marks[key] = mark
+            loaded.update(missing)
+        fresh = [(key, mark, row) for key, mark, row in found if marks.get(key) != mark]
+        if fresh:
+            await self.log_events([row for _key, _mark, row in fresh])
+            marks.update((key, mark) for key, mark, _row in fresh)
+        return len(fresh)
+
+    async def metrics_delivery_latency(self, *, window: str = "24h",
+                                       project_id: str | None = None,
+                                       until: float | None = None) -> dict:
+        """Approval/completion-to-dev latency for one completion cohort."""
+        from src.metrics.delivery_latency import snapshot
+
+        return await snapshot(self._engine, window=window, project_id=project_id,
+                              until=until, now=time.time())
 
     async def metrics_slow_snapshot(
         self,

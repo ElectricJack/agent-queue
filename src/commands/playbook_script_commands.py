@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from src.commands.principal import PrincipalKind, current_principal
 from src.jobs.playbook import ScriptSubmission, public_job
 from src.jobs.policy import JobError
-from src.jobs.script_sandbox import SandboxRequest
+from src.jobs.script_runner import ScriptRequest
 from src.playbooks.artifact_ref import ARTIFACT_SCHEMA_GENERATION
 from src.playbooks.definition import ScriptStep, artifact_sha256, contract_fingerprint
 from src.playbooks.invocation import current_invocation
@@ -56,8 +56,8 @@ class PlaybookScriptCommandsMixin:
                     or (kind != "project" and principal.project_id is not None)
                     or (kind == "profile" and principal.profile_id != scope_owner)):
                 raise JobError("unauthorized")
-            request = SandboxRequest(execution_id=uuid.uuid4().hex, run_id=invocation.run_id,
-                                     pinned=pinned, **args)
+            request = ScriptRequest(execution_id=uuid.uuid4().hex, run_id=invocation.run_id,
+                                    pinned=pinned, **args)
             script = ScriptSubmission(invocation.run_id, invocation.step_id,
                                       invocation.iteration_path, invocation.attempt,
                                       invocation.artifact_ref.artifact_sha256,

@@ -215,17 +215,20 @@ and `.aq/claim.json`), run `aq session drain-ack` and exit: the pool can recycle
 The server marks an idle session for drain on the second identical failure.
 If preparation retained ownership, preserve it and **end the turn awaiting the
 supervisor's inbox delivery**. Durable waits require an active claim and cannot be
-registered during preparation. If you hold an active claim, register **one** durable
-message wait for the reply with the returned thread/cursor, then end the turn:
+registered during preparation. If you hold an active claim and prime reports waits
+enabled for the project, register **one** durable message wait for the reply with
+the returned thread/cursor, then end the turn. If waits are disabled or registration
+returns `wait.disabled`, preserve the claim and end the turn awaiting the supervisor
+inbox delivery; do not retry registration or poll:
 
 ```bash
 aq wait register --kind message --ref <reply-thread> --after-seq <cursor> \
-  --timeout 3600 --idempotency-key claim-blocker-reply
+  --idempotency-key claim-blocker-reply
 ```
 
-Consume the existing wait when notified and follow the reply. On timeout, inspect
-the outcome once and ask for direction; it is not permission to restart an unchanged
-claim loop. Do not keep polling claims/inboxes, reread unchanged context or repeat the
+Acknowledge the existing outcome when notified and follow the reply or recorded
+supervisor decision. Keep the same wait; escalation never restarts the claim loop.
+Do not keep polling claims/inboxes, reread unchanged context or repeat the
 blocker report. Never drain a retained claim just to make the refusal disappear.
 
 `aq task close`'s TASK_ID argument is optional: omit it (as the loop above
@@ -259,17 +262,17 @@ For supported validation, submit the producer and wait together:
 
 ```bash
 aq test --aq-detach --aq-wait --aq-idempotency-key validation TEST_ARGS
-aq wait register --kind task --ref <producer-task> --timeout 7200 --idempotency-key settlement
+aq wait register --kind task --ref <producer-task> --idempotency-key settlement
 aq wait show <wait-id> --consume --json
 ```
 
-Register once and end the turn. The durable wait retains the current claim,
-workspace and seat; the daemon queues completion, failure or bounded timeout.
-`--consume` reads the result and consumes only its notification, so it does not
-leave a redundant nudge or close blocker. Plain reads remain diagnostic. Handle
-the actual outcome; expiry never cancels a producer or proves success. Inspect
-the producer once on timeout and decide what to do instead of blindly
-re-registering or submitting replacement work. Managed admission is opt-in;
+State one condition, register once and end the turn. AQ chooses sleep in place or
+hibernation and delivers the durable outcome. If requested, submit `aq wait checkpoint`
+with a compaction summary before ending the turn. `--consume` acknowledges the outcome;
+plain reads remain diagnostic. Act on the result or supervisor decision: availability
+never proves success. Escalation goes to the supervisor and keeps the worker asleep.
+Do not re-register the same condition or submit replacement work. Managed admission
+is opt-in;
 if disabled, use ordinary foreground `aq test` with the existing resource caps.
 
 For `messages.pending_before_close`, handle every mailbox named by the refusal
@@ -519,7 +522,8 @@ gating edge onto the filer or the filing's own parent chain is refused as
 `dependency_on_ancestor`, by a graph and by `aq task add-dependency`
 alike. Order the new tasks among themselves with local `needs`. A delivered
 plan still satisfies anything that depends on it after its branch is cleaned
-up, because readiness trusts the delivery receipt rather than the branch.
+up, because readiness checks Git containment of its retained source commit, not
+the branch or a delivery receipt.
 
 **Checklist ownership.** An unphased planner graph may put `subtasks:` on a
 child task. Those are checklist rows owned and settled by the worker that
@@ -598,3 +602,16 @@ archived id can never be recreated in a different project.
   `formula cook` is supervisor-only.
 - Don't retry an `out of scope: <command>` error. It is a property of your
   token, not a transient failure; say so in a comment and close or ask instead.
+
+## Retained parent merge during close
+
+A passing close may return `close_in_progress` with a `close_merge` operation.
+The source stays frozen on your published task branch. In `candidate_path`, resolve
+conflicts or failing checks and commit the fix, preserving the merge parents.
+Run `aq integration continue-close --operation-id <id>` to regenerate, validate and
+publish through the daemon's parent fence. Never push the parent yourself.
+A returned exact-check wait is already registered: end the turn and resume the same
+operation when delivered. Your author budget goes to the supervisor; it does not
+interrupt your work or make a duplicate repair task. Root publication and a disabled
+train remain publisher policy. After an ambiguous close, inspect your claim and task
+before retrying. Completion records name the original source, not the merge candidate.

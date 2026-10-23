@@ -6,6 +6,7 @@ These are pure data — no logic.
 
 from __future__ import annotations
 
+from src.models import TaskStatus
 # Pure-data schema modules: importing the command mixins here would pull the
 # doctor registry and the database into every CLI start.
 from src.commands.doctor_observation_schemas import CATALOG_SCHEMA, RUN_SCHEMA
@@ -14,6 +15,8 @@ from src.commands.playbook_state_schemas import STATE_SCHEMAS
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -50,6 +53,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "release_project_constraint": "project",
     "edit_project": "project",
     "bind_project_repository": "project",
+    "project_relocate": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -168,6 +172,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "wait_explain": "wait",
+    "wait_graph": "wait",
+    "wait_checkpoint": "wait",
+    "wait_ack": "wait",
+    "wait_decide": "wait",
+    "wait_lift": "wait",
+    "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
     "cron_list": "cron",
@@ -842,6 +853,25 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "list_projects",
         "description": "List all projects in the system.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "project_relocate",
+        "description": (
+            "Preview or apply an atomic project storage relocation. Requires paused admission, "
+            "disabled/drained train, stopped writers and current required CI. Reverse relocation "
+            "uses a fresh destination containing current work. Local operator only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "destination": {"type": "string"},
+                "owner_inventory": {"type": "object"},
+                "expected_digest": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "destination", "owner_inventory"],
+        },
     },
     {
         "name": "repair_repository_checkout",
@@ -2544,7 +2574,7 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Restart a named supervisor through AQ with current profile permissions, model and effort. "
             "Starts a fresh conversation by default; --resume resumes its prior conversation. "
-            "Requires global admin."
+            "Requires a local operator or live supervisor within the target project scope."
         ),
         "input_schema": {
             "type": "object",
@@ -2636,8 +2666,10 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
-                    "description": "New status — admin override, bypasses state machine (optional)",
+                    "enum": [status.value for status in TaskStatus],
+                    "description": (
+                        "New lifecycle status (optional); suspended states require wait controls"
+                    ),
                 },
                 "max_retries": {"type": "integer", "description": "Max retry attempts (optional)"},
                 "verification_type": {
@@ -5538,6 +5570,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "branch": {
                     "type": "string",
                     "description": "Branch name for this task's work (optional).",
+                },
+                "repair_batch": {
+                    "type": "string",
+                    "description": "Supervisor/operator only: assign push authority for this open batch's candidate branch, preserving the task's canonical branch.",
                 },
                 "pr_url": {"type": "string", "description": "Pull-request URL (optional)."},
                 "work_dir": {
@@ -8475,6 +8511,17 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_batch_fix",
+    "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "properties": {"action": {"type": "string", "enum": ["status", "push", "rebind"],
+                                   "default": "status"}},
+    },
+})
+
+
 _COLLABORATION_SCOPE = {
     "project_id": {"type": "string"},
     "task_id": {"type": "string"},
@@ -8632,6 +8679,11 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {
 # The git-first train's per-tick dispatch (integration.git_first: active).
 # Daemon-only: excluded from MCP, the API and the CLI; the service supplies its clock.
 _FALLBACK_INPUT_SCHEMAS["integration_train_tick"] = {
+    "type": "object",
+    "properties": {"now": {"type": ["number", "null"]}},
+    "additionalProperties": False,
+}
+_FALLBACK_INPUT_SCHEMAS["integration_reconcile_git_truth"] = {
     "type": "object",
     "properties": {"now": {"type": ["number", "null"]}},
     "additionalProperties": False,
@@ -9326,6 +9378,37 @@ _ALL_TOOL_DEFINITIONS.extend([
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])
 
+# Wait v2 uses one closed request schema across all public surfaces.
+from src.commands.contracts.wait import (  # noqa: E402
+    WaitRegisterArgs as _WaitRegisterArgs, WaitGetArgs as _WaitGetArgs,
+    WaitListArgs as _WaitListArgs, WaitCancelArgs as _WaitCancelArgs,
+)
+from src.commands.contracts.wait_v2 import (  # noqa: E402
+    PUBLIC_WAIT_V2_COMMANDS as _PUBLIC_WAIT_V2_COMMANDS, WAIT_V2_ARGS as _WAIT_V2_ARGS,
+)
+
+_WAIT_ARGS = {
+    "wait_register": _WaitRegisterArgs, "wait_get": _WaitGetArgs,
+    "wait_list": _WaitListArgs, "wait_cancel": _WaitCancelArgs,
+}
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] in _WAIT_ARGS:
+        _definition["input_schema"] = _WAIT_ARGS[_definition["name"]].model_json_schema()
+_WAIT_V2_DESCRIPTIONS = {
+    "wait_explain": "Explain a verified wait's condition, evidence and outcome.",
+    "wait_graph": "Inspect the dependency graph of verified waits.",
+    "wait_checkpoint": "Save a continuation checkpoint for the held claim's verified wait.",
+    "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
+    "wait_decide": "Record a supervisor decision for a verified wait.",
+    "wait_lift": "Lift an escalated verified wait with an authorized decision.",
+}
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],
+     "input_schema": _WAIT_V2_ARGS[name].model_json_schema()}
+    for name in sorted(_PUBLIC_WAIT_V2_COMMANDS)
+])
+
+
 # Shared observation schemas feed every descriptor projection; no playbook registration.
 
 _FALLBACK_INPUT_SCHEMAS.update({"doctor_catalog": CATALOG_SCHEMA, "doctor_run": RUN_SCHEMA,
@@ -9409,3 +9492,13 @@ for _name, _args in _ASK_ARGS.items():
         _ALL_TOOL_DEFINITIONS.append({"name": _name,
             "description": "Scoped human request communication and decision evidence.",
             "input_schema": _args.model_json_schema()})
+
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "integration_continue_close",
+    "description": "Continue the parent merge belonging to your held task and session.",
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["operation_id"],
+        "properties": {"operation_id": {"type": "string"}},
+    },
+})
