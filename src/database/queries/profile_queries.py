@@ -126,7 +126,7 @@ class ProfileQueryMixin:
             return self._row_to_profile(row) if row else None
         async with self._engine.begin() as owned:
             row = (await owned.execute(stmt)).mappings().fetchone()
-            return self._row_to_profile(row) if row else None
+        return self._row_to_profile(row) if row else None
 
     async def list_profiles(self, *, conn=None) -> list[AgentProfile]:
         """List all agent profiles ordered by name."""
@@ -136,7 +136,8 @@ class ProfileQueryMixin:
             return [self._row_to_profile(r) for r in result.mappings().fetchall()]
         async with self._engine.begin() as owned:
             result = await owned.execute(stmt)
-            return [self._row_to_profile(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return [self._row_to_profile(r) for r in rows]
 
     async def update_profile(self, profile_id: str, **kwargs) -> None:
         """Update arbitrary profile fields."""

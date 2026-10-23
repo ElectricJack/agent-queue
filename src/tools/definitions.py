@@ -298,6 +298,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "claude_usage": "system",
     "get_chat_analyzer_metrics": "system",
     "reload_config": "system",
+    "operational_retention": "system",
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",
@@ -4010,6 +4011,16 @@ _ALL_TOOL_DEFINITIONS = [
             },
             "required": ["section", "data"],
         },
+    },
+    {
+        "name": "operational_retention",
+        "description": "Archive and collect one bounded batch of old operational records.",
+        "input_schema": {"type": "object", "properties": {
+            "dry_run": {"type": "boolean", "default": False,
+                        "description": "Count eligible records without archiving or deletion."},
+            "batch_size": {"type": "integer", "minimum": 1, "maximum": 1000,
+                           "default": 1000},
+        }},
     },
     {
         "name": "reload_config",

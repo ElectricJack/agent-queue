@@ -189,7 +189,7 @@ class ProjectQueryMixin:
             return self._row_to_project(row) if row else None
         async with self._engine.begin() as owned:
             row = (await owned.execute(stmt)).mappings().fetchone()
-            return self._row_to_project(row) if row else None
+        return self._row_to_project(row) if row else None
 
     async def list_projects(
         self,
@@ -207,13 +207,14 @@ class ProjectQueryMixin:
             stmt = stmt.where(projects.c.status == status.value)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            found = []
-            for row in result.mappings().fetchall():
-                project = self._row_to_project(row)
-                if include_admission:
-                    project._source_admission_required = row["source_admission"]
-                found.append(project)
-            return found
+            rows = result.mappings().fetchall()
+        found = []
+        for row in rows:
+            project = self._row_to_project(row)
+            if include_admission:
+                project._source_admission_required = row["source_admission"]
+            found.append(project)
+        return found
 
     async def update_project(self, project_id: str, **kwargs) -> None:
         """Update arbitrary project fields."""

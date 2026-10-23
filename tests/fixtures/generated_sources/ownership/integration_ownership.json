@@ -19512,10 +19512,10 @@
       "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "15bc2ea12433ab88b9e915d52900de0123452fd4",
+    "measured_source_revision": "0e1cede46ecd2b2c14c8200b981a2655bae566c0 + 1e3ac0b14608fd4a4b5a2c90a25cacb57f4bf511",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 160837,
-    "delta": 5338,
+    "measured_owned_total": 160793,
+    "delta": 5294,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19535,7 +19535,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 1879,
+    "batch_measured_delta": 1835,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19544,7 +19544,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85316,
+    "measured_engine_lines": 85335,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22",
     "amendments": [

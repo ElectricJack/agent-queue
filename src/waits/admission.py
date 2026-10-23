@@ -5,6 +5,8 @@ configuration. Occupancy and time are observations, never cached verdicts.
 """
 
 from dataclasses import asdict, dataclass
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import time
@@ -13,7 +15,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from src.database.tables import (
-    continuations, integration_batch_members, integration_batches, integration_branch_owners,
+    workspace_kinds, workspaces, continuations, integration_batch_members, integration_batches, integration_branch_owners,
     integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records,
 )
 from src.waits.conditions import Condition, NodeKey, Observation, Snapshot
@@ -86,6 +88,35 @@ class AdmissionReader:
     def __init__(self, orchestrator, *, clock=time.time):
         self.orchestrator = orchestrator
         self.clock = clock
+        self._prepared = ContextVar("scheduler_admission", default=None)
+
+    @asynccontextmanager
+    async def prepared(self, project_id):
+        """Observe Git/policy outside the graph lock, then revalidate on its connection."""
+        from src.integration.admission import observe_admission
+        from src.integration.development import DevelopmentPrimitives
+        from src.routing.readiness import orchestrator_ready_projects
+
+        o = self.orchestrator
+        ready = await orchestrator_ready_projects(o)
+        async with o.db._engine.connect() as conn:
+            ids = list((await conn.execute(select(tasks.c.id).where(
+                tasks.c.project_id == project_id,
+                tasks.c.status.in_(("READY", "DEFINED", "PAUSED", "RESUME_PENDING")),
+            ))).scalars())
+        service = getattr(o, "development_integration", None)
+        if service is None:
+            service = DevelopmentPrimitives(o.db, data_dir=o.config.data_dir,
+                                            git=getattr(o, "git", None))
+        view = await observe_admission(
+            o.db, ids, service, cached_only=True,
+            default_mode=o.config.integration.default_mode, router_ready_projects=ready,
+        )
+        token = self._prepared.set((view, frozenset(ids), ready))
+        try:
+            yield
+        finally:
+            self._prepared.reset(token)
 
     async def observe_task(self, conn, task_id, *, continuation_id=None, migration_audit=False):
         from src.database.queries.claim_queries import (
@@ -124,10 +155,12 @@ class AdmissionReader:
             projects.c.id == task["project_id"],
         ))).mappings().one()
         profile = await o.db.get_profile(task["profile_id"], conn=conn) if task["profile_id"] else None
-        ready = await orchestrator_router_ready(o, task["project_id"])
+        prepared = self._prepared.get()
+        ready = (task["project_id"] in prepared[2] if prepared is not None
+                 else await orchestrator_router_ready(o, task["project_id"]))
         # The same SQL predicates the ordinary claim path uses. Git delivery is
         # separately re-observed below; an old cached verdict never clears a hold.
-        project_model = await o.db.get_project(task["project_id"])
+        project_model = await o.db.get_project(task["project_id"], conn=conn)
         mode = ProjectIntegrationMode.of(project_model)
         from src.integration.admission import observe_admission
         from src.integration.development import DevelopmentPrimitives
@@ -136,12 +169,17 @@ class AdmissionReader:
         if service is None:
             service = DevelopmentPrimitives(o.db, data_dir=config.data_dir,
                                             git=getattr(o, "git", None))
-        admission = await observe_admission(
-            o.db, [task_id], service, cached_only=True,
-            default_mode=config.integration.default_mode,
-            hierarchy_conn=conn,
-            router_ready_projects={task["project_id"]} if ready else set(),
-        )
+        if prepared is not None:
+            admission, ids, _ = prepared
+            if task_id not in ids:
+                return None  # Newly ready work is observed on the next pass.
+        else:
+            admission = await observe_admission(
+                o.db, [task_id], service, cached_only=True,
+                default_mode=config.integration.default_mode,
+                hierarchy_conn=conn,
+                router_ready_projects={task["project_id"]} if ready else set(),
+            )
         mode = admission.hierarchy_modes.get(task["project_id"], mode)
         predicates = claim_frontier_predicates(hierarchy_mode=mode)
         predicates["route"] = route_claimable(ready)
@@ -153,7 +191,7 @@ class AdmissionReader:
         from src.pool_claims import idle_pool_claim_loop_stalled, pool_claim_loop_stall_seconds
         from src.waits.occupancy import continuation_occupancy
 
-        resuming, reserved = await continuation_occupancy(o.db, config)
+        resuming, reserved = await continuation_occupancy(o.db, config, conn=conn)
         live = [dict(row) for row in (await conn.execute(select(sessions).where(
             (sessions.c.lifecycle == "pool") | sessions.c.id.in_(resuming),
             sessions.c.state.in_(("starting", "running", "draining")),
@@ -184,8 +222,21 @@ class AdmissionReader:
                             or project_count >= project["max_concurrent_agents"]
                             or profile_cap is not None and profile_count >= profile_cap)
         worktrees = o._worktrees_enabled()
+        from src.models import SYSTEM_KIND_SCOPE
+
+        workspace_rows = (await conn.execute(select(workspaces).where(
+            workspaces.c.project_id == task["project_id"],
+        ))).mappings().all()
+        kind_rows = (await conn.execute(select(workspace_kinds).where(
+            workspace_kinds.c.project_id.in_((SYSTEM_KIND_SCOPE, task["project_id"])),
+        ))).mappings().all()
+        kinds = {}
+        for row in sorted(kind_rows, key=lambda r: r["project_id"] != SYSTEM_KIND_SCOPE):
+            kinds[row["id"]] = o.db._row_to_workspace_kind(row)
         capacity = await o.db.count_available_workspaces(
             task["project_id"], kind_id="project-repo",
+            workspace_snapshot=[o.db._row_to_workspace(r) for r in workspace_rows],
+            kind_snapshot=kinds,
             worktree_slot_cap=o._project_slot_cap(project_model) if worktrees else None,
         )
         capacity = max(0, capacity - sum(

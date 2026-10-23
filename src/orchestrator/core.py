@@ -3360,6 +3360,11 @@ class Orchestrator(
             await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
         await self.cancel_claim_preparations()
         await stop_ready_owner_recovery(self)
+        for name in ("_operational_retention_dispatch", "_operational_retention_task",
+                     "_worktree_maintenance_task"):
+            pending = getattr(self, name, None)
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
         await self.message_delivery_service.stop()
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
@@ -4122,6 +4127,21 @@ class Orchestrator(
         if now - self._last_worktree_reaper < 300:
             return
         self._last_worktree_reaper = now
+
+        pending = getattr(self, "_worktree_maintenance_task", None)
+        if pending is None or pending.done():
+            self._worktree_maintenance_task = asyncio.create_task(
+                self._reap_worktree_slots_background(), name="worktree-maintenance",
+            )
+
+    async def _reap_worktree_slots_background(self) -> None:
+        """One serialized maintenance pass; Git subprocesses never block a cycle."""
+        try:
+            await self._reap_worktree_slots_pass()
+        except Exception:
+            logger.exception("Worktree maintenance failed; retrying on the next pass")
+
+    async def _reap_worktree_slots_pass(self) -> None:
 
         try:
             projects = await self.db.list_projects()
