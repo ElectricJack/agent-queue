@@ -28,6 +28,7 @@ export function useLayoutTiles(
   projectId: string | undefined,
   params: TilesParams,
   viewportRect: Rect | null,
+  layoutReady = false,
 ) {
   const [store, setStore] = useState<LayoutStore>(emptyStore);
   const [pending, setPending] = useState(false);
@@ -131,6 +132,7 @@ export function useLayoutTiles(
     const fresh = sameProject ? retainForReflow(storeRef.current) : emptyStore();
     storeRef.current = fresh;
     setStore(fresh);
+    setPending(false);
     setLoaded(false);
     void load();
     // paramsKey is the structural identity of `params`.
@@ -153,6 +155,13 @@ export function useLayoutTiles(
     const timer = setTimeout(() => void load(), VIEWPORT_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [viewportRect, load]);
+
+  // Extent and tiles start independently. Only retry tiles that actually
+  // answered 202; the first extent must not cancel a useful in-flight fetch.
+  // Checking both values also covers an extent that arrives before the 202.
+  useEffect(() => {
+    if (layoutReady && pending) void load();
+  }, [layoutReady, pending, load]);
 
   const refetchVisible = useCallback(() => {
     // Dropping the cells from `loaded` alone would leave nodes that vanished

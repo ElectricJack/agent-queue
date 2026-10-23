@@ -164,6 +164,21 @@ with no subprocess launcher of its own. Explicit account operations such as
 repository creation and gist sharing use the same runner under the capability
 rules in section 9.
 
+### Shared exact-commit check-run observations
+
+The startup-owned GitHub access service shares complete `filter=all` check-run
+listings across integration CI (including CI wait watchers), source observers,
+and the PR inbox. The key is the bound numeric repository identity and exact
+commit SHA; policy, producer and event filtering remain the caller's job.
+Concurrent readers share one bounded paginated request. Pending, empty or
+incomplete listings expire after 45 seconds; nonempty completed listings stay
+available without a time expiry. An observed missing commit removes its entry.
+Workflow identity/attempt/status changes and explicit suite/job reruns invalidate
+cached check runs so an unchanged SHA can acquire new evidence. Failed reads
+are not cached, and cancelling a reader does not cancel other readers' request.
+Actual requests retain the initiating caller's GitHub activity attribution and
+background quota policy; cache hits do not count as GitHub requests.
+
 ## 5. Repository identity and authorization
 
 Every repository operation receives an explicit validated target. Resolve it

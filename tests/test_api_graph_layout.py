@@ -896,6 +896,42 @@ async def test_default_router_delegates_to_the_orchestrator_db(db, monkeypatch):
     assert job.json()["id"] == job_id and job.json()["status"] == "queued"
 
 
+async def test_default_router_keeps_geometry_until_binding_or_version_changes(db, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from src.api import dependencies as deps
+    from src.api import graph_layout
+
+    await seed(db)
+    orch = SimpleNamespace(db=db, _command_handler=None)
+    monkeypatch.setattr(deps, "_orchestrator", orch)
+    build = Mock(wraps=graph_layout.build_graph_layout_router)
+    monkeypatch.setattr(graph_layout, "build_graph_layout_router", build)
+    load = AsyncMock(wraps=db.load_rows_for_containers)
+    monkeypatch.setattr(db, "load_rows_for_containers", load)
+    app = FastAPI()
+    app.include_router(graph_layout._build_default_router())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        for _ in range(3):
+            assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 1
+        assert load.await_count == 1
+        # Republishing a layout invalidates geometry without rebuilding routes.
+        await LayoutDriver(db).full_layout("p1", "all")
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 1
+        assert load.await_count == 2
+        # Messaging may swap the handler after startup. Never keep a stale binding.
+        orch._command_handler = _RecordingHandler(db)
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 2
+        assert load.await_count == 3
+        monkeypatch.setattr(deps, "_orchestrator", SimpleNamespace(db=db))
+        assert (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).status_code == 200
+        assert build.call_count == 3
+
+
 async def test_tidy_refuses_an_agent_session_scope(db, scoped_client_factory):
     """The mutation is scoped like a generated command route."""
     await seed(db)

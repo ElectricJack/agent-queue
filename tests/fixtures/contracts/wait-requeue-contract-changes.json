@@ -1,0 +1,591 @@
+{
+  "source_base": "1e3ac0b14b0d8f38aa0c5cbd2c2ccaf8f87b6a24",
+  "reason": "calm-rapids-50 adds the fenced wait_decide requeue decision (continuation_id and expected_generation) for held resume continuations.",
+  "command": "wait_decide",
+  "contract_fingerprint": "sha256:db3d6538532a23ac1b92892d72b76b39ba9f8fc25f79bfad921c6e6d9ddda2c2",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "6822549bffd34428c2c731814d6c02afe64a55c38ae3504bb846dd1a6262ecaf",
+  "catalogue_sections": {
+    "explicit": {
+      "list": true,
+      "previous_order": [
+        "policy_export",
+        "policy_diff",
+        "policy_apply",
+        "list_projects",
+        "project_relocate",
+        "repair_repository_checkout",
+        "repair_workspace_checkout",
+        "project_doctor",
+        "create_project",
+        "pause_project",
+        "resume_project",
+        "set_project_constraint",
+        "release_project_constraint",
+        "edit_project",
+        "bind_project_repository",
+        "get_git_identity",
+        "set_git_identity",
+        "set_default_branch",
+        "get_project",
+        "list_tasks",
+        "list_active_tasks_all_projects",
+        "task_recent_activity",
+        "get_task_tree",
+        "task_children",
+        "task_progress",
+        "reparent_task",
+        "create_task",
+        "ensure_task",
+        "get_downstream_tasks",
+        "task_route",
+        "task_route_override",
+        "add_workspace",
+        "list_workspaces",
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+        "list_workspace_kinds",
+        "find_merge_conflict_workspaces",
+        "workspace_doctor",
+        "workspace_cutover",
+        "workspace_retire_claim",
+        "workspace_clear_sentinel",
+        "workspace_reap",
+        "release_workspace",
+        "remove_workspace",
+        "edit_workspace",
+        "queue_sync_workspaces",
+        "list_agents",
+        "get_agent",
+        "create_agent",
+        "edit_agent",
+        "delete_agent",
+        "session_prune",
+        "session_cleanup",
+        "session_input",
+        "supervisor_restart",
+        "start_agent_terminal",
+        "get_task",
+        "edit_task",
+        "pause_task",
+        "resume_task",
+        "discard_pause_checkpoint",
+        "stop_task",
+        "task_recover",
+        "restart_task",
+        "reopen_with_feedback",
+        "remove_task",
+        "delete_task",
+        "archive_task",
+        "list_archived",
+        "skip_task",
+        "get_task_dependencies",
+        "add_dependency",
+        "remove_dependency",
+        "get_chain_health",
+        "get_status",
+        "list_event_triggers",
+        "get_recent_events",
+        "read_logs",
+        "get_task_result",
+        "run_command",
+        "get_stuck_tasks",
+        "delete_project",
+        "get_token_usage",
+        "token_audit",
+        "get_chat_analyzer_metrics",
+        "list_prompts",
+        "read_prompt",
+        "render_prompt",
+        "restart_daemon",
+        "orchestrator_control",
+        "get_agent_error",
+        "list_profiles",
+        "create_profile",
+        "get_profile",
+        "edit_profile",
+        "delete_profile",
+        "list_available_tools",
+        "check_profile",
+        "profile_audit",
+        "profile_drift",
+        "profile_reseed",
+        "install_profile",
+        "export_profile",
+        "import_profile",
+        "scan_stub_staleness",
+        "get_config",
+        "get_config_schema",
+        "preview_portable_config",
+        "export_portable_config",
+        "import_portable_config",
+        "update_config",
+        "reload_config",
+        "claude_usage",
+        "archive_settings",
+        "provide_input",
+        "set_task_status",
+        "task_deps",
+        "discord_purge_channel",
+        "shutdown",
+        "update_and_restart",
+        "find_applicable_tool",
+        "run_playbook",
+        "dry_run_playbook",
+        "show_playbook_graph",
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "cancel_playbook_run",
+        "playbook_health",
+        "playbook_graph_view",
+        "playbook_commands",
+        "playbook_v2_graph",
+        "playbook_graph_layout_save",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_artifacts",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
+        "get_playbook_source",
+        "playbook_source_resync",
+        "update_playbook_source",
+        "playbook_delete",
+        "set_playbook_enabled",
+        "show_effective_profile",
+        "list_mcp_servers",
+        "get_mcp_server",
+        "list_mcp_tool_catalog",
+        "probe_mcp_server",
+        "create_mcp_server",
+        "edit_mcp_server",
+        "delete_mcp_server",
+        "get_benchmark_report",
+        "doctor",
+        "get_costs",
+        "db_preflight_hierarchy",
+        "get_schema",
+        "project_ready",
+        "task_show",
+        "task_comment",
+        "benchmark_stage_record",
+        "task_comments",
+        "task_comment_edit",
+        "task_comment_delete",
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
+        "phase_create",
+        "phase_list",
+        "task_set",
+        "task_close",
+        "task_heartbeat",
+        "subagent_event",
+        "task_claim",
+        "task_handoff",
+        "message_send",
+        "message_reply",
+        "message_inbox",
+        "message_list",
+        "message_status",
+        "agent_message",
+        "memory_save",
+        "memory_search",
+        "create_task_graph",
+        "formula_list",
+        "formula_show",
+        "formula_cook",
+        "graph_layout_rebuild",
+        "graph_tidy",
+        "graph_reflow_status",
+        "ci_completed_status",
+        "ci_baseline_status",
+        "ci_repair_adopt",
+        "provider_usage_probe",
+        "provider_status",
+        "provider_held_tasks",
+        "provider_allocation_status",
+        "provider_allocation_preview",
+        "provider_allocation_apply",
+        "provider_history",
+        "provider_recheck",
+        "provider_set_state",
+        "provider_reroute",
+        "provider_reroute_undo",
+        "pr_merge",
+        "spec_approve",
+        "task_batch_propose",
+        "task_batch_update",
+        "task_batch_commit",
+        "task_batch_validate",
+        "task_batch_discard",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_import",
+        "playbook_v2_shadow_compile",
+        "list_intelligence_classes",
+        "edit_intelligence_class",
+        "delete_intelligence_class",
+        "pool_status",
+        "pool_rename",
+        "pool_scale",
+        "pool_set_enabled",
+        "pool_set_lifecycle",
+        "question_list",
+        "question_answer",
+        "question_escalate",
+        "review_attachment_add",
+        "review_attachment_list",
+        "review_submit",
+        "review_show",
+        "review_list",
+        "review_reopen",
+        "review_withdraw",
+        "gate_reopen",
+        "ask_prepare_decision",
+        "ask_decide",
+        "ask_retry_operation",
+        "review_feedback_complete",
+        "review_decide",
+        "approve_pull_request",
+        "review_comment",
+        "review_dispatch",
+        "review_delegate",
+        "review_import_edits",
+        "github_issue_triage",
+        "github_issue_fix_approved",
+        "github_issue_close_rejected",
+        "github_issue_rejection",
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+        "escalation_create",
+        "escalation_list",
+        "escalation_get",
+        "escalation_reply",
+        "escalation_update",
+        "escalation_resolve",
+        "escalation_apply_reply",
+        "escalation_sweep",
+        "digest_preview",
+        "digest_status",
+        "digest_facts",
+        "digest_post",
+        "digest_request",
+        "morning_report_tick",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
+        "report_reconcile",
+        "report_request",
+        "report_brief",
+        "report_submit",
+        "supervisor_inbox_post",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+        "supervisor_inbox_history",
+        "message_wait",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "integration_batch_fix",
+        "collaboration_create",
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        "job_submit",
+        "job_submit_integration",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        "artifact_verify",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
+        "test_selection_list",
+        "test_selection_policy_show",
+        "test_selection_promote",
+        "test_selection_revoke",
+        "knowledge_create",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_retire",
+        "knowledge_restore",
+        "record_show",
+        "record_search",
+        "knowledge_export",
+        "record_repair",
+        "record_capabilities",
+        "link_create",
+        "link_list",
+        "link_remove",
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_proposal_decide",
+        "knowledge_verify",
+        "knowledge_authority_grant",
+        "knowledge_authority_revoke",
+        "knowledge_share",
+        "knowledge_redact",
+        "knowledge_generation_tick",
+        "knowledge_generation_status",
+        "knowledge_create_task",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "decision_record",
+        "decision_list",
+        "operator_execute",
+        "operator_preflight",
+        "wait_ack",
+        "wait_checkpoint",
+        "wait_decide",
+        "wait_explain",
+        "wait_graph",
+        "wait_lift",
+        "playbook_script_run",
+        "ensure_spec_ingest",
+        "ensure_fidelity_review",
+        "approved_spec_packet",
+        "spec_ingest_reconcile",
+        "batch_reconcile",
+        "spec_ingest_legacy_inventory",
+        "ask_list",
+        "ask_show",
+        "ask_history",
+        "ask_reply",
+        "ask_apply_input",
+        "ask_discussion_reply",
+        "ask_update_context",
+        "ask_reconcile",
+        "ask_legacy_reset",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_repair_delivery",
+        "ask_intake",
+        "ask_button",
+        "integration_continue_close"
+      ],
+      "entries": {
+        "wait_decide": {
+          "current": {
+            "name": "wait_decide",
+            "description": "Record a supervisor decision for a verified wait.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Project Id"
+                },
+                "wait_id": {
+                  "minLength": 1,
+                  "title": "Wait Id",
+                  "type": "string"
+                },
+                "decision": {
+                  "enum": [
+                    "extend",
+                    "wake",
+                    "cancel",
+                    "reroute",
+                    "escalate_to_human",
+                    "requeue"
+                  ],
+                  "title": "Decision",
+                  "type": "string"
+                },
+                "note": {
+                  "maxLength": 4000,
+                  "minLength": 1,
+                  "title": "Note",
+                  "type": "string"
+                },
+                "extend_seconds": {
+                  "anyOf": [
+                    {
+                      "maximum": 86400,
+                      "minimum": 60,
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Extend Seconds"
+                },
+                "to": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "To"
+                },
+                "expected_generation": {
+                  "anyOf": [
+                    {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Generation"
+                },
+                "continuation_id": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Continuation Id"
+                }
+              },
+              "required": [
+                "wait_id",
+                "decision",
+                "note"
+              ],
+              "title": "WaitDecideArgs",
+              "type": "object"
+            }
+          },
+          "previous": {
+            "name": "wait_decide",
+            "description": "Record a supervisor decision for a verified wait.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "project_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Project Id"
+                },
+                "wait_id": {
+                  "minLength": 1,
+                  "title": "Wait Id",
+                  "type": "string"
+                },
+                "decision": {
+                  "enum": [
+                    "extend",
+                    "wake",
+                    "cancel",
+                    "reroute",
+                    "escalate_to_human"
+                  ],
+                  "title": "Decision",
+                  "type": "string"
+                },
+                "note": {
+                  "maxLength": 4000,
+                  "minLength": 1,
+                  "title": "Note",
+                  "type": "string"
+                },
+                "extend_seconds": {
+                  "anyOf": [
+                    {
+                      "maximum": 86400,
+                      "minimum": 60,
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Extend Seconds"
+                },
+                "to": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "To"
+                },
+                "expected_generation": {
+                  "anyOf": [
+                    {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Generation"
+                }
+              },
+              "required": [
+                "wait_id",
+                "decision",
+                "note"
+              ],
+              "title": "WaitDecideArgs",
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  }
+}
