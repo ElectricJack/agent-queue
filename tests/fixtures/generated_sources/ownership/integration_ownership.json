@@ -9599,6 +9599,22 @@
         21,
         21
       ]
+    },
+    "src/git/github_activity.py::github_component": {
+      "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
+      "landing_span": [
+        18,
+        28
+      ],
+      "baseline_span": null
+    },
+    "src/git/github_activity.py::check_background_budget": {
+      "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
+      "landing_span": [
+        118,
+        124
+      ],
+      "baseline_span": null
     }
   },
   "exclusions": {
@@ -13692,7 +13708,9 @@
     "ffdc36d90f4f43094d53cf205cccbc03fbe913f70fa271be3daeecd15f3b31de",
     "ffe0128684373bc7ce70298b0809ff368b7381cca05a4485b68e0cbdc8d67b14",
     "fff14f8db26fe7d356fa54882f8b9fad11b3df0209c79521bd934fc3cd6e4962",
-    "fff6baa3262ea5a823c2f7329ef4894641c975c9ed0d2a4b14fa4f38327f4193"
+    "fff6baa3262ea5a823c2f7329ef4894641c975c9ed0d2a4b14fa4f38327f4193",
+    "91d830ebb32113375e4cd3b7e79d0b589fd75f445f0bd8283b6af12682d22755",
+    "c1899e54134cabaee04932162934c4e6473f4a0557c2301f2a201b03afd93649"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -19509,13 +19527,15 @@
       "msg-7ed85e78d1af4f3e85b485a57967e794",
       "msg-381054d695e64055979a687c4d811e7e",
       "msg-ab86b9766c2f42b9ba4920aba585b577",
-      "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
+      "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
+      "msg-a337e2c905ce4f5c8a236344a4e25211",
+      "msg-330ea2478c724381acbb5512fc99e4b5"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+    "measured_source_revision": "f12a1f07560d3d0cd6458c078007bda21eca8080",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 160879,
-    "delta": 5380,
+    "measured_owned_total": 160982,
+    "delta": 5483,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19535,7 +19555,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 1921,
+    "batch_measured_delta": 2024,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19544,7 +19564,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85316,
+    "measured_engine_lines": 85398,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22",
     "amendments": [
@@ -19560,6 +19580,18 @@
         "global_request": "msg-9f895e0d",
         "global_grant": "msg-7f2f68c1",
         "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
+      },
+      {
+        "task_id": "prime-impact-40",
+        "decision_message_id": "msg-a337e2c905ce4f5c8a236344a4e25211",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "previous_owned_total": 160879,
+        "previous_engine_lines": 85316,
+        "authorized_owned_delta": 103,
+        "authorized_engine_delta": 82,
+        "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
+        "supersedes_message_id": "msg-ac47a08407a6462bb411326ecefeab44",
+        "grant_source_message_id": "msg-330ea2478c724381acbb5512fc99e4b5"
       }
     ]
   },
