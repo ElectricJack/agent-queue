@@ -518,10 +518,12 @@ declares `phases:`. That is the supported path for a phase → task plan.
 
 **Planner workflow.** A planner granted `create_task_graph` files a graph with
 `aq task create --project <pid> --from-spec <path> --dry-run --reason "..."`,
-then repeats without `--dry-run`. With no document parent it creates direct children
-under its held task. A document `parent:` creates the graph's own container under
-the held task; `--root` places that container at project root and is required for
-a phased graph. Root graphs require a document parent. Hierarchical/train worker
+then repeats without `--dry-run`. With no document parent, its graph is
+fenced to the planning task it holds: nodes become direct children of that task.
+A document `parent:` creates the graph's own container under the held task;
+`--root` places that container at project root. `phases:` needs a root graph,
+so a phased graph requires both `--root` and a document parent. Root graphs
+always require a document parent. Hierarchical/train worker
 graphs cannot declare a document parent, and those projects reject phases entirely.
 External task-id dependencies, `cross_project`, and authored `parent-child` edges
 remain outside scoped worker graph filing; use local `needs` to order its nodes.
