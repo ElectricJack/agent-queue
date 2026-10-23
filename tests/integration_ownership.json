@@ -19547,10 +19547,10 @@
       "msg-21f0bc97741343c39d69d7c5c7b97400"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
+    "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 161217,
-    "delta": 5718,
+    "measured_owned_total": 161647,
+    "delta": 6148,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19579,7 +19579,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85010,
+    "measured_engine_lines": 85376,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22",
     "amendments": [
@@ -19810,6 +19810,27 @@
         "measured_engine_lines": 85543,
         "measured_table_count": 45,
         "reason": "Exact project supervisor grant for the PR1759 merge repair under size-cap-delegation-2026-10-23, with explicit delegation to record the approved grant. Preserve recovery holds through dev's manual-pause Resume path until the authorized restart READY transaction. Keep the historical frozen-batch measurements; engine and table counts remain unchanged."
+      },
+      {
+        "task_id": "fair-flare-67",
+        "decision_id": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "operator_task": "sharp-cascade-53",
+        "decision_message_id": "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+        "grant_delivery_message_id": "msg-21f0bc97741343c39d69d7c5c7b97400",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1789",
+        "previous_source_revision": "de9a68b81cfcabe55ca5ce527a933891d36c8a1d",
+        "previous_owned_total": 161217,
+        "previous_engine_lines": 85010,
+        "previous_table_count": 45,
+        "authorized_owned_delta": 430,
+        "authorized_engine_delta": 366,
+        "authorized_table_delta": 0,
+        "measured_owned_total": 161647,
+        "measured_engine_lines": 85376,
+        "measured_table_count": 45,
+        "reason": "Compose the reviewed obsolete-child disposition with current dev using a plain merge. Exact merged measurement pre-approved under size-cap-delegation-2026-10-23; preserve all historical grants and strict Git ancestry.",
+        "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b"
       }
     ],
     "supplemental_grants": [
