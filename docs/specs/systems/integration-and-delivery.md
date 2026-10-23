@@ -438,10 +438,10 @@ The consumers are:
 
 | Consumer | What it reads |
 |---|---|
-| **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes a task whose prerequisite is not delivered: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. With no snapshot available the reason is `delivery_evidence_unavailable`, and the claim fails closed. |
-| **Readiness** (`src/task_graph/readiness.py`) | Maps those codes to "Waiting on delivery" or "Checking delivery evidence", reading cached snapshots only. |
+| **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes proven missing prerequisite delivery or pending refresh: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. Unknown or unloaded observations permit worker preparation. |
+| **Readiness** (`src/task_graph/readiness.py`) | Maps delivery exclusions to "Waiting on delivery", reading cached snapshots only. Unknown evidence adds no exclusion. |
 | **Archive and delete** (`archive_queries.py`) | Refuse without an observer. |
-| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus current default-target Git proof in `AdmissionView`. |
+| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus a default-target Git observation in `AdmissionView`; unknown evidence permits preparation without establishing delivery. |
 
 #### 3.3.7 Cleanup, retirement and recovery
 

@@ -409,6 +409,47 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "operational_retention": {
+    "argument_reads_diagnostic_only": [
+      "batch_size",
+      "dry_run"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_operational_retention",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'counts': counts, 'dry_run': bool(args.get('dry_run', False))}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'already_running'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'batch_size must be between 1 and 1000'}"
+      }
+    ],
+    "review_notes": "System-scoped archive-first mutation. Completed passes return per-table counts and dry_run; overlap is an explicit successful acknowledgement without a second worker; invalid batch size returns false before starting a worker. Exceptions propagate, never become inferred success. Cancellation shields the single pending worker.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c5900cf6111a27dd547867f03ca90e961d9458e3055abd1a5d6aa319ac77947d",
+    "tests": [
+      "tests/test_system_commands.py::test_operational_retention_uses_private_worker_pool",
+      "tests/test_system_commands.py::test_retention_request_cancel_does_not_overlap_worker",
+      "tests/test_system_commands.py::test_operational_retention_rejects_invalid_batch_size",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
   "orchestrator_control": {
     "argument_reads_diagnostic_only": [
       "action"

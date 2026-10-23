@@ -10,7 +10,7 @@ from __future__ import annotations
 # These names operate on installation-wide state, even if they happen to accept
 # project_id as a display filter. A filter is not proof of scoped execution.
 SYSTEM_COMMANDS = frozenset("""
-archive_settings claude_usage create_agent create_profile delete_agent delete_profile
+operational_retention archive_settings claude_usage create_agent create_profile delete_agent delete_profile
 edit_agent edit_profile export_profile get_config get_config_schema
 get_github_auth_status get_profile get_status import_profile install_profile
 list_github_owners list_intelligence_classes list_profiles list_project_roots
@@ -38,7 +38,8 @@ playbook_delete playbook_artifacts get_playbook_source update_playbook_source
 set_playbook_enabled playbook_graph_layout_save playbook_v2_graph playbook_graph_view
 show_playbook_graph playbook_artifact_diff
 batch_reconcile gate_reopen playbook_source_resync repair_repository_checkout
-repair_workspace_checkout spec_ingest_legacy_inventory spec_ingest_reconcile workspace_cutover
+repair_workspace_checkout spec_ingest_legacy_inventory spec_ingest_legacy_adopt
+spec_ingest_reconcile workspace_cutover
 run_command shutdown restart_daemon update_and_restart
 """.split())
 
@@ -74,7 +75,7 @@ inspect_playbook_run list_archived list_mcp_servers list_workflows list_workspac
 message_inbox message_list message_reply message_status pause_project pause_task phase_create
 phase_list playbook_activate playbook_run_overlay pool_status pr_merge project_doctor project_ready
 provide_input provider_reroute_undo question_answer question_escalate question_list release_project_constraint
-release_workspace remove_dependency remove_task remove_workspace reopen_with_feedback
+release_workspace rebind_workspace remove_dependency remove_task remove_workspace reopen_with_feedback
 reparent_task restart_task resume_playbook resume_project resume_task review_attachment_add
 review_attachment_list review_comment review_decide review_delegate review_dispatch
 review_import_edits review_list review_reopen review_show review_submit review_withdraw

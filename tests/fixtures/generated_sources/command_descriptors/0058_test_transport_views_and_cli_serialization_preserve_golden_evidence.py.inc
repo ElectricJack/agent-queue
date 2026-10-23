@@ -19,9 +19,16 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _restart_hold_changes(),
-                          _updater_changes()):
+        for recording in (
+            _hibernation_changes(),
+            _dispatch_changes(),
+            _merge_changes(),
+            _leaf_changes(),
+            _completion_changes(),
+            _restart_hold_changes(),
+            _updater_changes(),
+            _held_release_changes(),
+        ):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest

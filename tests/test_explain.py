@@ -630,22 +630,23 @@ class TestExplainCommand:
         await mktask(db, "root", status=TaskStatus.READY)
         await db.add_dependency("root", "leaf", DepType.DELIVERY_OF.value)
 
-        async def detail():
+        async def unavailable():
             res = await handler._cmd_explain_task({"task_id": "root"})
-            return next(
-                r["detail"] for r in res["reasons"]
+            return [
+                r for r in res["reasons"]
                 if r["code"] == "delivery_evidence_unavailable" and r["ref"] == "leaf"
-            )
+            ]
 
-        expected = "Delivery prerequisite leaf: Git evidence unavailable"
-        assert await detail() == expected
+        # Without an observer Git evidence is unloaded, which never withholds work.
+        assert await unavailable() == []
         async with db._engine.begin() as conn:
             await conn.execute(insert(task_delivery_receipts).values(
                 id="failed-receipt", domain_key="failed-receipt", source_task_id="leaf",
                 repository_id="repo", target_branch="main", disposition="failed",
                 resolution_evidence={"reason": "squash conflict"}, created_at=time.time(),
             ))
-        assert await detail() == expected
+        # A historical failed receipt is not Git evidence either.
+        assert await unavailable() == []
         assert await db.delivery_failures(["leaf"]) == {"leaf": "squash conflict"}
         # SQL projects completion; Git admission separately withholds the task.
         assert not (await db.get_task("root")).is_blocked

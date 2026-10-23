@@ -1534,19 +1534,6 @@ class IntegrationCommandsMixin:
         )
         return await integration_operator(self.db, project_id)
 
-    async def _integration_operator_for_batch(
-        self, batch_id: str
-    ) -> tuple[str | None, str | None]:
-        principal = current_principal() or TRUSTED_LOCAL
-        if principal.kind is not PrincipalKind.LOCAL and not (
-            principal.kind is PrincipalKind.SESSION and principal.elevated
-        ):
-            return None, "a local operator or live supervisor session is required"
-        batch = await self.db.get_integration_batch(batch_id)
-        return await integration_operator(
-            self.db, str(batch["project_id"]) if batch is not None else None
-        )
-
     async def _cmd_integration_status(self, args: dict) -> dict:
         project_id = str(args.get("project_id") or "")
         if not project_id:

@@ -535,9 +535,16 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = dev["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _restart_hold_changes(),
-                          _updater_changes()):
+        for recording in (
+            _hibernation_changes(),
+            _dispatch_changes(),
+            _merge_changes(),
+            _leaf_changes(),
+            _completion_changes(),
+            _restart_hold_changes(),
+            _updater_changes(),
+            _held_release_changes(),
+        ):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -1374,6 +1381,9 @@ def _before_parallel_catalogue():
     catalogue = json.loads(render_command_catalogue())
     catalogue = _before_updater_catalogue(catalogue)
     catalogue = _before_pool_delete_catalogue(catalogue)
+    catalogue = _before_retention_catalogue(catalogue)
+    catalogue = _before_workspace_catalogue(catalogue)
+    catalogue = _before_held_release_catalogue(catalogue)
     return catalogue
 
 
@@ -1381,9 +1391,18 @@ GIT_FIRST_CHANGES = ROOT / "tests/fixtures/contracts/git-first-active-contract-c
 
 
 
+HELD_RELEASE_CHANGES = ROOT / "tests/fixtures/contracts/held-release-contract-changes.json"
+
+
+WORKSPACE_CHANGES = ROOT / "tests/fixtures/contracts/workspace-ownership-contract-changes.json"
+
+
 def _git_first_changes():
     return json.loads(GIT_FIRST_CHANGES.read_text())
 
+
+
+HELD_RELEASE_MERGE_CHANGES = ROOT / "tests/fixtures/contracts/held-release-dev-merge-contract-changes.json"
 
 
 def test_git_first_catalogue_only_updates_delivery_mode_description():
@@ -1399,6 +1418,10 @@ def test_git_first_catalogue_only_updates_delivery_mode_description():
         evidence["previous_cli_catalogue_sha256"]
     )
 
+
+
+def _workspace_changes():
+    return json.loads(WORKSPACE_CHANGES.read_text())
 
 
 def test_original_pr_1872_legacy_execution_documents_and_fingerprints():
@@ -1430,6 +1453,13 @@ def test_original_pr_1872_legacy_execution_documents_and_fingerprints():
     for name in ("git_diff", "memory_save", "memory_search"):
         assert descriptors[name].origin == "plugin" and descriptors[name].plugin
 
+
+
+def _before_workspace_catalogue(catalogue=None):
+    return _revert_catalogue(
+        json.loads(render_command_catalogue()) if catalogue is None else catalogue,
+        _workspace_changes(),
+    )
 
 
 def test_original_pr_1872_transport_views_and_cli_serialization_preserve_golden_evidence():
@@ -1504,3 +1534,118 @@ def test_original_pr_1872_transport_views_and_cli_serialization_preserve_golden_
         assert definition == snapshot.commands[name].tool_definition()
         if name in definitions:
             assert definition == definitions[name]
+def _held_release_changes():
+    changes = json.loads(HELD_RELEASE_CHANGES.read_text())
+    assert changes["source_base"] == "2fcad876c53308a9d3b0e104258aeb2f4f50f6ce"
+    assert set(changes["transport_definitions"]) == {"doctor"}
+    assert set(changes["added_contracts"]) == {
+        "spec_ingest_legacy_adopt", "task_batch_release", "task_batch_retire",
+    }
+    return changes
+
+
+def _held_release_merge_changes():
+    changes = json.loads(HELD_RELEASE_MERGE_CHANGES.read_text())
+    assert changes["source_base"] == "94e69a6a60eaa640ee3cae13dd21edffb1ffc2c7"
+    assert changes["merged_source"] == "ddc3e6e6d9ba2ffa9af6fb1da041fa55115d2c5a"
+    return changes
+
+
+def test_workspace_catalogue_only_changes_guarded_ownership_controls():
+    evidence = _workspace_changes()
+    snapshot = command_snapshot()
+    assert set(evidence["transport_definitions"]) == {"release_workspace"}
+    assert set(evidence["new_commands"]) == {"rebind_workspace"}
+    for name, approved in evidence["new_commands"].items():
+        assert _digest(snapshot.commands[name].tool_definition()) == approved["transport_sha256"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    previous = _before_restart_hold_catalogue()
+    assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def _retention_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/operational-retention-contract-changes.json").read_text()
+    )
+
+
+def _revert_held_release_catalogue(catalogue):
+    """Remove exactly the reviewed held-release delta, leaving every other entry in place."""
+    delta = _held_release_changes()["catalogue_delta"]
+    explicit = {entry["name"]: entry for entry in catalogue["explicit"]}
+    assert set(delta["previous_explicit"]) == {"doctor"}
+    assert set(delta["added_explicit"]) == {"spec_ingest_legacy_adopt"}
+    for name, entry in delta["added_explicit"].items():
+        assert explicit[name] == entry
+    catalogue["explicit"] = [
+        delta["previous_explicit"].get(entry["name"], entry)
+        for entry in catalogue["explicit"] if entry["name"] not in delta["added_explicit"]
+    ]
+    assert set(delta["added_fallback"]) == {"task_batch_release", "task_batch_retire"}
+    assert set(delta["added_tool_categories"]) == {"spec_ingest_legacy_adopt"}
+    for key in ("fallback", "tool_categories"):
+        for name, entry in delta[f"added_{key}"].items():
+            assert catalogue[key].pop(name) == entry
+    return catalogue
+
+
+def _before_held_release_catalogue(catalogue=None):
+    return _revert_held_release_catalogue(
+        json.loads(render_command_catalogue()) if catalogue is None else catalogue,
+    )
+
+
+def _before_retention_catalogue(catalogue=None):
+    evidence = _retention_changes()
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    entries = [e for e in catalogue["explicit"] if e.get("name") == evidence["command"]]
+    assert entries == [evidence["explicit_entry"]]
+    catalogue["explicit"].remove(entries[0])
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_held_release_merge_only_adds_reviewed_delta_to_dev():
+    held = _held_release_changes()
+    merge = _held_release_merge_changes()
+    assert merge["source_cli_catalogue_sha256"] == held["cli_catalogue_sha256"]
+    assert merge["previous_cli_catalogue_sha256"] == _pr_repair_changes()["cli_catalogue_sha256"]
+    # Removing exactly the held-release delta recovers dev's frozen catalogue bytes.
+    previous = json.dumps(_before_wait_requeue_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == merge["previous_cli_catalogue_sha256"]
+    snapshot = command_snapshot()
+    for name, approved in held["added_contracts"].items():
+        assert _digest(snapshot.commands[name].tool_definition()) == approved["transport_sha256"]
+        if "execution" in approved:
+            contract = CONTRACTS.require(name).contract
+            assert canonical_execution_document(contract.execution) == approved["execution"]
+            assert contract.fingerprint() == approved["fingerprint"]
+
+
+def test_retention_catalogue_only_adds_reviewed_command():
+    evidence = _retention_changes()
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def test_retention_original_catalogue_evidence():
+    evidence = _retention_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    template = json.loads(render_command_catalogue())
+    explicit = {row["name"]: row for row in catalogue["explicit"]}
+    explicit[evidence["command"]] = evidence["explicit_entry"]
+    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
+                             if row["name"] in explicit]
+    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["tool_category"]}
+    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
+                                    if name in categories}
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]

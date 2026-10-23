@@ -238,6 +238,7 @@
         "tests/test_migrate_task_records.py",
         "tests/test_models.py",
         "tests/test_onboarding_queries.py",
+        "tests/test_operational_retention.py",
         "tests/test_sqlite_removal.py"
       ]
     },
@@ -4510,7 +4511,7 @@
         "collaboration"
       ],
       "default_arm": true,
-      "digest": "sha256:8d3a6d85aeea8680b49a8d45b5f0faebf6bc7c5896aa49991bc5a8096bc77105",
+      "digest": "sha256:3d757b1f5b8b2669985507b21c2bf1fa28130f22815dce971dfcb86a7bee29ea",
       "imports": [
         "src.agent_waits",
         "src.api.codegen",
@@ -4523,7 +4524,8 @@
         "src.mcp_registration",
         "src.orchestrator",
         "src.profiles.capabilities",
-        "src.tools.definitions"
+        "src.tools.definitions",
+        "src.wait_runtime.cycle"
       ],
       "markers": [
         "parametrize",
@@ -6265,12 +6267,14 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:49c54555bc047e21071d990396e1a8d2ad1cb6d76384163828514c777292da05",
+      "digest": "sha256:302e8e61e11b2fca38dd5f5c3c5ed85ccd5c9af0b60914dbbc92e24b8d8a2a65",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
         "src.config",
         "src.database",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.ask_checks",
         "src.doctor.builtin",
@@ -6283,6 +6287,7 @@
         "src.doctor.formula_checks",
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
+        "src.doctor.ingestion_checks",
         "src.doctor.integration_checks",
         "src.doctor.intelligence_class_checks",
         "src.doctor.models",
@@ -7225,7 +7230,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:9d62ffb4baa056bc9556a0d7143267a4d7ad39e361363f3695b103dc7311c486",
+      "digest": "sha256:607511aae8482a348b027c23ff7b5f321b5c56bdfdd3f1a298e8eab7f0304037",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -7233,12 +7238,14 @@
         "src.commands.fidelity_review_commands",
         "src.commands.principal",
         "src.database.queries",
+        "src.database.queries.claim_queries",
         "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
         "src.database.tables",
         "src.models",
         "src.profiles.capabilities",
-        "src.review_keys"
+        "src.review_keys",
+        "src.sessions.obsolete"
       ],
       "markers": [
         "parametrize"
@@ -13131,6 +13138,20 @@
       "markers": [],
       "summary": "SQLite/PostgreSQL parity tests for durable onboarding request storage."
     },
+    "tests/test_operational_retention.py": {
+      "areas": [
+        "database"
+      ],
+      "default_arm": true,
+      "digest": "sha256:94dfb7eb9660e1ee7a2d10353947bb19eeca121ed7d1855a848973d0b88343b7",
+      "imports": [
+        "src.database",
+        "src.database.operational_retention",
+        "src.database.tables"
+      ],
+      "markers": [],
+      "summary": "Archive-first retention on real PostgreSQL, including crash and race fences."
+    },
     "tests/test_operator_workers.py": {
       "areas": [
         "operator-workers"
@@ -14390,10 +14411,15 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:58e35ec8cccd65b2090806218256bde7aba9a7064bfe24961ee1349b2c1fe89a",
+      "digest": "sha256:59138ca31e136efa3268c611b392c31b01c89fd40e0b65070cbb509da5e737f5",
       "imports": [
+        "src.agent_waits",
         "src.api.auth",
+        "src.claim_file",
+        "src.commands",
         "src.commands.claim_commands",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.handler",
         "src.config",
         "src.database.queries",
@@ -14423,7 +14449,8 @@
         "src.orchestrator.worktree_manager",
         "src.pool_claims",
         "src.scheduler",
-        "src.sessions.harness_parser"
+        "src.sessions.harness_parser",
+        "src.workspace_ownership"
       ],
       "markers": [
         "parametrize"
@@ -18237,14 +18264,16 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:787cb482e1c71322f448a347f84a1d34528db8d56f163da1917cce673e3bebec",
+      "digest": "sha256:6a8085a3b5d6effc7668f35310041c562f6be8e7c3bdf2c8c9be8ede5aaf6483",
       "imports": [
         "src.api.models.system",
         "src.commands",
         "src.commands.handler",
+        "src.commands.principal",
         "src.commands.system_commands",
         "src.config",
         "src.database",
+        "src.database.operational_retention",
         "src.event_bus",
         "src.git.manager",
         "src.install",
@@ -18337,13 +18366,16 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:db1caf6cdf76b687cc0649cb33c6458545758315ede11f65c5fc890b2c4d6730",
+      "digest": "sha256:83d00ffd0e8dc7ed68105b80377377e0b7b22ddb162228f7369d7585cb3732c9",
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.asks.batch_scope",
         "src.asks.operations",
         "src.commands",
+        "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.principal",
         "src.commands.proposal_commands",
         "src.database.queries",
         "src.database.queries.ingest_batch_queries",
@@ -18352,6 +18384,7 @@
         "src.event_schemas",
         "src.models",
         "src.orchestrator.events",
+        "src.profiles.capabilities",
         "src.vault"
       ],
       "markers": [
@@ -19909,7 +19942,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:531087a8a5372d956cc8eee3d9aabb06f4754e754eef5654a128f63da31400f9",
+      "digest": "sha256:813511552b04f9e2e49cf64093bd0a02460370eebce1a4fe50152304e8a04f95",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -19918,6 +19951,7 @@
         "src.database",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.event_bus",
         "src.integration.admission",
         "src.integration.stacked_branches",
         "src.models",
@@ -19926,6 +19960,7 @@
         "src.wait_runtime.service",
         "src.waits.admission",
         "src.waits.conditions",
+        "src.waits.graph",
         "src.waits.occupancy",
         "src.waits.registry",
         "src.waits.reservations"
@@ -20104,7 +20139,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:83d9e39efa228ab22cbc2655c0479179405c814fdcc42c86b7c82041d144f292",
+      "digest": "sha256:abdd8c48ba8420502e6b1593bda94dd70a3f7ab775f957962f5a1d86cfb00cc3",
       "imports": [
         "src.database",
         "src.database.queries.wait_queries",
@@ -20116,7 +20151,9 @@
         "src.waits.graph",
         "src.waits.registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Wait graph propagation, retraction, cycles and persisted explanations."
     },
     "tests/test_wait_hibernation.py": {
@@ -20124,7 +20161,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:279a4ad1652f9215b4f472de3474093ea88cc15ee548df21148cfd10ebe54fbd",
+      "digest": "sha256:f99b0c0cc9e3aca6656d6378c395dee7564dfdf9a01ffe3f80a07f2d09026470",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -20154,6 +20191,7 @@
         "src.wait_runtime.measurements",
         "src.wait_runtime.resume",
         "src.wait_runtime.scheduler",
+        "src.waits",
         "src.waits.conditions",
         "src.waits.decision",
         "src.waits.fencing",
@@ -20630,7 +20668,7 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:0ea7e041967e324dfdb993bbbaffdb4e74b0f0e54afd5405940ba939c4e7e4f3",
+      "digest": "sha256:e60f0be35a266a39419f3ff9cc642f96d1c7436b837903d45d88774d91c847b6",
       "imports": [
         "src.claim_file",
         "src.commands.handler",
@@ -20645,6 +20683,7 @@
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
         "src.sessions.proctable",
+        "src.workspace_ownership",
         "src.workspace_registration"
       ],
       "markers": [

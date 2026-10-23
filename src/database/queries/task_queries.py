@@ -615,7 +615,8 @@ class TaskQueryMixin:
                     tasks.c.created_at.asc(),
                 )
             )
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def count_tasks_by_status(
         self,
@@ -3269,7 +3270,8 @@ class TaskQueryMixin:
             result = await conn.execute(
                 select(tasks).where(tasks.c.parent_task_id == parent_task_id)
             )
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def get_parent_tasks(
         self,
@@ -3292,7 +3294,8 @@ class TaskQueryMixin:
         stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = result.mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def find_task_by_dedup_key(self, project_id: str, dedup_key: str) -> "Task | None":
         """Return the non-terminal task with (project_id, dedup_key), or None.
