@@ -83,8 +83,8 @@ markdown under `vault/agent-types/<id>/profile.md` — one definition shared by
 every project.
 
 **Intelligence class** — how much thinking a task gets, independent of which
-CLI runs it. Shipped classes are the cross product of `fast` / `standard` /
-`deep` with `off` / `low` / `medium` / `high`
+CLI runs it. Seven classes ship: `fast-{low,high}`, `standard-high`,
+`deep-{low,high}` and `astra-{low,high}`
 ([`src/prompts/default_intelligence_classes/`](../../src/prompts/default_intelligence_classes/)).
 A class resolves to a concrete provider model at launch.
 

@@ -61,7 +61,9 @@ DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refr
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
+PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
 WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
+RESTART_HOLD_CHANGES = ROOT / "tests/fixtures/contracts/restart-hold-contract-changes.json"
 ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
 
 
@@ -104,7 +106,7 @@ def test_structure_catalogue_preserves_reviewed_delta():
         assert contract.fingerprint() == approved["fingerprint"]
         assert canonical_execution_document(contract.execution) == approved["execution"]
     previous = _revert_catalogue(
-        _revert_structure_catalogue(json.loads(render_command_catalogue())),
+        _revert_structure_catalogue(_before_restart_hold_catalogue()),
         _wait_requeue_changes(),
     )
     assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
@@ -120,13 +122,42 @@ def _pr_repair_changes():
     return json.loads(PR_REPAIR_CHANGES.read_text())
 
 
+def _restart_hold_changes():
+    return json.loads(RESTART_HOLD_CHANGES.read_text())
+
+
+def _before_restart_hold_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    approved = _restart_hold_changes()["transport_definitions"]["restart_task"]
+    [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
+    assert definition == approved["definition"]
+    definition.clear()
+    definition.update(approved["previous_definition"])
+    return catalogue
+
+
+def test_restart_hold_catalogue_preserves_original_pr_evidence():
+    # Recover the PR's supervisor-health base through dev's frozen input chain.
+    catalogue = _revert_target_repair_catalogue(_dev_catalogue())
+    evidence = _restart_hold_changes()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    approved = evidence["transport_definitions"]["restart_task"]
+    [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
+    assert definition == approved["previous_definition"]
+    definition.clear()
+    definition.update(approved["definition"])
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
 def _wait_requeue_changes():
     return json.loads(WAIT_REQUEUE_CHANGES.read_text())
 
 
 def _before_wait_requeue_catalogue():
     return _revert_catalogue(
-        _revert_structure_catalogue(json.loads(render_command_catalogue())),
+        _revert_structure_catalogue(_before_restart_hold_catalogue()),
         _wait_requeue_changes(),
     )
 
@@ -460,7 +491,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -470,7 +501,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert _digest(approved["previous"]) == digest
             digest = _digest(approved["current"])
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
-    catalogue = _revert_structure_catalogue(json.loads(render_command_catalogue()))
+    catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
     actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
@@ -577,6 +608,8 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
+    assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
     routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
@@ -604,6 +637,13 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in promotion_request:
+            change = promotion_request[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
         if path in routing:
             assert routing[path]["previous_sha256"] == digest
             historical = ROOT / routing[path]["preserved_previous_path"]

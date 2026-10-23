@@ -2819,9 +2819,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
             "decided_at": 100, "decided_by": "supervisor-p",
         })
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if held:
+        args.update(override_hold=True, reason="Owner recovery proved the fence free")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
     assert result["restarted"] == delegate
     assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
@@ -2831,6 +2832,11 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
         incident = await db.get_task_meta(delegate, "supervisor_recovery_incident")
         assert incident["decision"] == "superseded"
         assert incident["decision_history"][-1]["decision_reason"] == "Fence not released"
+        assert incident["decided_by"] == "human:local-operator"
+        assert "Owner recovery proved the fence free" in incident["decision_reason"]
+        comments = (await db.list_task_comments(delegate))["comments"]
+        audit = next(row for row in comments if "overridden by restart" in row["body"])
+        assert audit["author_id"] == "human:local-operator"
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2858,7 +2864,10 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db,
 
 
 @pytest.mark.parametrize("fence_state", ["attached", "handoff_pending"])
-async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
+@pytest.mark.parametrize("override_hold", [False, True])
+async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(
+    db, fence_state, override_hold,
+):
     """A fence no handoff can prove free is refused, naming the control to run."""
     service, delegate = await _continuous_parent_stage(db)
     streak = {"cause": "context_thrash", "count": 2}
@@ -2882,12 +2891,19 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
             handoff_state=fence_state, session_id="dead",
         ))
 
-    result = await TaskCommandsMixin._cmd_restart_task(
-        _restart_command(db, service), {"task_id": delegate}
-    )
+    args = {"task_id": delegate}
+    if override_hold:
+        args.update(override_hold=True, reason="Retry branch recovery after diagnosis")
+    result = await TaskCommandsMixin._cmd_restart_task(_restart_command(db, service), args)
 
-    assert "aq integration reserve-owner --task-id" in result["error"]
-    assert "aq integration release-owner --task-id" in result["error"]
+    assert result["success"] is False
+    if override_hold:
+        assert "aq integration reserve-owner --task-id" in result["error"]
+        assert "aq integration release-owner --task-id" in result["error"]
+    else:
+        assert result["error_code"] == "task_recovery.held"
+        assert result["recovery_hold"] == held
+        assert "--override-hold --reason" in result["error"]
     restored = await db.get_task(delegate)
     assert restored.status is TaskStatus.BLOCKED
     assert (restored.profile_id, restored.intelligence_class, restored.route_source,
@@ -2897,6 +2913,8 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
     )
     assert await db.get_task_meta(delegate, "worker_failure_streak") == streak
     assert await db.get_task_meta(delegate, "supervisor_recovery_incident") == held
+    comments = (await db.list_task_comments(delegate))["comments"]
+    assert not any("overridden by restart" in row["body"] for row in comments)
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )

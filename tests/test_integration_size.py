@@ -341,6 +341,30 @@ def test_operator_decision_storage_keeps_stack_authorization_charged(report, man
     assert report["spans"][path] == list(range(1, (ROOT / path).read_bytes().count(b"\n") + 1))
 
 
+def test_database_recovery_keeps_shared_integration_primitives_charged(report, manifest):
+    # These operations-only entry points reuse owned config loaders. Their
+    # callers do not acquire integration ownership just by reading config.
+    for path, name in (
+        ("src/cli/daemon.py", "_database_matches_compose"),
+        ("src/cli/doctor.py", "_offline_doctor"),
+    ):
+        assert f"{path}::{name}" in manifest["exclusions"]
+        source = ownership.python_source(path, (ROOT / path).read_bytes())
+        unit = next(unit for unit in source.units if unit.name == name)
+        assert not set(range(unit.start, unit.end + 1)) & set(report["spans"].get(path, []))
+    # Keep the existing shared ownership, including config and schema recovery.
+    for path, name in (
+        ("src/config.py", "load_config"),
+        ("src/cli/db.py", "_load_config"),
+        ("src/cli/daemon.py", "_backup_database"),
+        ("src/cli/daemon.py", "_database_is_at_head"),
+    ):
+        assert f"{path}::{name}" in manifest["shared"]
+        source = ownership.python_source(path, (ROOT / path).read_bytes())
+        unit = next(unit for unit in source.units if unit.name == name)
+        assert set(range(unit.start, unit.end + 1)) <= set(report["spans"][path])
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"
@@ -373,7 +397,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
         1_293, 2_166,
     ]
-    assert exception["batch_measured_delta"] == measured - 158_958
+    assert exception["batch_measured_delta"] == 2_255
     grant, = exception["supplemental_grants"]
     assert grant["task_id"] == "fresh-apex-30"
     assert grant["approval_message_id"] == "msg-4e25c0d3"
@@ -382,15 +406,19 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert grant["measured_owned_total"] == 160_825
     amendments = {item["task_id"]: item for item in exception["amendments"]}
     assert set(amendments) == {
-        "solid-impact-56", "agile-beacon-80", "nimble-torrent-12", "prime-impact-40",
-        "quick-pinnacle-97",
-        "stark-beacon-94",
-        "sharp-rapids-10",
-        "fair-dune-41",
-        "noble-flare-12",
-        "sound-forge-62",
-        "calm-rapids-50",
-        "fair-harbor-71",
+        'agile-beacon-80',
+        'calm-rapids-50',
+        'fair-dune-41',
+        'fair-flare-10',
+        'fair-harbor-71',
+        'nimble-torrent-12',
+        'noble-flare-12',
+        'prime-impact-40',
+        'quick-pinnacle-97',
+        'sharp-rapids-10',
+        'solid-impact-56',
+        'sound-forge-62',
+        'stark-beacon-94',
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -694,6 +722,30 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
 
+    # The restart repair grant follows this frozen batch; its historical
+    # membership, source and measured deltas remain unchanged above.
+    grant = amendments["fair-flare-10"]
+    assert grant["decision_message_id"] == "msg-76ff7843e72d451b9017a0b4db30c970"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["implementation_message_id"] == "msg-9a7a03cd"
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["root_task_id"] == "prime-crest-79"
+    assert grant["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1759"
+    assert grant["previous_source_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
+    assert grant["previous_measurement_revision"] == batch["source_revision"]
+    assert grant["previous_owned_total"] == 161_162
+    assert grant["authorized_owned_delta"] == grant["authorized_shared_delta"] == 19
+    assert grant["authorized_engine_delta"] == grant["authorized_table_delta"] == 0
+    assert (grant["previous_owned_total"] + grant["authorized_owned_delta"]
+            == grant["measured_owned_total"] == 161_181)
+    assert (grant["previous_engine_lines"] == grant["measured_engine_lines"]
+            == 85_543)
+    assert grant["previous_table_count"] == grant["measured_table_count"] == 45
+    assert (grant["measured_source_revision"]
+            == "10af37472a90cd488707c483047c9c97e2f7a5db")
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["restart_hold_repair_measurement"] == grant
+
 
 def test_post_release_structure_measurement_is_exact(report, manifest):
     exception = manifest["transition_exception"]
@@ -813,12 +865,46 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     assert batch["base_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == push_merge["prior_owned_total_cap"] == 161_213
+    ) == 161_213
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == push_merge["prior_engine_cap"] == 85_544
+    ) == 85_544
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["resume_recovery_measurement"] == amendments["calm-rapids-50"]
+
+
+def test_restart_hold_repair_merge_preserves_exact_grant(report, manifest):
+    exception = manifest["transition_exception"]
+    merged = exception["restart_hold_repair_merge_measurement"]
+    grants = {item["task_id"]: item for item in exception["amendments"]}
+    grant = grants["fair-flare-10"]
+    assert merged["task_id"] == grant["task_id"]
+    assert merged["root_task_id"] == grant["root_task_id"]
+    assert merged["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1900"
+    assert merged["referenced_decision"] == grant["referenced_decision"]
+    assert merged["operator_decision"] == "6679052c"
+    assert merged["operator_task"] == "sharp-cascade-53"
+    assert merged["decision_message_id"] == grant["decision_message_id"]
+    batch = exception["resume_batch_composition"]
+    assert merged["previous_source_revision"] == "d60c0f238c8205f495a384c0bd77c322a8fc89ac"
+    assert merged["previous_measurement_revision"] == batch["source_revision"]
+    assert merged["previous_owned_total"] == 161_198
+    assert merged["previous_recorded_owned_cap"] == 161_213
+    assert (exception["batch_measured_delta"]
+            == merged["previous_recorded_owned_cap"] - 158_958)
+    assert (merged["authorized_owned_delta"] == merged["authorized_shared_delta"]
+            == grant["authorized_owned_delta"] == 19)
+    assert (merged["previous_owned_total"] + merged["authorized_owned_delta"]
+            == merged["measured_owned_total"] == exception["measured_owned_total"]
+            == report["total"] == 161_217)
+    assert merged["authorized_engine_delta"] == merged["authorized_table_delta"] == 0
+    assert (merged["previous_engine_lines"] == merged["measured_engine_lines"]
+            == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_010)
+    assert merged["previous_table_count"] == merged["measured_table_count"] == 45
+    assert (merged["measured_source_revision"] == exception["measured_source_revision"]
+            == "a36c389c39a33ff60bffa98cc019591298bdcfa9")
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["restart_hold_repair_merge_measurement"] == merged
