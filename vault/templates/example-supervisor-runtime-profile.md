@@ -7,6 +7,14 @@ tags: [example, supervisor-runtime]
 
 # Email Triager
 
+<!-- aq:historical -->
+> **Obsolete example — do not copy as a runnable profile.** In-process task
+> execution and project-scoped profiles were removed. The current parser rejects
+> `runtime`, including `runtime: supervisor`; every agent uses a harness session.
+> This file preserves the earlier design. Use the current
+> [profile reference](../../docs/reference/profiles-and-classes.md) and
+> [routing guide](../../docs/concepts/agents-and-routing.md) to author a profile.
+
 <!--
   TEMPLATE: Example supervisor-runtime (tool-call-only) profile.
 

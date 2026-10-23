@@ -7,14 +7,23 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
-from src.database.tables import playbook_activations, playbook_artifacts, projects
+from src.database.tables import (
+    playbook_activations,
+    playbook_artifacts,
+    projects,
+    task_branch_origins,
+    task_integration_checkpoints,
+)
 from src.integration.batches import Batch, BatchMember, BatchStore
+from src.integration.branch_materialization import BranchMaterializationService
+from src.integration.delivery_watchdog import _file_takeover_on
 from src.integration.lock import PublishWithdrawn
 from src.integration.manual_control import enabled_train_write
 from src.integration.train_policy import current_checks, load_train_policy
 from src.integration.train_sources import DaemonLanes, DatabaseTargets
+from src.models import Task, TaskStatus
 from src.playbooks.train_policy import TrainPolicy
 from tests.test_delivery_consumers import git
 from tests.test_integration_train import (
@@ -30,7 +39,7 @@ from tests.test_integration_train import (
     lane,
     train,
 )
-from tests.test_integration_train_sources import MAIN, completed, hosted_train
+from tests.test_integration_train_sources import MAIN, completed, hosted_train, legacy_hierarchy
 from tests.test_integration_train_sources import world as world  # noqa: PLC0414 -- pytest fixture
 
 
@@ -56,6 +65,80 @@ async def activate(world, tmp_path, *, enabled=True, **settings):
         health="ready" if enabled else "disabled", reasons="[]",
     )
     return sha
+
+
+@pytest.mark.parametrize("mode", ["train", "hierarchy"])
+async def test_reenabled_train_backfills_unreserved_roots_and_restores_frontier(world, tmp_path, mode):
+    db = world.db
+    await db.update_project("p", hierarchical_integration_mode=mode)
+    await activate(world, tmp_path, enabled=False)
+    published = world.origin.work("published")
+    for name in ("paused", "published"):
+        await db.create_task(Task(id=name, project_id="p", title=name, description="off filing",
+                                  status=TaskStatus.READY, branch_name="aq/" + name))
+    hierarchy = legacy_hierarchy(world)
+    async with db.immediate() as conn:
+        assert (await hierarchy.reserve_ready_root_origin_on(conn, "paused"))["outcome"] == (
+            "not_eligible")
+        takeover = await _file_takeover_on(
+            db, conn, key="off-generation",
+            entry={"project_id": "p", "task_id": "old", "branch": "aq/old",
+                   "head": "a" * 40, "reason": "publisher_unavailable"},
+            repository_id="r", target_ref="refs/heads/main", hierarchy=hierarchy)
+    drain = BranchMaterializationService(
+        db, hierarchy_service_factory=lambda: hierarchy, legacy_container_collection=False)
+    assert await drain.drain_due() == []
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_branch_origins))).all()
+    await activate(world, tmp_path)
+    assert await db.count_ready_by_profile("p") == {}
+    await drain.drain_due()
+    assert await db.count_ready_by_profile("p") == {None: 3}
+    async with db._engine.connect() as conn:
+        origins = {row["task_id"]: dict(row) for row in (await conn.execute(
+            select(task_branch_origins))).mappings()}
+        checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "published"))).mappings().one()
+    assert checkpoint["checkpoint_sha"] == published
+    assert git(world.origin.url, "rev-parse", "aq/published") == published
+    assert git(world.origin.url, "rev-parse", "aq/paused") == origins["paused"]["base_sha"]
+    assert git(world.origin.url, "rev-parse", "aq/" + takeover) == origins[takeover]["base_sha"]
+    assert all(row["materialized"] for row in origins.values())
+    assert await drain.drain_due() == []
+    async with db._engine.connect() as conn:
+        assert {row["task_id"]: dict(row) for row in (await conn.execute(
+            select(task_branch_origins))).mappings()} == origins
+
+
+@pytest.mark.parametrize("filer", ["root", "system", "watchdog"])
+async def test_fresh_root_reaches_frontier_without_operator_reservation(world, tmp_path, filer):
+    await activate(world, tmp_path)
+    hierarchy = legacy_hierarchy(world)
+    async with world.db.immediate() as conn:
+        if filer == "watchdog":
+            task_id = await _file_takeover_on(
+                world.db, conn, key="stuck-generation",
+                entry={"project_id": "p", "task_id": "old", "branch": "aq/old",
+                       "head": "a" * 40, "reason": "publisher_unavailable"},
+                repository_id="r", target_ref="refs/heads/main", hierarchy=hierarchy)
+        else:
+            task = Task(id="fresh", project_id="p", title="fresh", description="fresh root",
+                        status=TaskStatus.READY)
+            if filer == "root":
+                await hierarchy.file_root_on(conn, task)
+            else:
+                await world.db.create_task(task, conn=conn)
+            task_id = task.id
+        origin = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == task_id))).mappings().one_or_none()
+        assert (origin is not None) == (filer != "system")
+    assert await world.db.count_ready_by_profile("p") == {}
+    drain = BranchMaterializationService(
+        world.db, hierarchy_service_factory=lambda: hierarchy, legacy_container_collection=False)
+    await drain.drain_due()
+    assert await world.db.count_ready_by_profile("p") == {None: 1}
+    task = await world.db.get_task(task_id)
+    assert git(world.origin.url, "rev-parse", task.branch_name)
 
 
 async def test_disable_stops_targets_freeze_and_publish_but_preserves_sources(world, tmp_path):
