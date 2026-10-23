@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections import deque
+from contextvars import ContextVar
 from datetime import datetime
 
 from sqlalchemy import or_, select
@@ -26,6 +27,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.github_contracts import GitHubAccessError
+from src.git.github_activity import check_background_budget, github_component
 from src.git.manager import GitError
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.delivery_branches import ACTIVE_BATCH_LIFECYCLES, branch_of
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 SWEEP_PRINCIPAL = "integration-pr-cleanup"
 ORPHAN_AGE_SECONDS = 24 * 60 * 60
 SETTLED_PR_CLEANUP_KEY = "integration_pr_cleanup"
+SWEEP_PULL = ContextVar("integration_sweep_pull", default=None)
 
 
 async def open_aq_pull_requests(db, git, project_id):
@@ -77,6 +80,7 @@ async def open_aq_pull_requests(db, git, project_id):
                 "pr_url": pull["html_url"],
                 "branch": head["ref"],
                 "head_sha": head["sha"],
+                "inventory_pull": pull,
                 "created_at": datetime.fromisoformat(
                     pull["created_at"].replace("Z", "+00:00")
                 ).timestamp(),
@@ -101,6 +105,16 @@ class PullRequestReconciler:
         self.projects = deque()
 
     async def tick(self, now):
+        with github_component(__name__, background=True):
+            try:
+                check_background_budget(self.git)
+                await self._tick(now)
+            except GitHubAccessError as exc:
+                if exc.category != "rate_limited":
+                    raise
+                self.next_due_at = max(now + self.interval_seconds, exc.retry_at or 0)
+
+    async def _tick(self, now):
         if now < self.next_due_at:
             return
         if not self.pending and not self.projects:
@@ -134,6 +148,9 @@ class PullRequestReconciler:
                 async with asyncio.timeout(self.item_timeout_seconds):
                     self.pending.extend(await open_aq_pull_requests(self.db, self.git, project_id))
             except (GitError, GitHubError, GitHubAccessError) as exc:
+                check_background_budget(self.git)
+                if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                    raise
                 log_handled(logger, logging.WARNING, "Could not inventory PRs for %s",
                             project_id, exc=exc)
             except Exception:
@@ -142,11 +159,17 @@ class PullRequestReconciler:
         for _ in range(min(self.page_size, len(self.pending))):
             pull = self.pending[0]
             try:
+                check_background_budget(self.git)
                 async with asyncio.timeout(self.item_timeout_seconds):
                     if "settled_task_id" in pull:
                         await retry_settled_task_prs(self.db, self.git, [pull["settled_task_id"]])
+                        check_background_budget(self.git)
                     else:
                         await self.close_delivered(pull)
+            except GitHubAccessError as exc:
+                if exc.category == "rate_limited":
+                    raise
+                logger.warning("Could not retire PR %s", pull.get("pr_url"), exc_info=True)
             except Exception:
                 logger.warning("Could not retire PR %s", pull, exc_info=True)
             # Cancellation keeps this PR queued for the next visit.
@@ -160,7 +183,13 @@ class PullRequestReconciler:
         handler = self.commands()
         args = {"project_id": pull["project_id"], "pr_number": pull["pr_number"]}
         with principal_context(ExecutionPrincipal.service(SWEEP_PRINCIPAL)):
-            preview = await handler.execute("integration_close_delivered_pr", args)
+            token = SWEEP_PULL.set((pull["project_id"], pull["pr_number"],
+                                   pull.get("inventory_pull")))
+            try:
+                preview = await handler.execute("integration_close_delivered_pr", args)
+            finally:
+                SWEEP_PULL.reset(token)
+            check_background_budget(self.git)
             if preview.get("outcome") != "would_close":
                 if preview.get("outcome") == "blocked" or not preview.get("outcome"):
                     logger.warning("PR proof for %s: %s", pull["pr_url"], preview)
@@ -174,6 +203,7 @@ class PullRequestReconciler:
                     "reason": "Periodic integration sweep proved delivery on the default branch",
                 },
             )
+            check_background_budget(self.git)
             if result.get("outcome") not in {"closed", "nothing_to_close"}:
                 logger.warning("PR closure for %s: %s", pull["pr_url"], result)
             return result

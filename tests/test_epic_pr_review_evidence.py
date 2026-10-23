@@ -1644,7 +1644,11 @@ class _PollClient:
         self.calls.append("open")
         if self.open_error is not None:
             raise self.open_error
-        return [{"number": 7, "state": "open"}] if self.state == "open" else []
+        return [{
+            "number": 7, "state": "open", "updated_at": self.updated_at,
+            "head": {"sha": self.head, "ref": "aq/epic/retire-the-publisher", "repo": {"id": 7}},
+            "base": {"ref": "main", "repo": {"id": 7}},
+        }] if self.state == "open" else []
 
     async def commit_check_runs(self, _sha):
         self.calls.append("checks")
@@ -1701,9 +1705,8 @@ async def test_poller_rereads_reviews_only_when_the_pull_request_changes(case):
     await poller.tick(1000.0)
     await poller.tick(1031.0)
     await poller.tick(1062.0)
-    # The unchanged PR is fetched on each visit; its reviews and the stored
-    # approval are not read or proven against Git again.
-    assert client.calls == ["pull", "reviews", "pull", "pull"]
+    # One repository inventory replaces both per-PR reads for unchanged roots.
+    assert client.calls == ["pull", "reviews", "open", "open"]
     assert producer.calls == [("review", 2)]
 
     # A rejection moves updated_at: only the new verdict is proven and stored.
@@ -1876,6 +1879,7 @@ async def test_poller_logs_each_root_condition_once_per_change(case, caplog):
     await poller.tick(1155.0)
     assert caplog.text.count("does not show its exact source head (head moved)") == 1
     client.pull_error = GitHubAccessError("transient", "GitHub request failed (transient)")
+    client.updated_at = "2026-10-02T00:10:00Z"
     await poller.tick(1186.0)
     assert caplog.text.count("GitHub PR review poll failed for epic e1") == 2
     assert caplog.text.count("Completed train root legacy has PR") == 1
@@ -1927,7 +1931,8 @@ async def test_poller_binds_each_repository_once_per_tick(case, caplog):
     # Success resumes both roots and resets backoff for the next failure.
     git.error = None
     await poller.tick(1214.0)
-    assert (git.binds, client.calls.count("pull")) == (4, 4)
+    # The unchanged first root reuses its cached detail after the bind recovers.
+    assert (git.binds, client.calls.count("pull")) == (4, 3)
     git.error = GitHubAccessError("permission", "gh: forbidden (HTTP 403)")
     await poller.tick(1245.0)
     assert git.binds == 5
