@@ -10,6 +10,7 @@ from sqlalchemy import func, select, update
 
 from src.commands.principal import ExecutionPrincipal
 from src.database.tables import integration_batches, messages, tasks
+from src.git.manager import _git_preparation_error
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
 from src.integration.fixers import BatchFixerService, split_members
 from src.integration.models import RepairPolicy
@@ -136,6 +137,27 @@ async def test_ambiguous_launch_is_retained_and_never_retried(db, fixer):
     assert len(await notices(db, supervisor=True)) == 1
     await service.settle_green("batch-fix", HEAD)
     assert (await state(db))["status"] == "green"
+
+
+@pytest.mark.parametrize("reason", [
+    "lock_wait_timeout", "git_timeout", "git_exit", "import_mismatch",
+])
+async def test_preparation_reason_reaches_fixer_blocker_and_train_notice(db, fixer, reason):
+    service, runtime, _ = fixer
+    runtime.start.side_effect = _git_preparation_error(
+        reason, subcommand="fetch", elapsed=120, budget=120,
+        returncode=128 if reason == "git_exit" else None,
+        diagnostic_kind="fatal" if reason == "git_exit" else "none",
+    )
+    result = await allocate(service)
+    assert result["outcome"] == "deferred"
+    assert f"reason={reason}" in result["reason"]
+    assert f"reason={reason}" in (await state(db))["blocker"]
+    notice, = await notices(db, supervisor=True)
+    assert notice["from_id"] == "integration-train"
+    assert f"reason={reason}" in notice["body"]
+    assert "subcommand=fetch" in notice["body"]
+    runtime.start.assert_awaited_once()
 
 
 @pytest.mark.parametrize("intent", ["paused", "aborted"])

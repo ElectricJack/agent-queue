@@ -87,6 +87,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from structlog.contextvars import bound_contextvars
+
 from src.git.askpass_broker import (
     GitCredentialTopology,
     make_request_channel,
@@ -245,6 +247,27 @@ def _git_subcommand(args: Sequence[str]) -> str | None:
             continue
         return arg
     return None
+
+
+def _git_preparation_error(
+    reason: str, *, subcommand: str = "none", elapsed: float = 0.0,
+    budget: float = 0.0, returncode: int | None = None, diagnostic_kind: str = "none",
+) -> GitError:
+    """Expose only bounded, daemon-selected fields at every diagnostic boundary."""
+    fields = {
+        "reason_code": reason, "git_subcommand": subcommand,
+        "elapsed_seconds": round(elapsed, 3), "budget_seconds": round(budget, 3),
+        "returncode": returncode, "diagnostic_kind": diagnostic_kind,
+    }
+    detail = (
+        f"reason={reason}, subcommand={subcommand}, elapsed={elapsed:.3f}s, "
+        f"budget={budget:.3f}s, rc={returncode}, diagnostic_kind={diagnostic_kind}"
+    )
+    # The stdlib-to-structlog bridge merges contextvars, not LogRecord extras.
+    # Keep extras too so direct stdlib consumers see the same typed fields.
+    with bound_contextvars(**fields):
+        logger.warning("git_preparation_failed: %s", detail, extra=fields)
+    return GitError(f"authenticated Git push preparation failed ({detail})")
 
 
 class _AuthenticatedGitTimeout(GitError):
@@ -678,6 +701,11 @@ class GitManager:
     # whole commit and tree history (no blobs); every later one is
     # incremental.  Ten minutes covers a large repository once.
     _PR_DIFF_FETCH_TIMEOUT = 600
+
+    # Local exact fetches have taken 115.4s against the old 120s ceiling on a
+    # busy retained store. Allow twice that ceiling for standalone acquisition;
+    # an explicit caller budget (including push authority) always wins.
+    _EXACT_FETCH_TIMEOUT = 240.0
 
     #: Directory, under the directory ``pr_merge`` runs in, holding one
     #: blob-less bare repository per ``<host>/<owner>/<repo>`` from which PR
@@ -2422,11 +2450,16 @@ class GitManager:
         key = os.path.realpath(git_dir)
         lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
             key, asyncio.Lock())
+        loop = asyncio.get_running_loop()
+        started_waiting = loop.time()
         try:
             async with asyncio.timeout_at(deadline):
                 await lock.acquire()
         except TimeoutError as exc:
-            raise GitError("authenticated Git push preparation failed") from exc
+            raise _git_preparation_error(
+                "lock_wait_timeout", elapsed=loop.time() - started_waiting,
+                budget=max(0.0, deadline - started_waiting),
+            ) from exc
         try:
             fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             if self._retained_verified_matches(key, fingerprint):
@@ -4745,7 +4778,7 @@ class GitManager:
             or destination_url.startswith("file://")
         ):
             raise GitError("invalid authenticated Git source")
-        fetch_timeout = timeout_seconds if timeout_seconds is not None else self._GIT_TIMEOUT
+        fetch_timeout = timeout_seconds if timeout_seconds is not None else self._EXACT_FETCH_TIMEOUT
         if not math.isfinite(fetch_timeout) or fetch_timeout <= 0:
             raise GitError("invalid authenticated Git fetch deadline")
         loop = asyncio.get_running_loop()
@@ -4776,7 +4809,7 @@ class GitManager:
                     imported, str(destination), borrowable_objects,
                     patterns=(), home=home, deadline=deadline,
                 )
-                held = await self._aholds_complete_commit(
+                held = _object_type == "commit" and await self._aholds_complete_commit(
                     imported, oid, home=home, deadline=deadline, lender_verified=seeded_tips > 0,
                 )
             mode = (
@@ -4785,10 +4818,25 @@ class GitManager:
                 else "full"
             )
             if held:
+                # The exact closure and lender integrity have already been checked.
+                # Pin it where it already lives instead of packing its full history
+                # into a temporary store and fetching that history straight back.
                 await self._run_isolated_import_git(
-                    [f"--git-dir={imported}", "update-ref", "refs/aq/exact", oid],
+                    [f"--git-dir={destination}", "update-ref", destination_ref, oid],
                     home=home, deadline=deadline,
                 )
+                pinned = await self._run_isolated_import_git(
+                    [f"--git-dir={destination}", "rev-parse", destination_ref],
+                    home=home, deadline=deadline,
+                )
+                if pinned.decode("ascii", errors="replace") != oid:
+                    raise _git_preparation_error("import_mismatch", subcommand="rev-parse")
+                logger.info(
+                    "authenticated exact fetch: exact_fetch=local, seeded_tips=%d, "
+                    "received_objects=0, received_kib=0, elapsed=%.1fs",
+                    seeded_tips, loop.time() - started,
+                )
+                return oid
             else:
                 try:
                     await self._arun_authenticated_git(
@@ -4832,7 +4880,7 @@ class GitManager:
                 home=home, deadline=deadline,
             )
             if local.decode("ascii", errors="replace") != oid:
-                raise GitError("authenticated exact Git import returned another object")
+                raise _git_preparation_error("import_mismatch", subcommand="rev-parse")
         logger.info(
             "authenticated exact fetch: exact_fetch=%s, seeded_tips=%d, "
             "received_objects=%d, received_kib=%d, elapsed=%.1fs",
@@ -5249,6 +5297,18 @@ class GitManager:
     ) -> bytes:
         """Run a credential-free Git import/verification command safely."""
         process: asyncio.subprocess.Process | None = None
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        budget = self._GIT_TIMEOUT if deadline is None else max(0.0, deadline - started)
+        # Never echo an argument as a subcommand: paths, refs and config values
+        # are untrusted even when this helper runs without a credential.
+        command = _git_subcommand(args)
+        subcommand = command if command in {
+            "init", "clone", "fetch", "rev-parse", "for-each-ref", "update-ref",
+            "cat-file", "rev-list", "count-objects", "fsck", "config",
+        } else "other"
+        if args == ["--exec-path"]:
+            subcommand = "exec-path"
         try:
             timeout = (
                 asyncio.timeout(self._GIT_TIMEOUT)
@@ -5272,8 +5332,16 @@ class GitManager:
         except BaseException as exc:
             if process is not None:
                 await self._kill_app_git_group(process)
-            if isinstance(exc, (FileNotFoundError, asyncio.TimeoutError)):
-                raise GitError("authenticated Git push preparation failed") from exc
+            if isinstance(exc, asyncio.TimeoutError):
+                raise _git_preparation_error(
+                    "git_timeout", subcommand=subcommand,
+                    elapsed=loop.time() - started, budget=budget,
+                ) from exc
+            if isinstance(exc, FileNotFoundError):
+                raise _git_preparation_error(
+                    "git_exit", subcommand=subcommand, elapsed=loop.time() - started,
+                    budget=budget, diagnostic_kind="executable_missing",
+                ) from exc
             raise
         # Git can print integrity errors while returning zero. Keep untrusted
         # paths/content out of the exception, but never discard that evidence.
@@ -5301,9 +5369,17 @@ class GitManager:
         elif process.returncode == 0 and re.search(
             rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
         ):
-            raise GitError("isolated Git command reported errors")
+            raise _git_preparation_error(
+                "git_exit", subcommand=subcommand, elapsed=loop.time() - started,
+                budget=budget, returncode=process.returncode, diagnostic_kind="error",
+            )
         if process.returncode != 0:
-            raise GitError("authenticated Git push preparation failed")
+            kind = re.search(rb"(?m)^(fatal|error|warning):", stderr)
+            raise _git_preparation_error(
+                "git_exit", subcommand=subcommand, elapsed=loop.time() - started,
+                budget=budget, returncode=process.returncode,
+                diagnostic_kind=kind[1].decode("ascii") if kind else "exit_status",
+            )
         return stdout.strip()
 
     @staticmethod
@@ -5496,7 +5572,7 @@ class GitManager:
                         deadline=_deadline,
                     )
                     if imported.decode("ascii", errors="replace") != tip_oid:
-                        raise GitError("authenticated Git push preparation failed")
+                        raise _git_preparation_error("import_mismatch", subcommand="rev-parse")
             for tip_oid, _ref in imports:
                 target = next(branch for tip, branch, _old in validated if tip == tip_oid)
                 kind = await self._run_isolated_import_git(

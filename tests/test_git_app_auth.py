@@ -3276,6 +3276,218 @@ async def test_concurrent_integrity_checks_of_one_store_run_one_fsck(tmp_path, m
     assert overlap == [1]
 
 
+async def test_retained_verification_lock_timeout_has_safe_reason(tmp_path, caplog):
+    manager = GitManager()
+    lock = asyncio.Lock()
+    await lock.acquire()
+    manager._retained_verify_locks = {str(tmp_path.resolve()): lock}
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._averify_retained_objects(
+            str(tmp_path), home=tmp_path,
+            deadline=asyncio.get_running_loop().time() + 0.01,
+        )
+    assert "reason=lock_wait_timeout" in str(caught.value)
+    record = caplog.records[-1]
+    assert record.reason_code == "lock_wait_timeout"
+    assert record.elapsed_seconds >= record.budget_seconds
+    assert str(tmp_path) not in record.getMessage()
+    assert lock.locked()  # Timing out cannot release another verifier's lock.
+    lock.release()
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, FileNotFoundError])
+async def test_isolated_preparation_spawn_failure_has_safe_reason(
+    tmp_path, monkeypatch, caplog, failure,
+):
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_spawn_isolated_git", AsyncMock(
+        side_effect=failure("private-path-ref-token-sentinel"),
+    ))
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._run_isolated_import_git(
+            [f"--git-dir={tmp_path}", "fetch", "private-ref-sentinel"],
+            home=tmp_path, deadline=asyncio.get_running_loop().time() + 12,
+        )
+    reason = "git_timeout" if failure is TimeoutError else "git_exit"
+    assert f"reason={reason}" in str(caught.value)
+    record = caplog.records[-1]
+    assert record.reason_code == reason
+    assert record.git_subcommand == "fetch"
+    assert 0 < record.budget_seconds <= 12
+    if failure is FileNotFoundError:
+        assert record.diagnostic_kind == "executable_missing"
+    assert "sentinel" not in str(caught.value) + record.getMessage()
+    assert str(tmp_path) not in str(caught.value) + record.getMessage()
+
+
+@pytest.mark.parametrize("command", ["fetch", "private-command-sentinel"])
+async def test_isolated_preparation_exit_has_allowlisted_diagnostics(
+    tmp_path, monkeypatch, caplog, command,
+):
+    process = SimpleNamespace(returncode=128, communicate=AsyncMock(return_value=(
+        b"private-output-sentinel", b"fatal: private-path-ref-token-sentinel\n",
+    )))
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_spawn_isolated_git", AsyncMock(return_value=process))
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._run_isolated_import_git([command], home=tmp_path)
+    assert "reason=git_exit" in str(caught.value)
+    record = caplog.records[-1]
+    assert record.git_subcommand == ("fetch" if command == "fetch" else "other")
+    assert record.returncode == 128
+    assert record.diagnostic_kind == "fatal"
+    assert "sentinel" not in str(caught.value) + record.getMessage()
+
+
+async def test_app_push_import_mismatch_has_safe_reason(tmp_path, monkeypatch, caplog):
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_apush_borrowable_objects", AsyncMock(return_value=None))
+    # init, fetch and rev-parse: the returned ref points at a different tip.
+    monkeypatch.setattr(manager, "_run_isolated_import_git", AsyncMock(
+        side_effect=[b"", b"", b"private-ref-token-sentinel"],
+    ))
+    with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
+        await manager._apush_oid_with_app_auth_to_url(
+            str(tmp_path), destination_url="https://github.com/acme/widgets.git",
+            token="private-credential-sentinel", tip_oid="a" * 40,
+            branch="private-branch-sentinel", expected_old_oid="0" * 40,
+        )
+    assert "reason=import_mismatch" in str(caught.value)
+    assert caplog.records[-1].reason_code == "import_mismatch"
+    assert "sentinel" not in str(caught.value) + caplog.text
+
+
+def test_preparation_reason_survives_production_json_log_bridge():
+    import io
+    import json
+
+    import structlog
+
+    from src.logging_config import _build_shared_processors
+
+    output = io.StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(structlog.stdlib.ProcessorFormatter(
+        processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                    structlog.processors.JSONRenderer()],
+        foreign_pre_chain=_build_shared_processors(),
+    ))
+    manager_module.logger.addHandler(handler)
+    before = structlog.contextvars.get_contextvars()
+    try:
+        manager_module._git_preparation_error(
+            "git_timeout", subcommand="fsck", elapsed=119.5, budget=120,
+        )
+    finally:
+        manager_module.logger.removeHandler(handler)
+    event = json.loads(output.getvalue())
+    assert event["reason_code"] == "git_timeout"
+    assert event["git_subcommand"] == "fsck"
+    assert event["elapsed_seconds"] == 119.5
+    assert event["budget_seconds"] == 120
+    assert structlog.contextvars.get_contextvars() == before
+
+
+async def test_retained_fsck_deadline_identifies_phase_and_reaps_process(tmp_path, monkeypatch):
+    manager = GitManager()
+    manager._GIT_TIMEOUT = 0.01
+    process = SimpleNamespace(communicate=AsyncMock(side_effect=asyncio.TimeoutError))
+    monkeypatch.setattr(manager, "_spawn_isolated_git", AsyncMock(return_value=process))
+    cleanup = AsyncMock()
+    monkeypatch.setattr(manager, "_kill_app_git_group", cleanup)
+    with pytest.raises(GitError, match="reason=git_timeout, subcommand=fsck"):
+        await manager._run_isolated_import_git(
+            [f"--git-dir={tmp_path}", "fsck", "--full"],
+            home=tmp_path, verify_integrity=True,
+        )
+    cleanup.assert_awaited_once_with(process)
+
+
+async def test_exact_local_pin_reuses_verification_without_round_trip(tmp_path, monkeypatch):
+    work, source, store = _exact_fetch_case(tmp_path)
+    manager = GitManager()
+    tip = _git(["rev-parse", "HEAD"], work)
+    await _exact_fetch(manager, store, source, tip, "refs/aq/exact/first")
+    # Verify the newly imported object files once, as the retained gate does.
+    await manager._averify_retained_objects(
+        str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+    )
+    original = manager._run_isolated_import_git
+    commands = []
+
+    async def record(args, **kwargs):
+        commands.append(args)
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", record)
+    assert await _exact_fetch(manager, store, source, tip, "refs/aq/exact/second") == tip
+    assert not any("fetch" in args or "fsck" in args for args in commands)
+    assert _git(["rev-parse", "refs/aq/exact/second"], store) == tip
+    assert any(args == [f"--git-dir={store}", "update-ref", "refs/aq/exact/second", tip]
+               for args in commands)
+
+
+async def test_exact_local_pin_preserves_requested_object_type(tmp_path):
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(["rev-parse", "HEAD"], work)
+    _git(["fetch", str(source), f"{tip}:refs/aq/held"], store)
+    with pytest.raises(GitError, match="another object type"):
+        await GitManager()._afetch_exact_oid_with_app_auth_to_url(
+            str(store), destination_url=source.as_uri(), token=None, oid=tip,
+            destination_ref="refs/aq/invalid-tag", _object_type="tag",
+        )
+    assert not (store / "refs/aq/invalid-tag").exists()
+
+
+async def test_exact_fetch_budget_is_finite_and_explicit_caller_wins(tmp_path, monkeypatch):
+    manager = GitManager()
+    budgets = []
+
+    async def stop(args, *, home, deadline):
+        budgets.append(deadline - asyncio.get_running_loop().time())
+        raise GitError("budget captured before work")
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", stop)
+    for budget in (None, 0.25):
+        with pytest.raises(GitError, match="budget captured"):
+            await manager._afetch_exact_oid_with_app_auth_to_url(
+                str(tmp_path), destination_url="https://github.com/acme/widgets.git",
+                token=None, oid="a" * 40, destination_ref="refs/aq/test",
+                timeout_seconds=budget,
+            )
+    assert 239 < budgets[0] <= 240
+    assert 0 < budgets[1] <= 0.25
+
+
+async def test_exact_fetch_contended_lock_keeps_one_deadline(tmp_path, monkeypatch):
+    """A queue consuming the budget reports the lock, never starts a new fsck."""
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(["rev-parse", "HEAD"], work)
+    _git(["fetch", str(source), f"{tip}:refs/aq/held"], store)
+    manager = GitManager()
+    lock = asyncio.Lock()
+    await lock.acquire()
+    manager._retained_verify_locks = {str(store.resolve()): lock}
+    original = manager._run_isolated_import_git
+    commands = []
+
+    async def record(args, **kwargs):
+        commands.append(args)
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", record)
+    try:
+        with pytest.raises(GitError, match="reason=lock_wait_timeout"):
+            await manager._afetch_exact_oid_with_app_auth_to_url(
+                str(store), destination_url=source.as_uri(), token=None, oid=tip,
+                destination_ref="refs/aq/exact/test", timeout_seconds=1.0,
+            )
+        assert not any("fsck" in args for args in commands)
+        assert not (store / "refs/aq/exact/test").exists()
+    finally:
+        lock.release()
+
+
 async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
     store = tmp_path / "store.git"
     subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
