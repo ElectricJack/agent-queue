@@ -18,7 +18,9 @@ from time import monotonic, time
 from typing import Callable, Protocol
 
 from src.git.github_activity import GitHubActivity, caller_component, endpoint_template
+from src.git.github_cache import ConditionalResponseCache, conditional_key, frame_response
 from src.git.github import (
+    GitHubApiResponse,
     MAX_HEADER_BYTES,
     MAX_RESPONSE_BYTES,
     _command_error,
@@ -208,6 +210,7 @@ class GhRunner:
         self._retry_at = 0.0
         self._rate_limit_status: int | None = None
         self._activity = GitHubActivity(clock)
+        self._response_cache = ConditionalResponseCache()
         # One-second buckets bound memory even when request volume spikes.
         self._calls: dict[str, deque[tuple[int, int]]] = {}
         self._resolved_executable: str | None = None
@@ -323,6 +326,19 @@ class GhRunner:
         if any(secret in argument for secret in argument_secrets for argument in command):
             raise ValueError("GitHub credentials must not appear in process arguments")
 
+        cache_token = token
+        if identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
+            cache_token = self._base_env.get("GH_TOKEN") or self._base_env.get("GITHUB_TOKEN")
+        cache_key = conditional_key(command, identity, repository, cache_token)
+        cached = self._response_cache.get(cache_key, output_limit=stdout_limit)
+        if cached is not None:
+            validator = cached.headers.get("etag")
+            condition = (
+                f"If-None-Match: {validator}" if validator
+                else f"If-Modified-Since: {cached.headers['last-modified']}"
+            )
+            command = (*command, "--header", condition)
+
         app_config: tempfile.TemporaryDirectory[str] | None = None
         if identity.mode is GitHubCredentialMode.APP:
             app_config = tempfile.TemporaryDirectory(prefix=".config-", dir=self.cwd)
@@ -384,13 +400,30 @@ class GhRunner:
         safe_stderr = _scrub_diagnostic(stderr, secrets=diagnostic_secrets)
         error = _cli_error(process.returncode, stderr) if process.returncode else None
         response = None
+        restored = False
         if command[0] == "api" and stdout.startswith(b"HTTP/"):
             response = _decode_included_response(
                 stdout,
                 max_header_bytes=MAX_HEADER_BYTES,
                 max_body_bytes=stdout_limit,
             )
-            self._activity.observe(response.headers)
+            self._activity.observe(response.headers, status=response.status)
+            if response.status == 304 and cached is not None:
+                # Retain Link and representation headers omitted by a 304, but
+                # expose current quota/validator headers from the wire response.
+                response = GitHubApiResponse(
+                    cached.status, {**cached.headers, **response.headers}, cached.body,
+                )
+                stdout = frame_response(response)
+                if len(stdout) > stdout_limit:
+                    raise GitHubAppError("transient", "GitHub response exceeded size limit")
+                error = None
+                restored = True
+            if cache_key is not None:
+                if response.status == 200 and error is None:
+                    self._response_cache.store(cache_key, response)
+                elif response.status != 304:
+                    self._response_cache.discard(cache_key)
             if response.status >= 400:
                 http_error = _http_error(
                     response.status, response.headers, self._clock(), response.body
@@ -405,7 +438,10 @@ class GhRunner:
                     error = http_error
             if strip_headers:
                 stdout = response.body
-        result = GhResult(process.returncode or 0, stdout, safe_stderr)
+        # gh versions may exit nonzero for a valid HTTP 304. The restored
+        # response is successful only when backed by this request's cache entry.
+        result = GhResult(0 if restored else process.returncode or 0,
+                          stdout, safe_stderr)
         if error is not None and error.category == "rate_limited":
             new_episode = self._clock() >= self._retry_at
             self._defer(error)

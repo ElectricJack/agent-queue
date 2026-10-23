@@ -383,6 +383,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "solid-impact-56", "agile-beacon-80", "nimble-torrent-12", "prime-impact-40",
         "quick-pinnacle-97",
         "stark-beacon-94",
+        "sharp-rapids-10",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -397,7 +398,27 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]
             == 85_321)
     composition = exception["batch_composition"]
-    assert composition["source_revision"] == exception["measured_source_revision"]
+    assert composition["source_revision"] == "4e98fa0b96d561cfa7de934541c3e66df430b2a6"
+    # sharp-rapids-10's exact +9/+0 is composed on top of dev's frozen batch record.
+    snapshot = amendments["sharp-rapids-10"]
+    assert snapshot["decision_message_id"] == "msg-3f6311071a6647429059f3a990750597"
+    assert snapshot["decision_message_id"] in exception["decision_message_ids"]
+    assert snapshot["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert snapshot["operator_decision"] == "6679052c"
+    assert snapshot["grant_id"] == "sharp-rapids-10-cap-epoch2-2026-10-23"
+    assert snapshot["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1885"
+    assert snapshot["previous_source_revision"] == "61869b7cdcf507b8e8acb596893bb63ac0794997"
+    assert snapshot["previous_owned_total"] == 161_102
+    assert snapshot["authorized_owned_delta"] == 9
+    assert snapshot["authorized_engine_delta"] == 0
+    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == measured
+    assert snapshot["measured_owned_total"] == measured == 161_111
+    assert snapshot["previous_engine_lines"] == snapshot["measured_engine_lines"] == 85_517
+    assert snapshot["measured_engine_lines"] == exception["measured_engine_lines"]
+    assert snapshot["measured_table_count"] == 45
+    assert snapshot["measured_source_revision"] == exception["measured_source_revision"]
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["dashboard_pr_snapshot_measurement"] == snapshot
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
         "quick-pinnacle-97",
@@ -430,7 +451,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         assert amendments[task_id]["decision_message_id"] in exception["decision_message_ids"]
     assert composition["base_owned_total"] + sum(
         delta["owned"] for delta in composition["approved_deltas"].values()
-    ) == measured
+    ) == snapshot["previous_owned_total"]
     assert composition["base_engine_lines"] + sum(
         delta["engine"] for delta in composition["approved_deltas"].values()
     ) == exception["measured_engine_lines"]

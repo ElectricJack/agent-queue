@@ -288,6 +288,22 @@ or CLI diagnostic also starts the cooldown; an ordinary permission 403 does not.
 Requests resume when the shared deadline expires. API invocations retain HTTP
 headers even when a binding/account caller only consumes the body.
 
+The startup-owned runner caches successful REST GET responses with an ETag or
+Last-Modified validator, including their bodies and pagination Link headers.
+Each entry is isolated by credential identity and token fingerprint, repository,
+and full request arguments (including URL, page/query and representation headers).
+Stored-login entries belong to that runner's startup-selected login. The cache
+holds at most 256 entries and 16 MiB, evicting least recently used entries; it is
+cleared on daemon restart. Writes and transformed or caller-conditional requests
+bypass it. No-store responses are not retained. Subsequent GETs send
+If-None-Match, or If-Modified-Since when only Last-Modified is available. A 304
+restores the cached body and merges response headers, retaining pagination links
+when omitted by the 304. Response-size limits still apply to restored content.
+Every reuse is validated over the network; failures never serve stale content.
+The activity snapshot separately reports `not_modified_per_hour` by component.
+These counts are a subset of API launch counts, exposing conditional-request
+savings without changing the existing traffic counters.
+
 `aq integration status` includes a `github` snapshot, also in brief output:
 daemon-wide `api_calls_per_minute` keyed by method and endpoint (without query
 values), `gh_commands_per_minute` for non-API CLI invocations, and the active
@@ -303,6 +319,9 @@ keyed by caller component, with `component_window_seconds: 3600`. These are
 rolling, bounded, in-memory launch counts at one-second resolution, reset on
 daemon restart. Nested calls inherit explicit component context; other calls
 use their nearest AQ caller outside the Git package, or `unattributed`.
+The event-loop host `src.main` is not a caller: child tasks without an explicit
+component or a more specific AQ frame remain `unattributed`. Endpoint counters
+and rate-limit warnings still identify their request.
 Excess component identities aggregate under `other components`. Counters include
 failed launches that reached a process and exclude calls refused before launch;
 they measure traffic, not GitHub's billable primary-quota usage.
@@ -316,8 +335,9 @@ refused during that episode do not repeat this warning or log their diagnostics.
 
 `primary_quota` reports the last valid core-quota limit, remaining, reset and
 reserve, or null after reset/when unknown. The reserve is ten percent of the
-limit, rounded up. The background review poller and periodic PR cleanup share
-this reserve: at or below it, both defer until reset without launching requests.
+limit, rounded up. The background review poller, periodic PR cleanup and
+dashboard PR snapshot share this reserve: at or below it, they defer until reset
+without launching requests.
 Foreground worker and train operations retain access to that share; actual
 rate-limit backoff still applies to everyone. Out-of-order responses in one
 window cannot increase the observed remaining quota.

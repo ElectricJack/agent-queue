@@ -2854,7 +2854,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:d90bab6905d95f9ff7c05b58d6618eed30f80936ef427d54440aa3e31c75956d",
+      "digest": "sha256:8261c8a4249a95da135b7df36579180c40d0fb7c19a107fa441a3ef8775e1414",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2864,6 +2864,7 @@
         "src.commands.review_commands",
         "src.database.queries.pull_request_queries",
         "src.database.tables",
+        "src.git.github_activity",
         "src.git.github_contracts"
       ],
       "markers": [
