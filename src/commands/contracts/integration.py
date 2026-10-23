@@ -94,6 +94,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
+        "integration_fast_forward_pr",
         "integration_delegate_publication",
         "integration_revoke_publication",
     }
@@ -666,6 +667,14 @@ class IntegrationCloseDeliveredPrArgs(_PreviewHeadArgs):
     reason: str | None = Field(default=None, min_length=1)
 
 
+class IntegrationFastForwardPrArgs(_PreviewHeadArgs):
+    task_id: str = Field(min_length=1)
+    pr_number: int = Field(gt=0)
+    dry_run: bool = True
+    expected_head_sha: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
+
+
 class IntegrationOperationalValue(CommandValue):
     id: str | None = None
     head_sha: str | None = None
@@ -774,6 +783,20 @@ class IntegrationCloseDeliveredPrValue(CommandValue):
     task_ids: list[str] = Field(default_factory=list)
     proof: dict[str, Any] | None = None
     undelivered: dict[str, Any] | None = None
+    reason: str | None = None
+
+
+class IntegrationFastForwardPrValue(CommandValue):
+    """A separately filed repair's head adopted into its root PR branch."""
+
+    task_id: str | None = None
+    project_id: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    target_branch: str | None = None
+    previous_oid: str | None = None
+    published_oid: str | None = None
+    root_task_id: str | None = None
     reason: str | None = None
 
 
@@ -1670,6 +1693,16 @@ INTEGRATION_CLOSE_DELIVERED_PR = _operational_contract(
     result_model=IntegrationCloseDeliveredPrValue,
 )
 
+INTEGRATION_FAST_FORWARD_PR = _operational_contract(
+    "integration_fast_forward_pr",
+    IntegrationFastForwardPrArgs,
+    ("would_publish", "published", "already_published", "changed", "blocked", "not_eligible",
+     "not_found", "invalid"),
+    successes=frozenset({"would_publish", "published", "already_published"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationFastForwardPrValue,
+)
+
 
 INTEGRATION_TRANSFER_OWNER = CommandContract(
     execution=_natural_execution(
@@ -2381,6 +2414,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         INTEGRATION_REDRIVE_CHILD,
         INTEGRATION_REOPEN_COLLECTION,
         INTEGRATION_CLOSE_DELIVERED_PR,
+        INTEGRATION_FAST_FORWARD_PR,
         INTEGRATION_FILE_CHILDREN,
         INTEGRATION_CHECKPOINT_PARENT,
         INTEGRATION_MUTATE_HIERARCHY,
