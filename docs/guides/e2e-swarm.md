@@ -89,10 +89,13 @@ override. Production still refuses overrides of claimed or running tasks.
 S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
 (the `provb` worker, the probation canary and the pinned task) retry
 `no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
-skip a READY fixture while another transaction holds its row. Other claim outcomes and claims of an unexpected
-task fail immediately. S2 and S3 accept only the remaining S1 fixtures, including
-when separate pytest items run them in different subprocesses. A timeout reports
-the last claim and the fixture state.
+skip a READY fixture while another transaction holds its row. Each claim waits
+one second so an unlock without a `task.ready` event cannot consume the retry
+budget in a few long polls. `claim_in_progress` for an expected fixture resumes
+the same preparation on the next call. Other claim outcomes and claims or
+preparations of an unexpected task fail immediately. S2 and S3 accept only the
+remaining S1 fixtures, including when separate pytest items run them in different
+subprocesses. A timeout reports the last claim and the fixture state.
 
 CI covers all 20 scenarios as **21 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
@@ -396,10 +399,10 @@ cooks, a snapshot that drifts from the graph, a container that never settles.*
 **S5 — fence and scope.** A second pool session's token cannot heartbeat the
 first session's task (`out_of_scope`), and a token scoped to `e2e` cannot
 `aq prime` a task in project `other`. Before those assertions, the holder
-retries only `no_ready_work` within the convergence budget and must claim the
-exact fixture: even a routed `READY` row can be skipped while another transaction
-locks it. A timeout reports the last claim and fixture state; other claim
-failures stop immediately. *Regression it catches: a token being
+retries `no_ready_work` and observes fixture preparation within the convergence
+budget, then must claim the exact fixture: even a routed `READY` row can be skipped
+while another transaction locks it. A timeout reports the last claim and fixture
+state; other claim failures stop immediately. *Regression it catches: a token being
 treated as a key to the daemon rather than an identity.*
 
 **S6 — doctor.** Every `pools.*`, `claims.*`, `hierarchy.*` and

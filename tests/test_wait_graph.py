@@ -450,3 +450,19 @@ def test_long_chain_reports_truncation_and_collapses_resource_cycles():
     assert len(result["longest_chains"][0]["components"]) == 64
     assert result["longest_chains"][0]["truncated"]
     assert not result["deadlocks"]
+
+
+async def test_busy_graph_lock_refuses_within_bound_then_admits(env):
+    """A held fence refuses waiters within the bound instead of queueing pooled connections."""
+    from src.waits.graph import lock_graph
+
+    async with env.db._engine.begin() as holder:
+        await lock_graph(holder)
+        async with env.db._engine.begin() as waiter:
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(WaitError) as refused:
+                await lock_graph(waiter, timeout=0.2)
+            assert refused.value.code == "wait.graph_busy"
+            assert asyncio.get_running_loop().time() - started < 5
+    async with env.db._engine.begin() as waiter:
+        await lock_graph(waiter, timeout=0.2)

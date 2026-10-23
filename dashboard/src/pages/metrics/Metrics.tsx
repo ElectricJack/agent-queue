@@ -11,6 +11,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { RANGES, type RangeKey } from "../../api/metrics";
 import { useEventStreamStatus } from "../../ws/EventStreamProvider";
+import DeliveryLatency from "./DeliveryLatency";
 import ProviderUsage from "./ProviderUsage";
 import StatTiles from "./StatTiles";
 import SustainedLagBanner from "./SustainedLagBanner";
@@ -108,6 +109,8 @@ export default function Metrics() {
       <StatTiles sample={feed.latest} />
 
       <ProviderUsage />
+
+      <DeliveryLatency />
 
       {feed.isLoading ? (
         <p className="text-sm text-gray-500">Loading history…</p>

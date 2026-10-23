@@ -192,6 +192,11 @@ class JobService:
             "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
             **session_env_caps(self.config),
         }
+        from src.build_cache import resolved_cache_settings
+
+        cache = await resolved_cache_settings(self.db, self.config, project_id)
+        if cache:
+            env["CCACHE_DIR" if cache.kind == "ccache" else "SCCACHE_DIR"] = cache.dir
         if preset in NODE_PRESETS:
             # npm/pnpm launchers and package scripts commonly use /usr/bin/env node.
             # Keep that server-resolved runtime on PATH inside the detached job.
@@ -237,6 +242,8 @@ class JobService:
             "adapter_request_hash": adapter_request_hash,
             "tool_versions": {"python": sys.version, "executable": sys.executable},
         }
+        if cache:
+            contract["build_cache"] = {"kind": cache.kind, "dir": cache.dir}
         if preset == "matter_render":
             import hashlib
 
@@ -457,7 +464,28 @@ class JobService:
             # No spawn retry, even if the caller cannot distinguish pre/post exec.
             await self.reconcile(changed)
 
-    async def reconcile(self, job):
+    async def recover_on_startup(self):
+        """Settle the previous daemon's launches before workspace recovery runs.
+
+        Called once from ``Orchestrator.initialize`` before any tick, while no
+        launch can be in flight: the only spawner of a runner was the previous
+        daemon process. A launch that left neither a receipt nor an intent and
+        whose nonce no live process carries therefore never executed and never
+        will -- the execution proof an ambiguous ``starting`` row otherwise
+        waits for forever, pinning its workspace across every restart. Queued
+        jobs keep their pins (they still launch); script jobs wait for the
+        first tick, after the playbook engine is up.
+        """
+        async with self._tick_lock:
+            for job in await self.db.reconcilable_jobs(limit=1000):
+                if job["owner_kind"] == "playbook" or job["state"] == "queued":
+                    continue
+                # A native-Windows owner outlives the daemon; only its own
+                # status can prove it dead.
+                restarted = not job["contract"].get("native_windows")
+                await self.reconcile(job, daemon_restarted=restarted)
+
+    async def reconcile(self, job, *, daemon_restarted=False):
         if job["owner_kind"] == "playbook":
             from src.jobs.playbook import reconcile
 
@@ -488,8 +516,7 @@ class JobService:
             # A just-created starting row may precede the detached exec. Bound
             # that gap without ever launching again on adoption.
             if (
-                not receipt
-                and not intent
+                not (receipt or intent or daemon_restarted)
                 and time.time() - (job.get("launch_at") or job["submitted_at"]) < 30
             ):
                 return
@@ -543,8 +570,9 @@ class JobService:
                 held = await asyncio.to_thread(held_slots, lock_dir)
                 if any(slot.holder.get("job_nonce") == nonce for slot in held):
                     raise RuntimeError("jobs.cleanup_blocked")
+            # Only a restart proves a dead launch (recover_on_startup); elapsed time never does.
             if job["state"] in TERMINAL:
-                if receipt or intent:
+                if receipt or intent or daemon_restarted:
                     await self.db.job_cleanup_verified(job["id"])
                 return
             tail = b""
@@ -618,8 +646,8 @@ class JobService:
                 job["id"],
                 job["state_version"],
                 result["state"],
-                cleaned=bool(receipt or intent),
-                cleanup_blocked=not bool(receipt or intent),
+                cleaned=bool(receipt or intent or daemon_restarted),
+                cleanup_blocked=not (receipt or intent or daemon_restarted),
                 result=result,
                 result_ref=job["id"],
                 result_version=1,
@@ -670,13 +698,18 @@ class JobService:
                 remove_snapshot = False
                 if job["owner_kind"] == "integration" and job["input_mode"] == "snapshot":
                     snapshot = Path(job["contract"]["cwd"])
-                    root = Path(self.config.data_dir) / "job-snapshots"
+                    from src.projects.storage_binding import bound_path, read_binding
+
+                    root = bound_path(await read_binding(self.db, job["project_id"]),
+                                      Path(self.config.data_dir) / "job-snapshots")
                     ws = await self.db.get_workspace(job["workspace_id"])
                     # Only internally provisioned, disabled snapshots may be removed.
                     if (
                         ws and ws.kind_id == "job-snapshot" and not ws.enabled
                         and snapshot.parent == root
                         and job["workspace_id"] == "job-snapshot-" + snapshot.name
+                        and not (root / ".owners" / (snapshot.name + ".json")).exists()
+                        and not (root / ".owners" / (snapshot.name + ".json")).is_symlink()
                     ):
                         snapshot_ws = ws
                         from sqlalchemy import select
