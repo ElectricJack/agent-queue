@@ -114,6 +114,39 @@ def test_structure_catalogue_preserves_reviewed_delta():
     )
 
 
+UPDATER_CHANGES = ROOT / "tests/fixtures/contracts/updater-safety-contract-changes.json"
+
+
+def _updater_changes():
+    return json.loads(UPDATER_CHANGES.read_text())
+
+
+def _before_updater_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    for name, approved in _updater_changes()["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        assert definition["description"] == approved["description"]
+        assert _digest(definition) == approved["sha256"]
+        definition["description"] = approved["previous_description"]
+        assert _digest(definition) == approved["previous_sha256"]
+    return catalogue
+
+
+def test_updater_catalogue_only_changes_guarded_update_description():
+    evidence = _updater_changes()
+    assert set(evidence["transport_definitions"]) == {"update_and_restart"}
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    assert evidence["previous_cli_catalogue_sha256"] == _pr_repair_changes()["cli_catalogue_sha256"]
+    for name, approved in evidence["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        definition["description"] = approved["description"]
+        assert _digest(definition) == approved["sha256"]
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
 def _stuck_check_changes():
     return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
 
@@ -127,7 +160,7 @@ def _restart_hold_changes():
 
 
 def _before_restart_hold_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_updater_catalogue()
     approved = _restart_hold_changes()["transport_definitions"]["restart_task"]
     [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
     assert definition == approved["definition"]
@@ -491,7 +524,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes(),
+                          _updater_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
