@@ -14372,7 +14372,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:b6261ebb581c040bbbfd3bc0d799f8010a79e241750d4f0e363988bdcdf9129e",
+      "digest": "sha256:58e35ec8cccd65b2090806218256bde7aba9a7064bfe24961ee1349b2c1fe89a",
       "imports": [
         "src.api.auth",
         "src.commands.claim_commands",
@@ -14402,6 +14402,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.pools",
+        "src.orchestrator.worktree_manager",
         "src.pool_claims",
         "src.scheduler",
         "src.sessions.harness_parser"
