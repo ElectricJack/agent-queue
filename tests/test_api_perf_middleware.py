@@ -323,12 +323,19 @@ async def _receive():
 
 
 @pytest.mark.skip(reason="timing flake under CI load; disabled by Jack 2026-10-23")
-async def test_an_sse_route_records_a_handshake_and_an_open_gauge_not_a_lifetime(registry):
+async def test_an_sse_route_records_a_handshake_and_an_open_gauge_not_a_lifetime(
+    registry, monkeypatch,
+):
+    from types import SimpleNamespace
+
     # Driven as raw ASGI: httpx's ASGITransport buffers a whole streaming body
     # before returning, so it cannot observe the gauge while the stream is open.
-    release = asyncio.Event()
+    opened, release = asyncio.Event(), asyncio.Event()
+    clock = [0.0]
+    monkeypatch.setattr(perf_middleware, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
 
     async def sse_app(scope, receive, send):
+        clock[0] = 0.025
         await send(
             {
                 "type": "http.response.start",
@@ -337,6 +344,7 @@ async def test_an_sse_route_records_a_handshake_and_an_open_gauge_not_a_lifetime
             }
         )
         await send({"type": "http.response.body", "body": b"data: 1\n\n", "more_body": True})
+        opened.set()
         await release.wait()
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
@@ -347,16 +355,19 @@ async def test_an_sse_route_records_a_handshake_and_an_open_gauge_not_a_lifetime
         sent.append(message)
 
     task = asyncio.create_task(middleware(_raw_scope(registry), _receive, send))
-    await asyncio.sleep(0.02)
+    await opened.wait()
+    clock[0] = 3600.0  # An hour-long stream still records only its 25 ms handshake.
     mid = registry.snapshot()
     stream = mid["api"]["streams"]["GET /api/sessions/{session_id}/pane"]
     assert stream["open"] == 1
-    assert stream["handshake"]["count"] == 1 and stream["handshake"]["max"] < 40
+    assert stream["handshake"]["count"] == 1 and stream["handshake"]["max"] == 25
     assert stream["outcome"] == {"kind": "sum", "accepted": 1, "refused": 0}
     release.set()
     await task
     end = registry.snapshot()
     assert end["api"]["streams"]["GET /api/sessions/{session_id}/pane"]["open"] == 0
+    # snapshot() drains the histogram; closing must not add a lifetime sample.
+    assert end["api"]["streams"]["GET /api/sessions/{session_id}/pane"]["handshake"]["count"] == 0
     assert "GET /api/sessions/{session_id}/pane" not in end["api"]["routes"]
     assert end["api"]["all"]["count"] == 0
     assert [m["type"] for m in sent] == [
