@@ -154,7 +154,7 @@ def _client(app: DashboardServerApp, peer: str = "127.0.0.1") -> httpx.AsyncClie
         ("/docs", "not_served"),
         ("/redoc", "not_served"),
         ("/openapi.json", "not_served"),
-        ("/plans/abc", "not_served"),
+        ("/plans/abc", "static"),
         ("/dashboard", "not_served"),
         ("/dashboard/tasks", "not_served"),
         ("/", "static"),
@@ -168,7 +168,7 @@ def test_the_path_table_matches_on_segment_boundaries(path, kind):
 async def test_the_bundle_and_every_deep_route_answer_the_same_index(tmp_path):
     app, proxy = _app(tmp_path)
     async with _client(app) as client:
-        pages = [await client.get(path) for path in ("/", "/tasks", "/projects/p/graph", "/apix")]
+        pages = [await client.get(path) for path in ("/", "/tasks", "/projects/p/graph", "/plans/solid-grove.13", "/apix")]
         asset = await client.get("/assets/app.js")
         missing = await client.get("/nope.js")
     for page in pages:
@@ -183,7 +183,7 @@ async def test_the_bundle_and_every_deep_route_answer_the_same_index(tmp_path):
 
 @pytest.mark.parametrize(
     "path",
-    ["/mcp", "/mcp/x", "/docs", "/redoc", "/openapi.json", "/plans/p", "/dashboard", "/dashboard/",
+    ["/mcp", "/mcp/x", "/docs", "/redoc", "/openapi.json", "/dashboard", "/dashboard/",
      "/dashboard/tasks", "/__aq", "/__aq/nope"],
 )
 async def test_the_daemons_other_surfaces_are_a_json_404_never_html(tmp_path, path):
@@ -197,7 +197,7 @@ async def test_the_daemons_other_surfaces_are_a_json_404_never_html(tmp_path, pa
     assert proxy.http_paths == []
 
 
-@pytest.mark.parametrize("path", ["/api", "/api/tasks?x=1", "/health", "/ready", "/ws/events"])
+@pytest.mark.parametrize("path", ["/api", "/api/tasks?x=1", "/api/plans/solid-grove.13", "/health", "/ready", "/ws/events"])
 async def test_the_proxied_prefixes_reach_the_proxy(tmp_path, path):
     app, proxy = _app(tmp_path)
     async with _client(app) as client:

@@ -612,6 +612,7 @@
         "tests/test_parent_ci_publication.py",
         "tests/test_promote_commands.py",
         "tests/test_promotion_backmerge.py",
+        "tests/test_promotion_continuous_equivalence.py",
         "tests/test_promotion_flow.py",
         "tests/test_promotion_notes_input.py",
         "tests/test_promotion_policy.py",
@@ -1229,6 +1230,7 @@
         "tests/test_playbook_v2_fixtures.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
         "tests/test_project_defaults_playbook.py",
+        "tests/test_quilt_health_watch.py",
         "tests/test_shipped_playbook_sources.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_v1_removal.py"
@@ -9198,9 +9200,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:cc992bfd524fc0775b9f6c74d3005c17795e24b4682bf0317db4ae54db19bbe9",
+      "digest": "sha256:250c0409cbeb70896f23a4ff365c21fecbfd7e9733d15a801c03f3be10fa0d0b",
       "imports": [
         "src.api.auth",
+        "src.api.scope",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
@@ -9215,6 +9218,7 @@
         "src.integration.lock",
         "src.integration.models",
         "src.integration.train",
+        "src.messages.delivery",
         "src.models",
         "src.profiles.capabilities",
         "src.sessions",
@@ -13031,10 +13035,11 @@
         "object-loop"
       ],
       "default_arm": true,
-      "digest": "sha256:2ab1cf33f995c6d0bdcd3b995a571c89db2be0e92f383f7b23d66a7aa91462bc",
+      "digest": "sha256:a416aa1770c278c5677fb421430e37d8583a135f7146989acf8fef81c3247193",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
         "src.commands.contracts.registry",
         "src.commands.principal",
         "src.commands.resource_authorization",
@@ -14371,7 +14376,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:b6261ebb581c040bbbfd3bc0d799f8010a79e241750d4f0e363988bdcdf9129e",
+      "digest": "sha256:58e35ec8cccd65b2090806218256bde7aba9a7064bfe24961ee1349b2c1fe89a",
       "imports": [
         "src.api.auth",
         "src.commands.claim_commands",
@@ -14401,6 +14406,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.pools",
+        "src.orchestrator.worktree_manager",
         "src.pool_claims",
         "src.scheduler",
         "src.sessions.harness_parser"
@@ -15178,6 +15184,27 @@
       ],
       "summary": "Hotfix and backmerge gates with real PostgreSQL, retained refs and Git DAGs."
     },
+    "tests/test_promotion_continuous_equivalence.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:686bc16dbdb476e758d4d472d0e7fb02335b34523ac43c3f1929b6f13ccac2d6",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Run the typed-source port and frozen shipped policy through the same real engine."
+    },
     "tests/test_promotion_flow.py": {
       "areas": [
         "integration-promotion"
@@ -15738,18 +15765,24 @@
         "provider-usage"
       ],
       "default_arm": true,
-      "digest": "sha256:b8c86225f8b06a664d3ae813b723bbbfe82fa476120ec0c0311707db7647a98d",
+      "digest": "sha256:a71a5472c418cb415edd0fd15a1f146eca40646e844e38b3e8b2f9a61725545d",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.principal",
         "src.config",
         "src.database.queries.provider_usage_queries",
         "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.playbooks.executors.command",
+        "src.profiles.capabilities",
         "src.providers",
         "src.providers.probe"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``provider_usage_probe`` — implementation spec T4."
     },
     "tests/test_provider_usage_queries.py": {
@@ -15764,6 +15797,30 @@
       ],
       "markers": [],
       "summary": "ProviderUsageQueryMixin — implementation spec T1."
+    },
+    "tests/test_quilt_health_watch.py": {
+      "areas": [
+        "shipped-playbooks"
+      ],
+      "default_arm": true,
+      "digest": "sha256:315bf3bfe0f6377ffac5afc08af5c85165087348c714095fce129f6e2d84e732",
+      "imports": [
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.authority",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors",
+        "src.playbooks.executors.agent_task",
+        "src.playbooks.executors.base",
+        "src.playbooks.expressions",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Disabled Quilt candidate against the unmodified installed graph and old goldens."
     },
     "tests/test_rate_guard.py": {
       "areas": [
@@ -19430,7 +19487,7 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:bf5b0c9b48e84a229832d166c2225c3a99a2f9db5b2e8a339e10b2cebdd6be77",
+      "digest": "sha256:c49a97de926ae8213537a2cdddf918ae82cd2037ba54acbbbe66eedde1798f25",
       "imports": [
         "src.cli",
         "src.cli.app",
@@ -19438,6 +19495,7 @@
         "src.config",
         "src.dashboard_server.app",
         "src.dashboard_server.settings",
+        "src.database.backup",
         "src.install",
         "src.install.command",
         "src.install.dashboard",
