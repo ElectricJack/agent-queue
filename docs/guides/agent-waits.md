@@ -88,6 +88,19 @@ acknowledging another session's wait or crossing a project boundary.
 `source_unavailable`, cancellation and a failed producer are explicit outcomes;
 none implies success. See [wake context](wake-context-compaction.md).
 
+Transient resume workspace failures get up to three attempts with backoff while
+retaining the checkout. For a repaired workspace or launch hold, a supervisor can requeue
+the exact continuation generation without changing the resolved wait:
+
+```bash
+aq wait decide --wait-id WAIT_ID --decision requeue \
+  --continuation-id CONTINUATION_ID --expected-generation GENERATION \
+  --note 'Infrastructure repaired; retry this saved continuation'
+```
+
+Pause and uncertain-stop holds require their own recovery. Requeue is audited;
+the hold incident resolves when the fresh session receives its resume context.
+
 ## Deadlines and human input
 
 Operational deadlines escalate to the supervisor without waking the worker or
