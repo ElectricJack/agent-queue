@@ -47,7 +47,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-efc241b8ddbb4c1fb63a41f5fe3f0d90',
                           'msg-21f0bc97741343c39d69d7c5c7b97400'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '8a20eca1d29881c24b78c6ae77ca66559f8d557b',
+ 'measured_source_revision': '9c830f717be72274fb8af1521941c52927af541b',
  'original_owned_total_cap': 155499,
  'measured_owned_total': 161647,
  'delta': 6148,
@@ -332,7 +332,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            'a plain merge. Exact merged measurement pre-approved under '
                            'size-cap-delegation-2026-10-23; preserve all historical grants and '
                            'strict Git ancestry.',
-                 'measured_source_revision': '8a20eca1d29881c24b78c6ae77ca66559f8d557b'}],
+                 'measured_source_revision': '9c830f717be72274fb8af1521941c52927af541b'}],
  'supplemental_grants': [{'task_id': 'fresh-apex-30',
                           'approval_message_id': 'msg-4e25c0d3',
                           'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',

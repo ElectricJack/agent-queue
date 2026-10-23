@@ -19547,7 +19547,7 @@
       "msg-21f0bc97741343c39d69d7c5c7b97400"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "8a20eca1d29881c24b78c6ae77ca66559f8d557b",
+    "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
     "original_owned_total_cap": 155499,
     "measured_owned_total": 161647,
     "delta": 6148,
@@ -19830,7 +19830,7 @@
         "measured_engine_lines": 85376,
         "measured_table_count": 45,
         "reason": "Compose the reviewed obsolete-child disposition with current dev using a plain merge. Exact merged measurement pre-approved under size-cap-delegation-2026-10-23; preserve all historical grants and strict Git ancestry.",
-        "measured_source_revision": "8a20eca1d29881c24b78c6ae77ca66559f8d557b"
+        "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b"
       }
     ],
     "supplemental_grants": [
