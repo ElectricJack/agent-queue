@@ -49,6 +49,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-625e460c4a7c456983e5eb114ea22446',
                           'msg-c80bde55a6d1442791a2ba4f9597d7a0',
                           'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12',
+                          'msg-2a11607018264013b97698493f53906e',
                           'msg-1b59c9af50fd43418246593c54d85a16'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': 'a36c389c39a33ff60bffa98cc019591298bdcfa9',
@@ -413,6 +414,28 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'reason': 'PR #1861 latency instrumentation and bounded background graph waits; '
                            'project supervisor approved the exact footprint under '
                            'size-cap-delegation-2026-10-23. Retain features and count equality.'},
+                {'task_id': 'fair-meadow-87',
+                 'decision_message_id': 'msg-2a11607018264013b97698493f53906e',
+                 'confirmation_message_id': 'msg-1d04c8bcd4cd4b3a8274bba7518e47d9',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'operator_task': 'sharp-cascade-53',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1898',
+                 'previous_source_revision': '48adaddad079a7adc2930e470590621c1575e674',
+                 'previous_owned_total': 161113,
+                 'previous_engine_lines': 85517,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 105,
+                 'authorized_engine_delta': 1,
+                 'authorized_table_delta': 0,
+                 'measured_source_revision': '0ec24f68578dbf9834fa96c0aa1133c15b6270ed',
+                 'measured_owned_total': 161218,
+                 'measured_engine_lines': 85518,
+                 'measured_table_count': 45,
+                 'reason': 'Supervisor-owned wait delivery and independent CI observation '
+                           'recovery. Exact project-supervisor amendment under '
+                           'size-cap-delegation-2026-10-23; preserve existing ownership '
+                           'classifications and historical grants.'},
                 {'task_id': 'fair-ember-93',
                  'decision_record': 'decision:8f9bd96b-900d-4afc-8b98-645dd0ae4eab',
                  'decision_message_id': 'msg-1b59c9af50fd43418246593c54d85a16',
