@@ -19680,6 +19680,8 @@
       {
         "task_id": "noble-flare-12",
         "decision_message_id": "msg-68ccb1d50ee04851a7268dd58e9d4459",
+        "operator_decision": "6679052c",
+        "operator_task": "sharp-cascade-53",
         "referenced_decision": "size-cap-delegation-2026-10-23",
         "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1892",
         "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",

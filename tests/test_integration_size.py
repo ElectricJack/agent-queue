@@ -423,6 +423,8 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert viewport["decision_message_id"] == "msg-68ccb1d50ee04851a7268dd58e9d4459"
     assert viewport["decision_message_id"] in exception["decision_message_ids"]
     assert viewport["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert viewport["operator_decision"] == "6679052c"
+    assert viewport["operator_task"] == "sharp-cascade-53"
     assert viewport["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1892"
     assert viewport["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
     assert viewport["previous_owned_total"] == snapshot["measured_owned_total"]
