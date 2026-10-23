@@ -29,9 +29,18 @@ the project resumes. Human gates use the same escalation delivery boundary.
   Routine notices to a worker in a verified wait remain subject to its held-mail
   fence; writing a pause notice does not itself wake or satisfy that wait.
   Prime documents repeat the pause instruction, including with local overrides.
+- Pausing also stops the project's supervisor agent. The session lens refuses
+  to cold-start or wake it, and reconciliation drains the running one after its
+  current turn, recording `project_paused` as the stop reason. The pause never
+  flips the operator's `supervisor_enabled` intent, so resume restarts the
+  supervisor only when it was enabled before the pause — a supervisor that was
+  off before the pause stays off. The global supervisor is not project-scoped
+  and is unaffected by any pause or resume.
 - Resume releases pending items through their existing delivery pumps. The
   hold survives a daemon restart because project status and outboxes are durable.
 
 Focused checks cover silence, resume, withdrawal during pause, retry and lease
-preservation, project isolation, mid-attempt pauses, worker notices and dashboard
-labels. No operator database or real chat transport is used in these checks.
+preservation, project isolation, mid-attempt pauses, worker notices, dashboard
+labels, supervisor stop/drain on pause, no respawning while paused,
+resume re-arm only for a previously-enabled supervisor, and wake refusal
+while paused. No operator database or real chat transport is used in these checks.

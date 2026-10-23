@@ -1353,7 +1353,7 @@ class LayoutQueryMixin:
         including it here would shift it twice.
         """
         from sqlalchemy.dialects import postgresql, sqlite
-        from src.database.tables import task_layout_cells as cells, task_layouts
+        from src.database.tables import task_layout_cells as cells, task_layouts, tasks
         from src.task_graph.layout.flow import cells_for_box
 
         dialect = self._engine.dialect.name
@@ -1370,6 +1370,20 @@ class LayoutQueryMixin:
             return q.with_for_update() if dialect == "postgresql" else q
 
         async with self._engine.begin() as conn:
+            # FK checks otherwise acquire task locks only after an upsert has
+            # locked geometry. Deletion locks tasks before geometry: taking
+            # KEY SHARE first avoids that inversion, across every batch.
+            present: set[str] = set()
+            for chunk in _chunks(sorted({row.task_id for row in write_set.upserts})):
+                query = (
+                    select(tasks.c.id)
+                    .where(tasks.c.id.in_(chunk))
+                    .order_by(tasks.c.id)
+                    .with_for_update(read=True, key_share=True)
+                )
+                present.update((await conn.execute(query)).scalars())
+            # The snapshot can outlive a deletion that won the task locks.
+            upserts = [row for row in write_set.upserts if row.task_id in present]
             meta = (await conn.execute(_meta_query())).mappings().first()
             if meta is None:
                 # Seed a placeholder row first so a concurrent first-publish
@@ -1445,11 +1459,11 @@ class LayoutQueryMixin:
             # cells at the stale box. The translation pass runs after the
             # upserts, so its entry overwrites and the last write wins.
             touched: dict[str, tuple[float, float, float, float]] = {}
-            if write_set.upserts:
+            if upserts:
                 # Keep parameter construction and executemany bounded; a
                 # 10k-row publication otherwise starves health on this loop.
                 # All batches share this transaction and its meta-row lock.
-                for chunk in _chunks(write_set.upserts, LAYOUT_WRITE_BATCH_SIZE):
+                for chunk in _chunks(upserts, LAYOUT_WRITE_BATCH_SIZE):
                     rows_vals = [
                         {
                             "project_id": project_id,
