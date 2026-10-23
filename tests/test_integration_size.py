@@ -371,7 +371,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
         1_293, 2_166,
     ]
-    assert exception["batch_measured_delta"] == measured - 158_958
+    assert exception["batch_measured_delta"] == 2_204
     grant, = exception["supplemental_grants"]
     assert grant["task_id"] == "fresh-apex-30"
     assert grant["approval_message_id"] == "msg-4e25c0d3"
@@ -387,7 +387,10 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "fair-dune-41",
         "noble-flare-12",
         "sound-forge-62",
+        "fair-flare-10",
     }
+    assert (exception["batch_measured_delta"]
+            + amendments["fair-flare-10"]["authorized_owned_delta"] == measured - 158_958)
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
     assert amendment["authorized_owned_delta"] == 17
@@ -564,7 +567,7 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     batch = exception["frozen_batch_composition"]
     assert batch["batch_id"] == "train-5429c3c71859f327ff8b46dbf1edc557"
     assert batch["starting_revision"] == "48adaddad079a7adc2930e470590621c1575e674"
-    assert batch["source_revision"] == exception["measured_source_revision"]
+    assert batch["source_revision"] == "73e99672d2447c44ef6a71d43a0187f2d16630af"
     assert batch["member_sources"] == {
         "noble-flare-12": "f09829d145915bc7426d24f28623283f7319a7a2",
         "sound-forge-62": "15239e75971ae5ac39e6a7d0a5e467331ab58428",
@@ -585,13 +588,38 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     assert batch["base_table_count"] == activation["measured_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_162
+    ) == 161_162
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_543
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
+
+    # The restart repair grant follows this frozen batch; its historical
+    # membership, source and measured deltas remain unchanged above.
+    grant = amendments["fair-flare-10"]
+    assert grant["decision_message_id"] == "msg-76ff7843e72d451b9017a0b4db30c970"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["implementation_message_id"] == "msg-9a7a03cd"
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["root_task_id"] == "prime-crest-79"
+    assert grant["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1759"
+    assert grant["previous_source_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
+    assert grant["previous_measurement_revision"] == batch["source_revision"]
+    assert grant["previous_owned_total"] == 161_162
+    assert grant["authorized_owned_delta"] == grant["authorized_shared_delta"] == 19
+    assert grant["authorized_engine_delta"] == grant["authorized_table_delta"] == 0
+    assert (grant["previous_owned_total"] + grant["authorized_owned_delta"]
+            == grant["measured_owned_total"] == exception["measured_owned_total"]
+            == report["total"] == 161_181)
+    assert (grant["previous_engine_lines"] == grant["measured_engine_lines"]
+            == report["groups"]["engine"] == 85_543)
+    assert grant["previous_table_count"] == grant["measured_table_count"] == 45
+    assert (grant["measured_source_revision"] == exception["measured_source_revision"]
+            == "10af37472a90cd488707c483047c9c97e2f7a5db")
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["restart_hold_repair_measurement"] == grant
 
 
 @pytest.mark.parametrize("field,value", [
