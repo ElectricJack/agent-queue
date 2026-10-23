@@ -19532,13 +19532,14 @@
       "msg-00b0e08117cc479c9a4a0b36fc5a30d0",
       "msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c",
       "msg-a337e2c905ce4f5c8a236344a4e25211",
-      "msg-330ea2478c724381acbb5512fc99e4b5"
+      "msg-330ea2478c724381acbb5512fc99e4b5",
+      "msg-e2dd5a423516458eb564e745a12ab30e"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "438aa36cc93945305ea291622009f6b34d4ee733",
+    "measured_source_revision": "344a85b9d8388521975af9b830e4d8b17817562e",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 161053,
-    "delta": 5554,
+    "measured_owned_total": 161081,
+    "delta": 5582,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19558,7 +19559,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 2095,
+    "batch_measured_delta": 2123,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19567,7 +19568,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85468,
+    "measured_engine_lines": 85496,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22",
     "amendments": [
@@ -19621,6 +19622,23 @@
         "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
         "supersedes_message_id": "msg-ac47a08407a6462bb411326ecefeab44",
         "grant_source_message_id": "msg-330ea2478c724381acbb5512fc99e4b5"
+      },
+      {
+        "task_id": "quick-pinnacle-97",
+        "decision_message_id": "msg-e2dd5a423516458eb564e745a12ab30e",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "previous_source_revision": "dd95038cca3fef9aae70eb0092079fe24d52a062",
+        "previous_owned_total": 161053,
+        "previous_engine_lines": 85468,
+        "authorized_owned_delta": 28,
+        "authorized_engine_delta": 28,
+        "measured_owned_total": 161081,
+        "measured_engine_lines": 85496,
+        "measured_table_count": 45,
+        "measured_source_revision": "344a85b9d8388521975af9b830e4d8b17817562e",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1884",
+        "reason": "Recover orphaned launching fixer reservations after a per-attempt grace period; fence late registration and completion by session, instance and launch timestamp. Exact self-approved measurement under the project supervisor delegation."
       }
     ],
     "supplemental_grants": [
@@ -19687,15 +19705,20 @@
         "prime-impact-40": {
           "owned": 103,
           "engine": 82
+        },
+        "quick-pinnacle-97": {
+          "owned": 28,
+          "engine": 28
         }
       },
       "reason": "Compose the existing exact grants on their common measured dev tree; preserve each historical measurement below.",
-      "source_revision": "438aa36cc93945305ea291622009f6b34d4ee733",
+      "source_revision": "344a85b9d8388521975af9b830e4d8b17817562e",
       "member_sources": {
         "agile-beacon-80": "6ba25e2472d4a8c6bb145d6f9bc2e067c8ebad61",
         "grand-quest-20": "d60c599767a340d3e3fd6dba2eff8451d349d7e7",
         "nimble-torrent-12": "9f2dd1988046baa0e40681c4457f4729b55e80c6",
-        "prime-impact-40": "0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8"
+        "prime-impact-40": "0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8",
+        "quick-pinnacle-97": "344a85b9d8388521975af9b830e4d8b17817562e"
       }
     }
   },
