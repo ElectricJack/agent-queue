@@ -32,10 +32,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-ab86b9766c2f42b9ba4920aba585b577',
                           'msg-21784b3e56aa4f54bf1042b7c9af4aaf'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '15bc2ea12433ab88b9e915d52900de0123452fd4',
+ 'measured_source_revision': 'b65c4f58866c1569e7ed73cb3a9d306f3060e1f0',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160842,
- 'delta': 5343,
+ 'measured_owned_total': 160884,
+ 'delta': 5385,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -49,7 +49,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 1884,
+ 'batch_measured_delta': 1926,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -66,9 +66,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'previous_engine_lines': 85301,
                  'authorized_owned_delta': 17,
                  'authorized_engine_delta': 15,
-                 'reason': 'Memoize stack authorization inputs within one '
-                           'scheduler sync pass; supervisor approved exact net '
-                           'footprint after removing an unused parent query.',
+                 'reason': 'Memoize stack authorization inputs within one scheduler sync '
+                           'pass; supervisor approved exact net footprint after removing an '
+                           'unused parent query.',
                  'global_request': 'msg-9f895e0d',
                  'global_grant': 'msg-7f2f68c1',
                  'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'}],
@@ -79,8 +79,17 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'prior_owned_total_cap': 160820,
                           'authorized_delta': 5,
                           'measured_owned_total': 160825,
-                          'reason': 'Verify registered linked fixer worktrees '
-                                    'before permission bypass.'}]}
+                          'reason': 'Verify registered linked fixer worktrees before '
+                                    'permission bypass.'}],
+ 'merge_measurement': {'task_id': 'fresh-apex-30',
+                       'dev_source_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
+                       'dev_owned_total': 160879,
+                       'dev_engine_lines': 85316,
+                       'authorized_owned_delta': 5,
+                       'authorized_engine_delta': 5,
+                       'approval_message_id': 'msg-4e25c0d3',
+                       'reason': 'Carry forward the unchanged approved fixer delta onto the '
+                                 'measured dev tree.'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

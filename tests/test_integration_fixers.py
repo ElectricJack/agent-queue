@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import asyncio
 import pytest
@@ -9,6 +10,7 @@ from sqlalchemy import func, select, update
 
 from src.commands.principal import ExecutionPrincipal
 from src.database.tables import integration_batches, messages, tasks
+from src.git.manager import _git_preparation_error
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
 from src.integration.fixers import BatchFixerService, split_members
 from src.integration.models import RepairPolicy
@@ -137,6 +139,27 @@ async def test_ambiguous_launch_is_retained_and_never_retried(db, fixer):
     assert (await state(db))["status"] == "green"
 
 
+@pytest.mark.parametrize("reason", [
+    "lock_wait_timeout", "git_timeout", "git_exit", "import_mismatch",
+])
+async def test_preparation_reason_reaches_fixer_blocker_and_train_notice(db, fixer, reason):
+    service, runtime, _ = fixer
+    runtime.start.side_effect = _git_preparation_error(
+        reason, subcommand="fetch", elapsed=120, budget=120,
+        returncode=128 if reason == "git_exit" else None,
+        diagnostic_kind="fatal" if reason == "git_exit" else "none",
+    )
+    result = await allocate(service)
+    assert result["outcome"] == "deferred"
+    assert f"reason={reason}" in result["reason"]
+    assert f"reason={reason}" in (await state(db))["blocker"]
+    notice, = await notices(db, supervisor=True)
+    assert notice["from_id"] == "integration-train"
+    assert f"reason={reason}" in notice["body"]
+    assert "subcommand=fetch" in notice["body"]
+    runtime.start.assert_awaited_once()
+
+
 @pytest.mark.parametrize("intent", ["paused", "aborted"])
 async def test_operator_intent_refuses_launch(db, fixer, intent):
     service, runtime, _ = fixer
@@ -213,17 +236,19 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
                        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "work"))
     config.sessions.enabled, config.sessions.provider = True, "fake"
     registry = HarnessRegistry()
-    harness_id = getattr(request, "param", "codex")
+    overrides = getattr(request, "param", {})
+    harness_id = overrides.get("id", "codex")
     permission_flag = ("--dangerously-bypass-approvals-and-sandbox" if harness_id == "codex"
                        else "--dangerously-skip-permissions")
-    registry.upsert(Harness(id=harness_id, command=harness_id, model_flag="--model",
-                           permission_flag=permission_flag,
-                           supports_hooks=harness_id == "codex",
-                           hook_files=((".codex/hooks.json", "hooks/codex.json"),)
-                           if harness_id == "codex" else (),
-                           hook_trust_flag="--dangerously-bypass-hook-trust"
-                           if harness_id == "codex" else ""))
-    profile = AgentProfile(id="fixer-profile", name="Fixer", harness=harness_id,
+    harness = Harness(**{
+        "id": harness_id, "command": harness_id, "model_flag": "--model",
+        "permission_flag": permission_flag, "supports_hooks": harness_id == "codex",
+        "hook_files": ((".codex/hooks.json", "hooks/codex.json"),) if harness_id == "codex" else (),
+        "hook_trust_flag": "--dangerously-bypass-hook-trust" if harness_id == "codex" else "",
+        **overrides,
+    })
+    registry.upsert(harness)
+    profile = AgentProfile(id="fixer-profile", name="Fixer", harness=harness.id,
                            model="test-model", lifecycle="pool")
     await db.create_profile(profile)
     transport = LocalGit(remote)
@@ -266,7 +291,8 @@ def principal_for(row):
                               session_instance_token=row.instance_token, project_id=row.project_id)
 
 
-@pytest.mark.parametrize("live_fixer", ["codex", "claude"], indirect=True)
+@pytest.mark.parametrize("live_fixer", [{}, {"id": "claude", "command": "claude"}],
+                         indirect=True)
 async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, live_fixer):
     service, runtime, orch, row, _, source, _ = live_fixer
     assert row.lifecycle == "named" and row.task_id is None and row.state == "running"
@@ -312,6 +338,18 @@ async def test_fixer_refuses_checkout_without_linked_registration(db, live_fixer
         await runtime._start(state)
     mint.assert_not_awaited()
     assert len(orch.session_providers.create("fake").starts) == starts
+
+
+@pytest.mark.parametrize("live_fixer", [
+    {"id": "claude", "command": "claude", "session_id_flag": "--session-id"},
+], indirect=True)
+async def test_session_id_flag_launch_carries_a_dashed_uuid(db, live_fixer):
+    # Claude rejects a 32-hex --session-id ("Must be a valid UUID") and dies at startup.
+    _, _, orch, row, _, _, _ = live_fixer
+    command = orch.session_providers.create("fake").sessions[row.name].spec.command
+    value = command[command.index("--session-id") + 1]
+    assert value == row.id == row.session_key
+    assert str(UUID(value)) == value
 
 
 async def test_launch_pins_heads_target_start_in_daemon_namespace(db, live_fixer):
@@ -599,6 +637,7 @@ async def test_capacity_retry_reuses_unlaunched_identity_without_spending_rounds
         head_sha=NEXT, authorize=AsyncMock(return_value=True))
     assert result["outcome"] == "filed"
     assert result["session_id"] == first["session_id"]
+    assert str(UUID(first["session_id"])) == first["session_id"]
     current = (await db.get_integration_batch(successor.id))["fixer_state"]
     assert current["red_heads"] == [NEXT]
     assert current["starting_sha"] == NEXT
@@ -676,3 +715,35 @@ async def test_deferred_successor_observes_late_fix_on_retained_writer(split_env
     fresh = await service.visit(following, members, await snapshot(following))
     assert fresh.state == "testing", fresh
     assert await ops.is_ancestor(repo, later, fresh.candidate_sha)
+
+
+async def test_capacity_retry_dashes_a_legacy_hex_identity_before_launch(db, fixer):
+    from src.integration.fixer_runtime import FixerCapacityUnavailable
+
+    service, runtime, now = fixer
+    runtime.start.side_effect = FixerCapacityUnavailable("fleet is full")
+    assert (await allocate(service))["outcome"] == "deferred"
+    # A row deferred before identities were minted dashed carries a 32-hex id.
+    legacy = uuid4().hex
+    successor = Batch("legacy-next", "p", "r", "refs/heads/dev")
+    store = BatchStore(db)
+    await store.freeze(successor, await store.members("batch-fix"),
+                       trees={"one": "e" * 40, "two": "f" * 40})
+    async with db.immediate() as conn:
+        waiting = await state(db)
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == "batch-fix")
+                           .values(fixer_state=None))
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == successor.id)
+                           .values(fixer_state={**waiting, "session_id": legacy,
+                                                "batch_id": successor.id,
+                                                "target_ref": candidate_ref(successor.id)},
+                                   fixer_queue={"family_id": "batch-fix"}))
+    now[0] += 5000
+    runtime.start.side_effect = None
+    result = await service.allocate(successor.id, target_ref=candidate_ref(successor.id),
+        head_sha=NEXT, authorize=AsyncMock(return_value=True))
+    assert result["outcome"] == "filed"
+    dashed = str(UUID(legacy))
+    assert result["session_id"] == dashed
+    assert (await db.get_integration_batch(successor.id))["fixer_state"]["session_id"] == dashed
+    assert runtime.start.await_args_list[-1].args[0]["session_id"] == dashed

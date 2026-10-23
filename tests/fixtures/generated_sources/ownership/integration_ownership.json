@@ -19512,10 +19512,10 @@
       "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "15bc2ea12433ab88b9e915d52900de0123452fd4",
+    "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 160842,
-    "delta": 5343,
+    "measured_owned_total": 160884,
+    "delta": 5385,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19535,7 +19535,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 1884,
+    "batch_measured_delta": 1926,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19573,7 +19573,17 @@
         "measured_owned_total": 160825,
         "reason": "Verify registered linked fixer worktrees before permission bypass."
       }
-    ]
+    ],
+    "merge_measurement": {
+      "task_id": "fresh-apex-30",
+      "dev_source_revision": "4e50c276fca68cbe92ba4fc704363ec6026db7dc",
+      "dev_owned_total": 160879,
+      "dev_engine_lines": 85316,
+      "authorized_owned_delta": 5,
+      "authorized_engine_delta": 5,
+      "approval_message_id": "msg-4e25c0d3",
+      "reason": "Carry forward the unchanged approved fixer delta onto the measured dev tree."
+    }
   },
   "storage_dispositions": {
     "integration_close_attempts": {
