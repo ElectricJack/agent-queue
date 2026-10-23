@@ -488,6 +488,12 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """Restore a lost lock from the exact active claim, without rewriting it."""
         from src.workspace_ownership import rebind_workspace
 
+        session = await self.db.get_session(args.get("session_id"))
+        if session is not None:
+            if (denied := self._session_project_scope_error(session)) is not None:
+                return denied
+        if not all(args.get(key) for key in ("workspace_id", "task_id", "session_id")):
+            return {"success": False, "error": "workspace_id, task_id and session_id are required"}
         return await rebind_workspace(
             self.db, args["workspace_id"], args["task_id"], args["session_id"],
         )

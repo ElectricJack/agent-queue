@@ -60,6 +60,25 @@ DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refr
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
+WORKSPACE_CHANGES = ROOT / "tests/fixtures/contracts/workspace-ownership-contract-changes.json"
+
+
+def _workspace_changes():
+    return json.loads(WORKSPACE_CHANGES.read_text())
+
+
+def test_workspace_catalogue_only_changes_guarded_ownership_controls():
+    evidence = _workspace_changes()
+    snapshot = command_snapshot()
+    assert set(evidence["transport_definitions"]) == {"release_workspace"}
+    assert set(evidence["new_commands"]) == {"rebind_workspace"}
+    for name, approved in evidence["new_commands"].items():
+        assert _digest(snapshot.commands[name].tool_definition()) == approved["transport_sha256"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    previous = _revert_catalogue(json.loads(render_command_catalogue()), evidence)
+    assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
 
 
 def _stuck_check_changes():
@@ -72,7 +91,7 @@ def _pr_repair_changes():
 
 def _before_pr_repair_catalogue():
     evidence = _pr_repair_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _revert_catalogue(json.loads(render_command_catalogue()), _workspace_changes())
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -383,7 +402,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _workspace_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -414,7 +433,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
     pr_repair = _pr_repair_changes()
     assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
-    assert actual == pr_repair["cli_catalogue_sha256"]
+    workspace = _workspace_changes()
+    assert workspace["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == workspace["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"

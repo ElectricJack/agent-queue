@@ -562,7 +562,9 @@ class WorkspaceQueryMixin:
                 ).mappings().fetchone()
                 if not ws_row:
                     continue
-                if await claim_blocks_acquisition(conn, ws_row["workspace_path"]):
+                if await claim_blocks_acquisition(
+                    conn, ws_row["workspace_path"], requesting_task_id=locked_by_task_id,
+                ):
                     continue
 
                 # Path-level conflict check — preserved from acquire_workspace.

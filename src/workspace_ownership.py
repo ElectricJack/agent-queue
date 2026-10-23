@@ -7,7 +7,7 @@ import os
 import time
 from pathlib import Path
 
-from sqlalchemy import and_, exists, or_, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 
 from src.claim_file import CLAIM_FILE, read_claim_file
 from src.database.tables import (
@@ -24,16 +24,30 @@ LIVE_STATES = ("starting", "running", "draining", "sleeping")
 ATTACHED_STATES = ("attached", "handoff_pending")
 
 
+def session_retains_workspace():
+    """A released one-shot cooldown is history, not a hibernating owner."""
+    released_cooldown = and_(
+        sessions.c.lifecycle == "task",
+        sessions.c.state == "sleeping",
+        sessions.c.sleep_reason == "rate_limit",
+        ~exists(select(tasks.c.id).where(
+            tasks.c.id == sessions.c.task_id,
+            tasks.c.assigned_agent_id == sessions.c.agent_id,
+        )).correlate(sessions),
+    )
+    return or_(
+        and_(sessions.c.state.in_(LIVE_STATES), ~func.coalesce(released_cooldown, False)),
+        and_(sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None)),
+    )
+
+
 def unattached_workspace():
     """A cleared lock row does not revoke a session or integration attachment."""
     return and_(
         ~exists(
             select(sessions.c.id).where(
                 sessions.c.work_dir == workspaces.c.workspace_path,
-                or_(
-                    sessions.c.state.in_(LIVE_STATES),
-                    and_(sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None)),
-                ),
+                session_retains_workspace(),
             )
         ).correlate(workspaces),
         ~exists(
@@ -48,7 +62,7 @@ def unattached_workspace():
     )
 
 
-async def claim_blocks_acquisition(conn, path):
+async def claim_blocks_acquisition(conn, path, *, requesting_task_id=None):
     """Permit known released markers to reach the existing stale-marker recovery.
 
     Unknown/unreadable markers fail closed. No marker is removed by placement.
@@ -74,17 +88,17 @@ async def claim_blocks_acquisition(conn, path):
             await conn.execute(
                 select(sessions).where(
                     sessions.c.id == claim.get("session_id"),
+                    session_retains_workspace(),
                 )
             )
         )
         .mappings()
         .one_or_none()
     )
-    if session and (
-        session["state"] in LIVE_STATES
-        or (session["task_id"] == claim["task_id"] and session["claim_phase"] is not None)
-    ):
+    if session:
         return True
+    if requesting_task_id == claim["task_id"]:
+        return False
     if row is None:
         return False
     epoch = claim.get("claim_epoch")
@@ -138,10 +152,7 @@ async def ownership_blockers(conn, ws):
                         if ws["locked_by_agent_id"]
                         else False,
                     ),
-                    or_(
-                        sessions.c.state.in_(LIVE_STATES),
-                        and_(sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None)),
-                    ),
+                    session_retains_workspace(),
                 )
             )
         )

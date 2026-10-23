@@ -12956,7 +12956,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RebindWorkspaceResponse"
+                }
               }
             }
           },
@@ -68848,6 +68850,34 @@
           "session_id"
         ],
         "title": "RebindWorkspaceRequest"
+      },
+      "RebindWorkspaceResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "workspace_id",
+          "task_id",
+          "session_id"
+        ],
+        "title": "RebindWorkspaceResponse"
       },
       "ReceiptDTO": {
         "properties": {

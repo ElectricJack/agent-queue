@@ -1253,6 +1253,32 @@ async def test_real_cutover_preserves_writer_and_provisions_each_base_with_its_k
 
 
 class TestWorkspaceOwnershipControls:
+    @pytest.mark.parametrize("lifecycle,reason,assigned,available", [
+        ("task", "rate_limit", False, 1),
+        ("task", "rate_limit", True, 0),
+        ("task", None, False, 0),
+        ("pool", "rate_limit", False, 0),
+    ])
+    async def test_sleeping_capacity_distinguishes_released_cooldown_from_owner(
+        self, setup, lifecycle, reason, assigned, available,
+    ):
+        from src.claim_file import remove_claim_file
+
+        _handler, db, path = await self._held(setup)
+        remove_claim_file(str(path))
+        await db.update_workspace("held-ws", locked_by_agent_id=None, locked_by_task_id=None)
+        await db.update_session(
+            "holder-session", lifecycle=lifecycle, state="sleeping", desired_state="sleeping",
+            claim_phase=None, sleep_reason=reason,
+        )
+        if not assigned:
+            await db.update_task("held", assigned_agent_id=None)
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == available
+        acquired = await db.acquire_one_unlocked(
+            "p1", "project-repo", "exclusive", "held", "holder",
+        )
+        assert (acquired is not None) == bool(available)
+
     async def _held(self, setup):
         from src.claim_file import write_claim_file
         from src.models import TaskStatus

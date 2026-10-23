@@ -17035,7 +17035,7 @@
   "rebind_workspace": {
     "mode": "json_object",
     "producer": "src/commands/agent_commands.py:AgentCommandsMixin._cmd_rebind_workspace",
-    "source_digest": "sha256:6acf9b478314d184b21feae4ef9c17496431f02d8f8dd25f675c1d2b03458c4d",
+    "source_digest": "sha256:223f45cc39002861248c3186c0c7ec6f29226f4ae7d06524f26008ef54e79295",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -17054,6 +17054,14 @@
     "result_policy": "strict boolean success at producer; no inferred outcome",
     "return_branches": [
       {
+        "return": "session belongs to a different project scope",
+        "protocol": "explicit_boolean: False (_session_project_scope_error)"
+      },
+      {
+        "return": "missing workspace_id, task_id or session_id",
+        "protocol": "explicit_boolean: False"
+      },
+      {
         "return": "missing or incoherent session/task/agent/workspace/claim, or conflicting ownership",
         "protocol": "explicit_boolean: False (src.workspace_ownership.rebind_workspace)"
       },
@@ -17066,10 +17074,11 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_workspace_commands.py::TestWorkspaceOwnershipControls"
+      "tests/test_workspace_commands.py::TestWorkspaceOwnershipControls",
+      "tests/test_command_scope_matrix.py::test_a_project_supervisor_cannot_reach_another_projects_session"
     ],
     "helper_producers": {},
-    "review_notes": "Delegates unchanged boolean outcomes from src.workspace_ownership.rebind_workspace. Reviewed all exits: every identity, assignment, path, epoch, metadata, phase or ownership mismatch returns success=false; coherent restoration returns success=true. Original-principal resource gates resolve workspace, task and session. Only the workspace lock row is repaired; marker/session/task/enabled state is preserved."
+    "review_notes": "Handler rejects foreign project sessions before argument validation and returns success=false for missing required identities. Delegates unchanged boolean outcomes from src.workspace_ownership.rebind_workspace. Reviewed all exits: every identity, assignment, path, epoch, metadata, phase or ownership mismatch returns success=false; coherent restoration returns success=true. Original-principal resource gates resolve workspace, task and session. Only the workspace lock row is repaired; marker/session/task/enabled state is preserved."
   },
   "reconcile_agent_cron": {
     "mode": "json_object",
