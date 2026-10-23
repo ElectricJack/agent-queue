@@ -74,6 +74,7 @@ areas:
     description: "Task hierarchy: dotted child ids, set-parent and children reads, container settlement and close, subtree delete/archive, phases, standing parents and hierarchy doctor checks and statement budgets."
     match:
       - tests/test_hierarchy_*.py
+      - tests/test_task_split.py
       - tests/test_phases.py
       - tests/perf/test_hierarchy_statements.py
       - tests/test_worker_filing.py
@@ -114,6 +115,7 @@ areas:
       - tests/test_agent_task_routing.py
       - tests/test_cross_project_routing.py
       - tests/test_default_assignment_routing_playbook.py
+      - tests/test_assignment_routing_building_blocks.py
       - tests/test_pool_agent_routing.py
       - tests/test_task_route_source.py
       - tests/test_routing_planner.py
@@ -380,7 +382,9 @@ areas:
       - tests/test_shipped_playbook_sources.py
       - tests/test_default_agent_type_playbooks.py
       - tests/test_default_pipeline_intake.py
+      - tests/test_default_pipeline_equivalence.py
       - tests/test_default_assignment_routing_playbook.py
+      - tests/test_assignment_routing_building_blocks.py
       - tests/test_plugin_cron_to_playbook_migration.py
       - tests/test_blocked_task_escalation.py
       - tests/test_ci_main_sentinel.py

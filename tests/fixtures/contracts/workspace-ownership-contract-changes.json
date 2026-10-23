@@ -1,8 +1,8 @@
 {
   "source_base": "f8af6255714732c751b89ad4bea8bb8f1ab8fa51",
   "reason": "Record guarded release parameters and exact active-claim rebind; preserve all earlier command recordings.",
-  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
-  "cli_catalogue_sha256": "57b456d1515046acda8f11c565bd3f9609928cdc2e6b960462375e0b2bbbbf18",
+  "previous_cli_catalogue_sha256": "684a29ee4d859edb0a8ced373b464b2a2ed5377be09f95c9d8ca9829eaa7406f",
+  "cli_catalogue_sha256": "48745271312551668a34bc4032c5ea332da97a4c05202ff856c7e582e84bf408",
   "catalogue_sections": {
     "explicit": {
       "list": true,
@@ -654,6 +654,7 @@
         "get_task_tree",
         "task_children",
         "task_progress",
+        "task_split",
         "reparent_task",
         "get_task_dependencies",
         "task_deps",
@@ -885,5 +886,6 @@
       "transport_sha256": "f1232802c4f4b4531e11d5d6c383c6c848714e1c7a9b25823e60cb2361e5a355",
       "contract_fingerprint": "sha256:8b504a0973d2ef976508efc325ed17d3f9f59f53f7f8df370a283aba21638782"
     }
-  }
+  },
+  "merged_dev_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac"
 }

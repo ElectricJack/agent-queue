@@ -106,7 +106,7 @@ MEMBER_LIMIT = 200
 # Leave time in the visit deadline to freeze and advance an admitted prefix: a
 # cooperative quantum (not a fenced writer's deadline) that red roots do not spend.
 SELECTION_WORK_SECONDS = 60.0
-_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted",
+_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted", "source_ci_repair_unchanged",
     "root_pr_checks_need_repair", "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted"})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
@@ -306,9 +306,9 @@ async def _epic_branches_on(conn, ids=(), *, target=None):
     ).order_by(tasks.c.id))).all())
 
 
-async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
+async def project_snapshot(db, target, *, read=False, cached_only=False) -> GitTruthSnapshot | None:
     """Observe the project root through the daemon's isolated delivery store."""
-    from src.integration.delivery_observer import prerequisite_observer
+    from src.integration.delivery_observer import DeliveryObserver, prerequisite_observer
 
     observer = prerequisite_observer(db) or getattr(db, "_delivery_observer", None)
     if observer is None:
@@ -316,9 +316,9 @@ async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
     repo = await db.get_repo(target.repository_id)
     observed = await observer.snapshot(DeliveryTarget(
         target.project_id, target.repository_id, repo.url, target.target_ref,
-    ))
+    ), max_age=DeliveryObserver.READ_MAX_AGE if read else 0.0, cached_only=cached_only)
     return observed if isinstance(observed, GitTruthSnapshot) else GitTruthSnapshot(
-        GitTruth(observer.git), observed,
+        GitTruth(observer.git), observed, cached_only=cached_only,
     )
 
 

@@ -3,7 +3,9 @@
 The batch branch is the workspace and publication boundary. A red observation
 changes the input of the same session, never files another task or consumes a
 claim. Session launch is registered before process creation; an uncertain launch
-is retained for inspection rather than retried as a second agent.
+is retained for inspection rather than retried as a second agent. A launch that
+provably left no process (never registered, or registered and confirmed stopped)
+waits with backoff and relaunches like a capacity wait.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -19,9 +21,14 @@ from sqlalchemy.dialects.postgresql import insert
 from src.database.tables import integration_batch_members, integration_batches, messages, sessions, tasks
 from src.git.manager import is_valid_git_oid
 from src.integration.batches import candidate_ref
+from src.integration.models import repair_deadline, repair_deadline_due
 from src.integration.lock import BranchLock
 from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
 from src.waits.sources import execute_batch_mutation, insert_message_with_source_event
+
+_LAUNCH_RETRY_MAX_SECONDS = 3600
+_LAUNCH_ESCALATE_AFTER = 3
+_LAUNCH_GRACE_SECONDS = 120
 
 
 class BatchFixerService:
@@ -78,6 +85,47 @@ class BatchFixerService:
                        revisit_seconds=state.get("revisit_seconds", 300))
         return {"success": True, "outcome": "deferred", "reason": state["blocker"],
                 "session_id": state["session_id"]}
+
+    @staticmethod
+    async def _relaunchable(conn, state):
+        """The identity to relaunch with, or None while a process may exist.
+
+        An unregistered identity is reused with its checkout. A registered one
+        that launch cleanup confirmed stopped cannot register again, so it gets
+        a fresh identity under the same session name.
+        """
+        row = (await conn.execute(select(sessions.c.state).where(
+            sessions.c.id == state["session_id"],
+        ))).one_or_none()
+        if row is None:
+            return dict(state)
+        if row.state != "stopped":
+            return None
+        return {**state, "session_id": str(uuid4()), "instance_token": uuid4().hex[:12]}
+
+    async def _retry_launch(self, conn, batch, state, reason):
+        from src.integration.fixer_batches import defer_on
+
+        fresh = await self._relaunchable(conn, state)
+        if fresh is None:
+            return None
+        failures = fresh.get("launch_failures", 0) + 1
+        backoff = min(fresh["revisit_seconds"] * 2 ** (failures - 1), _LAUNCH_RETRY_MAX_SECONDS)
+        fresh.pop("blocker", None)
+        # The unlaunched status: resume transfers it and allocate relaunches it.
+        fresh.update(status="waiting_capacity", launch_failures=failures, launch_error=reason)
+        if failures >= _LAUNCH_ESCALATE_AFTER and not fresh.get("launch_escalated"):
+            fresh["launch_escalated"] = True
+            await self._message(conn, batch, fresh, "launch-retry", (
+                f"Batch {batch['id']} fixer failed to launch {failures} times: {reason}. "
+                f"No process was left running; the train retries with backoff "
+                f"(next in {backoff}s) and will not report again for this batch family."
+            ), supervisor=True)
+        await self._write(conn, batch["id"], fresh)
+        await defer_on(conn, batch, now=self.clock(), reason="launch_retry",
+                       head_sha=fresh["head_sha"], revisit_seconds=backoff)
+        return {"success": True, "outcome": "deferred", "reason": reason,
+                "session_id": fresh["session_id"]}
 
     async def allocate(
         self, batch_id, *, target_ref, head_sha, authorize=None, held=False,
@@ -137,6 +185,20 @@ class BatchFixerService:
                     integration_batches.c.fixer_state["family_id"].astext == family,
                     integration_batches.c.fixer_state["session_id"].astext.is_not(None),
                 ).with_for_update())).mappings().one_or_none()
+                # Before launch retries, a failed launch blocked its family
+                # forever. A successor takes over an identity that left no process.
+                fresh = (await self._relaunchable(conn, owner["fixer_state"])
+                         if owner and not existing_only
+                         and str(owner["fixer_state"].get("blocker", "")).startswith(
+                             "launch incomplete") else None)
+                if fresh is not None:
+                    if authorize is None or not await authorize():
+                        return {"success": True, "outcome": "withdrawn"}
+                    fresh.pop("blocker", None)
+                    state = {**fresh, "batch_id": batch_id, "target_ref": target_ref,
+                             "status": "waiting_capacity", "launch_escalated": True}
+                    await self._write(conn, owner["id"], None)
+                    owner = None
                 if owner:
                     if existing_only:
                         return {"success": True, "outcome": "exists",
@@ -144,8 +206,9 @@ class BatchFixerService:
                     if authorize is None or not await authorize():
                         return {"success": True, "outcome": "withdrawn"}
                     bound = dict(owner["fixer_state"])
-                    if (bound.get("blocker") or self.clock() >= bound["deadline"]
-                            or len(bound["red_keys"]) >= bound["max_rounds"]):
+                    if (bound.get("blocker") or repair_deadline_due(bound["deadline"], self.clock())
+                            or (bound["max_rounds"]
+                                and len(bound["red_keys"]) >= bound["max_rounds"])):
                         from src.integration.fixer_batches import defer_on
 
                         reason = bound.get("blocker") or "fixer family budget exhausted"
@@ -176,8 +239,7 @@ class BatchFixerService:
                     tasks.c.id == ordinary_repair_id(batch_id, batch["repair_attempt_count"]),
                 ))
                 legacy = status is not None and status not in {"COMPLETED", "FAILED", "BLOCKED"}
-            if legacy:
-                # Finish an already held ordinary repair; never allocate its successor.
+            if legacy:  # Finish an already held ordinary repair; never allocate its successor.
                 pass
             elif not state:
                 if existing_only:
@@ -187,7 +249,7 @@ class BatchFixerService:
                 members = (await conn.execute(select(integration_batch_members).where(
                     integration_batch_members.c.batch_id == batch_id,
                 ).order_by(integration_batch_members.c.ordinal))).mappings().all()
-                identity = uuid4().hex
+                identity = str(uuid4())  # Claude's --session-id needs the dashed form
                 now = self.clock()
                 state = {
                     "version": 1, "batch_id": batch_id, "project_id": batch["project_id"],
@@ -198,11 +260,11 @@ class BatchFixerService:
                     "instance_token": uuid4().hex[:12], "status": "launching",
                     "starting_sha": head_sha, "head_sha": head_sha, "red_heads": [head_sha],
                     "red_keys": [evidence_key], "failure_evidence": evidence,
-                    "created_at": now,
-                    "deadline": now + (policy.primary_seconds if policy else 1800),
-                    "budget_seconds": policy.primary_seconds if policy else 1800,
+                    "created_at": now, "launch_started_at": now,
+                    "deadline": repair_deadline(now, policy.primary_seconds if policy else 0),
+                    "budget_seconds": policy.primary_seconds if policy else 0,
                     "revisit_seconds": policy.deferred_revisit_seconds if policy else 300,
-                    "max_rounds": min(3, policy.primary_attempts) if policy else 3,
+                    "max_rounds": policy.primary_attempts if policy else 0,
                     "brief": brief, "sync_default_branch": sync_default_branch,
                     "members": [{"task_id": m["task_id"], "source_sha": m["source_sha"],
                                  "source_base_sha": m["source_base_sha"]} for m in members],
@@ -214,13 +276,27 @@ class BatchFixerService:
                 ).values(repair_attempt_count=integration_batches.c.repair_attempt_count + 1))
                 launch = state
             else:
-                if state["status"] == "waiting_capacity":
-                    state.update(status="launching", deadline=self.clock() + state["budget_seconds"],
+                if state["status"] == "waiting_capacity":  # Nothing binds the id: dash legacy hex.
+                    state.update(status="launching", session_id=str(UUID(state["session_id"])),
+                                 launch_started_at=self.clock(),
+                                 deadline=repair_deadline(self.clock(), state["budget_seconds"]),
+                                 brief=brief,
                                  starting_sha=head_sha, head_sha=head_sha, red_heads=[head_sha],
-                                 red_keys=[evidence_key], failure_evidence=evidence, brief=brief)
+                                 red_keys=[evidence_key], failure_evidence=evidence)
                     launch = state
                 if state["target_ref"] != target_ref:
                     return await self._block(conn, batch, state, "repair branch changed")
+                if (launch is None and state["status"] == "launching"
+                        and self.clock() >= state.get("launch_started_at", state["created_at"])
+                        + _LAUNCH_GRACE_SECONDS):
+                    # Registration commits active before process creation. Give
+                    # in-flight preparation a grace period; only retry when no
+                    # registered process can remain, including after a restart.
+                    retried = await self._retry_launch(
+                        conn, batch, state, "fixer launch did not register within 120s",
+                    )
+                    if retried:
+                        return retried
                 if state["status"] == "green":
                     # The same batch can turn red when its target advances. Preserve
                     # the original session and its accumulated fixes.
@@ -231,8 +307,10 @@ class BatchFixerService:
                     state["failure_evidence"] = evidence
                     state["head_sha"] = head_sha
                     state["brief"] = brief
-                    if not state.get("blocker") and self.clock() < state["deadline"] \
-                            and len(state["red_heads"]) <= state["max_rounds"]:
+                    if (not state.get("blocker")
+                            and not repair_deadline_due(state["deadline"], self.clock())
+                            and (not state["max_rounds"]
+                                 or len(state["red_heads"]) <= state["max_rounds"])):
                         await self._message(conn, batch, state, "red:" + evidence_key, (
                             f"The batch is red at {head_sha}. Continue in the same checkout "
                             f"on {target_ref}; preserve all frozen members.\n{brief}\n"
@@ -240,9 +318,9 @@ class BatchFixerService:
                             "Commit fixes, run aq integration batch-fix --action push, "
                             "then end your turn for the next CI observation."
                         ))
-                if self.clock() >= state["deadline"]:
+                if repair_deadline_due(state["deadline"], self.clock()):
                     return await self._block(conn, batch, state, "fixer time budget exhausted")
-                if len(state["red_heads"]) > state["max_rounds"]:
+                if state["max_rounds"] and len(state["red_heads"]) > state["max_rounds"]:
                     return await self._block(conn, batch, state, "fixer CI round budget exhausted")
                 await self._write(conn, batch_id, state)
         if legacy:
@@ -260,7 +338,9 @@ class BatchFixerService:
                     row = (await conn.execute(select(integration_batches).where(
                         integration_batches.c.id == batch_id,
                     ).with_for_update())).mappings().one()
-                    current = dict(row["fixer_state"])
+                    current = dict(row["fixer_state"] or {})
+                    if not self._current_launch(row, current, launch):
+                        return {"success": True, "outcome": "withdrawn"}
                     if isinstance(exc, FixerCapacityUnavailable):
                         current["status"] = "waiting_capacity"
                         await self._write(conn, batch_id, current)
@@ -269,12 +349,19 @@ class BatchFixerService:
                                        revisit_seconds=current["revisit_seconds"])
                         return {"success": True, "outcome": "deferred", "reason": str(exc),
                                 "session_id": current["session_id"]}
+                    # _start commits "active" before the process starts.
+                    if row["intent"] == "open" and current["status"] in {"launching", "active"}:
+                        retried = await self._retry_launch(conn, row, current, str(exc))
+                        if retried:
+                            return retried
                     return await self._block(conn, row, current, f"launch incomplete: {exc}")
             async with self.db.immediate() as conn:
                 row = (await conn.execute(select(integration_batches).where(
                     integration_batches.c.id == batch_id,
                 ).with_for_update())).mappings().one()
-                state = dict(row["fixer_state"])
+                state = dict(row["fixer_state"] or {})
+                if not self._current_launch(row, state, launch):
+                    return {"success": True, "outcome": "withdrawn"}
                 state.update(details)
                 if state["status"] == "launching":
                     state["status"] = "active"
@@ -293,6 +380,13 @@ class BatchFixerService:
                 return await self._block(conn, row, dict(row["fixer_state"]),
                                          "fixer session is stopped or launch is uncertain")
         return {"success": True, "outcome": "exists", "session_id": state["session_id"]}
+
+    @staticmethod
+    def _current_launch(batch, state, launch):
+        return (batch["intent"] == "open" and state.get("status") in {"launching", "active"}
+                and all(state.get(key) == launch.get(key) for key in (
+                    "session_id", "instance_token", "launch_started_at",
+                )))
 
     async def recover_reservation(self, batch_id, **kwargs):
         # In-place sessions reserve only during publication. Pending/unknown CI
