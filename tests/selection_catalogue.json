@@ -6351,8 +6351,9 @@
         "migrations"
       ],
       "default_arm": true,
-      "digest": "sha256:44cb76fb183503eaaf4a5e1ab173eb8dd0725f9177cd35b8795619b71ddae427",
+      "digest": "sha256:456b0456b5efc86dc2a9701d0e919154967fd40eb1d2c3cc7aa91e34a0a29824",
       "imports": [
+        "src.cli.app",
         "src.config",
         "src.database",
         "src.database.schema_key",

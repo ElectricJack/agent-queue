@@ -2686,6 +2686,7 @@
         "required": [],
         "optional": [
           "--fix",
+          "--offline",
           "--json",
           "--check",
           "--brief",
