@@ -65,6 +65,53 @@ WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-ch
 ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
 
 
+STRUCTURE_CHANGES = ROOT / "tests/fixtures/contracts/post-release-structure-contract-changes.json"
+
+
+def _structure_changes():
+    changes = json.loads(STRUCTURE_CHANGES.read_text())
+    assert changes["source_base"] == "908112dce62681fb4761e80a218382c75fc939cf"
+    assert changes["source_commit"] == "f136e4af2c8f05a3d52cce6118fab78e03733a9e"
+    assert set(changes["added_commands"]) == {"task_split"}
+    assert set(changes["transport_definitions"]) == {"reparent_task"}
+    assert set(changes["contracts"]) == {"integration_mutate_hierarchy"}
+    return changes
+
+
+def _revert_structure_catalogue(catalogue):
+    changes = _structure_changes()
+    for name, approved in changes["added_commands"].items():
+        assert catalogue["fallback"].pop(name) == approved["transport_definition"]
+        assert catalogue["tool_categories"].pop(name) == approved["category"]
+        assert CONTRACTS.require(name).contract.fingerprint() == approved["contract_fingerprint"]
+    for name, approved in changes["transport_definitions"].items():
+        [definition] = [row for row in catalogue["explicit"] if row["name"] == name]
+        assert definition == approved["current"]
+        schema = json.loads(json.dumps(definition["input_schema"]))
+        for field in ("expected_old_generation", "expected_new_generation"):
+            assert schema["properties"].pop(field)["type"] == "integer"
+            assert field not in schema.get("required", ())
+        assert schema == approved["previous"]["input_schema"]
+        definition.clear()
+        definition.update(approved["previous"])
+    return catalogue
+
+
+def test_structure_catalogue_preserves_reviewed_delta():
+    changes = _structure_changes()
+    for name, approved in changes["contracts"].items():
+        contract = CONTRACTS.require(name).contract
+        assert contract.fingerprint() == approved["fingerprint"]
+        assert canonical_execution_document(contract.execution) == approved["execution"]
+    previous = _revert_catalogue(
+        _revert_structure_catalogue(json.loads(render_command_catalogue())),
+        _wait_requeue_changes(),
+    )
+    assert hashlib.sha256((json.dumps(previous, indent=2) + "\n").encode()).hexdigest() == (
+        _pr_repair_changes()["cli_catalogue_sha256"]
+    )
+
+
 def _stuck_check_changes():
     return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
 
@@ -78,7 +125,10 @@ def _wait_requeue_changes():
 
 
 def _before_wait_requeue_catalogue():
-    return _revert_catalogue(json.loads(render_command_catalogue()), _wait_requeue_changes())
+    return _revert_catalogue(
+        _revert_structure_catalogue(json.loads(render_command_catalogue())),
+        _wait_requeue_changes(),
+    )
 
 
 def test_wait_requeue_catalogue_only_changes_reviewed_command():
@@ -368,7 +418,7 @@ def test_legacy_execution_documents_and_fingerprints():
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes()):
+                          _leaf_changes(), _completion_changes(), _structure_changes()):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -415,8 +465,13 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
                 digest = approved["sha256"]
+        if name in _structure_changes()["transport_definitions"]:
+            approved = _structure_changes()["transport_definitions"][name]
+            assert _digest(approved["previous"]) == digest
+            digest = _digest(approved["current"])
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
-    actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
+    catalogue = _revert_structure_catalogue(json.loads(render_command_catalogue()))
+    actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
     assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
     assert main["previous_cli_catalogue_sha256"] == scripts["cli_catalogue_sha256"]

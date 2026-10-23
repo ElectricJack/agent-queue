@@ -49,6 +49,7 @@ from src.integration.owner_recovery import (
     _Refusal,
 )
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.integration.row_query import select_row
 from src.integration.runtime_contracts import (
     Primitive,
     PrimitiveOutcome,
@@ -120,11 +121,7 @@ class _ExactWriterRecovery(OwnerRecovery):
         async with self.db._engine.connect() as conn:
             session = None
             if row["session_id"]:
-                session = (
-                    (await conn.execute(select(sessions).where(sessions.c.id == row["session_id"])))
-                    .mappings()
-                    .one_or_none()
-                )
+                session = await select_row(conn, sessions, sessions.c.id == row['session_id'])
                 if session is None:
                     raise _Refusal("stop_unknown", "writer session record is missing")
             elif row["handoff_state"] != "reserved":
@@ -209,36 +206,16 @@ class _ReleaseCheckedDB:
                 )
                 if await self.db._read_manual_pause(conn, task_id) is not None:
                     raise _Refusal("subject_held", "task manually paused during stop proof")
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_branch_owners)
-                        .where(
-                            integration_branch_owners.c.id == self.owner["id"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            row = await select_row(
+                conn, integration_branch_owners,
+                integration_branch_owners.c.id == self.owner['id'],
+                lock=True,
             )
             fields = ("owner_id", "fence_token", "handoff_state", "session_id", "workspace_id")
             if row is None or any(row[field] != self.owner[field] for field in fields):
                 raise _Refusal("stale_fence", "writer binding changed during stop proof")
             if self.session is not None:
-                session = (
-                    (
-                        await conn.execute(
-                            select(sessions)
-                            .where(
-                                sessions.c.id == self.session["id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                session = await select_row(conn, sessions, sessions.c.id == self.session['id'], lock=True)
                 fields = (
                     "id",
                     "name",
@@ -265,18 +242,10 @@ class _ReleaseCheckedDB:
             ):
                 raise _Refusal(WRITER_LIVE, "writer was claimed during stop proof")
             if self.owner["workspace_id"]:
-                workspace = (
-                    (
-                        await conn.execute(
-                            select(workspaces)
-                            .where(
-                                workspaces.c.id == self.owner["workspace_id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                workspace = await select_row(
+                    conn, workspaces,
+                    workspaces.c.id == self.owner['workspace_id'],
+                    lock=True,
                 )
                 if workspace is None:
                     raise _Refusal("stop_unknown", "workspace disappeared during stop proof")
@@ -445,17 +414,10 @@ class WriterPrimitives:
                 return PrimitiveOutcome(
                     primitive=p, outcome="configuration_blocked", reason="subject_stale_or_held"
                 )
-            existing = (
-                (
-                    await conn.execute(
-                        select(integration_subject_journal).where(
-                            integration_subject_journal.c.subject_id == subject.id,
-                            integration_subject_journal.c.idempotency_key == key,
-                        )
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            existing = await select_row(
+                conn, integration_subject_journal,
+                integration_subject_journal.c.subject_id == subject.id,
+                integration_subject_journal.c.idempotency_key == key,
             )
             request = args.model_dump(mode="json")
             if existing is not None:
@@ -668,19 +630,7 @@ class WriterPrimitives:
                     )
             if current.writer.fence_token is not None:
                 return PrimitiveOutcome(primitive=p, outcome="stale")
-            task = (
-                (
-                    await conn.execute(
-                        select(tasks)
-                        .where(
-                            tasks.c.id == args.owner_task_id,
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            task = await select_row(conn, tasks, tasks.c.id == args.owner_task_id, lock=True)
             if (
                 task is None
                 or task["status"] != "BLOCKED"
@@ -820,19 +770,7 @@ class WriterPrimitives:
                 # Filing is blocked until its first lease. A never-leased,
                 # never-started task has no write authority to transfer. Its
                 # stop proof changes no other owner's branch reservation.
-                task = (
-                    (
-                        await conn.execute(
-                            select(tasks)
-                            .where(
-                                tasks.c.id == args.task_id,
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                task = await select_row(conn, tasks, tasks.c.id == args.task_id, lock=True)
                 if (
                     task is None
                     or current.budget is None
@@ -1020,27 +958,17 @@ class OperationSafety:
         """
         if operation["target_kind"] != "parent":
             return None, None
-        parent = (
-            await conn.execute(
-                select(tasks)
-                .where(tasks.c.id == operation["parent_task_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == operation["parent_task_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        episode = (
-            await conn.execute(
-                select(integration_parent_episodes)
-                .where(integration_parent_episodes.c.id == operation["episode_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'], lock=True)
+        checkpoint = await select_row(
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+            lock=True,
+        )
+        episode = await select_row(
+            conn, integration_parent_episodes,
+            integration_parent_episodes.c.id == operation['episode_id'],
+            lock=True,
+        )
         if (
             parent is None
             or checkpoint is None

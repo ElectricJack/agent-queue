@@ -1504,6 +1504,36 @@
           }
         },
         "reason": "Compose the unchanged resume and shared-check grants on the retained starting head; the other members add no owned lines. Preserve every historical grant and batch measurement."
+      },
+      "post_release_structure_measurement": {
+        "task_id": "swift-nexus-38",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "operator_task": "sharp-cascade-53",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1775",
+        "required_pr_head": "14183dc9d82cdc4cb32610827e228b49b6e488d2",
+        "dev_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+        "previous_source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+        "measured_source_revision": "063b7620f635b34aeb376d1d9d4280dd22273b7d",
+        "previous_owned_total": 161162,
+        "previous_engine_lines": 85543,
+        "previous_table_count": 45,
+        "authorized_owned_delta": -38,
+        "authorized_engine_delta": -554,
+        "authorized_table_delta": 0,
+        "measured_owned_total": 161124,
+        "measured_engine_lines": 84989,
+        "measured_table_count": 45,
+        "measured_groups": {
+          "shared": 62537,
+          "companions": 11168,
+          "engine": 84989,
+          "policy_sources": 1042,
+          "policy": 493,
+          "ui": 262,
+          "guards": 633
+        },
+        "reason": "Exact combined-tree remeasurement after merging PR #1775 head with dev. Approval pre-granted by size-cap-delegation-2026-10-23, operator decision 6679052c on sharp-cascade-53. Preserve ownership classifications and all historical grants; no production code moved or trimmed for the count."
       }
     }
   },
@@ -14814,5 +14844,35 @@
     "grant_delivery_message_id": "msg-6cbd33a9db9846f29816f2fc0df8f8fd",
     "merged_dev_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
     "implementation_revision": "70d79c47c561ee85ecd74080767bbc5cdf0e210c"
+  },
+  "post_release_structure_measurement": {
+    "task_id": "swift-nexus-38",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1775",
+    "required_pr_head": "14183dc9d82cdc4cb32610827e228b49b6e488d2",
+    "dev_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+    "previous_source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+    "measured_source_revision": "063b7620f635b34aeb376d1d9d4280dd22273b7d",
+    "previous_owned_total": 161162,
+    "previous_engine_lines": 85543,
+    "previous_table_count": 45,
+    "authorized_owned_delta": -38,
+    "authorized_engine_delta": -554,
+    "authorized_table_delta": 0,
+    "measured_owned_total": 161124,
+    "measured_engine_lines": 84989,
+    "measured_table_count": 45,
+    "measured_groups": {
+      "shared": 62537,
+      "companions": 11168,
+      "engine": 84989,
+      "policy_sources": 1042,
+      "policy": 493,
+      "ui": 262,
+      "guards": 633
+    },
+    "reason": "Exact combined-tree remeasurement after merging PR #1775 head with dev. Approval pre-granted by size-cap-delegation-2026-10-23, operator decision 6679052c on sharp-cascade-53. Preserve ownership classifications and all historical grants; no production code moved or trimmed for the count."
   }
 }
