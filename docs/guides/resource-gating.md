@@ -348,10 +348,10 @@ tuned at least as far. `pg_stat_statements` is also preloaded via
 `shared_preload_libraries`; it still needs `CREATE EXTENSION
 pg_stat_statements;` run once by an operator before it is queryable.
 
-`-m perf` matters as much as `AQ_PERF_STRICT`: `--aq-all-markers` only stops
-`aq test` from adding its *own* `-m`, and pyproject's `addopts` still carries
-`-m "not perf and ..."`, so without an explicit `-m` the run deselects
-everything and reports "no tests were collected". `-s` matters too: each
+Use `-m perf` to select only performance tests. `--aq-all-markers` supplies
+an empty `-m ''` when no marker expression was supplied, overriding both the
+wrapper's deselects and pyproject's `addopts`; it selects the other marker
+families too. `-s` matters too: each
 latency test prints its p95, median and max, so a passing run records the
 margin rather than only the verdict.
 
@@ -369,9 +369,9 @@ A caller that times a run can ask how much of it was queueing. With
 `AQ_TEST_SLOT_REPORT=<file>` set, `aq test` appends one JSON line per slot
 event (`waiting`, `acquired` with `waited`, `slot_timeout`, `released`;
 format in `src/resources/slot_report.py`), and `AQ_TEST_WAIT_TIMEOUT=<s>`
-overrides `test_wait_timeout` (`--aq-timeout` still wins). The development
-publisher sets both so its `timeout_seconds` charges only the run, not the
-wait for a slot. For a full-suite run the wait for the full-suite lock and
+overrides `test_wait_timeout` (`--aq-timeout` still wins). This is a foreground
+diagnostic hook; integration validation uses managed jobs with separate queue
+and run deadlines instead. For a full-suite run the wait for the full-suite lock and
 the slot after it are one reported wait, and the timeout bounds both
 together.
 
@@ -383,6 +383,33 @@ contain a `/` or end in `.py`), and a `::node-id` suffix is stripped before
 the stat, so `-k` and `-m` expressions are never mistaken for paths. For the
 same reason pytest's exit code **5** (nothing collected) is reported with an
 explicit "nothing was verified" line.
+
+### Managed test jobs
+
+With `resources.jobs.enabled: true` and a disposable
+`resources.jobs.test_database_url` configured for agent-queue tests, submit a
+detached run and its durable wait together:
+
+```bash
+aq test --aq-detach --aq-wait --aq-idempotency-key focused-validation tests/test_cli_test_runner.py
+# Equivalent finite preset submission:
+aq job submit --preset test --wait --idempotency-key focused-validation -- tests/test_cli_test_runner.py
+```
+
+Choose one submission form and retain its key and returned job/wait IDs for
+recovery. End the turn when instructed, then consume the delivered result with
+`aq wait show <wait-id> --consume --json`. A completed wait reports the job's
+actual outcome; it does not imply the tests passed. Inspect it with
+`aq job result <job-id>`. `aq job logs <job-id> --follow` attaches to retained
+output; Ctrl+C detaches, and `aq job cancel <job-id>` explicitly cancels.
+
+Detached tests use server-owned admission and caps, so foreground flags such as
+`--aq-timeout`, `--aq-no-wait`, `--aq-workers` and `--aq-dry-run`, and smart
+selection flags, cannot be combined with `--aq-detach`. `--aq-all-markers` and
+the explicit serial worker count remain supported. Jobs stay disabled by
+default; otherwise use foreground `aq test`. See
+[managed jobs](../specs/implementation/managed-jobs.md) for recovery, pins,
+presets and retention.
 
 ### Why `flock`
 
