@@ -1,6 +1,8 @@
 """The Reviews inbox reads a durable snapshot and pins human approvals."""
 
 import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -14,6 +16,9 @@ from src.database.queries.pull_request_queries import (
     list_known_pull_requests, read_pull_request_snapshot, write_pull_request_snapshot,
 )
 from src.database.tables import archived_tasks, projects, tasks
+from src.git.github import GitHubAccess, GitHubClient
+from src.git.github_auth import GitHubAuth
+from src.integration.ci import AuthenticatedGitHubObserver, CIObservationDeferred, IntegrationCITrust
 from src.git.github_activity import GitHubActivity
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 
@@ -100,6 +105,59 @@ class FakeClient:
     async def paged_items(self, path, **kwargs):
         self.calls.append(path)
         return [{"status": "completed", "conclusion": "success"}]
+
+
+async def test_inbox_and_hosted_ci_observers_share_one_check_run_request(db):
+    await seed(db)
+    auth = GitHubAuth()
+    calls = []
+
+    class Runner:
+        credential_identity = auth.credential_identity
+
+        async def run(self, args, **kwargs):
+            path = args[-1]
+            calls.append(path)
+            await asyncio.sleep(0)  # let the three independent observers overlap
+            if "/check-runs?" in path:
+                body = {"check_runs": [{"id": 11, "name": "Tests", "app": {"id": 404},
+                                       "status": "completed", "conclusion": "success"}]}
+            elif "/actions/runs?" in path:
+                body = {"workflow_runs": []}
+            elif "state=open" in path:
+                body = [{"html_url": BASE + "1", "state": "open", "head": {"sha": SHA}}]
+            elif path.endswith("/pulls/1"):
+                body = {"number": 1, "html_url": BASE + "1", "state": "open", "head": {"sha": SHA},
+                        "base": {"repo": {"id": 1, "full_name": "acme/repo"}}}
+            else:
+                body = []  # reviews
+            return SimpleNamespace(returncode=0, stderr="", stdout=(
+                b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps(body).encode()))
+
+    access = GitHubAccess(auth, Runner())
+    binding = GitHubRepositoryBinding(1, "acme/repo")
+    access.bind_repository = lambda _: _binding()
+
+    async def _binding():
+        return binding
+
+    trust = IntegrationCITrust(canonical_repository_id="repo", repository_id=1,
+                              full_name="acme/repo", producer_id="github-actions",
+                              required_checks={"version": "v1", "names": ["unit"]})
+    inbox = PendingPullRequestInbox(db, access)
+    observers = [AuthenticatedGitHubObserver(GitHubClient(binding, access=access))
+                 for _ in range(2)]
+    results = await asyncio.gather(
+        inbox.refresh(), *(observer.observe(trust, SHA) for observer in observers),
+        return_exceptions=True,
+    )
+    assert results[0] is None
+    assert all(isinstance(result, CIObservationDeferred) for result in results[1:])
+    items, _ = await read_pull_request_snapshot(db)
+    assert items[0]["ci_status"] == "success"
+    assert sum("/check-runs?" in path for path in calls) == 1
+    await inbox.refresh_row("open-task")
+    assert sum("/check-runs?" in path for path in calls) == 1
 
 
 async def test_candidates_include_archived_but_only_active_projects(db):
@@ -439,7 +497,7 @@ async def test_unchanged_refresh_makes_no_badge_calls_and_updates_metadata(db, c
 
 
 @pytest.mark.parametrize("field", ["head", "updated_at", "missing_timestamp"])
-async def test_badge_cache_invalidates_only_changed_pr(cached_inbox, field):
+async def test_badge_cache_invalidates_only_changed_pr(db, cached_inbox, field):
     inbox, client, _ = cached_inbox
     await inbox.refresh()
     client.calls.clear()
@@ -450,13 +508,112 @@ async def test_badge_cache_invalidates_only_changed_pr(cached_inbox, field):
     else:
         client.pulls[0].pop("updated_at")
     await inbox.refresh()
-    assert len(client.calls) == 3
-    assert any("/pulls/1/reviews" in path for path in client.calls)
-    assert not any("/pulls/4/reviews" in path for path in client.calls)
+    expected = (f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"
+                if field == "head" else "repos/acme/repo/pulls/1/reviews?per_page=100")
+    assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100", expected]
+    items, _ = await read_pull_request_snapshot(db)
+    changed = next(item for item in items if item["task_id"] == "open-task")
+    assert changed["review_decision"] == ("changes requested" if field == "head" else "approved")
     if field == "missing_timestamp":
         client.calls.clear()
         await inbox.refresh()
+        assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100", expected]
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure"])
+async def test_review_update_reuses_terminal_checks(db, cached_inbox, conclusion):
+    inbox, client, _ = cached_inbox
+    original_checks = client.paged_items
+
+    async def checks(path, **kwargs):
+        await original_checks(path, **kwargs)
+        return [{"status": "completed", "conclusion": conclusion}]
+
+    client.paged_items = checks
+    await inbox.refresh()
+    original_reviews = client.paged_list
+
+    async def reviews(path, **kwargs):
+        result = await original_reviews(path, **kwargs)
+        if "/pulls/1/reviews" in path:
+            return [{"id": 5, "state": "CHANGES_REQUESTED", "commit_id": SHA,
+                     "user": {"login": "jack", "type": "User"}}]
+        return result
+
+    client.paged_list = reviews
+    client.pulls[0]["updated_at"] = "2026-09-21T00:00:00Z"
+    client.calls.clear()
+    await inbox.refresh()
+    assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100",
+                            "repos/acme/repo/pulls/1/reviews?per_page=100"]
+    items, _ = await read_pull_request_snapshot(db)
+    changed = next(item for item in items if item["task_id"] == "open-task")
+    assert changed["review_decision"] == "changes requested"
+    assert changed["ci_status"] == conclusion
+
+
+async def test_pending_checks_retry_with_capped_backoff_and_stop_when_terminal(
+    db, cached_inbox, monkeypatch,
+):
+    inbox, client, _ = cached_inbox
+    now = 0
+    monkeypatch.setattr("src.api.pull_requests.monotonic", lambda: now)
+    original_checks = client.paged_items
+    status = "in_progress"
+
+    async def checks(path, **kwargs):
+        await original_checks(path, **kwargs)
+        return [{"status": status, "conclusion": "success"}]
+
+    client.paged_items = checks
+    await inbox.refresh()
+    for deadline in (300, 900, 1800, 2700):
+        now = deadline - 1
+        client.calls.clear()
+        await inbox.refresh()
+        assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100"]
+        now = deadline
+        client.calls.clear()
+        await inbox.refresh()
         assert len(client.calls) == 3
+        assert sum("/check-runs" in path for path in client.calls) == 2
+        assert not any("/reviews" in path for path in client.calls)
+    status = "completed"
+    now = 3600
+    await inbox.refresh()
+    items, _ = await read_pull_request_snapshot(db)
+    assert {item["ci_status"] for item in items} == {"success"}
+    now = 10000
+    client.calls.clear()
+    await inbox.refresh()
+    assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100"]
+
+
+async def test_new_head_resets_pending_check_backoff(cached_inbox, monkeypatch):
+    inbox, client, _ = cached_inbox
+    now = 0
+    monkeypatch.setattr("src.api.pull_requests.monotonic", lambda: now)
+    original_checks = client.paged_items
+
+    async def checks(path, **kwargs):
+        await original_checks(path, **kwargs)
+        return []  # No runs yet is also pending.
+
+    client.paged_items = checks
+    await inbox.refresh()
+    now = 300
+    await inbox.refresh()  # Old head's next check is now at 900.
+    now = 301
+    client.pulls[0]["head"] = {"sha": MOVED}
+    client.calls.clear()
+    await inbox.refresh()
+    assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100",
+                            f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"]
+    now = 601
+    client.calls.clear()
+    await inbox.refresh()
+    assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100",
+                            f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"]
 
 
 async def test_closed_pr_is_evicted_and_reopening_fetches_badges(db, cached_inbox):
@@ -477,7 +634,7 @@ async def test_failed_badge_read_is_retried_without_replacing_snapshot(db, cache
     inbox, client, _ = cached_inbox
     await inbox.refresh()
     before = await read_pull_request_snapshot(db)
-    client.pulls[0]["updated_at"] = "2026-09-21T00:00:00Z"
+    client.pulls[0]["head"] = {"sha": MOVED}
     client.fail_checks = True
     with pytest.raises(RuntimeError, match="checks unavailable"):
         await inbox.refresh()
@@ -485,7 +642,8 @@ async def test_failed_badge_read_is_retried_without_replacing_snapshot(db, cache
     client.fail_checks = False
     client.calls.clear()
     await inbox.refresh()
-    assert len(client.calls) == 3
+    assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100",
+                            f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"]
 
 
 async def test_row_refresh_forces_badges_and_background_respects_reserve(db, cached_inbox):

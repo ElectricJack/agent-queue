@@ -6,8 +6,10 @@ isolation, privileged launcher, prerequisite doctor or separate host acceptance.
 `resources.scripts.enabled` defaults to **true**; setting it false refuses new
 launches. Managed job admission (`resources.jobs.enabled`) must also be enabled.
 `ScriptStep` is an accepted step kind and activates with the inferred `script_v1`
-feature pin. Nothing else needs configuring: storage roots default under
-`~/.agent-queue/scripts/`, and executables are ordinary host binaries unless the
+feature pin. Protected-value storage keys must be ready for encrypted output
+(see [key setup](playbook-building-blocks.md#activating-the-stuck-task-watch)).
+Storage roots default under `{data_dir}/scripts/` (`~/.agent-queue/scripts/` on a
+default installation), and executables are ordinary host binaries unless the
 operator opts into digest pinning with a runtime manifest.
 
 ## Programs and pins

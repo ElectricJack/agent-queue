@@ -775,6 +775,13 @@ Existing origins, checkpoints and retired completion history are preserved.
 An unknown remote state or conflicting branch ownership refuses the edit and
 rolls back its database changes.
 
+Re-enabling the train playbook also recovers detached READY roots filed while
+it was off: branch reconciliation backfills missing origins before draining
+reservations. The same bounded pass catches system filings that have no origin;
+the delivery watchdog reserves an origin when it files a takeover while the
+train is enabled. Failures are retried without blocking later roots, and the
+pass rechecks train activation and writer ownership under the project lock.
+
 A reservation is cut by the branch materialization drain
 (`src/integration/branch_materialization.py`), ten origins per pass, so a
 large backfill reaches its last origins minutes later; until then those tasks

@@ -30,8 +30,12 @@ Review binds the final pushed SHA; later fixes require fresh review.
 
 ## Never close over unpushed commits
 
-Commit and publish your assigned task branch with guarded `aq git push` before pass or fail
-close; record HEAD and checks. Slots reset after release. A failed close preserves unpushed
+As the final submission step for every code task, merge `origin/dev` into your task branch
+with `git merge origin/dev` (merge, not rebase). Resolve any conflicts with full context,
+then run only targeted tests for the touched files; do not run a full CI pass.
+Commit the result, push with guarded `aq git push`, then publish/close the task.
+Record HEAD and checks. Before any pass or fail close, commit and publish your assigned
+task branch. Slots reset after release. A failed close preserves unpushed
 work on an AQ recovery branch; if its push fails, the task remains held. Fix publication
 before retrying. For a required PR use `aq git create-pr --title "..." --body "..."` after
 pushing.

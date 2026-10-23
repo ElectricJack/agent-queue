@@ -25,8 +25,6 @@ import yaml
 from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from src.waits.sources import execute_task_status_mutation
-from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -72,21 +70,27 @@ from src.integration.delivery_truth import (
     undeliverable_repairs_on,
 )
 from src.integration.epics import (
-    EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks, playbook_epic_checks_on,
+    EpicGraphReader,
+    EpicPolicy,
+    EpicReadinessEvaluator,
+    HeadChecks,
+    playbook_epic_checks_on,
 )
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.manual_control import train_write
 from src.integration.models import (
-    BranchKey, RepairPolicy, integration_ci_policy,
+    BranchKey,
+    RepairPolicy,
+    integration_ci_policy,
 )
 from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND, generated_paths
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
-from src.integration.selection_metrics import selection_count, selection_stage
 from src.integration.runtime_contracts import Subject
+from src.integration.selection_metrics import selection_count, selection_stage
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -95,6 +99,7 @@ from src.integration.train import (
     TrainTarget,
 )
 from src.projects.github import GitHubError
+from src.waits.sources import execute_batch_mutation, execute_task_status_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +112,7 @@ MEMBER_LIMIT = 200
 # Leave time in the visit deadline to freeze and advance an admitted prefix: a
 # cooperative quantum (not a fenced writer's deadline) that red or conflicting roots do not spend.
 SELECTION_WORK_SECONDS = 60.0
-_REFUNDED_PR_REFUSALS = frozenset({"pr_conflicting", "pr_checks_red", "source_ci_repair_exhausted",
+_REFUNDED_PR_REFUSALS = frozenset({"pr_conflicting", "pr_checks_red", "source_ci_repair_exhausted", "source_ci_repair_unchanged",
     "root_pr_checks_need_repair", "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted"})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
@@ -1244,9 +1249,8 @@ class DatabaseBatches:
 
     async def _supersede_removed_checks(self, target, snapshot, service, batch, members):
         """Release obsolete check pins without rewriting frozen policy or sources."""
-        from src.operator_decisions import OperatorDecisions
-
         from src.integration.train_policy import load_train_policy
+        from src.operator_decisions import OperatorDecisions
 
         # Live playbook policy applies to this same candidate, without a requeue.
         if (await load_train_policy(self.db, target.project_id)).policy is not None:
@@ -3038,7 +3042,7 @@ class DaemonLanes:
                     return ({"code": "epic_refresh_unavailable", "task_id": graph.epic_id,
                              "ref": target.target_ref, "reason": type(exc).__name__,
                              "detail": "Collected epic refresh will be retried"},)
-                if refreshed["outcome"] != "current":
+                if refreshed["outcome"] not in {"current", "skipped"}:
                     if refreshed["outcome"] == "started":
                         await self.db.log_event("integration.epic_refresh",
                             project_id=target.project_id, task_id=graph.epic_id,
@@ -3172,7 +3176,10 @@ class DaemonLanes:
     async def _observe_promotion_source(self, target, retained, gitops, snapshot):
         """Notify reviewed continuous policy when exact source push CI becomes green."""
         from src.integration.promotion_steps import (
-            FlowSchema, PromotionSourceRefusal, check_source_green, promotion_policy_event,
+            FlowSchema,
+            PromotionSourceRefusal,
+            check_source_green,
+            promotion_policy_event,
             step_required_checks,
         )
         from src.playbooks.services import resolve_integration_route
@@ -3293,9 +3300,9 @@ class DaemonLanes:
         Candidate trees must match the boundary's configured CI producer. The
         default branch itself supplies promotion trust, as in promote_request.
         """
+        from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
         from src.integration.attestation import _MAX_TRUST_BYTES, _parse_trust_manifest
         from src.integration.ci import TRUST_MANIFEST_PATH
-        from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
 
         if not is_valid_git_oid(sha):
             raise SubjectTrustError("identity_mismatch", "subject head is not a Git OID")
@@ -3521,9 +3528,9 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
     config = orchestrator.config.integration
     if getattr(config, "git_first", "shadow") != "active":
         return None
-    from src.integration.fixers import BatchFixerService
-    from src.integration.fixer_runtime import DaemonFixerRuntime
     from src.integration.dispatch_waits import DispatchWaits
+    from src.integration.fixer_runtime import DaemonFixerRuntime
+    from src.integration.fixers import BatchFixerService
 
     batches = DatabaseBatches(orchestrator.db, clock=clock,
                              cleanup=getattr(orchestrator, "integration_cleanup_service", None))
