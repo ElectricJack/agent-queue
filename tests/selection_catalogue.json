@@ -1227,6 +1227,7 @@
         "tests/test_hierarchical_delivery_playbook.py",
         "tests/test_playbook_v2_fixtures.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
+        "tests/test_project_defaults_playbook.py",
         "tests/test_shipped_playbook_sources.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_v1_removal.py"
@@ -14871,6 +14872,31 @@
       ],
       "markers": [],
       "summary": "Tests for project constraint scheduling behavior."
+    },
+    "tests/test_project_defaults_playbook.py": {
+      "areas": [
+        "shipped-playbooks"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2677045177a669fcaaf48d444e1ac827f12fd67bb0122ecc063e6d681dbf2e06",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.models",
+        "src.playbooks.artifact_store",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.private_values",
+        "src.playbooks.receipts"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Installed/candidate project-defaults parity using real command dispatch and PostgreSQL."
     },
     "tests/test_project_github.py": {
       "areas": [
