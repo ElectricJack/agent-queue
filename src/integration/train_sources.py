@@ -1608,6 +1608,8 @@ class DatabaseBatches:
         evaluated_ids: set[str] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
+        from src.integration.github_review_poll import root_pr_target_scope
+
         if target.kind == "promotion":
             return None
         delivered_to_project = set(delivered_ids or ())
@@ -1706,6 +1708,7 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
+        selection_count("candidates_eligible", len(ids))
         for index, task_id in enumerate(ids):
             if (index and selection_deadline is not None
                     and self._selection_clock() >= selection_deadline):
@@ -1719,6 +1722,7 @@ class DatabaseBatches:
                     })
                 break
             candidate_started = self._selection_clock()
+            selection_count("candidates_evaluated")
             if selection_deadline is not None:
                 self._selection_after[target.key] = task_id
             if evaluated_ids is not None:
@@ -1811,7 +1815,8 @@ class DatabaseBatches:
                 continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
-                with selection_stage("pr_admission", items=1):
+                with (selection_stage("pr_admission", items=1),
+                      root_pr_target_scope(target, snapshot.target_oid)):
                     refusal = (await self.pr_gate(target, member) if self.pr_gate else {
                         "code": "unknown", "ref": task_id, "task_id": task_id,
                         "detail": "root PR admission observer is unavailable",
@@ -1839,7 +1844,9 @@ class DatabaseBatches:
                     member, refusal = refused_sources[source_id]
                     if member.source_sha != bases.get(repair_id):
                         continue
-                    if await admit_repaired(target, member) is None:
+                    with root_pr_target_scope(target, snapshot.target_oid):
+                        repaired_refusal = await admit_repaired(target, member)
+                    if repaired_refusal is None:
                         members[source_id] = member
                         paired_sources.setdefault(source_id, set()).add(repair_id)
                         if blockers is not None and refusal in blockers:

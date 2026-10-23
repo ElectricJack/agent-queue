@@ -7616,6 +7616,182 @@ async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(w
     git(world.origin.url, "merge-base", "--is-ancestor", pull["merge_commit_sha"], "main")
 
 
+@pytest.mark.parametrize("change", ["head", "target", "url", "policy", "generation", "expiry"])
+async def test_root_pr_gate_reuses_checks_and_reviews_until_identity_changes(world, change):
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    project = await world.db.get_project("p")
+    policy = project.hierarchical_integration_policy
+    policy["root"]["admission"] = "reviewed"
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    github.reviews = [{"id": 1, "commit_id": head, "state": "APPROVED",
+                       "user": {"login": "alice", "type": "User"}}]
+    github.pull_request = AsyncMock(wraps=github.pull_request)
+    github.paged_items = AsyncMock(wraps=github.paged_items)
+    github.paged_list = AsyncMock(wraps=github.paged_list)
+
+    for _ in range(2):
+        pending = await train.batches.pending(MAIN, await snapshot(world))
+        assert [(m.task_id, m.source_sha) for m in pending[0]] == [("leaf", head)]
+    assert github.pull_request.await_count == github.paged_list.await_count == 1
+    check_reads = github.paged_items.await_count
+
+    if change == "head":
+        head = world.origin.work("leaf", "revised source")
+        await close(world.db, "leaf", [head], close_id="revised", origin=world.origin)
+        github.pr_runs[head] = "success"
+        github.reviews[0]["commit_id"] = head
+    elif change == "target":
+        await completed(world, "landed", land=True)
+    elif change == "url":
+        old_url = (await world.db.get_task("leaf")).pr_url
+        url = "https://github.com/acme/widgets/pull/9999"
+        github.pulls[url] = github.pulls[old_url]
+        await world.db.update_task("leaf", pr_url=url)
+    elif change == "policy":
+        policy["root"]["required_checks"]["version"] = "v2"
+        await world.db.update_project("p", hierarchical_integration_policy=policy)
+    elif change == "generation":
+        async with world.db.immediate() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_generation=1))
+    else:
+        now[0] += 600
+    pending = await train.batches.pending(MAIN, await snapshot(world))
+    assert [(m.task_id, m.source_sha) for m in pending[0]] == [("leaf", head)]
+    assert github.pull_request.await_count == github.paged_list.await_count == 2
+    assert github.paged_items.await_count > check_reads
+
+
+async def test_root_pr_gate_target_move_bypasses_refusal_backoff(world):
+    head = await completed(world, "leaf")
+    train, github, _ = await hosted_train(world, clock=lambda: 1000)
+    github.pr_runs[head] = "failure"
+    github.pull_request = AsyncMock(wraps=github.pull_request)
+    for _ in range(2):
+        blockers = []
+        await train.batches.pending(MAIN, await snapshot(world), blockers=blockers)
+        assert blockers[0]["code"] == "pr_checks_red"
+    assert github.pull_request.await_count == 1
+    github.pr_runs[head] = "success"
+    await completed(world, "landed", land=True)
+    pending = await train.batches.pending(MAIN, await snapshot(world))
+    assert [m.task_id for m in pending[0]] == ["leaf"]
+    assert github.pull_request.await_count == 2
+
+
+@pytest.mark.parametrize("change,code", [("checks", "pr_checks_red"),
+                                         ("review", "pr_review_missing"),
+                                         ("outage", "unknown")])
+async def test_root_pr_gate_expired_success_cannot_survive_failed_refresh(world, change, code):
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    project = await world.db.get_project("p")
+    policy = project.hierarchical_integration_policy
+    policy["root"]["admission"] = "reviewed"
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    github.reviews = [{"id": 1, "commit_id": head, "state": "APPROVED",
+                       "user": {"login": "alice", "type": "User"}}]
+    assert (await train.batches.pending(MAIN, await snapshot(world)))[0]
+    if change == "checks":
+        github.pr_runs[head] = "failure"
+    elif change == "review":
+        github.reviews.clear()
+    else:
+        github.unavailable = True
+    now[0] += 600
+    for _ in range(2):
+        blockers = []
+        pending = await train.batches.pending(MAIN, await snapshot(world), blockers=blockers)
+        assert pending is None
+        assert blockers[0]["code"] == code
+
+
+async def test_root_pr_gate_without_fetched_target_does_not_reuse_success(world):
+    head = await completed(world, "leaf")
+    train, github, _ = await hosted_train(world)
+    github.pull_request = AsyncMock(wraps=github.pull_request)
+    member = BatchMember("leaf", head, git(world.origin.clone, "rev-parse", f"{head}^"))
+    for _ in range(2):
+        assert await train.batches.pr_gate(MAIN, member) is None
+    assert github.pull_request.await_count == 2
+
+
+async def test_root_pr_gate_cache_evicts_old_roots_without_reusing_another_pr(world, monkeypatch):
+    import src.integration.github_review_poll as review_poll
+
+    monkeypatch.setattr(review_poll, "PR_GATE_CACHE_LIMIT", 1)
+    for task_id in ("a", "b"):
+        await completed(world, task_id)
+    train, github, _ = await hosted_train(world)
+    github.pull_request = AsyncMock(wraps=github.pull_request)
+    observed = await snapshot(world)
+    for task_id in ("a", "b", "b", "a"):
+        pending = await train.batches.pending(MAIN, observed, candidate_ids=[task_id])
+        assert [m.task_id for m in pending[0]] == [task_id]
+    assert github.pull_request.await_count == 3
+
+
+async def test_root_pr_gate_target_move_preserves_running_source_recovery(world, monkeypatch):
+    queued, release, calls = queued_recovery(world, monkeypatch, result={"outcome": "pending"})
+    head = await completed(world, "leaf")
+    train, github, _ = await hosted_train(world, failure_handler=queued, clock=lambda: 1000)
+    github.pr_runs[head] = "failure"
+    try:
+        await train.batches.pending(MAIN, await snapshot(world))
+        await completed(world, "landed", land=True)
+        await train.batches.pending(MAIN, await snapshot(world))
+        assert calls == ["leaf"]
+    finally:
+        release.set()
+        await asyncio.sleep(0)
+    await train.batches.pending(MAIN, await snapshot(world))
+    assert calls == ["leaf"]
+
+
+async def test_warm_pr_gate_evaluates_entire_frontier_and_reports_visit_counts(world):
+    for index in range(24):
+        task_id = f"root-{index:02}"
+        await completed(world, task_id)
+        # The small-fixture helper sums task-name bytes for PR numbers; these
+        # names collide (root-01/root-10). Give the full frontier distinct PRs.
+        await world.db.update_task(task_id,
+            pr_url=f"https://github.com/acme/widgets/pull/{10000 + index}")
+    train, github, _ = await hosted_train(world, clock=lambda: 1000)
+    elapsed = 0.0
+    train.batches._selection_clock = lambda: elapsed
+    pull_request = github.pull_request
+
+    async def expensive_pull(url):
+        nonlocal elapsed
+        elapsed += 3  # Replay the reported PR latency without a wall-clock budget.
+        return await pull_request(url)
+
+    github.pull_request = AsyncMock(side_effect=expensive_pull)
+    observed = await snapshot(world)
+    cold, warm = SelectionMetrics(), SelectionMetrics()
+    with selection_metrics_scope(cold):
+        await train.batches.pending(MAIN, observed, selection_deadline=elapsed + 60)
+    assert cold.counts["candidates_eligible"] == 24
+    assert cold.counts["candidates_evaluated"] == 20
+    assert cold.counts["candidate_work_deferred"] == 4
+    with selection_metrics_scope(warm):
+        pending = await train.batches.pending(MAIN, observed, selection_deadline=elapsed + 60)
+    assert len(pending[0]) == 24
+    assert warm.counts["candidates_eligible"] == warm.counts["candidates_evaluated"] == 24
+    assert warm.counts["pr_gate_cache_hits"] == 20
+    assert warm.counts["pr_gate_cache_misses"] == 4
+    assert github.pull_request.await_count == 24
+    await train.tick()
+    await train.drain()
+    [visit] = train.status()
+    counts = visit["timing"]["selection"]["counts"]
+    assert counts["candidates_eligible"] == counts["candidates_evaluated"] == 24
+    assert counts["pr_gate_cache_hits"] == 24
+
+
 @pytest.mark.parametrize("condition", ["paired", "repair_red", "unfinished", "stale", "review",
                                       "prerequisite"])
 async def test_red_source_requires_exact_admitted_repair_and_combined_candidate(world, condition):

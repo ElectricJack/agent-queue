@@ -4155,8 +4155,8 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "update_and_restart",
         "description": (
-            "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream "
-            "and restart even when already current. With a release or branch selector, run shared "
+            "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; "
+            "otherwise refuses with operator configuration guidance. Run shared "
             "preflight and launch the operator updater; returns pid, log, selector and commit, "
             "or up_to_date without restarting. Read the log for the final outcome. "
             "Use wait_for_tasks=true to let running tasks finish before restarting; "
