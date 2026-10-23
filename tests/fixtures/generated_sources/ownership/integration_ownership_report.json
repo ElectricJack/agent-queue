@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 160879,
+    "owned_total_cap": 160849,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1058,10 +1058,10 @@
         "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+      "measured_source_revision": "24794f2e55b12368c4616f5accfffe1a3c34d847",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 160879,
-      "delta": 5380,
+      "measured_owned_total": 160849,
+      "delta": 5350,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1081,7 +1081,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 1921,
+      "batch_measured_delta": 1891,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1106,6 +1106,13 @@
           "global_request": "msg-9f895e0d",
           "global_grant": "msg-7f2f68c1",
           "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf"
+        },
+        {
+          "task_id": "prime-grove-46",
+          "decision": "size-cap-delegation-2026-10-23",
+          "previous_owned_total": 160879,
+          "authorized_owned_delta": -30,
+          "reason": "Remove the legacy updater path in clear-delta-43 / PR #1855 after merging PR #1797; re-record exactly origin/dev measured_owned_total minus 30 under the supervisor delegated size-cap decision."
         }
       ]
     }
@@ -14158,5 +14165,31 @@
     "grant_delivery_message_id": "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
     "global_request": "msg-9f895e0d",
     "global_grant": "msg-7f2f68c1"
+  },
+  "updater_safety_measurement": {
+    "source_revision": "24794f2e55b12368c4616f5accfffe1a3c34d847",
+    "task_id": "prime-grove-46",
+    "authority": "size-cap-delegation-2026-10-23",
+    "dev_revision": "e7989d1aa62381a607aab67d8ce245a955ed904e",
+    "previous_measurement": {
+      "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+      "measured_owned_total": 160879,
+      "measured_engine_lines": 85316,
+      "measured_table_count": 45
+    },
+    "measured_owned_total": 160849,
+    "measured_engine_lines": 85316,
+    "measured_table_count": 45,
+    "measured_groups": {
+      "shared": 61976,
+      "companions": 11127,
+      "engine": 85316,
+      "policy_sources": 1042,
+      "policy": 493,
+      "ui": 262,
+      "guards": 633
+    },
+    "owned_delta": -30,
+    "reason": "Exact downward re-record after the guarded updater removes 30 owned lines. Fixed baseline, landing snapshot, ownership classifications and storage dispositions are unchanged."
   }
 }

@@ -32,10 +32,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-ab86b9766c2f42b9ba4920aba585b577',
                           'msg-21784b3e56aa4f54bf1042b7c9af4aaf'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': 'b65c4f58866c1569e7ed73cb3a9d306f3060e1f0',
+ 'measured_source_revision': '24794f2e55b12368c4616f5accfffe1a3c34d847',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160879,
- 'delta': 5380,
+ 'measured_owned_total': 160849,
+ 'delta': 5350,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -49,7 +49,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 1921,
+ 'batch_measured_delta': 1891,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -71,7 +71,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            'parent query.',
                  'global_request': 'msg-9f895e0d',
                  'global_grant': 'msg-7f2f68c1',
-                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'}]}
+                 'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'},
+                {'task_id': 'prime-grove-46',
+                 'decision': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160879,
+                 'authorized_owned_delta': -30,
+                 'reason': 'Remove the legacy updater path in clear-delta-43 / PR #1855 after '
+                           'merging PR #1797; re-record exactly origin/dev measured_owned_total '
+                           'minus 30 under the supervisor delegated size-cap decision.'}]}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
