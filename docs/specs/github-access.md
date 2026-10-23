@@ -413,6 +413,22 @@ discovery, workspace/base fetch, exact PR-diff fetch, recovery/WIP publication,
 parent CI snapshots, promotion and branch deletion. Extend isolated acquisition
 to transfer objects into a credential-free local checkout. Preserve repository
 locks, exact-ref checks, object validation and existing transfer budgets.
+
+Credential-free preparation failures expose only daemon-selected reason fields:
+`lock_wait_timeout`, `git_timeout` (subcommand, elapsed seconds and available
+budget), `git_exit` (subcommand, return code and diagnostic kind), or
+`import_mismatch`. The same safe detail reaches exceptions, fixer blockers and
+integration-train messages, and a structured `git_preparation_failed` log event.
+Never include raw stderr, paths, ref names or credentials in these fields.
+
+Standalone exact-object acquisition has a finite 240-second aggregate budget:
+successful local acquisitions on a busy retained store have taken 115.4 seconds
+against the former 120-second limit. An explicit caller budget always wins,
+including remaining push authority; no phase resets that deadline. A complete,
+integrity-verified local commit is pinned directly with `update-ref`, without
+fetching its graph back from a temporary repository. Retained verification still
+reuses only an unchanged clean store within its existing cache lifetime.
+
 Additional private submodules or LFS services require their own explicit scope;
 do not forward the repository token to arbitrary secondary destinations.
 
