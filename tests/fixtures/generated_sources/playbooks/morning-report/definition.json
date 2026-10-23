@@ -5,7 +5,7 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-10-20T15:28:38.207325Z",
+  "compiled_at": "2026-10-23T07:41:01.578575Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "morning-report",
   "purpose": "routine",
@@ -15,11 +15,11 @@
       "id": "reconcile-morning",
       "name": "reconcile-morning",
       "source": {
-        "end_line": 31,
+        "end_line": 52,
         "excerpt": "## Rule: reconcile-morning",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 31
+        "start_line": 52
       },
       "trigger": {
         "event_type": "report.morning_due"
@@ -30,17 +30,17 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:23cea13fc31dfa06ee58109d9cf3efcf28e1448cc7de0d76eb680038302cb108",
+  "source_hash": "sha256:2305fcd35ed1adc8ffa16ab383929a00c02e739827fe421beea8eb321707f99d",
   "steps": {
     "reconcile-morning--backoff": {
       "outcomes": [],
       "rule": "reconcile-morning",
       "source": {
-        "end_line": 42,
+        "end_line": 63,
         "excerpt": "4. Wait 60 seconds on a durable timer before retrying a failed call.",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 42
+        "start_line": 63
       },
       "timeout_seconds": 60,
       "title": "backoff",
@@ -55,11 +55,11 @@
       "outcome": "completed",
       "rule": "reconcile-morning",
       "source": {
-        "end_line": 36,
+        "end_line": 57,
         "excerpt": "2. If `report.report_id` is the event's `report_id` and `report.state` is still",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 36
+        "start_line": 57
       },
       "title": "Completed",
       "type": "terminal"
@@ -68,11 +68,11 @@
       "outcome": "failed",
       "rule": "reconcile-morning",
       "source": {
-        "end_line": 49,
+        "end_line": 71,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "morning-report.md",
-        "start_line": 49
+        "start_line": 71
       },
       "title": "Failed",
       "type": "terminal"
@@ -81,11 +81,11 @@
       "outcomes": [],
       "rule": "reconcile-morning",
       "source": {
-        "end_line": 41,
+        "end_line": 62,
         "excerpt": "3. Wait 60 seconds on a durable timer, then call step 1 again.",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 41
+        "start_line": 62
       },
       "timeout_seconds": 60,
       "title": "pause",
@@ -142,11 +142,11 @@
       "default": "reconcile-morning--done",
       "rule": "reconcile-morning",
       "source": {
-        "end_line": 46,
-        "excerpt": "6. If `retried` is still pending for the event's `report_id`, as in step 2,",
+        "end_line": 67,
+        "excerpt": "6. If `retried.report_id` matches the event's `report_id` and `retried.state`",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 46
+        "start_line": 67
       },
       "title": "recheck",
       "type": "decision"
@@ -157,11 +157,11 @@
       "rule": "reconcile-morning",
       "save_result_as": "retried",
       "source": {
-        "end_line": 43,
+        "end_line": 64,
         "excerpt": "5. Call `morning_report_tick` again and bind its result as `retried`. The",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 43
+        "start_line": 64
       },
       "title": "retry",
       "transitions": {
@@ -217,11 +217,11 @@
       "default": "reconcile-morning--done",
       "rule": "reconcile-morning",
       "source": {
-        "end_line": 36,
+        "end_line": 57,
         "excerpt": "2. If `report.report_id` is the event's `report_id` and `report.state` is still",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 36
+        "start_line": 57
       },
       "title": "settle",
       "type": "decision"
@@ -232,11 +232,11 @@
       "rule": "reconcile-morning",
       "save_result_as": "report",
       "source": {
-        "end_line": 33,
+        "end_line": 54,
         "excerpt": "1. Call `morning_report_tick` with no arguments and bind its result as `report`.",
         "heading": "Rule: reconcile-morning",
         "path": "morning-report.md",
-        "start_line": 33
+        "start_line": 54
       },
       "title": "tick",
       "transitions": {

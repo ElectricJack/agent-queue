@@ -493,7 +493,7 @@ they never silently expand the public schema.
 
 The restart hold correction records `restart_task`'s optional `override_hold` and
 `reason` arguments in `restart-hold-contract-changes.json`. Removing exactly that
-transport delta restores the supervisor-health catalogue bytes. The producer audit
+transport delta restores the pre-hold dev catalogue bytes. The producer audit
 pins the explicit refusal and delegated restart paths; recovery tests cover exact
 hold fencing, release authority and recorded provenance.
 

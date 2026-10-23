@@ -363,7 +363,7 @@
       },
       {
         "protocol": "delegated_producer",
-        "return": "_error('report.invalid', 'report exceeds 1,200 characters after rendering')"
+        "return": "_error('report.invalid', f'report exceeds {MAX_CHARS:,} characters after rendering')"
       },
       {
         "protocol": "delegated_producer",
@@ -378,12 +378,14 @@
         "return": "{'success': True, 'request_id': request_id, 'window_id': row['owner_ref'], 'state': changed['state'], 'version': changed['version']}"
       }
     ],
+    "review_notes": "Reviewed MAX_CHARS-derived rendered-budget error text; outcome protocol, resource gates and typed contract unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:ae3f2f6f8b5e9253501f7d7067ae2063a373568346fb88ac37955c92c79ba2dc",
+    "source_digest": "sha256:d6dd8b58dfa2882dda204e8cd8b27314976a28c8036f63c127c4011a17897914",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_report_requests.py::test_submission_budget_includes_footer_and_marker"
     ]
   }
 }

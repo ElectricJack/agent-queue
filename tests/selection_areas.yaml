@@ -381,6 +381,7 @@ areas:
       - tests/test_default_playbook_v2_artifacts.py
       - tests/test_project_defaults_playbook.py
       - tests/test_playbook_v2_fixtures.py
+      - tests/test_quilt_health_watch.py
       - tests/test_shipped_playbook_sources.py
       - tests/test_default_agent_type_playbooks.py
       - tests/test_default_pipeline_intake.py
@@ -494,6 +495,7 @@ areas:
       - tests/test_integration_properties.py
       - tests/test_promotion_backmerge.py
       - tests/test_promotion_policy.py
+      - tests/test_promotion_continuous_equivalence.py
       - tests/test_promotion_request_playbook.py
       - tests/test_promote_commands.py
       - tests/test_promotion_notes_input.py
@@ -617,6 +619,7 @@ areas:
     match:
       - tests/test_provider_availability*.py
       - tests/test_provider_commands.py
+      - tests/test_provider_failover_playbook.py
       - tests/test_provider_escalation.py
       - tests/test_provider_evidence.py
       - tests/test_provider_inflight.py

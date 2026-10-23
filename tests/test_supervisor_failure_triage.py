@@ -89,3 +89,104 @@ async def test_internal_triage_command_is_idempotent_and_maps_all_successes(hand
         assert (await registration.invoke(args, None)).outcome == outcome
     handler.execute.return_value = {"error": "scope refused"}
     assert (await registration.invoke(args, None)).outcome == "rejected"
+
+
+EQUIVALENCE = FIXTURE.with_name("supervisor-failure-triage-equivalence")
+SCENARIOS = json.loads((EQUIVALENCE / "scenarios.json").read_text())
+
+
+def test_port_preserves_baseline_policy_and_records_source_provenance():
+    baseline = (EQUIVALENCE / "baseline-source.md").read_bytes()
+    assert hashlib.sha256(baseline).hexdigest() == (
+        "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+    )
+    old = load_definition_json((EQUIVALENCE / "baseline-artifact.json").read_text())
+    new = _definition()
+    assert old.source_hash == source_digest(baseline.decode())
+    # Source locations and compile metadata may move; executable policy may not.
+    for attribute in ("rules", "steps"):
+        def policy(definition):
+            value = definition.model_dump(mode="json", exclude_none=True)[attribute]
+            rows = value.values() if isinstance(value, dict) else value
+            for row in rows:
+                row.pop("source", None)
+            return value
+        assert policy(old) == policy(new)
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda scenario: scenario["name"])
+async def test_port_matches_baseline_through_engine_and_dispatch(scenario):
+    from types import SimpleNamespace
+
+    from src.commands.handler import CommandHandler
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.config import AppConfig
+    from src.playbooks.engine import PlaybookEngine
+    from src.playbooks.executors.base import EngineServices
+    from tests.playbook_v2_engine_helpers import (
+        InMemoryArtifactStore,
+        RecordingBus,
+        RecordingRunRepository,
+        StubActivations,
+        artifact_ref_for,
+    )
+
+    traces = []
+    for definition in (
+        load_definition_json((EQUIVALENCE / "baseline-artifact.json").read_text()),
+        _definition(),
+    ):
+        db = AsyncMock()
+        db.get_task.return_value = SimpleNamespace(id="task-1", project_id="project-1")
+        config = AppConfig()
+        bus = RecordingBus()
+        command_handler = CommandHandler(SimpleNamespace(db=db, bus=bus), config)
+        execute = command_handler.execute
+        command_handler.execute = AsyncMock(wraps=execute)
+        set_handler_provider(lambda: command_handler)
+        store = InMemoryArtifactStore()
+        store.put(definition)
+        ref = artifact_ref_for(definition)
+        runs = RecordingRunRepository()
+        engine = PlaybookEngine(
+            services=EngineServices(
+                contracts=CONTRACTS, clock=lambda: 1000.0,
+                artifact_store=store, bus=bus, private_values=AsyncMock(),
+            ),
+            runs=runs, waits=None, activations=StubActivations([ref]),
+        )
+        trace = []
+        try:
+            for index, outcome in enumerate(scenario["outcomes"]):
+                event = {**scenario["event"], "event_id": f'{scenario["event"]["event_id"]}-{index}'}
+                if outcome == "runtime_error":
+                    command_handler.execute.side_effect = RuntimeError("dispatch unavailable")
+                else:
+                    db.notify_task_recovery.return_value = (
+                        {"success": False, "error": "scope refused"}
+                        if outcome == "rejected" else
+                        {"outcome": outcome, "task_id": "task-1", "incident_id": "incident-1"}
+                    )
+                result = await engine.dispatch_event(event, TRUSTED_LOCAL)
+                assert len(result.run_ids) == 1
+                snapshot = runs.snapshots[result.run_ids[0]]
+                assert snapshot.lifecycle.value == scenario["terminal"]
+                receipt = next(r for r in runs.receipts if r.run_id == snapshot.run_id
+                               and r.step_id == NOTIFY and r.receipt_kind == "step")
+                assert receipt.selected_transition == f"{RULE}::{NOTIFY}::{outcome}"
+                trace.append((snapshot.lifecycle.value, receipt.selected_transition))
+                command_handler.execute.assert_awaited_with(
+                    "task_failure_triage_notify",
+                    {"task_id": "task-1", "project_id": "project-1"},
+                )
+                # The same delivery is deduplicated before invoking the command again.
+                before = command_handler.execute.await_count
+                await engine.dispatch_event(event, TRUSTED_LOCAL)
+                assert command_handler.execute.await_count == before
+            assert command_handler.execute.await_count == len(scenario["outcomes"])
+            if "runtime_error" not in scenario["outcomes"]:
+                assert db.notify_task_recovery.await_count == len(scenario["outcomes"])
+            traces.append(trace)
+        finally:
+            set_handler_provider(None)
+    assert traces[0] == traces[1]
