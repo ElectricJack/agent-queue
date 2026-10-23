@@ -398,3 +398,101 @@ async def test_retained_migrations_doctor_never_downgrades_or_stamps(
     assert await _stamped_at(ctx.config.database.url) == ORPHAN
     async with ctx.db._engine.connect() as conn:
         assert await conn.scalar(text("SELECT to_regclass('public.tasks')")) == "tasks"
+
+
+async def _offline_cli(ctx, monkeypatch, *args):
+    """Exercise the real CLI and check against only this test's scratch DB."""
+    import asyncio
+    import json
+
+    from click.testing import CliRunner
+
+    from src.cli.app import cli
+
+    monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: "cli")
+    monkeypatch.delenv("AQ_API_TOKEN", raising=False)
+    monkeypatch.setattr("src.cli.db._load_config", lambda: ctx.config)
+    monkeypatch.setattr(
+        "src.cli.doctor._get_client", lambda *a: pytest.fail("offline must not use the daemon")
+    )
+    monkeypatch.setattr(
+        Database, "initialize", lambda *a: pytest.fail("offline must never initialize the schema")
+    )
+    result = await asyncio.to_thread(
+        CliRunner().invoke, cli,
+        ["doctor", "--offline", "--check", CHECK_ID, "--json", *args],
+    )
+    return result, json.loads(result.stdout)["data"]
+
+
+class TestOfflineDoctor:
+    async def test_check_runs_without_a_daemon_on_an_orphan_database(self, ctx, monkeypatch):
+        await _stamp(ctx.config.database.url, ORPHAN)
+
+        async def missing(revision):
+            return None
+
+        monkeypatch.setattr(db_checks_module, "find_revision_source", missing)
+
+        result, data = await _offline_cli(ctx, monkeypatch)
+
+        assert result.exit_code == 2, result.output
+        assert data["checks"][0]["data"]["orphans"] == [ORPHAN]
+        assert data["checks"][0]["severity"] == "error"
+        assert await _stamped_at(ctx.config.database.url) == ORPHAN
+
+    async def test_fix_keeps_the_stamp_fallback_opt_in(self, ctx, monkeypatch):
+        await _stamp(ctx.config.database.url, ORPHAN)
+        monkeypatch.delenv(STAMP_ENV, raising=False)
+
+        async def missing(revision):
+            return None
+
+        monkeypatch.setattr(db_checks_module, "find_revision_source", missing)
+        result, data = await _offline_cli(ctx, monkeypatch, "--fix")
+
+        assert result.exit_code == 2, result.output
+        assert STAMP_ENV in data["checks"][0]["detail"]
+        assert not data["checks"][0]["fix_applied"]
+        assert await _stamped_at(ctx.config.database.url) == ORPHAN
+
+    @pytest.mark.migration
+    async def test_fix_runs_the_borrowed_revisions_downgrade_without_a_daemon(
+        self, ctx, monkeypatch,
+    ):
+        from sqlalchemy import text
+
+        dsn = ctx.config.database.url
+        head = (await _check().run(ctx)).data["heads"][0]
+        async with ctx.db._engine.begin() as conn:
+            await conn.execute(text("CREATE TABLE orphan_leftover (id INTEGER PRIMARY KEY)"))
+        await _stamp(dsn, ORPHAN)
+        monkeypatch.setattr(
+            db_checks_module, "find_revision_source", _fixed_source("refs/x", "migrations/v.py")
+        )
+        monkeypatch.setattr(
+            db_checks_module, "_revision_file_text", _fixed_text(_synthetic_revision(ORPHAN, head))
+        )
+
+        result, data = await _offline_cli(ctx, monkeypatch, "--fix")
+
+        assert result.exit_code == 0, result.output
+        assert data["checks"][0]["fix_applied"]
+        assert await _stamped_at(dsn) == head
+        async with ctx.db._engine.connect() as conn:
+            assert await conn.scalar(text("SELECT to_regclass('public.orphan_leftover')")) is None
+
+    async def test_retained_migration_policy_blocks_offline_repair(self, ctx, monkeypatch):
+        await _stamp(ctx.config.database.url, ORPHAN)
+        ctx.config.database.schema_ahead_migrations = "/nonexistent/retained/migrations"
+        monkeypatch.setenv(STAMP_ENV, "1")
+        for method in ("find_revision_source", "_downgrade_with_borrowed_file", "_stamp"):
+            monkeypatch.setattr(
+                db_checks_module, method, lambda *a: pytest.fail("must preserve retained schema")
+            )
+
+        result, data = await _offline_cli(ctx, monkeypatch, "--fix")
+
+        assert result.exit_code == 2, result.output
+        assert data["checks"][0]["data"]["retained_migrations"]
+        assert await _stamped_at(ctx.config.database.url) == ORPHAN

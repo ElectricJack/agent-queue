@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from types import SimpleNamespace
 from typing import Any
 
@@ -55,6 +55,7 @@ TRAIN_VISIT_BLOCKERS = {
 
 #: How long one task's explain waits for its completed-branch read.
 _COMPLETED_BRANCH_BUDGET_SECONDS = 5.0
+_TRAIN_GIT_BUDGET = 3.0  #: The train read's Git budget; what it has not observed is unknown.
 
 
 def _blocker(
@@ -642,9 +643,7 @@ class IntegrationStatusService:
             conn, project["id"], project["integration_repository_id"], limit=None,
         )
 
-    async def train_status(
-        self, project_id: str, *, observe: bool = True
-    ) -> dict[str, Any] | None:
+    async def train_status(self, project_id: str, *, observe: bool = True) -> dict[str, Any] | None:
         """The train's targets and open batches, from Git, checks, reviews and intent.
 
         ``observe=False`` is the control-only read: the durable batches, the last
@@ -667,8 +666,7 @@ class IntegrationStatusService:
             if project is None:
                 return None
             batches = await self._train_batches_on(
-                conn, integration_batches.c.project_id == project_id
-            )
+                conn, integration_batches.c.project_id == project_id)
             visits = self._train_visits(project_id)
             evidence = await self._train_evidence_on(conn, visits)
             from src.operator_decisions import history_on
@@ -706,9 +704,12 @@ class IntegrationStatusService:
         repository = await self.db.get_repo(project["integration_repository_id"]) if (
             observe and project["integration_repository_id"]) else None
         if repository is not None:
-            default = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
-            observed = await project_snapshot(self.db, TrainTarget(
-                project_id, repository.id, default))
+            root = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+            observed, deadline = None, asyncio.get_running_loop().time() + _TRAIN_GIT_BUDGET
+            with suppress(TimeoutError):  # reuse a recent fetch; never wait out a slow one
+                async with asyncio.timeout_at(deadline):
+                    observed = await project_snapshot(self.db, TrainTarget(
+                        project_id, repository.id, root), read=True, cached_only=self.cached_only)
             async with self.db._engine.connect() as conn:
                 child = tasks.alias("status_epic_child")
                 epics_on = (await conn.execute(select(
@@ -719,6 +720,7 @@ class IntegrationStatusService:
                     select(child.c.id).where(child.c.parent_task_id == tasks.c.id).exists(),
                 ).order_by(tasks.c.id))).all()
             retired = getattr(getattr(self.train, "targets", None), "retired_targets", ())
+            inspect = EpicRefresh(self.db).inspect
             open_refs = {batch["target_ref"] for batch in batches}
             for task_id, task_status, branch in epics_on:
                 ref = "refs/heads/" + branch.removeprefix("refs/heads/")
@@ -727,13 +729,11 @@ class IntegrationStatusService:
                 if (task_status == "COMPLETED" and ref not in open_refs and
                         (absent or (project_id, repository.id, ref) in retired)):
                     continue
-                try:
-                    if observed is None:
-                        raise ValueError("default branch cannot be observed")
-                    _, _, _, distance = await EpicRefresh(self.db).inspect(task_id, snapshot=observed)
-                    epics.append(distance)
-                except (ValueError, GitError, OSError):
-                    epics.append({"task_id": task_id, "behind": None, "state": "unknown"})
+                distance = {"task_id": task_id, "behind": None, "state": "unknown"}
+                with suppress(ValueError, GitError, OSError, TimeoutError):
+                    async with asyncio.timeout_at(deadline):
+                        distance = (await inspect(task_id, snapshot=observed))[3]
+                epics.append(distance)
         return {
             "projection_kind": "train",
             "project_id": project_id,
@@ -1154,7 +1154,7 @@ class IntegrationStatusService:
             policy = RepairPolicy.model_validate(current["policy"])
             ordinal = int(current["ordinal"])
             limit = policy.primary_attempts if ordinal == 0 else policy.debug_attempts
-            if current["state"] == "active" and int(current["attempts"]) >= limit:
+            if current["state"] == "active" and limit and int(current["attempts"]) >= limit:
                 blockers.append(
                     _blocker(
                         "budget_exhausted",
