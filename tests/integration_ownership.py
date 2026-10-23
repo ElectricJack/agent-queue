@@ -45,10 +45,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f',
                           'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '4bafa45f1ac0a466eab372c7b6b0b866f67bb832',
+ 'measured_source_revision': '34302a22e2bc0541d1e73b667bb9161cf27431e6',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161213,
- 'delta': 5714,
+ 'measured_owned_total': 161211,
+ 'delta': 5712,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -62,14 +62,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2255,
+ 'batch_measured_delta': 2253,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
- 'measured_engine_lines': 85544,
+ 'measured_engine_lines': 85023,
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -498,7 +498,33 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                                    'reason': 'Carry the unchanged approved '
                                                              'push-diagnostic delta onto merged '
                                                              'dev; preserve every historical '
-                                                             'grant.'}]}
+                                                             'grant.'}],
+ 'authenticated_push_merge_measurement': {'task_id': 'fleet-dune-15',
+                                          'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                          'operator_decision': '6679052c',
+                                          'operator_task': 'sharp-cascade-53',
+                                          'approval_message_id': 'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12',
+                                          'authority': 'Supervisor reopen preapproval, 2026-10-23: '
+                                                       'exact merged amendment for PR #1882.',
+                                          'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1882',
+                                          'merged_dev_revision': 'd60c0f238c8205f495a384c0bd77c322a8fc89ac',
+                                          'prior_owned_total_cap': 161213,
+                                          'prior_engine_cap': 85544,
+                                          'dev_owned_total': 161198,
+                                          'dev_engine_lines': 85010,
+                                          'dev_table_count': 45,
+                                          'measured_source_revision': '34302a22e2bc0541d1e73b667bb9161cf27431e6',
+                                          'measured_owned_total': 161211,
+                                          'measured_engine_lines': 85023,
+                                          'measured_table_count': 45,
+                                          'authorized_owned_delta': 13,
+                                          'authorized_engine_delta': 13,
+                                          'authorized_table_delta': 0,
+                                          'headroom': 0,
+                                          'restore_task': 'azure-ridge-72',
+                                          'reason': 'Carry unchanged approved push diagnostics '
+                                                    'onto independently measured dev; retain all '
+                                                    'historical grants and real reductions.'}}
 
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
