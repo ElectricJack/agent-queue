@@ -31,14 +31,24 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-381054d695e64055979a687c4d811e7e',
                           'msg-ab86b9766c2f42b9ba4920aba585b577',
                           'msg-21784b3e56aa4f54bf1042b7c9af4aaf',
+<<<<<<< HEAD
                           'msg-1984d09ec70e479c9d0cc14c57e828c3',
                           'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
                           'msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c'],
+=======
+                          'msg-a337e2c905ce4f5c8a236344a4e25211',
+                          'msg-330ea2478c724381acbb5512fc99e4b5'],
+>>>>>>> 0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': 'b65c4f58866c1569e7ed73cb3a9d306f3060e1f0',
+ 'measured_source_revision': 'f12a1f07560d3d0cd6458c078007bda21eca8080',
  'original_owned_total_cap': 155499,
+<<<<<<< HEAD
  'measured_owned_total': 160950,
  'delta': 5451,
+=======
+ 'measured_owned_total': 160982,
+ 'delta': 5483,
+>>>>>>> 0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -52,14 +62,22 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
+<<<<<<< HEAD
  'batch_measured_delta': 1992,
+=======
+ 'batch_measured_delta': 2024,
+>>>>>>> 0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
+<<<<<<< HEAD
  'measured_engine_lines': 85386,
+=======
+ 'measured_engine_lines': 85398,
+>>>>>>> 0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -75,6 +93,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'global_request': 'msg-9f895e0d',
                  'global_grant': 'msg-7f2f68c1',
                  'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'},
+<<<<<<< HEAD
                 {'task_id': 'agile-beacon-80',
                  'decision_message_id': 'msg-1984d09ec70e479c9d0cc14c57e828c3',
                  'referenced_decision': 'msg-00b0e081',
@@ -151,6 +170,20 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                            'nimble-torrent-12': {'owned': 1, 'engine': 0}},
                        'reason': 'Compose the existing exact grants on their common measured '
                                  'dev tree; preserve each historical measurement below.'}}
+=======
+                {'task_id': 'prime-impact-40',
+                 'decision_message_id': 'msg-a337e2c905ce4f5c8a236344a4e25211',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160879,
+                 'previous_engine_lines': 85316,
+                 'authorized_owned_delta': 103,
+                 'authorized_engine_delta': 82,
+                 'reason': 'GitHub caller diagnostics, shared background quota reserve and '
+                           'inventory reuse; exact supervisor grant under '
+                           'size-cap-delegation-2026-10-23.',
+                 'supersedes_message_id': 'msg-ac47a08407a6462bb411326ecefeab44',
+                 'grant_source_message_id': 'msg-330ea2478c724381acbb5512fc99e4b5'}]}
+>>>>>>> 0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

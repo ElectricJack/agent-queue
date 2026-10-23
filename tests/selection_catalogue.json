@@ -7653,11 +7653,12 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:46998fca9677830d0bef091f524ed25ceb7810607e2a577090b37c5b55ff4e72",
+      "digest": "sha256:48a32ea41ee6d33a55779ffbda7b7de6176cea890ecf5b8c2191d153957225c7",
       "imports": [
         "src.commands.integration_commands",
         "src.config",
         "src.git.github",
+        "src.git.github_activity",
         "src.git.github_app",
         "src.git.github_auth",
         "src.git.github_cli",
@@ -9609,11 +9610,13 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:c3c0eb990fac0597e861b4ded8021a3ecc3cf0057ca09e5beef6be5b4d8961f8",
+      "digest": "sha256:1cdb2d9a08ca1d8711d976a4aed6a60a2824cd58af525bce7e606dc37db6f587",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.tables",
+        "src.git.github_auth",
+        "src.git.github_cli",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
