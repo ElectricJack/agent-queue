@@ -21807,7 +21807,7 @@
       "_claim_precondition_refusal": "sha256:43692f096a7f7a1c94305812d7f4090d90ea2a53de5d6924659e30310d648b7d",
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:6722ada280e9abcccb852ee3e7a4d751780a958ec24dbad4bfcaa0f1fdb3cc79",
+      "_prepare_and_activate_locked": "sha256:d4dfda501280d4675a7236320d840443fb310cb9234b4850514f93279d9b7f9b",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
@@ -21866,7 +21866,7 @@
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
       "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:6722ada280e9abcccb852ee3e7a4d751780a958ec24dbad4bfcaa0f1fdb3cc79",
+      "_prepare_and_activate_locked": "sha256:d4dfda501280d4675a7236320d840443fb310cb9234b4850514f93279d9b7f9b",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
@@ -23630,7 +23630,7 @@
   "update_and_restart": {
     "mode": "json_object",
     "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_update_and_restart",
-    "source_digest": "sha256:5fa666c48c69ddb165f96d9eaadb28fc7dc5822c03df506b5712317da2fc8fc5",
+    "source_digest": "sha256:e92c640b839645c4fe1befc2b9ced546628a27c652020578dba4b995f30dd545",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -23652,8 +23652,8 @@
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "await self._update_and_restart_legacy(args)",
-        "protocol": "delegated_producer"
+        "return": "{'success': False, 'error': 'deployment_not_configured', 'remediation': 'Configure deploy.tag_glob and deploy.target for releases, or deploy.track_branch for branch tracking. Alternatively, run `aq update` as the operator from your own terminal for a guarded branch update.'}",
+        "protocol": "explicit_boolean: False"
       },
       {
         "return": "{'success': False, 'error': 'migration_recovery_required', 'remediation': 'Follow deployment history remediation, then run aq update --yes --resume-after-recovery as operator after restoring the installation.'}",
@@ -23690,10 +23690,7 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_system_commands.py"
     ],
-    "helper_producers": {
-      "_update_and_restart_legacy": "sha256:56dbd00e826e21d9152b16c760bafb7b6c41814ec2dbf5d4107fdbf1c1e99134"
-    },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "review_notes": "All return branches carry explicit boolean success. An unconfigured daemon update refuses with operator/configuration remediation before planning, subprocesses, scheduling changes or restart. Configured updates retain migration recovery and failed-target holds and launch the detached guarded updater. Removed the implicit legacy producer; standalone operator aq update remains guarded."
   },
   "update_config": {
     "mode": "json_object",

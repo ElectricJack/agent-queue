@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import time
@@ -16,6 +17,7 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.contracts.registry import CONTRACTS, ContractRegistry
+from src.commands.contracts.models import CommandResult
 from src.commands.principal import (
     TRUSTED_LOCAL,
     ExecutionPrincipal,
@@ -51,10 +53,126 @@ COMMANDS = (
     "object_loop_inputs", "object_loop_start", "object_loop_reconcile",
     "object_score_record", "object_checkpoint_read",
 )
+PORT_FIXTURES = ROOT / "tests/fixtures/playbooks/object-loop-port"
+PORT_SCENARIOS = json.loads((PORT_FIXTURES / "scenarios.json").read_text())
 
 
 def artifact():
     return load_definition_json((BUNDLE / "artifact.json").read_text())
+
+
+def test_port_preserves_installed_graph_and_authority():
+    raw = (PORT_FIXTURES / "installed.artifact.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == PORT_SCENARIOS["installed_artifact_sha256"]
+    # The exact pre-port repository bytes are also pinned by the legacy digest
+    # guard. The installed copy differs only in its compilation timestamp.
+    repository = json.loads((PORT_FIXTURES / "repository.artifact.json").read_text())
+    installed = json.loads(raw)
+    repository.pop("compiled_at")
+    installed.pop("compiled_at")
+    assert repository == installed
+    old = load_definition_json(raw.decode())
+    new = artifact()
+    # required_capabilities changes checkpoint authority (amber-crest-92).
+    # Retain legacy metadata until that compatibility work is reviewed.
+    assert new.trusted_execution is old.trusted_execution is None
+    assert new.compiled_against == old.compiled_against
+    assert new.scope == old.scope
+    # Source references move when authoring clauses are added. Executable rules,
+    # inputs, conditions, retries, limits and edges must otherwise stay identical.
+    for key in ("rules", "steps"):
+        before = old.model_dump(mode="json")[key]
+        after = new.model_dump(mode="json")[key]
+        for items in (before, after):
+            for item in (items.values() if isinstance(items, dict) else items):
+                item.pop("source", None)
+        assert before == after
+
+
+@pytest.mark.parametrize("rule", [
+    "on-formula", "on-completion", "on-failure", "on-review", "recover",
+])
+@pytest.mark.parametrize("scenario", PORT_SCENARIOS["scenarios"], ids=lambda s: s["name"])
+async def test_port_matches_installed_scenarios(scenario, rule):
+    """Run both frozen graphs through typed previews; no live handler is invoked.
+
+    Only the current-policy placeholder changes between graphs. This models
+    separately pinned attempts, never automatic adoption of an existing loop.
+    Compare all command arguments and node outcomes, including refusals.
+    """
+    old = load_definition_json((PORT_FIXTURES / "installed.artifact.json").read_text())
+    traces = []
+    for definition in (old, artifact()):
+        ref = artifact_ref_for(definition)
+
+        def bind_policy(value):
+            if isinstance(value, dict):
+                return {k: bind_policy(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [bind_policy(v) for v in value]
+            if value == "$POLICY":
+                return ref.artifact_sha256
+            if value == "$POLICY_HEX":
+                return ref.artifact_sha256.removeprefix("sha256:")
+            return value
+
+        remaining = bind_policy(scenario["calls"])
+        calls = []
+        registry = ContractRegistry()
+        for name in COMMANDS:
+            registration = CONTRACTS.require(name)
+
+            async def preview(args, _principal, name=name, registration=registration):
+                expected = remaining.pop(0)
+                assert name == expected["command"]
+                assert args.model_dump() == registration.contract.execution.args_model.model_validate(
+                    expected["args"],
+                ).model_dump()
+                calls.append((name, args.model_dump(), expected["outcome"]))
+                return CommandResult(
+                    outcome=expected["outcome"], summary=expected["outcome"],
+                    value=registration.contract.execution.result_model.model_validate(
+                        expected["value"],
+                    ),
+                )
+
+            async def forbidden_live(_args, _principal):
+                pytest.fail("Equivalence previews must never invoke a live command")
+
+            contract = registration.contract.model_copy(update={
+                "execution": registration.contract.execution.model_copy(
+                    update={"supports_preview": True},
+                ),
+            })
+            registry.register(replace(
+                registration, contract=contract, invoke=forbidden_live, preview=preview,
+            ))
+        store = InMemoryArtifactStore()
+        store.put(definition)
+        engine = PlaybookEngine(
+            services=EngineServices(contracts=registry, artifact_store=store, clock=lambda: 100),
+            runs=RecordingRunRepository(),
+        )
+        event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
+        tree = await engine.dry_run(ref, {
+            "event_type": event_type, "project_id": PROJECT, "event_id": "port-equivalence",
+        }, TRUSTED_LOCAL)
+        assert not tree.truncated and len(tree.paths) == 1
+        path = tree.paths[0]
+        assert not remaining, (remaining, path)
+        assert len(calls) == len(scenario["calls"]), path
+        assert path.completed, path  # Traversal completion, not business success.
+        terminal = "done" if scenario["completed"] else "failed"
+        assert path.nodes[-1].step_id == f"{rule}--{terminal}", path
+        assert all(n.outcome != "runtime_error" for n in path.nodes), path
+        # Remove only the per-artifact identity from argument comparison.
+        normalized_calls = json.dumps(calls, sort_keys=True).replace(
+            ref.artifact_sha256.removeprefix("sha256:"), "$POLICY_HEX",
+        )
+        traces.append((normalized_calls, [
+            (n.step_id, n.target, n.outcome) for n in path.nodes
+        ]))
+    assert traces[0] == traces[1]
 
 
 @pytest.fixture(params=[False, True], ids=["legacy", "run-bound"])

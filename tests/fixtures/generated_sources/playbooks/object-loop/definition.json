@@ -9,7 +9,7 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-10-20T15:28:37.511746Z",
+  "compiled_at": "2026-10-23T07:38:15.814704Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "object-loop",
   "purpose": "routine",
@@ -95,7 +95,7 @@
     "project_id": "matter-engine-cpp",
     "type": "project"
   },
-  "source_hash": "sha256:0a1b96a900549bf840821eda167e0228c4c08711a8586261bf9cd015c093aa85",
+  "source_hash": "sha256:19c8d15bc6482d98b95c57fb101b7e36b46252ce6ae6646a128c4302a11869fb",
   "steps": {
     "on-completion--adopt": {
       "command": "object_loop_reconcile",
@@ -479,11 +479,11 @@
       "outcome": "completed",
       "rule": "on-completion",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Completed",
       "type": "terminal"
@@ -492,11 +492,11 @@
       "outcome": "failed",
       "rule": "on-completion",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Failed",
       "type": "terminal"
@@ -1569,11 +1569,11 @@
       "outcome": "completed",
       "rule": "on-failure",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Completed",
       "type": "terminal"
@@ -1582,11 +1582,11 @@
       "outcome": "failed",
       "rule": "on-failure",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Failed",
       "type": "terminal"
@@ -2659,11 +2659,11 @@
       "outcome": "completed",
       "rule": "on-formula",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Completed",
       "type": "terminal"
@@ -2672,11 +2672,11 @@
       "outcome": "failed",
       "rule": "on-formula",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Failed",
       "type": "terminal"
@@ -3749,11 +3749,11 @@
       "outcome": "completed",
       "rule": "on-review",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Completed",
       "type": "terminal"
@@ -3762,11 +3762,11 @@
       "outcome": "failed",
       "rule": "on-review",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Failed",
       "type": "terminal"
@@ -4839,11 +4839,11 @@
       "outcome": "completed",
       "rule": "recover",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Completed",
       "type": "terminal"
@@ -4852,11 +4852,11 @@
       "outcome": "failed",
       "rule": "recover",
       "source": {
-        "end_line": 178,
+        "end_line": 245,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 245
       },
       "title": "Failed",
       "type": "terminal"
