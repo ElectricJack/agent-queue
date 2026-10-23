@@ -1,0 +1,11 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/default-pipeline/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/scenarios/default-pipeline/before.artifact.json",
+      "previous_sha256": "0064f7e4b84733ae2d190fa6a420d48a8de100b13b5c406a0e770db5f893cafb",
+      "sha256": "04498620587d606388c43e77b5cb492ac98f131aeea594c83041b79d4ec7c1c2"
+    }
+  },
+  "reason": "wise-forge-11 declares the three existing typed command capabilities for default-pipeline. Only source provenance and trusted execution declarations change; rules, steps, contracts and outcomes are preserved. Chain this pin after the hibernation evidence without replacing historical hashes. The captured pre-port artifact and tests/test_default_pipeline_equivalence.py prove baseline preservation and executable equivalence. This recording does not install or activate the playbook.",
+  "source_base": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473"
+}
