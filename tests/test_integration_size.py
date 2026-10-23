@@ -387,9 +387,26 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert merged["approval_message_id"] == "msg-a10c7ab8ff2946f8b1f27528a407524c"
     assert merged["decision_id"] == "size-cap-delegation-2026-10-23"
     assert merged["authorized_owned_delta"] == grant["authorized_delta"] == 5
-    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == measured
+    push = exception["authenticated_push_measurement"]
+    assert push["task_id"] == "fleet-dune-15"
+    assert push["measured_source_revision"] == "715a3caf99c083f80a9426a303c9336cbb264921"
+    assert push["approval_message_id"] == "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12"
+    assert push["request_message_id"] == "msg-027dff134dbc4cd8b5966c36151384ba"
+    assert push["decision_id"] == merged["decision_id"]
+    assert push["authorized_owned_delta"] == push["authorized_engine_delta"] == 13
+    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == (
+        push["prior_owned_total_cap"]
+    )
     assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]
+            == push["prior_engine_lines"])
+    assert push["prior_owned_total_cap"] + push["authorized_owned_delta"] == measured
+    assert (push["prior_engine_lines"] + push["authorized_engine_delta"]
             == exception["measured_engine_lines"])
+    assert push["measured_owned_total"] == measured
+    assert push["measured_engine_lines"] == exception["measured_engine_lines"]
+    assert push["measured_table_count"] == exception["measured_table_count"] == 45
+    assert push["headroom"] == 0
+    assert push["restore_task"] == exception["restore_task"] == "azure-ridge-72"
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [
