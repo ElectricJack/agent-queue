@@ -1413,3 +1413,33 @@ class TestDaemonNotRunningPrompt:
         ):
             result = runner.invoke(cli, ["task", "list"], input="y\n")
             assert result.exit_code == 0
+
+
+@pytest.mark.parametrize('override', [False, True])
+def test_task_restart_forwards_explicit_hold_override(runner, override):
+    from src.cli.app import cli
+
+    args = ['task', 'restart', 'held-task', '--yes', '--json']
+    expected = {'task_id': 'held-task'}
+    if override:
+        args.extend(['--override-hold', '--reason', 'Review accepted'])
+        expected.update(override_hold=True, reason='Review accepted')
+    with (
+        patch.object(CLIClient, 'connect', new_callable=AsyncMock),
+        patch.object(CLIClient, 'close', new_callable=AsyncMock),
+        patch.object(CLIClient, 'execute', new_callable=AsyncMock,
+                     return_value={'success': True, 'restarted': 'held-task'}) as execute,
+    ):
+        result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    execute.assert_awaited_once_with('restart_task', expected)
+
+
+def test_task_restart_override_without_reason_fails_before_dispatch(runner):
+    from src.cli.app import cli
+
+    with patch.object(CLIClient, 'execute', new_callable=AsyncMock) as execute:
+        result = runner.invoke(cli, ['task', 'restart', 'held-task', '--yes', '--override-hold'])
+    assert result.exit_code == 2
+    assert '--override-hold requires --reason' in result.output
+    execute.assert_not_awaited()

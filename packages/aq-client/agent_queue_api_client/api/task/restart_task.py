@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: RestartTaskRequest,
 ) -> Response[RestartTaskResponse | RestartTaskResponse422]:
-    """Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+    """Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
-     Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+     Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
     Args:
         body (RestartTaskRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: RestartTaskRequest,
 ) -> RestartTaskResponse | RestartTaskResponse422 | None:
-    """Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+    """Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
-     Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+     Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
     Args:
         body (RestartTaskRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: RestartTaskRequest,
 ) -> Response[RestartTaskResponse | RestartTaskResponse422]:
-    """Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+    """Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
-     Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+     Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
     Args:
         body (RestartTaskRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: RestartTaskRequest,
 ) -> RestartTaskResponse | RestartTaskResponse422 | None:
-    """Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+    """Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
-     Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.
+     Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason
+    and operator/global-supervisor authority; the release is audited.
 
     Args:
         body (RestartTaskRequest):
