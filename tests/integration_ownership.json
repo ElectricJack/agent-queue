@@ -19514,7 +19514,7 @@
       "msg-00b0e08117cc479c9a4a0b36fc5a30d0"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "974e10dcf94ad95f98c14fbc3d7171072e644da2",
+    "measured_source_revision": "efd690243cecfafedfeaf81c829d86255cabd620",
     "original_owned_total_cap": 155499,
     "measured_owned_total": 160944,
     "delta": 5445,
@@ -19583,15 +19583,20 @@
       "task_id": "agile-beacon-80",
       "authority": "msg-00b0e08117cc479c9a4a0b36fc5a30d0",
       "operator_decision": "6679052c",
-      "merged_dev_revision": "e7989d1aa62381a607aab67d8ce245a955ed904e",
+      "delegation_thread": "size-cap-delegation-2026-10-23",
+      "merged_dev_revision": "4e50c276fca68cbe92ba4fc704363ec6026db7dc",
       "merged_dev_owned_total": 160879,
-      "previous_source_revision": "c19fa67c3040faef95d80170aa6b40fdfe7d2dc5",
-      "previous_measured_owned_total": 160902,
-      "measured_source_revision": "974e10dcf94ad95f98c14fbc3d7171072e644da2",
+      "merged_dev_engine_lines": 85316,
+      "merged_dev_table_count": 45,
+      "previous_source_revision": "974e10dcf94ad95f98c14fbc3d7171072e644da2",
+      "previous_measured_owned_total": 160944,
+      "measured_source_revision": "efd690243cecfafedfeaf81c829d86255cabd620",
       "measured_owned_total": 160944,
       "measured_engine_lines": 85381,
       "measured_table_count": 45,
-      "reason": "Project grant requires the later landing branch to re-record the combined total when dev advances; retained-store changes add 42 owned lines and this task retains its approved 65-line delta."
+      "authorized_owned_delta": 65,
+      "authorized_engine_delta": 65,
+      "reason": "Plain merge of PR1877 preparation diagnostics from dev; combined totals remain unchanged and this task retains its approved 65-line delta. Project grant requires re-recording against the combined total when dev advances."
     }
   },
   "storage_dispositions": {
