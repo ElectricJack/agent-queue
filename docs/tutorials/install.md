@@ -372,7 +372,11 @@ What the watchdog does, and what it never does:
   while the watchdog's own start is still running wins: that start checks
   again just before it spawns the daemon, and `aq stop` waits for it.
 - **It does not race a start or a deploy**: while `aq start` holds
-  `daemon.lock` or `aq update` holds `update.lock`, it waits.
+  `daemon.lock`, or an `update.lock` younger than two hours exists, it waits.
+  An older update marker no longer blocks recovery.
+- **Changed watchdog code reloads**: the foreground service exits with code
+  75 when its source changes, allowing the service manager to start the new
+  code.
 - **Down is confirmed**: two checks in a row must find no daemon (the boot
   check skips this). It then waits up to three minutes for PostgreSQL before
   running `aq start`, which also backs up the database first when a migration
@@ -495,7 +499,7 @@ software unless an explicit uninstall scope says otherwise.
 | --- | --- | --- |
 | Interrupted install or a completed login | `aq install` | Revalidates completed steps and resumes at the first unsatisfied one. |
 | A host changed in a way the normal checks cannot verify | `aq install --repair` | Reconciles the recorded installation; does not delete resources. |
-| Get the latest AQ | `aq update` | Stops the dashboard server and then the daemon (running agents keep running), fast-forwards the checkout, then runs the rest from the new code in a fresh process: reinstalls dependencies and rebuilds the dashboard when they changed, and starts the daemon and the dashboard server again, checking the daemon's `/health` and that the dashboard server answers with this install's bundle. Backs up the database first when the update has migrations, refuses local edits or commits, and rolls back if anything fails — including an error the updater did not expect. `aq update --check` only reports. |
+| Get the latest AQ | `aq update` | Stops the dashboard server and then the daemon (running agents keep running), fast-forwards the checkout, then runs the rest from the new code in a fresh process: reinstalls dependencies and rebuilds the dashboard when they changed, and starts the daemon and the dashboard server again, checking the daemon's `/health` and that the dashboard server answers with this install's bundle. Backs up the database first when the update has migrations, refuses local edits or commits, and rolls back failures before migrations. If migrations may have run, it keeps the newer checkout and records a recovery hold for the operator. `aq update --check` only reports. |
 | Update AQ and make the version transition resumable | `aq install --upgrade` | Performs repair plus records an upgrade transaction before changing steps. |
 | Inspect removal without changing anything | `aq uninstall --dry-run` | Shows what AQ owns, keeps, or leaves for manual removal. |
 | Remove AQ runtime but keep data | `aq uninstall` | Stops AQ and removes its runtime records; configuration, data, and database stay. |
