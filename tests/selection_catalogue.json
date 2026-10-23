@@ -599,6 +599,7 @@
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
+        "tests/test_integration_pr_repair_publication.py",
         "tests/test_integration_properties.py",
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_lineage.py",
@@ -9601,6 +9602,29 @@
       ],
       "summary": "An open PR closes only once Git proves its work is on the default branch."
     },
+    "tests/test_integration_pr_repair_publication.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:e09654b0ae7669563fe777e9e46ef6e867907a8102fcf00e49f024fd4f9ac706",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.pr_repair_publication",
+        "src.integration.repository_git",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A separately filed repair's passing head fast-forwards its root PR's branch."
+    },
     "tests/test_integration_properties.py": {
       "areas": [
         "development-delivery",
@@ -13015,7 +13039,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:fd20d2d460e5456b4d1a942ee6d5751a4f866bb17dc8b443b716e6a3d70f4c6f",
+      "digest": "sha256:76ed5cd80c491220759122d65de452fdee5dbc61c082f93400046a861c47529c",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -13032,6 +13056,8 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.core",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.required",
@@ -19594,7 +19620,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:b6460a8d4756eeec50c482025cfc68b669833ff2325a3f29be58b3de16ef83be",
+      "digest": "sha256:531087a8a5372d956cc8eee3d9aabb06f4754e754eef5654a128f63da31400f9",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -19604,6 +19630,7 @@
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.integration.admission",
+        "src.integration.stacked_branches",
         "src.models",
         "src.scheduler",
         "src.wait_runtime.scheduler",
@@ -19742,7 +19769,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:7f06eb91c0c1a7a479c12587c9caf57a5167e5a7130760332a24675e794089fc",
+      "digest": "sha256:e20affeaf0628d0a7f09ac0219ce5b35cb8e6657afd7af4512d9c288c8dfb233",
       "imports": [
         "src.api.models.metrics",
         "src.config",
@@ -19759,6 +19786,7 @@
         "src.prime",
         "src.scheduler",
         "src.sessions.reconciler",
+        "src.wait_runtime",
         "src.wait_runtime.eviction",
         "src.wait_runtime.hibernate",
         "src.wait_runtime.legacy_human",
