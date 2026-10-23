@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -30,6 +32,139 @@ POINTER_BODY = {
     "dashboard_url": "http://127.0.0.1:8082/",
     "hint": "The daemon is API-only. Run `aq dashboard status`.",
 }
+
+
+def test_daemon_startup_cannot_import_or_host_the_dashboard(tmp_path):
+    """Exercise the real API/MCP assembly in a clean interpreter, without sockets or DB IO.
+
+    A sys.modules check in pytest would be polluted by dashboard/CLI tests.
+    Record even attempted imports here: an optional import caught by startup
+    must fail this guard too. Only uvicorn's socket-serving method is replaced;
+    the daemon entrypoint imports, app factory, MCP mount and lifespans are real.
+    """
+    probe = r'''
+import asyncio
+import importlib.abc
+import inspect
+from pathlib import Path
+import sys
+from unittest.mock import patch
+
+forbidden = ("src.dashboard_server", "src.dashboard_assets.runtime")
+attempts = []
+
+class NoDashboard(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(fullname == prefix or fullname.startswith(prefix + ".") for prefix in forbidden):
+            attempts.append(fullname)
+            raise ImportError("dashboard code in daemon: " + fullname)
+
+sys.meta_path.insert(0, NoDashboard())
+
+import src.main
+from src.config import AppConfig, DatabaseConfig
+from src.embedded_mcp import run_mcp_server
+from src.orchestrator import Orchestrator
+from httpx import ASGITransport, AsyncClient
+from starlette.routing import Mount
+from starlette.responses import HTMLResponse
+from starlette.staticfiles import StaticFiles
+import uvicorn
+
+async def check():
+    root = Path(sys.argv[1])
+    config = AppConfig(
+        data_dir=str(root / "data"), workspace_dir=str(root / "work"),
+        database=DatabaseConfig(url="postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"),
+    )
+    orch = Orchestrator(config)
+    shutdown = asyncio.Event()
+    errors = []
+    served = []
+    # The historical plan viewer is the sole permitted HTML endpoint.
+    allowed_html_routes = {"/plans/{task_id}"}
+    html_routes = set()
+
+    def check_routes(app, prefix=""):
+        assert not isinstance(app, StaticFiles), type(app)
+        assert not type(app).__module__.startswith(forbidden), type(app)
+        for route in getattr(app, "routes", ()):
+            path = prefix + route.path
+            if isinstance(route, Mount):
+                check_routes(route.app, path)
+            endpoint = getattr(route, "endpoint", None)
+            response_class = getattr(route, "response_class", None)
+            returns_html = isinstance(response_class, type) and issubclass(
+                response_class, HTMLResponse
+            )
+            if endpoint is not None:
+                returns_html |= "HTMLResponse" in str(inspect.signature(endpoint).return_annotation)
+            if returns_html:
+                assert path in allowed_html_routes, path
+                html_routes.add(path)
+
+    async def plan_content(task_id):
+        return "# Legacy plan"
+
+    async def serve(server, *args, **kwargs):
+        try:
+            app = server.config.app
+            check_routes(app)
+            assert html_routes == allowed_html_routes, html_routes
+            assert app.docs_url is None and app.redoc_url is None
+            async with app.router.lifespan_context(app):
+                async with AsyncClient(
+                    transport=ASGITransport(app), base_url="http://127.0.0.1:8081",
+                    follow_redirects=False,
+                ) as client:
+                    for path in ("/", "/index.html", "/assets/app.js", "/focus", "/docs", "/redoc"):
+                        response = await client.get(path)
+                        assert response.status_code == 404, (path, response.status_code)
+                        assert "text/html" not in response.headers.get("content-type", ""), path
+                    for path in ("/dashboard", "/dashboard/index.html", "/dashboard/assets/app.js"):
+                        response = await client.get(path)
+                        assert response.status_code == 307, (path, response.status_code)
+                        assert response.json()["error"] == "dashboard_not_served_here"
+                        assert response.headers["location"].startswith("http://127.0.0.1:8082/")
+                    response = await client.get("/plans/solid-grove.13")
+                    assert response.status_code == 200
+                    assert response.headers["content-type"].startswith("text/html")
+                    assert "Legacy plan" in response.text
+                    for path, status in (
+                        ("/plans", 404), ("/plans/solid-grove/extra", 404),
+                        ("/plans/solid..grove", 400),
+                    ):
+                        response = await client.get(path)
+                        assert response.status_code == status, (path, response.status_code)
+                        assert "text/html" not in response.headers.get("content-type", ""), path
+            served.append(True)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            shutdown.set()
+
+    # Startup cannot hide a dashboard launch behind a new subprocess either.
+    with patch.object(uvicorn.Server, "serve", serve), patch(
+        "subprocess.Popen", side_effect=AssertionError("daemon launched a hosting process")
+    ):
+        await asyncio.wait_for(
+            run_mcp_server(orch, config, shutdown, plan_content_provider=plan_content), timeout=60
+        )
+    assert not errors, errors
+    assert served == [True], served
+    assert not attempts, attempts
+    assert not [name for name in sys.modules if name.startswith(forbidden)]
+
+asyncio.run(check())
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @asynccontextmanager
