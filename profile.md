@@ -28,6 +28,7 @@ src/main.py — composition root, health, supervised API/MCP
 ├── CommandHandler — common command boundary for all supported surfaces
 ├── Orchestrator — startup recovery, deterministic cycle, shutdown
 │   ├── Scheduler and pool reconciliation
+│   ├── Task graph — deterministic parsing, validation and atomic creation
 │   ├── Session cascade — each stage has a bounded timeout
 │   └── Domain services — integration and message delivery have independent loops
 ├── Verified waits, review notifier and pool-progress watchdog
@@ -39,12 +40,22 @@ External coding CLIs run in tmux sessions through profile-selected harnesses.
 
 ### Task State Machine
 
-The shared enum in `src/models.py` contains DEFINED, READY, ASSIGNED,
-IN_PROGRESS, WAITING, HIBERNATED, RESUME_PENDING, WAITING_INPUT, PAUSED,
-COMPLETED, FAILED and BLOCKED. `transition_task` enforces suspended-state
-transitions; other invalid legacy transitions warn unless
-`state_machine.enforce` is enabled. See [task-graph](docs/specs/systems/task-graph.md)
-for the transition graph, readiness, guarded overrides and terminal semantics.
+Twelve stored states: `DEFINED`, `READY`, `ASSIGNED`, `IN_PROGRESS`, `WAITING`,
+`HIBERNATED`, `RESUME_PENDING`, `WAITING_INPUT`, `PAUSED`, `COMPLETED`, `FAILED`,
+`BLOCKED`. Push scheduling uses ASSIGNED; a pool claim goes READY → IN_PROGRESS.
+Durable waits use IN_PROGRESS → WAITING → HIBERNATED → RESUME_PENDING →
+IN_PROGRESS. WAITING_INPUT remains a separate input path. Manual pauses need not
+have a resume timer. Failed attempts retry within policy, then require intervention.
+
+`is_blocked` projects dependencies and gates; the shared admission view adds current
+integration evidence before a worker can claim. Approval is represented by gates,
+not the removed AWAITING_APPROVAL / AWAITING_PLAN_APPROVAL states. Plan ingestion
+uses explicit graph documents or reviewed change sets; `process_plan` is removed.
+See [Tasks](docs/concepts/tasks.md) and the [task-graph system map](docs/specs/systems/task-graph.md)
+for hierarchy, transitions, admission and completion guards.
+
+`transition_task` enforces suspended-state transitions; other invalid legacy
+transitions warn unless `state_machine.enforce` is enabled.
 
 ### Memory Tiers
 
