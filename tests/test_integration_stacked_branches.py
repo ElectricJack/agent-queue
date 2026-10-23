@@ -203,7 +203,9 @@ async def test_cross_epic_and_root_sources_stack_on_current_parent(stack):
 
 @pytest.mark.parametrize("contained", [False, True])
 @pytest.mark.parametrize("decision", ["label", "pause", "gate", "rejection", "operator"])
-async def test_cross_epic_parent_decisions_travel_through_transitive_sources(stack, decision, contained):
+async def test_cross_epic_parent_decisions_travel_through_transitive_sources(
+    stack, decision, contained, monkeypatch,
+):
     # The foreign epic is still open; no synthetic epic approval is required.
     from src.database.tables import gates, integration_review_evidence, task_gates, task_labels
     from src.operator_decisions import OperatorDecisions
@@ -216,8 +218,17 @@ async def test_cross_epic_parent_decisions_travel_through_transitive_sources(sta
     await db.add_dependency("first", "cross")
     if contained:
         git(stack.origin.clone, "push", "origin", f"{stack.first}:aq/epic", f"{stack.first}:main")
+        import src.integration.stacked_branches as module
+
+        # Exercise an expired ref cache without depending on machine speed.
+        now = module.time.monotonic() + 3
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now))
+    # Preparation observed the old target before the completions/push above.
+    # Refresh both the snapshot and refs before testing the explicit decisions.
+    view = await observe_stacks(stack.service.observer, "p", task_id="child")
+    assert view.proofs
+    assert await view.fresh()
     assert await db.is_hierarchy_task_runnable("child")
-    assert (await observe_stacks(stack.service.observer, "p", task_id="child")).proofs
     async with db.immediate() as conn:
         if decision == "label":
             await conn.execute(insert(task_labels).values(task_id="other-epic", label="hold:human"))
