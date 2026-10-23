@@ -310,6 +310,13 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            'Resume path until the authorized restart READY transaction. Keep the '
                            'historical frozen-batch measurements; engine and table counts remain '
                            'unchanged.'},
+                {'task_id': 'prime-grove-46',
+                 'decision': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160879,
+                 'authorized_owned_delta': -30,
+                 'reason': 'Remove the legacy updater path in clear-delta-43 / PR #1855 after '
+                           'merging PR #1797; re-record exactly origin/dev measured_owned_total '
+                           'minus 30 under the supervisor delegated size-cap decision.'},
                 {'task_id': 'bright-impact-14',
                  'decision_message_id': 'msg-c80bde55a6d1442791a2ba4f9597d7a0',
                  'referenced_decision': 'size-cap-delegation-2026-10-23',

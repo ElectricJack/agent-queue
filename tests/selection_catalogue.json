@@ -13035,10 +13035,11 @@
         "object-loop"
       ],
       "default_arm": true,
-      "digest": "sha256:2ab1cf33f995c6d0bdcd3b995a571c89db2be0e92f383f7b23d66a7aa91462bc",
+      "digest": "sha256:a416aa1770c278c5677fb421430e37d8583a135f7146989acf8fef81c3247193",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
         "src.commands.contracts.registry",
         "src.commands.principal",
         "src.commands.resource_authorization",
@@ -19434,7 +19435,7 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:bf5b0c9b48e84a229832d166c2225c3a99a2f9db5b2e8a339e10b2cebdd6be77",
+      "digest": "sha256:c49a97de926ae8213537a2cdddf918ae82cd2037ba54acbbbe66eedde1798f25",
       "imports": [
         "src.cli",
         "src.cli.app",
@@ -19442,6 +19443,7 @@
         "src.config",
         "src.dashboard_server.app",
         "src.dashboard_server.settings",
+        "src.database.backup",
         "src.install",
         "src.install.command",
         "src.install.dashboard",
