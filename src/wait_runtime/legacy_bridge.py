@@ -18,7 +18,9 @@ from src.database.queries.continuation_queries import measurement_medians
 from src.database.tables import agent_waits, messages, tasks, wait_deadlines, wait_records
 from src.waits.conditions import NodeKey, Scope, WaitError, canonical
 from src.waits.decision import decide_sleep, measured_inputs, project_policy
-from src.waits.graph import add_edges, lock_graph, recompute_from, would_create_cycle
+from src.waits.graph import (
+    add_edges, background_graph_work, lock_graph, recompute_from, would_create_cycle,
+)
 from src.wait_runtime.hibernate import begin_suspension
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
@@ -52,6 +54,7 @@ class LegacyWaitBridge:
         self.db = self.orch.db
         self.clock = clock
 
+    @background_graph_work()
     async def run(self, args, *, principal, scope=None, handler=None):
         from src.wait_runtime.legacy_pass import run_pass
 

@@ -54856,6 +54856,7 @@
                 "counters": {},
                 "pool": {}
               },
+              "operations": {},
               "host": {
                 "psi": {},
                 "stale": false,
@@ -56655,6 +56656,39 @@
         ],
         "title": "OnboardingErrorInfo"
       },
+      "OperationPerf": {
+        "properties": {
+          "latency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcomes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Outcomes",
+            "default": {}
+          },
+          "in_flight": {
+            "type": "number",
+            "title": "In Flight",
+            "default": 0
+          },
+          "peak_in_flight": {
+            "type": "number",
+            "title": "Peak In Flight",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "OperationPerf",
+        "description": "Bounded operation timing; coarser tiers average concurrency gauges."
+      },
       "OperatorDecisionDTO": {
         "properties": {
           "step_id": {
@@ -57694,6 +57728,14 @@
               "counters": {},
               "pool": {}
             }
+          },
+          "operations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OperationPerf"
+            },
+            "type": "object",
+            "title": "Operations",
+            "default": {}
           },
           "host": {
             "$ref": "#/components/schemas/HostPerf",

@@ -35,6 +35,26 @@ from tests.db_fixtures import lease_dsn
 PROJECT_ID = "proj"
 
 
+async def test_pool_display_omits_stopped_history_and_keeps_other_instances(orch, db):
+    from src.models import SessionRecord
+
+    for state in ("running", "sleeping", "quarantined", "stopped"):
+        await db.create_session(SessionRecord(
+            id=f"display-{state}", name=f"display-{state}", profile_id="worker",
+            project_id=PROJECT_ID, lifecycle="pool", state=state,
+            harness="codex", provider="fake", work_dir="/tmp", epoch="test",
+            instance_token=f"token-{state}", started_at=1,
+        ))
+    display = await orch._measure_pools(for_display=True)
+    sizing = await orch._measure_pools()
+    assert {s.state for s in display.pool_sessions} == {"running", "sleeping", "quarantined"}
+    assert {s.state for s in sizing.pool_sessions} == {
+        "running", "sleeping", "quarantined", "stopped",
+    }
+    assert display.supply == sizing.supply
+    assert display.demand == sizing.demand
+
+
 @pytest.mark.parametrize("artifact", [False, True])
 async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch, artifact):
     from src.scheduler import PoolKey

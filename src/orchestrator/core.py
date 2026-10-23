@@ -93,6 +93,7 @@ from src.messaging.types import (
 from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
 )
+from src.metrics.perf import timed_operation
 from src.models import (
     DAEMON_AUTHORED_TASK_TYPES,
     AgentProfile,
@@ -3434,6 +3435,7 @@ class Orchestrator(
         except Exception:
             logger.exception("Tracked deployment check failed")
 
+    @timed_operation("orchestrator.cycle")
     async def run_one_cycle(self) -> None:
         """Run one iteration of the orchestrator's main loop.
 
