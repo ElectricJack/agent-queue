@@ -5,11 +5,13 @@ External I/O never holds source/ask transactions. Each attempt records its fence
 before I/O; lease recovery may only reconcile that exact attempt, never resend it.
 """
 
+import json
 import logging
 import secrets
 import time
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.asks.authority import public_allowed
 from src.asks.models import AskError, SourceIdentity, digest
@@ -17,10 +19,12 @@ from src.asks.render import render
 from src.asks.service import new_id
 from src.database.tables import (
     ask_action_tokens as tokens,
+    ask_external_bindings as bindings,
     human_asks,
     human_communication_modes as modes,
     outbound_deliveries as outbox,
     projects,
+    system_config,
 )
 from src.escalations.interactions import ButtonSpec
 from src.escalations.plan import MAX_ATTEMPTS, backoff_for
@@ -49,6 +53,56 @@ def config_fingerprint(config):
             d.project_id,
         ]
     )
+
+
+async def fence_config_modes(config, *, conn, now, exclude=None):
+    """Retire changed writers only for the current and last observed destination.
+
+    Persist the observation so a destination move followed by a restart/revert
+    cannot revive its old writer. Legacy and unpinned rows require explicit
+    cutover; configuration observation never migrates them.
+    """
+    key = "ask-delivery-config:v1"
+    await conn.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0))))
+    saved = await conn.scalar(select(system_config.c.value).where(system_config.c.key == key))
+    previous = json.loads(saved) if saved else {}
+    current = {"destination": destination(config), "fingerprint": config_fingerprint(config)}
+    destinations = {current["destination"]}
+    if previous.get("destination"):
+        destinations.add(previous["destination"])
+    stmt = update(modes).where(
+        modes.c.destination.in_(destinations),
+        modes.c.mode != "legacy",
+        modes.c.config_fingerprint.is_not(None),
+        modes.c.config_fingerprint != "",
+        modes.c.config_fingerprint != current["fingerprint"],
+    )
+    if exclude:
+        stmt = stmt.where(~and_(modes.c.project_id == exclude[0], modes.c.destination == exclude[1]))
+    retired = (
+        await conn.execute(
+            stmt.values(
+                mode="delivery_disabled", generation=modes.c.generation + 1,
+                migrated=True, config_fingerprint=current["fingerprint"], updated_at=now,
+            ).returning(modes.c.project_id, modes.c.destination)
+        )
+    ).all()
+    for project, dest in retired:
+        await conn.execute(
+            update(tokens).where(
+                tokens.c.binding_id.in_(
+                    select(bindings.c.id).where(
+                        bindings.c.project_id == project, bindings.c.destination == dest,
+                    )
+                ),
+                tokens.c.revoked_at.is_(None),
+            ).values(revoked_at=now)
+        )
+    if previous != current:
+        await conn.execute(
+            pg_insert(system_config).values(key=key, value=json.dumps(current))
+            .on_conflict_do_update(index_elements=["key"], set_={"value": json.dumps(current)})
+        )
 
 
 class AskDeliveryAdapter:
@@ -107,19 +161,7 @@ class AskDeliveryAdapter:
         # Configuration expresses desired delivery, never permission to revive a
         # retired writer. Persist its fence so reverting YAML cannot re-enable it.
         async with self.db.immediate() as conn:
-            await conn.execute(
-                update(modes)
-                .where(
-                    modes.c.config_fingerprint != config_fingerprint(self.config),
-                )
-                .values(
-                    mode="delivery_disabled",
-                    generation=modes.c.generation + 1,
-                    migrated=True,
-                    config_fingerprint=config_fingerprint(self.config),
-                    updated_at=self.clock(),
-                )
-            )
+            await fence_config_modes(self.config, conn=conn, now=self.clock())
         # Keyset rotation also advances past private or unavailable sources that
         # have no binding yet. Such rows must not monopolize the first batch.
         stmt = (

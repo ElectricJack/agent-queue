@@ -671,9 +671,9 @@ class WriterPrimitives:
                             args.owner_task_id,
                             role=role,
                             conn=conn,
-                            ttl_seconds=min(
+                            ttl_seconds=(min(
                                 args.ttl_seconds, current.budget.deadline_at - self.clock()
-                            ),
+                            ) if current.budget.deadline_at is not None else args.ttl_seconds),
                         )
                     else:
                         fence = await self.ownership.acquire(
@@ -683,7 +683,9 @@ class WriterPrimitives:
                 return PrimitiveOutcome(
                     primitive=p, outcome="busy", detail={"holder": "racing_owner"}
                 )
-            expiry = min(self.clock() + args.ttl_seconds, current.budget.deadline_at)
+            expiry = self.clock() + args.ttl_seconds
+            if current.budget.deadline_at is not None:
+                expiry = min(expiry, current.budget.deadline_at)
             await conn.execute(
                 update(integration_branch_owners)
                 .where(

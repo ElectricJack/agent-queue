@@ -18,7 +18,8 @@ curl -s http://127.0.0.1:8081/api/task/show \
 
 * Path parameters appear only on the hand-written resource routes
   (`/api/tasks/{task_id}/files`, `/api/projects/{project_id}/graph`, …).
-* Query parameters appear only on `GET` routes
+* Resource routes may use query parameters (including attachment uploads);
+  common `GET` examples are
   (`/api/metrics/series?from=…&to=…&step=…`,
   `/api/sessions/{name}/messages?limit=…`).
 * Every response is JSON except `/plans/{task_id}` (HTML), the file-read
@@ -41,7 +42,7 @@ route:
 
 | Scope | How you get it | What it can do |
 |---|---|---|
-| **local** | No `Authorization` header. | Everything. This is the operator path: the `aq` CLI on your own machine, and the dashboard. |
+| **local** | No bearer token, with `require_session_token` off. | Trusted operator scope on the loopback deployment. Resource routes can additionally require the operator viewer. |
 | **session** | `Authorization: Bearer aqs_…` | A narrow, server-defined set of commands, pinned to the token's own session, task and project. |
 
 Session tokens are minted by the daemon when it launches a session and are
@@ -58,22 +59,20 @@ session runtime sets alongside `AQ_API_URL`.
 Two identity fields are never taken from the client. `profile_id` and
 `policy_fingerprint` are derived *after* the token validates, from the live
 `sessions` row, so editing a profile takes effect without re-minting a token.
-And every server-owned key (`_scope` and the rest of `SERVER_OWNED_ARG_KEYS`)
-is stripped from the request body before the daemon injects its own — a client
-cannot claim to be someone else by putting it in the body.
+Both command surfaces strip `_`-prefixed arguments before injecting `_scope`;
+typed routes also strip `SERVER_OWNED_ARG_KEYS`. The command layer derives
+the principal and applies resource authorization independently of the body.
 
 ### What a session token may call
 
-The allowlist is [`AGENT_COMMAND_SET`](../../../src/api/scope.py) — the
-commands a worker needs to do its job and close out: `prime`, `task_show`,
-`task_set`, `task_comment`, `task_comments`, `task_close`, `task_children`,
-`task_progress`, `task_heartbeat`, `task_handoff`, `task_claim`,
-`session_drain_ack`, `create_task`, `reparent_task`, `project_ready`,
-`message_send`, `message_inbox`, `message_reply`, `message_status` (only
-for messages addressed to the caller's own mailboxes), `memory_save`,
-`memory_search`, `formula_list`, `formula_show`, `get_schema`,
-`subagent_event`, `integration_status`,
-`integration_resolve_candidate_member`. Anything else is refused:
+The allowlist is [`AGENT_COMMAND_SET`](../../../src/api/scope.py). It includes
+held-task work and comments/subtasks, claims and close, messages, jobs, waits,
+cron, collaboration, scoped knowledge/record operations, verification selection,
+review submission and some planning and integration operations. Membership is
+only the first gate: commands still check live claims, provenance, resource
+ownership, profile grants and feature enablement. Read that set for the full
+current list rather than treating an example here as an authorization grant.
+A command outside it is refused:
 
 ```bash
 curl -s -w '\nHTTP %{http_code}\n' http://127.0.0.1:8081/api/execute \
@@ -108,7 +107,7 @@ on another task by naming it.
 
 ### Narrower and wider than the allowlist
 
-Four things modify that picture, all of them in
+Several rules modify that picture, all of them in
 [`src/api/scope.py`](../../../src/api/scope.py) and all decided from persisted
 state — a live session row, the task it holds, the agent that holds it — never
 from anything in the request:
@@ -118,13 +117,16 @@ from anything in the request:
   project) may call anything, and is refused from any client address other
   than loopback.
 * **Operator-only commands.** Some commands are refused even to an elevated
-  token: the integration controls, integration configuration fields on
-  `edit_project`, intelligence-class edits, `session_input`, global agent
-  settings and the seven project-onboarding commands, which require the global
-  admin or the local CLI.
+  token. Integration controls and integration configuration on `edit_project`
+  admit live project supervisors, with target ownership resolved by
+  [`target_scope.py`](../../../src/api/target_scope.py). Test-selection promotion
+  and local review controls remain operator-only. Intelligence-class changes,
+  global agent settings, repository binding and onboarding require the global
+  admin or local operator; direct `session_input` requires global admin scope
+  for a bearer caller.
 * **Capability carve-outs.** A live worker session may run a small set of git
   commands (`git_push`, `git_create_pr`, and the read-only ones) restricted to
-  its own task's branch — `git_merge` and `pr_merge` are not among them.
+  its own task's branch (including guarded `git_pull`) — `git_merge` and `pr_merge` are not among them.
   Sessions running the `reviewer`, `final-reviewer`, `triage` or
   `playbook-compiler` profiles get similarly narrow grants, each resolved from
   graph provenance and each reaching exactly the task it was spawned for.
@@ -154,14 +156,17 @@ Failures map onto HTTP status codes:
 |---|---|---|
 | `401` | `{"ok": false, "error": "invalid or expired token"}` | Bearer token invalid, expired or revoked. |
 | `403` | `{"error": "out of scope: …"}` or `{"error": "…", "error_code": "capability_denied"}` | Scope or capability refusal. |
-| `409` | `{"error": …, "error_code": "revision_conflict", "current_revision": N}` | `edit_intelligence_class` only. |
+| `409` | Structured conflict body | Intelligence-class edits/deletion, dashboard-state revision conflicts, provider allocation conflicts, and knowledge/record conflicts. |
+| `404`, `410`, `428`, `503` | Structured command error | Knowledge/record families map stable codes to missing, expired/redacted, missing-precondition and retryable/integrity failures. |
 | `422` | `{"error": "…"}` | The command ran and returned an error. |
 | `422` | `{"detail": [{"loc": ["body", "title"], "msg": "Field required", …}]}` | The body failed validation before the command ran. |
 
-Two families keep their whole structured payload on a `422` rather than being
-reduced to one string, because their clients render it: the project-onboarding
-commands (with `error_code`, `phase`, `field_errors`) and the
-`escalation_*` / `digest_*` commands.
+`ERROR_STATUS` in [`codegen.py`](../../../src/api/codegen.py) is the status
+mapping. `DETAILED_ERROR_COMMANDS` preserves full refusal bodies for onboarding,
+hierarchy deletion/archive, escalations/digests, asks, jobs, waits, reports,
+test selection, policy and dashboard state, among others. Routing-choice refusals
+also retain their detail. Most other command errors reduce to `{"error": "…"}`.
+The response declarations in `openapi.json` describe the documented variants.
 
 Real examples, same missing task:
 
@@ -202,7 +207,7 @@ itself in the way that suits it, and the schema is the authority:
 |---|---|---|
 | `limit` only (a cap, newest first) | most listings | `message_inbox`, `escalation_list`, `list_archived`, `read_logs`, `get_recent_events`, `session_logs`, `task_recent_activity`, `playbook_*` listings |
 | `limit` + `offset` + `total` | comments and children | `task_comments` returns `{"comments": […], "total": N, "limit": L, "offset": O}` |
-| `cursor` | two endpoints | the graph-layout `list` endpoint and `search_github_repositories` |
+| `cursor` / keyset fields | endpoint-specific | Graph-layout `list`, `search_github_repositories`, and conversation history (`before_created_at` plus `before_id` for equal-time rows). |
 | Server-chosen resolution | `GET /api/metrics/series` | Never more than 12,000 points: the step is coarsened instead, and `truncated: true` says so. |
 | Sequence replay | `/ws/events` | `?after_seq=N`, delivered in pages of 500 — see [streaming](events.md). |
 
@@ -218,10 +223,9 @@ print(json.dumps(s['components']['schemas']['TaskCommentsRequest']['properties']
 
 ## State ownership
 
-Nothing on this page is configuration you edit except two keys, both under
-`api_auth` in `~/.agent-queue/config.yaml`: `token_ttl_hours` and
-`require_session_token` (plus `trusted_dashboard_origins`, which only the
-[terminal WebSocket](events.md#terminal-websocket) reads). Tokens themselves
+Authentication settings live under `api_auth` in `~/.agent-queue/config.yaml`:
+`token_ttl_hours`, `require_session_token`, and `trusted_dashboard_origins`
+(the terminal sockets and their HTTP access probe read the origin list). Tokens themselves
 live in the database and in a per-process cache; scope is derived per request
 and never stored.
 
@@ -233,7 +237,7 @@ and never stored.
 | `403 token restricted to loopback` | A global-admin token was used from another host. | By design. Run the call locally. |
 | `403 out of scope: project_id mismatch` | The body named a different project than the token's. | Omit the field and let the daemon inject it. |
 | `403 out of scope: this interactive agent has no assigned project` | A manually opened terminal session has no project; only `prime`, `get_schema` and `subagent_event` work there. | Run the command from a task session, or as the local operator. |
-| `422 Field required` with `loc: ["body", …]` | The body is missing a required field, or a field has the wrong type. | Check the request schema in `openapi.json` or `/docs`. |
+| `422 Field required` with `loc: ["body", …]` | The body is missing a required field, or a field has the wrong type. | Check the request schema in `openapi.json` or `/openapi.json`; `/docs` and `/redoc` are disabled. |
 | A `null` you sent was ignored | Typed routes drop `null` fields before dispatch, so "unset" and "explicitly null" normally collapse. | A few commands preserve an explicit null deliberately (`task_set`, `pool_scale`'s bounds, `edit_task`'s `intelligence_class`, where null clears the class hint). For anything else, use `/api/execute`, which forwards `args` verbatim. |
 
 ## Related pages
