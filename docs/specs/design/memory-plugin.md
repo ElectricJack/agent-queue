@@ -30,10 +30,16 @@ tags: [design, memory, plugin, milvus, memsearch]
 
 ---
 
+> **Current boundary (2026-10-22).** Core knowledge now lives in PostgreSQL records and works without a memory
+> plugin. Core refuses legacy plugins named `aq-memory` or `memory`; installing
+> one does not enable the APIs described below. The optional adapter ports do not
+> supply a backend or a load handshake. See
+> [knowledge records](../../guides/knowledge-records.md).
+
 ## 1. Overview
 
 The memory system is implemented as a **self-contained external plugin** shipped as a
-separate repo at `/mnt/d/Dev/aq/aq-memory` (or installed via `aq plugin install`). It
+separate repo at `<external aq-memory checkout>` (or installed via `aq plugin install`). It
 replaces the original `memory.py` MemoryManager (2958 lines) and memory plugin facade
 (1046 lines) with a unified plugin owned outside the core tree.
 
