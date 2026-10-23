@@ -1,5 +1,6 @@
 """Reserve common capacity and launch a fresh continuation through task execution."""
 
+import errno
 import json
 import time
 import uuid
@@ -20,6 +21,19 @@ from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
 from src.wait_runtime.legacy_parking import parked
+
+
+WORKSPACE_ATTEMPTS = 3
+
+
+def retryable_workspace_error(exc):
+    """Retry contention and interrupted transport, never checkout identity failures."""
+    if isinstance(exc, WaitError):
+        return exc.code == 'wait.graph_busy'
+    return (isinstance(exc, (TimeoutError, ConnectionError))
+            or isinstance(exc, OSError) and exc.errno in {
+                errno.EAGAIN, errno.EBUSY, errno.ETIMEDOUT, errno.ECONNRESET,
+            })
 
 
 async def verify_saved_branch(orch, task, path):
@@ -95,6 +109,32 @@ class ResumeTransaction:
             if (task['status'] != 'RESUME_PENDING' or wait['outcome'] == 'pending'
                     or not await parked(conn, task, wait, intent)):
                 return None
+            retry = intent['facts'].get('workspace_retry', {})
+            if retry.get('due_at', 0) > self.clock():
+                return None
+            if task['assigned_agent_id'] and retry:
+                # This is the same capacity reservation, with no spawned writer.
+                # Keep its agent and staged checkout instead of provisioning again.
+                agent = await conn.scalar(select(agents.c.id).where(
+                    agents.c.id == task['assigned_agent_id'],
+                    agents.c.current_task_id == task['id'], agents.c.state == 'BUSY',
+                ).with_for_update())
+                reservation = await conn.scalar(select(admission_reservations.c.id).where(
+                    admission_reservations.c.continuation_id == intent['id'],
+                    admission_reservations.c.state == 'granted',
+                ).with_for_update())
+                if not agent or not reservation or intent['new_session_id']:
+                    raise WaitError('continuation.stale_generation', 'workspace retry owner changed')
+                await conn.execute(update(continuations).where(
+                    continuations.c.id == intent['id'],
+                ).values(resume_state='reserved', version=intent['version'] + 1,
+                         facts={**intent['facts'], 'resume_attempt_started_at': self.clock()}))
+                await conn.execute(update(admission_reservations).where(
+                    admission_reservations.c.id == reservation,
+                ).values(deadline_at=self.clock()
+                         + self.orch.config.wait_policy.transition_budget_seconds))
+                return AssignAction(agent, task['id'], task['project_id'],
+                                    continuation_id=intent['id'], generation=generation)
             observed = await self.service.scheduler.reader.observe_task(
                 conn, task['id'], continuation_id=continuation_id,
             )
@@ -277,14 +317,97 @@ class ResumeTransaction:
                         continuations.c.id == current['id'],
                     ).values(facts=facts))
             except Exception as exc:
-                await self.failed(action, task, f'workspace preparation: {exc}', handler=handler,
-                                  hold_reason='resume_workspace_failed')
-                return {'success': True, 'held': True}
+                return await self.workspace_failed(action, exc, handler=handler)
             try:
                 await self.orch._launch_session_for_task_locked(action, task, None, workspace)
             except Exception as exc:
                 return await self.failed(action, task, str(exc), handler=handler)
             return {'success': True, 'dispatched': True}
+
+    async def workspace_failed(self, action, exc, *, handler):
+        """Persist bounded backoff without releasing a partially prepared checkout."""
+        async with self.db._engine.begin() as conn:
+            wait_id = await conn.scalar(select(continuations.c.wait_id).where(
+                continuations.c.id == action.continuation_id,
+            ))
+            task, wait, intent = await locked_suspension(conn, wait_id)
+            if (intent['id'] != action.continuation_id
+                    or intent['suspension_generation'] != action.generation
+                    or intent['resume_state'] != 'reserved'
+                    or intent['new_session_id'] is not None
+                    or task['assigned_agent_id'] != action.agent_id):
+                raise WaitError('continuation.stale_generation', 'workspace reservation changed')
+            failures = intent['facts'].get('workspace_retry', {}).get('failures', 0) + 1
+            due_at = self.clock() + min(60, 5 * 2 ** min(failures - 1, 4))
+            facts = {**intent['facts'], 'workspace_retry': {
+                'failures': failures, 'due_at': due_at, 'error': str(exc)}}
+            await conn.execute(update(continuations).where(
+                continuations.c.id == intent['id'],
+            ).values(facts=facts))
+            intent['facts'] = facts
+            if (task['status'] == 'PAUSED' or not retryable_workspace_error(exc)
+                    or failures >= WORKSPACE_ATTEMPTS):
+                return await self.service.lifecycle.hibernate.hold(
+                    conn, task, wait, intent,
+                    'paused' if task['status'] == 'PAUSED' else 'resume_workspace_failed',
+                    handler, detail=f'workspace preparation: {exc}',
+                )
+            await conn.execute(update(continuations).where(
+                continuations.c.id == intent['id'],
+            ).values(resume_state='queued', version=intent['version'] + 1))
+            await conn.execute(update(admission_reservations).where(
+                admission_reservations.c.continuation_id == intent['id'],
+                admission_reservations.c.state == 'granted',
+            ).values(deadline_at=due_at + self.orch.config.wait_policy.transition_budget_seconds))
+            return {'success': True, 'retry_queued': True, 'retry_at': due_at}
+
+    async def requeue(self, args, *, principal, scope, handler):
+        """Supervisor repair of a resolved wait's held resume, with no source rewrite."""
+        async with self.db._engine.begin() as conn:
+            task, wait, intent = await locked_suspension(conn, args['wait_id'])
+            await self.service.decisions.authorize(conn, principal, task['project_id'])
+            if scope.get('project_id') and scope['project_id'] != task['project_id']:
+                raise WaitError('wait.out_of_scope', 'continuation is outside supervisor scope')
+            if (intent['id'] != args['continuation_id']
+                    or intent['suspension_generation'] != args['expected_generation']):
+                raise WaitError('continuation.stale_generation', 'held resume generation changed')
+            if (intent['resume_state'] != 'held'
+                    or intent['hold_reason'] not in {'resume_workspace_failed', 'resume_launch_failed'}
+                    or task['status'] != 'RESUME_PENDING' or wait['outcome'] == 'pending'
+                    or wait['cleared_at'] is not None or task['branch_name'] != intent['branch']
+                    or not await parked(conn, task, wait, intent)):
+                raise WaitError('wait.unavailable', 'continuation has no repairable resume hold')
+            if await conn.scalar(select(sessions.c.id).where(
+                sessions.c.task_id == task['id'],
+                sessions.c.state.not_in(('stopped', 'failed')),
+            ).with_for_update().limit(1)):
+                raise WaitError('continuation.stop_uncertain', 'task still has a live process')
+            # Workspace holds have never spawned a process. Launch holds require
+            # confirmed stop and ordinary launch cleanup before another writer.
+            if intent['new_session_id']:
+                session = await conn.scalar(select(sessions.c.id).where(
+                    sessions.c.id == intent['new_session_id'], sessions.c.state == 'stopped',
+                ).with_for_update())
+                if not session or task['assigned_agent_id'] is not None:
+                    raise WaitError('continuation.stop_uncertain', 'prior resume is not retired')
+            facts = {**intent['facts'], 'workspace_retry': {'failures': 0, 'due_at': 0},
+                     'resume_requeue': {'at': self.clock(), 'note': args['note'],
+                                        'principal_kind': principal.kind,
+                                        'session_id': principal.session_id,
+                                        'hold_reason': intent['hold_reason']}}
+            await conn.execute(update(continuations).where(
+                continuations.c.id == intent['id'],
+            ).values(resume_state='queued', hold_reason=None, facts=facts,
+                     launch_attempts=0 if not task['assigned_agent_id'] else intent['launch_attempts'],
+                     new_session_id=None, envelope_id=None, version=intent['version'] + 1))
+            await conn.execute(insert(events).values(
+                event_type='wait.resume_requeued', project_id=task['project_id'],
+                task_id=task['id'], timestamp=self.clock(), payload=json.dumps({
+                    'wait_id': wait['id'], 'continuation_id': intent['id'],
+                    'generation': intent['suspension_generation'], **facts['resume_requeue']}),
+            ))
+            return {'success': True, 'wait_id': wait['id'], 'decision': 'requeue',
+                    'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
 
     async def bind_launch(self, action, record):
         """Commit the next process identity and immutable envelope before spawn."""

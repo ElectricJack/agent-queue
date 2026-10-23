@@ -1,6 +1,6 @@
 """Live in-place waits are occupied seats with an eviction candidate marker."""
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from src.database.tables import sessions, tasks, wait_records
 
 
@@ -36,7 +36,9 @@ async def continuation_occupancy(db, config):
                admission_reservations.c.continuation_id == continuations.c.id).outerjoin(
             sessions, sessions.c.id == continuations.c.new_session_id,
         )).where(
-            continuations.c.resume_state.in_(("reserved", "launching", "delivered", "acknowledged")),
+            or_(continuations.c.resume_state.in_(("reserved", "launching", "delivered", "acknowledged")),
+                and_(continuations.c.resume_state == 'queued',
+                     tasks.c.assigned_agent_id.is_not(None))),
             admission_reservations.c.state.in_(("pending", "overdue", "granted", "consumed")),
         ))).mappings().all()
     resuming, pending = set(), {}

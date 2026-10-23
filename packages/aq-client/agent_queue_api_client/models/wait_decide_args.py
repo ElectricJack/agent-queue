@@ -22,6 +22,7 @@ class WaitDecideArgs:
         extend_seconds (float | None | Unset):
         to (None | str | Unset):
         expected_generation (int | None | Unset):
+        continuation_id (None | str | Unset):
     """
 
     wait_id: str
@@ -31,6 +32,7 @@ class WaitDecideArgs:
     extend_seconds: float | None | Unset = UNSET
     to: None | str | Unset = UNSET
     expected_generation: int | None | Unset = UNSET
+    continuation_id: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         wait_id = self.wait_id
@@ -63,6 +65,12 @@ class WaitDecideArgs:
         else:
             expected_generation = self.expected_generation
 
+        continuation_id: None | str | Unset
+        if isinstance(self.continuation_id, Unset):
+            continuation_id = UNSET
+        else:
+            continuation_id = self.continuation_id
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -80,6 +88,8 @@ class WaitDecideArgs:
             field_dict["to"] = to
         if expected_generation is not UNSET:
             field_dict["expected_generation"] = expected_generation
+        if continuation_id is not UNSET:
+            field_dict["continuation_id"] = continuation_id
 
         return field_dict
 
@@ -128,6 +138,15 @@ class WaitDecideArgs:
 
         expected_generation = _parse_expected_generation(d.pop("expected_generation", UNSET))
 
+        def _parse_continuation_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        continuation_id = _parse_continuation_id(d.pop("continuation_id", UNSET))
+
         wait_decide_args = cls(
             wait_id=wait_id,
             decision=decision,
@@ -136,6 +155,7 @@ class WaitDecideArgs:
             extend_seconds=extend_seconds,
             to=to,
             expected_generation=expected_generation,
+            continuation_id=continuation_id,
         )
 
         return wait_decide_args

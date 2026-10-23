@@ -19812,7 +19812,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:61d0afc73fcf95d240f03be2e1226c9f97e69f8fd878022b7c3f4fa79b5e578a",
+      "digest": "sha256:a68fea078ce3de9a4232c227ba75470518bd0490929ab0eb2215b24058f59474",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -19844,6 +19844,7 @@
         "src.waits.decision",
         "src.waits.fencing",
         "src.waits.holding",
+        "src.waits.occupancy",
         "src.waits.registry",
         "src.waits.resume_ack"
       ],

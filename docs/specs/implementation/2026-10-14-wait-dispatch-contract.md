@@ -223,3 +223,23 @@ so suspension history and admission audit keep their task identity, and the
 independent wait outcome audit is retained. Bulk hierarchy changes publish every changed dependency source
 in the mutation transaction using a bounded number of database statements.
 All wait feature flags remain disabled by default.
+
+
+## Retry and repair of resume workspace preparation
+
+Workspace preparation retries contention (`wait.graph_busy`), transport failures,
+and OS busy/timeout errors up to three attempts, with durable 5/10 second backoff.
+The queued continuation retains the same reservation, agent, staged checkout,
+saved head and resolved source outcome. Reserved capacity remains counted during
+backoff. Identity, dirty-checkout and other non-retryable failures hold immediately;
+exhausted retries create the existing `resume_workspace_failed` incident.
+
+A live owning supervisor or local operator can issue `wait_decide` with
+`decision=requeue`, `wait_id`, `continuation_id`, `expected_generation` and a
+nonblank note. The transaction repeats project, generation, stopped-writer,
+branch and resolved-wait fences. Only workspace/launch resume holds are eligible;
+suspension, pause and uncertain-stop holds require their own recovery. Requeue
+preserves the source and checkout, records actor/reason/time in facts and an audit
+event, and resets the retry budget. It does not acknowledge the outcome. The hold
+incident is withdrawn when the fresh process receives prime, atomically with
+outcome delivery; failed retries retain the incident.

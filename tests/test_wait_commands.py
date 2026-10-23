@@ -1328,3 +1328,21 @@ async def test_concrete_cancel_refuses_a_stale_claim_and_foreign_supervisor(env)
                           principal))["error_code"] == "wait.out_of_scope"
     async with env.db._engine.connect() as conn:
         assert await conn.scalar(select(wait_records.c.outcome)) == "pending"
+
+
+@pytest.mark.parametrize('missing', ['continuation_id', 'expected_generation'])
+def test_requeue_requires_explicit_continuation_generation(missing):
+    args = dict(wait_id='w', decision='requeue', continuation_id='c',
+                expected_generation=1, note='Infrastructure repaired')
+    args.pop(missing)
+    with pytest.raises(ValidationError, match='requeue requires'):
+        WaitDecideArgs.model_validate(args)
+
+
+def test_cli_requeue_sends_continuation_and_generation(cli_transport):
+    group, calls = cli_transport
+    result = CliRunner().invoke(group, ['decide', '--wait-id', 'w', '--decision', 'requeue',
+        '--continuation-id', 'c', '--expected-generation', '2', '--note', 'Infrastructure repaired'])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == ('wait_decide', dict(wait_id='w', decision='requeue', continuation_id='c',
+        expected_generation=2, note='Infrastructure repaired'))
