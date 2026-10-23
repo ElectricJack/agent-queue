@@ -18,6 +18,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.integration.row_query import select_row
 from src.waits.sources import execute_workspace_release
 
 LIVE_STATES = ("starting", "running", "draining", "sleeping")
@@ -72,28 +73,11 @@ async def claim_blocks_acquisition(conn, path, *, requesting_task_id=None):
     claim = read_claim_file(path)
     if not claim or not isinstance(claim.get("task_id"), str):
         return True
-    row = (
-        (
-            await conn.execute(
-                select(tasks.c.status, tasks.c.claim_epoch).where(
-                    tasks.c.id == claim["task_id"],
-                )
-            )
-        )
-        .mappings()
-        .one_or_none()
+    row = await select_row(
+        conn, tasks, tasks.c.id == claim["task_id"],
     )
-    session = (
-        (
-            await conn.execute(
-                select(sessions).where(
-                    sessions.c.id == claim.get("session_id"),
-                    session_retains_workspace(),
-                )
-            )
-        )
-        .mappings()
-        .one_or_none()
+    session = await select_row(
+        conn, sessions, sessions.c.id == claim.get("session_id"), session_retains_workspace(),
     )
     if session:
         return True
@@ -122,16 +106,8 @@ async def ownership_blockers(conn, ws):
             }
         )
     if ws["locked_by_agent_id"]:
-        agent = (
-            (
-                await conn.execute(
-                    select(agents).where(
-                        agents.c.id == ws["locked_by_agent_id"],
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
+        agent = await select_row(
+            conn, agents, agents.c.id == ws["locked_by_agent_id"],
         )
         if agent and (agent["state"] == "BUSY" or agent["current_task_id"]):
             blockers.append(
@@ -213,8 +189,6 @@ async def release_workspace(db, workspace_id, *, force=False, task_id=None):
         if ws["locked_by_task_id"]:
             blockers.append({"kind": "task_lock", "task_id": ws["locked_by_task_id"]})
         protected = {b["task_id"] for b in blockers}
-        if ws["locked_by_task_id"]:
-            protected.add(ws["locked_by_task_id"])
         if force and (not task_id or protected != {task_id}):
             return {
                 "success": False,
