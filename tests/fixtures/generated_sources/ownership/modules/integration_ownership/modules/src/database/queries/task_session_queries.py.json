@@ -1,0 +1,35 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_session_queries.py::TaskSessionQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_authorized_source_heads": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_source_ci_inherited_oids": {
+      "baseline_span": [
+        418,
+        447
+      ],
+      "landing_span": [
+        418,
+        447
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_dependencies, task_session_attempts, tasks": {
+      "reason": "Reads exact frozen batch members as inherited history for ordinary worker push authorization; the immutable sources remain required candidate ancestors."
+    },
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_source_ci, sessions, task_dependencies, task_session_attempts, tasks": {
+      "baseline_span": [
+        9,
+        17
+      ],
+      "landing_span": [
+        9,
+        17
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

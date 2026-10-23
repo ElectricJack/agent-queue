@@ -429,13 +429,34 @@ _SHORT_DEFAULT = 0.25
 _PROOF_DELAY = 1.0
 
 
-def test_recovery_preview_declares_a_guarded_git_proof_budget():
+@pytest.mark.parametrize("command", [
+    "integration_recover_completed_container",
+    "integration_fast_forward_pr",
+    "integration_redrive_root",
+])
+def test_integration_controls_declare_a_guarded_git_proof_budget(command):
     from src.cli.client import _COMMAND_TIMEOUTS, _DEFAULT_TIMEOUT
 
     assert _DEFAULT_TIMEOUT == 30.0
-    assert _COMMAND_TIMEOUTS["integration_recover_completed_container"] == 300.0
+    assert _COMMAND_TIMEOUTS[command] == 300.0
     # Control-only status is a bounded database read and keeps the default.
     assert "integration_status" not in _COMMAND_TIMEOUTS
+
+
+@pytest.mark.parametrize("command", ["integration_fast_forward_pr", "integration_redrive_root"])
+async def test_integration_remote_proof_outlasting_default_returns_result(
+    delayed_command_server, monkeypatch, command,
+):
+    url, commands, replies = delayed_command_server
+    monkeypatch.setattr("src.cli.client._DEFAULT_TIMEOUT", _SHORT_DEFAULT)
+    result = {"success": True, "outcome": "would_publish", "task_id": "repair"}
+    replies[command] = (_PROOF_DELAY, 200, {"ok": True, "result": result})
+    args = {"task_id": "repair", "dry_run": True}
+
+    async with CLIClient(base_url=url) as client:
+        assert await client.execute(command, args) == result
+
+    assert commands == [{"command": command, "args": args}]
 
 
 async def test_recovery_preview_outlasting_default_returns_exact_proof(

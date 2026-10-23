@@ -1,0 +1,16 @@
+{
+  "exclusions": {
+    "src/commands/operator_authority.py::HUMAN_DECISION_COMMANDS": "Names operator-worker setup commands that require an exact recorded human decision before dispatch; the named commands keep their own charged handlers. No integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_FORBIDDEN": "Operator-worker denylist of human gate and delivery command names; it only refuses dispatch. The named commands keep their own charged handlers; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_READS": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_WRITES": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority."
+  },
+  "generic_dependencies": {
+    "src/commands/operator_authority.py::bind_operator_dispatch": "Generic per-dispatch operator scoping: narrows the grant to the exact audited command and arguments and refuses unwrapped operator setup commands; integration handlers are charged independently.",
+    "src/commands/operator_authority.py::is_operator_profile": "Generic authored profile-role predicate for routing, claims and pool demand; reads only the operator_execute capability, with no integration policy, storage or delivery authority. Integration-specific callers remain independently charged.",
+    "src/commands/operator_authority.py::local_or_operator": "Generic authority predicate: LOCAL principal or an operator grant for exactly the dispatched command; integration-specific checks that call it are charged independently.",
+    "src/commands/operator_authority.py::operator_grant": "Generic context-local exact-command grant lookup; binding validates command and arguments before shared resource authorization, with no integration-specific behavior.",
+    "src/commands/operator_authority.py::operator_grant_var": "Generic request-local operator grant context storage; it binds one audited command and argument digest, and every integration handler it reaches is charged independently."
+  }
+}

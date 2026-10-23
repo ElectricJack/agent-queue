@@ -18,6 +18,13 @@ tags: [design, work-graph, dependencies, gates, labels, state-machine, explain, 
 
 ---
 
+> **Current task-graph contract (2026-10-22).** This design includes unimplemented
+> status-collapse proposals and superseded removal rules. Current AQ has twelve
+> task states, shared integration admission, managed-parent settlement gates and
+> unified deletion. Start with [Tasks](../../concepts/tasks.md) and the
+> [system map](../systems/task-graph.md); the historical sections below are not
+> an operational command reference.
+
 ## 1. Problem
 
 The task graph is the substrate everything else in the overhaul (sessions, worktrees, the supervisor agent) stands on, and today it is too thin:
@@ -129,6 +136,15 @@ retains its own uncached observation (`max_age=0`) and revalidation under task
 locks, even when a tick's advisory view still makes a task look runnable. An
 absent truth-bearing observer withholds the affected prerequisites without a
 receipt fallback. Non-hierarchy projects keep their source admission policy.
+
+Pool claims first try candidates without `blocks`, `delivery-of` or `waits-for`
+sources. These candidates pass the same frontier predicates and locked input
+revalidation, without waiting for unrelated Git observations. If that pass has
+no compatible claimable task, selection retries with the full candidate set.
+Admission scopes hierarchy prerequisite observations to its candidate identities;
+an empty source set requires no Git observation. Prerequisite views never
+recompute dependent blockedness: they may be read while the scheduler holds
+those task rows under the wait-graph fence on another connection.
 
 `delivery-of` edges require source completion in the persisted graph projection
 and current default-target Git proof in `AdmissionView`. Completion alone is
@@ -583,6 +599,8 @@ filing rather than substituting another branch. This base selection does not
 replace live remote observations used by adoption, reparenting or completion.
 
 ### Operator removal (2026-10-06)
+
+> **Superseded:** use the [unified delete contract](../../superpowers/specs/2026-10-11-unified-task-delete.md). `remove` is a deprecated alias; deletion can explicitly delete branches, and task-only deletion reparents surviving children. The former always-subtree/no-branch-removal policy below is historical.
 
 `remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is
 available to a local human or live project/global supervisor. A worker cannot

@@ -1,0 +1,23 @@
+{
+  "generic_dependencies": {
+    "src/task_names.py::MAX_NAMING_DEPTH": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_names.py::MAX_STRUCTURAL_DEPTH": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_names.py::child_task_id": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_names.py::fresh_root_id": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_names.py::generate_task_id": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_names.py::naming_depth": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/task_names.py::_task_identity_exists": {
+      "baseline_span": [
+        99,
+        136
+      ],
+      "landing_span": [
+        99,
+        136
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

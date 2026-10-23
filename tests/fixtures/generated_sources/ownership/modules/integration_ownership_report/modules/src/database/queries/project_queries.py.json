@@ -1,0 +1,68 @@
+{
+  "shared_definitions": {
+    "src/database/queries/project_queries.py::ProjectQueryMixin._row_to_project": {
+      "baseline_span": [
+        333,
+        373
+      ],
+      "landing_span": [
+        333,
+        373
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin._validate_hierarchical_integration_project": {
+      "baseline_span": [
+        149,
+        169
+      ],
+      "landing_span": [
+        149,
+        169
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository": {
+      "reason": "First-repository CAS rejects configured or durable integration state under the hierarchy and publication fences. Changes only project repository authorization with an atomic audit; never publishes refs or recreates integration lifecycle state."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.create_project": {
+      "baseline_span": [
+        36,
+        81
+      ],
+      "landing_span": [
+        36,
+        81
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.delete_project": {
+      "baseline_span": [
+        170,
+        263
+      ],
+      "landing_span": [
+        170,
+        263
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.list_projects": {
+      "reason": "Optionally projects project_admission_required onto each project; this integration demand branch charges the full shared listing method."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.update_project": {
+      "baseline_span": [
+        109,
+        148
+      ],
+      "landing_span": [
+        109,
+        148
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/project_queries.py::import from src.database.tables import archived_tasks, chat_analyzer_suggestions, events, integration_batches, project_integration_leases, project_constraints, projects, repos, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_integration_checkpoints, task_metadata, task_results, task_subtasks, task_tools, tasks, token_ledger, workspaces": {
+      "reason": "Imports existing integration lease, batch and checkpoint tables for the first-repository binding refusal fence alongside ordinary project CRUD tables."
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "shared_definitions": {
+    "src/database/queries/blocked_state.py::BlockedStateMixin.delivery_failures": {
+      "reason": "Reads current failed root delivery receipts and their resolution evidence to explain landing failures after the latest completion."
+    },
+    "src/database/queries/blocked_state.py::blocked_predicate": {
+      "baseline_span": [
+        271,
+        290
+      ],
+      "landing_span": [
+        271,
+        290
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/blocked_state.py::delivery_landed": {
+      "reason": "Builds the legacy correlated landing predicate across ancestor receipts, repository default branch and latest completion time; charges this compatibility delivery authority."
+    },
+    "src/database/queries/blocked_state.py::import from src.database.tables import events, gates, projects, repos, task_completion_records, task_delivery_receipts, task_dependencies, task_gates, task_labels, task_metadata, tasks": {
+      "reason": "Imports delivery receipts, completion records and repository identities used by landing-dependent blocked-state queries."
+    }
+  }
+}

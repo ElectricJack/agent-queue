@@ -1,0 +1,216 @@
+{
+  "task_comment": {
+    "argument_reads_diagnostic_only": [
+      "body",
+      "kind",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_task_findings_conflict": "sha256:586ac3ec4d99fdd453a487f0a93d4dde359c9f2a9e0312060b3ff8f4a4d729b9",
+      "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_comment_commands.py:TaskCommentCommandsMixin._cmd_task_comment",
+    "resource_gates": [
+      "held_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'body must contain 1 to {MAX_COMMENT_BODY} characters and not be blank'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Comment author, id, and timestamp are assigned by the server'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'kind must be one of {', '.join(COMMENT_KINDS)}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._task_findings_conflict(error)"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'comment': comment}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f4c44ea6f82cdf3cd8e29dfceeef5e1599313422b86be6bc064c59a2aa84bf02",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_comment_delete": {
+    "argument_reads_diagnostic_only": [
+      "comment_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_comment_mutation_target": "sha256:69b3bdf515b160b35655412ef294d4940859bf9388f2e3c1b765c5b1928320ae",
+      "_task_findings_conflict": "sha256:586ac3ec4d99fdd453a487f0a93d4dde359c9f2a9e0312060b3ff8f4a4d729b9"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_comment_commands.py:TaskCommentCommandsMixin._cmd_task_comment_delete",
+    "resource_gates": [
+      "held_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._task_findings_conflict(error)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Comment '{args['comment_id']}' not found on task '{task.id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'deleted': comment['id'], 'task_id': task.id}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c9ad2268d67e801254faf6dca693492e65da264a5674e3bb4bafa0460eb051fd",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_comment_edit": {
+    "argument_reads_diagnostic_only": [
+      "body",
+      "comment_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_comment_mutation_target": "sha256:69b3bdf515b160b35655412ef294d4940859bf9388f2e3c1b765c5b1928320ae",
+      "_task_findings_conflict": "sha256:586ac3ec4d99fdd453a487f0a93d4dde359c9f2a9e0312060b3ff8f4a4d729b9"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_comment_commands.py:TaskCommentCommandsMixin._cmd_task_comment_edit",
+    "resource_gates": [
+      "held_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'body must contain 1 to {MAX_COMMENT_BODY} characters and not be blank'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._task_findings_conflict(error)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Comment '{args['comment_id']}' not found on task '{task.id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'comment': comment}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d27b51c8b229d005a1b7b278e348cf734627778ac270fe3b7a57c6f6478fbb64",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_comments": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "offset",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_comment_commands.py:TaskCommentCommandsMixin._cmd_task_comments",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'limit must be 1..200 and offset must be nonnegative'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{**comments, 'success': True}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:6e979ade0a803dcb71656b53593b8d14ea066fbc5dea31487615e4bcd7326d3b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_supervisor_recovery.py"
+    ]
+  }
+}

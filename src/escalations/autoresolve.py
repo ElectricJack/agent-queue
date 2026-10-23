@@ -10,7 +10,7 @@ channel stops being an append-only log of every incident the daemon ever had:
 Source kind                     Rule
 ===============================  =============================================
 ``gate``                        resolves when the gate resolves; outcome = the
-                                gate decision
+                                gate decision; retires cancelled gates
 ``supervisor_delivery``         low severity, never the human channel,
                                 auto-resolves when the notice delivers or the
                                 supervisor session starts (owned by
@@ -19,6 +19,10 @@ Source kind                     Rule
                                 ``(project, body_kind)``)
 ``question`` / ``needs_human``  obsolete when the task reaches a terminal status
 with a task
+``wait`` / ``continuation``      retire when the task completes or the bound
+                                wait/hold clears
+``integration_train_stall``      retire terminal or removed batches
+``integration_delivery_stuck``   retire on the bound containment projection
 any ``stale``                   obsolete after 7 days with no activity
 ===============================  =============================================
 
@@ -43,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.escalations.facts import OPEN_STATES
+from src.escalations.sources import OPERATIONAL_SOURCES, operational_source
 from src.escalations.state import stale_since_seconds
 
 logger = logging.getLogger(__name__)
@@ -60,11 +65,13 @@ STALE_OBSOLETE_SECONDS = 7 * 86400.0
 #: recovery escalation is raised against, so retiring on either would close a
 #: question that is still live.
 AUTO_OBSOLETE_TASK_STATUSES = frozenset({"COMPLETED"})
+TASK_SOURCES = frozenset({
+    "question", "task", "task_attempt", "task_recovery", "wait", "continuation",
+})
 
-#: How long to wait before re-reading the same incident.  The rules are cheap
-#: and idempotent, so this only bounds how much work one long-open incident can
-#: ask of a tick.
-SCAN_LIMIT = 200
+#: Read the complete open set by default. A newest-first cap starves older
+#: incidents indefinitely when the newest rows remain open.
+SCAN_LIMIT = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +132,12 @@ def gate_resolved_rule(
     """
     if str(row.get("source_kind") or "") != "gate" or not source:
         return None
+    if str(source.get("status") or "") == "cancelled":
+        return AutoDecision(
+            outcome="sweep", new_state="cancelled",
+            terminal_outcome=f"Gate {source.get('id')} was cancelled; no decision is needed.",
+            evidence={"automatic_rule": "gate_cancelled", "gate_id": str(source.get("id"))},
+        )
     if str(source.get("status") or "") != "resolved":
         return None
     resolution = str(source.get("resolution") or "").strip()
@@ -149,7 +162,7 @@ def task_terminal_rule(
     task_id = row.get("task_id")
     if not task_id or not source:
         return None
-    if str(row.get("source_kind") or "") not in {"question", "task_attempt", "task_recovery"}:
+    if str(row.get("source_kind") or "") not in TASK_SOURCES:
         return None
     status = _source_status(source)
     if status not in AUTO_OBSOLETE_TASK_STATUSES:
@@ -159,6 +172,22 @@ def task_terminal_rule(
         new_state="cancelled",
         terminal_outcome=f"Task {task_id} reached {status}; no decision is needed.",
         evidence={"task_id": str(task_id), "task_status": status},
+    )
+
+
+def source_cleared_rule(
+    row: Mapping[str, Any], ctx: RuleContext, source: Any,
+) -> AutoDecision | None:
+    """Operational causes are retired only on evidence from their bound source."""
+    if row.get("source_kind") not in OPERATIONAL_SOURCES or not isinstance(source, Mapping):
+        return None
+    if not source.get("cleared"):
+        return None
+    rule = str(source["cleared"])
+    return AutoDecision(
+        outcome="sweep", new_state="cancelled",
+        terminal_outcome=f"Source cleared: {rule}.",
+        evidence={"automatic_rule": rule, **source},
     )
 
 
@@ -200,6 +229,7 @@ def _stale_expired(
 AUTO_RESOLVE_RULES: tuple[Callable[..., AutoDecision | None], ...] = (
     gate_resolved_rule,
     task_terminal_rule,
+    source_cleared_rule,
     _stale_expired,
 )
 
@@ -231,7 +261,7 @@ class EscalationAutoResolver:
         """§7.1's P1 flag.  Off means no incident is closed by a rule."""
         return bool(getattr(getattr(self._discord, "escalations", None), "stateful", False))
 
-    async def tick(self, *, limit: int = SCAN_LIMIT) -> AutoResolveReport:
+    async def tick(self, *, limit: int | None = SCAN_LIMIT) -> AutoResolveReport:
         report = AutoResolveReport()
         if not self.enabled:
             report.skipped = "discord.escalations.stateful is off"
@@ -248,10 +278,10 @@ class EscalationAutoResolver:
         self, row: Mapping[str, Any], ctx: RuleContext, report: AutoResolveReport
     ) -> bool:
         """Close ``row`` if a rule fires for it.  Idempotent per incident."""
-        decision = await self.decide(row, ctx)
-        if decision is None:
-            return False
         try:
+            decision = await self.decide(row, ctx)
+            if decision is None:
+                return False
             closed = await self._close(row, decision, ctx)
         except Exception:
             logger.warning("auto-resolution of %s failed", row.get("id"), exc_info=True)
@@ -287,12 +317,20 @@ class EscalationAutoResolver:
         return None
 
     async def _source(self, row: Mapping[str, Any]) -> Any | None:
-        """The incident's live source: its gate, or its task.  Never both needed."""
-        if str(row.get("source_kind") or "") == "gate" and row.get("source_identity"):
+        """Read the bound source, preferring completed task evidence where applicable."""
+        kind = str(row.get("source_kind") or "")
+        task = None
+        if kind == "gate" and row.get("source_identity"):
             return await self.db.get_gate(str(row["source_identity"]))
-        if row.get("task_id"):
-            return await self.db.get_task(str(row["task_id"]))
-        return None
+        if row.get("task_id") and kind in TASK_SOURCES:
+            task = await self.db.get_task(str(row["task_id"]))
+            if task is None:
+                task = await self.db.get_archived_task(str(row["task_id"]))
+            if _source_status(task) == "COMPLETED":
+                return task
+        if kind in OPERATIONAL_SOURCES:
+            return await operational_source(self.db, row)
+        return task
 
     async def _close(
         self, row: Mapping[str, Any], decision: AutoDecision, ctx: RuleContext

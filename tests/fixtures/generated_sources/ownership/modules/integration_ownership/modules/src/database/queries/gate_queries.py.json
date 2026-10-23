@@ -1,0 +1,19 @@
+{
+  "exclusions": {
+    "src/database/queries/gate_queries.py::_VALID_STATUSES['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/database/queries/gate_queries.py::GateQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/gate_queries.py::GateQueriesMixin._forget_generated_pr_links::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 425,
+      "owner": "GateQueriesMixin._forget_generated_pr_links",
+      "owner_fingerprint": "1b2dee51bd8a2a9ce6dcdb791a37e62253074fea3f5aeda927ef272326532e15",
+      "reason": "Deletes only selected generated PR-link metadata rows while forgetting stale links; removing a display/link projection does not mutate a Git ref."
+    }
+  }
+}

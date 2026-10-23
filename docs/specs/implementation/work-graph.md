@@ -19,6 +19,11 @@ All file/line references verified against the tree at HEAD (2026-08-19). Python 
 
 ---
 
+> **Current implementation (2026-10-22).** For shipped states, admission,
+> hierarchy and deletion, see the [task-graph system map](../systems/task-graph.md).
+> This implementation plan predates durable-wait states, the shared admission
+> view and unified deletion; its command examples and state counts are historical.
+
 ## 1. Scope
 
 Phase 0 of the framework overhaul: typed edges, persisted `is_blocked`, gates + sweep, labels, outcome metadata + retry policy, state-machine enforcement, explain/ready, `after_seq` replay, payload-registry test, hierarchical child ids, computed group progress. The status collapse (design §12) is **not** implemented here; nothing below may block it.

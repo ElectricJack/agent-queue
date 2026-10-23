@@ -893,7 +893,7 @@ class HierarchyQueryMixin:
         if hierarchy_modes is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self)
+            hierarchy_modes = await hierarchy_frontier_modes(self, task_ids=task_ids)
         async with self._engine.connect() as conn:
             rows = (
                 (
@@ -1316,6 +1316,7 @@ class HierarchyQueryMixin:
         delivery=None,
         obsolete_integration_delegate: bool = False,
         allow_missing_provenance_reopen: bool = False,
+        preserve_collected_children: bool = False,
     ) -> bool:
         """Fence hierarchy/lifecycle writers; return whether hierarchy delivery applies.
 
@@ -1439,7 +1440,13 @@ class HierarchyQueryMixin:
                     "delivery_unknown", f"{mutation} requires current Git delivery evidence",
                 )
             internal_refs = set()
-            if rollover_operation is not None or recovering_provenance:
+            if (rollover_operation is not None or recovering_provenance
+                    or preserve_collected_children and mutation == "reopen"
+                    and task_row.parent_task_id is None and own_proof is not None
+                    and own_proof.state is DeliveryState.PENDING):
+                # A root PR conflict reworks the aggregate on its existing
+                # branch. Children already collected onto internal branches
+                # keep that delivery; default-branch delivery is still fixed.
                 branches = (await conn.execute(select(tasks.c.branch_name).where(
                     tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
                 ))).scalars()

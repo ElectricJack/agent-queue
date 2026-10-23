@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/api/host_shell.py::audit_host_shell::d71ee6e4a340780de2532bfca9177cd80d4b0ac848427deaa9ea807392a56034": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 81,
+      "owner": "audit_host_shell",
+      "owner_fingerprint": "67b996e1fb1d13cb6b10603a9f594d7f1ccff561b089d210606b3989f2dc7ad4",
+      "reason": "Host-shell HTTP and WebSocket lifecycle audit records shell names and caller identities; no integration state or ref replay authority."
+    }
+  }
+}

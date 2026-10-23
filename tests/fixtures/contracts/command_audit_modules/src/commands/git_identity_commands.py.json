@@ -1,0 +1,91 @@
+{
+  "get_git_identity": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/git_identity_commands.py:GitIdentityCommandsMixin._cmd_get_git_identity",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{project_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f6cb954892b368aebbb191dab280632c79507067377997a78076f704165d23ff",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_git_identity.py"
+    ]
+  },
+  "set_git_identity": {
+    "argument_reads_diagnostic_only": [
+      "clear",
+      "email",
+      "name",
+      "source"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/git_identity_commands.py:GitIdentityCommandsMixin._cmd_set_git_identity",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'clear cannot be combined with name/email'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_git_identity', 'field': exc.field, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': '; '.join((str(e) for e in errors if e))}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'configured': current is not None, 'installation': current.as_dict() if current else None, 'previous': previous.as_dict() if previous else None, 'changed': previous != current, 'applies_to': 'Commits from sessions launched after this change; running pool sessions launched under another identity retire at their next claim.'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:4eead7ec641d2969b0d6e6346e381c9496e2756fa0eb11da577c7076a27f9719",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_git_identity.py"
+    ]
+  }
+}

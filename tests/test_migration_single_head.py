@@ -55,7 +55,11 @@ def test_alembic_chain_is_single_headed():
 #: the sibling for good.  ``a00000000050`` was deployed on ``a00000000048``
 #: while the live candidate carried its own ``a00000000049``
 #: (docs/superpowers/specs/2026-10-01-later-repair-stage-constraints-design.md).
-DEPLOYED_PARENTS = {"a00000000050": "a00000000048"}
+# Unlimited repair deadlines shipped as revision 121 before transcript fences.
+DEPLOYED_PARENTS = {
+    "a00000000050": "a00000000048",
+    "a00000000121": "a00000000120",
+}
 
 
 def test_deployed_revisions_keep_their_parent():

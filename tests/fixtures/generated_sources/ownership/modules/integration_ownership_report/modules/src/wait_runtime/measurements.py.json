@@ -1,0 +1,11 @@
+{
+  "shared_definitions": {
+    "src/wait_runtime/measurements.py::capture_costs": {
+      "landing_span": [
+        46,
+        90
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/resources.py::project_tests": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

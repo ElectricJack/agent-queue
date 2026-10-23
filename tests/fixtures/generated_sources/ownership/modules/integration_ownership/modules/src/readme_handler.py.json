@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/readme_handler.py::register_readme_handlers": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/readme_handler.py::scan_and_generate_readme_summaries": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

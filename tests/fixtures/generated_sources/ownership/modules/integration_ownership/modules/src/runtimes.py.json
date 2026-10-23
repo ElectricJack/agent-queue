@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/runtimes.py::default_registry": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

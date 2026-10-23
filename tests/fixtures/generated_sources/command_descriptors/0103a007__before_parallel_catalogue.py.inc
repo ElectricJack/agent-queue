@@ -1,0 +1,7 @@
+def _before_parallel_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_updater_catalogue(catalogue)
+    catalogue = _before_pool_delete_catalogue(catalogue)
+    return catalogue
+
+

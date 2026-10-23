@@ -1,0 +1,186 @@
+{
+  "shared_definitions": {
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
+      "baseline_span": [
+        119,
+        119
+      ],
+      "landing_span": [
+        119,
+        119
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_adopt']": {
+      "baseline_span": [
+        105,
+        105
+      ],
+      "landing_span": [
+        105,
+        105
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_adopt_legacy_deliveries']": {
+      "baseline_span": [
+        108,
+        108
+      ],
+      "landing_span": [
+        108,
+        108
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_app_verify']": {
+      "baseline_span": [
+        103,
+        104
+      ],
+      "landing_span": [
+        103,
+        104
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_continue_close']": {
+      "baseline_span": null,
+      "landing_span": [
+        107,
+        107
+      ],
+      "reason": "Author-assisted close needs candidate regeneration time before returning its verified wait."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_development_sweep']": {
+      "baseline_span": [
+        99,
+        99
+      ],
+      "landing_span": [
+        99,
+        99
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_eject']": {
+      "baseline_span": [
+        120,
+        120
+      ],
+      "landing_span": [
+        120,
+        120
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_flush']": {
+      "baseline_span": [
+        100,
+        100
+      ],
+      "landing_span": [
+        100,
+        100
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance']": {
+      "baseline_span": [
+        106,
+        107
+      ],
+      "landing_span": [
+        106,
+        107
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance_refs']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_pause_batch']": {
+      "baseline_span": [
+        117,
+        117
+      ],
+      "landing_span": [
+        117,
+        117
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_recover_completed_container']": {
+      "reason": "Allows 300 seconds for retained fetch, fsck, two remote-head reads and ancestry verification during completed-container recovery."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_refresh_epic']": {
+      "baseline_span": [
+        115,
+        115
+      ],
+      "landing_span": [
+        115,
+        115
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_owner']": {
+      "reason": "Gives integration owner recovery 300 seconds for provider confirmation and remote Git verification; this command-specific timeout is charged."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_resume_batch']": {
+      "baseline_span": [
+        118,
+        118
+      ],
+      "landing_span": [
+        118,
+        118
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_retire_origin']": {
+      "baseline_span": [
+        116,
+        116
+      ],
+      "landing_span": [
+        116,
+        116
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_seal_now']": {
+      "baseline_span": [
+        109,
+        114
+      ],
+      "landing_span": [
+        109,
+        114
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_settle_batch']": {
+      "reason": "Sets the integration batch settlement request timeout to 180 seconds; this is integration transport configuration."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_trust_manifest']": {
+      "baseline_span": [
+        101,
+        102
+      ],
+      "landing_span": [
+        101,
+        102
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['task_close']": {
+      "baseline_span": null,
+      "landing_span": [
+        105,
+        106
+      ],
+      "reason": "Author-assisted close needs candidate regeneration time before returning its verified wait."
+    }
+  }
+}

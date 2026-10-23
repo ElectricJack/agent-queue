@@ -1,0 +1,20 @@
+{
+  "dashboard_pr_snapshot_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 9,
+    "decision_message_id": "msg-3f6311071a6647429059f3a990750597",
+    "grant_id": "sharp-rapids-10-cap-epoch2-2026-10-23",
+    "measured_engine_lines": 85517,
+    "measured_owned_total": 161111,
+    "measured_source_revision": "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "previous_engine_lines": 85517,
+    "previous_owned_total": 161102,
+    "previous_source_revision": "61869b7cdcf507b8e8acb596893bb63ac0794997",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1885",
+    "reason": "Dashboard PR snapshot quota fix; exact project supervisor amendment under size-cap-delegation-2026-10-23. No automatic ceiling increase or source relocation.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "sharp-rapids-10"
+  }
+}

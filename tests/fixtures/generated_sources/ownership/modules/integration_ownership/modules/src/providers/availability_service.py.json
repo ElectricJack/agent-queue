@@ -1,0 +1,25 @@
+{
+  "generic_dependencies": {
+    "src/providers/availability_service.py::ProviderAvailabilityService": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/providers/availability_service.py::ProviderAvailabilityService._announce::316e943a7f2f50b1716c7d0c5aac48fb8e19d5841d0325e81e8e4b4edb64a42e": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1003,
+      "owner": "ProviderAvailabilityService._announce",
+      "owner_fingerprint": "d5afbde70ea3680cac8d566327fcb40a905fb47414ba99d71eb2f1b80b0fc70d",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/providers/availability_service.py::ProviderAvailabilityService._emit_escalation::5843ded36648813d0455e8c4771b12a3fcad3551e8bbdc68c444cc4f36105baa": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1708,
+      "owner": "ProviderAvailabilityService._emit_escalation",
+      "owner_fingerprint": "c18aa865523b8494943b1ea3ba2a6eee7f44a62dcb81a5140590629a102173cf",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}
