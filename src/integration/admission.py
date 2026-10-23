@@ -748,12 +748,19 @@ async def observe_admission(
     async with db._engine.connect() as conn:
         batch.policy_inputs, batch.hierarchy_required = await _frontier_inputs(conn, ids)
     pids = {p[0] for p in batch.inputs[5] if p[1] in {"hierarchy", "train"}}
+    # With no blocks sources there is no hierarchy Git proof to obtain. In
+    # particular, a root must not wait on unrelated candidates' prerequisite
+    # scan (or its fetch/row-lock queue) before it can be claimed.
+    if not batch.hierarchy_required:
+        pids.clear()
+    unavailable = {}
     modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
         db, project_ids=pids, cached_only=cached_only,
         views=batch.hierarchy_views, stack_views=batch.stack_views,
-        conn=hierarchy_conn,
+        display_unavailable=unavailable, conn=hierarchy_conn,
+        task_ids=ids,
+
         **({"max_age": 0} if not cached_only else {}),
-        **({"task_ids": ids} if cached_only else {}),
     ) if pids else {}
     batch.hierarchy_modes = dict(modes)
     batch.lock_ids |= set().union(*batch.hierarchy_required.values())
@@ -853,3 +860,20 @@ async def structural_candidates(db, project_id, *, page_size=128):
                 return ids
             last = rows[-1]
             cursor = (last.priority, last.created_at, last.id)
+
+
+async def independent_candidates(db, candidate_ids):
+    """Candidates requiring no source delivery, with graph changes fenced later.
+
+    The ordinary AdmissionView still checks every frontier predicate and locks
+    and revalidates these inputs before the take and activation.
+    """
+    ids = set(candidate_ids)
+    if not ids:
+        return set()
+    async with db._engine.connect() as conn:
+        dependent = (await conn.execute(select(task_dependencies.c.task_id).where(
+            task_dependencies.c.task_id.in_(ids),
+            task_dependencies.c.dep_type.in_(("blocks", "delivery-of", "waits-for")),
+        ))).scalars()
+        return ids - set(dependent)

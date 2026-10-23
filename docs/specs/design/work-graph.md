@@ -141,6 +141,15 @@ absent truth-bearing observer permits preparation without a receipt fallback.
 The agent merges prerequisite state from Git; ancestry at publication remains
 the delivery authority. Non-hierarchy projects keep their source admission policy.
 
+Pool claims first try candidates without `blocks`, `delivery-of` or `waits-for`
+sources. These candidates pass the same frontier predicates and locked input
+revalidation, without waiting for unrelated Git observations. If that pass has
+no compatible claimable task, selection retries with the full candidate set.
+Admission scopes hierarchy prerequisite observations to its candidate identities;
+an empty source set requires no Git observation. Prerequisite views never
+recompute dependent blockedness: they may be read while the scheduler holds
+those task rows under the wait-graph fence on another connection.
+
 `delivery-of` edges require source completion in the persisted graph projection
 and a separate default-target Git observation in `AdmissionView`. Unknown
 observations permit dispatch, pool demand and claims; proven missing ancestry

@@ -23,7 +23,8 @@ from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 
-from sqlalchemy import literal, or_, select
+from sqlalchemy import Text, any_, bindparam, literal, or_, select
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
@@ -479,6 +480,7 @@ async def hierarchy_frontier_modes(
     """
 
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.database.tables import task_dependencies
 
     observer = prerequisite_observer(db)
     if observer is None:
@@ -489,6 +491,26 @@ async def hierarchy_frontier_modes(
                            "proceed to Git preparation without receipt fallback")
             db._warned_missing_prerequisite_observer = True
         return {}
+    if task_ids is not None:
+        task_ids = frozenset(task_ids)
+    scoped_ids = {task_id} if task_id is not None else task_ids
+    if scoped_ids is not None:
+        # Preparation also uses this reader. A task without blocks sources
+        # needs no hierarchy delivery proof there either. Retain the ordinary
+        # SQL frontier/origin checks and let new edges fail closed under locks.
+        async with db._engine.connect() if conn is None else nullcontext(conn) as read:
+            required_projects = set((await read.execute(select(tasks.c.project_id).join(
+                task_dependencies, task_dependencies.c.task_id == tasks.c.id,
+            ).where(
+                tasks.c.id == any_(bindparam("task_ids", list(scoped_ids), type_=ARRAY(Text))),
+                task_dependencies.c.dep_type == "blocks",
+            ))).scalars())
+        project_ids = required_projects if project_ids is None else (
+            set(project_ids) & required_projects
+        )
+        if not project_ids:
+            return {}
+
     if task_id is not None:
         task = await db.get_task(task_id)
         if task is None or (project_ids is not None and task.project_id not in project_ids):
@@ -919,12 +941,13 @@ class DeliveryObserver:
                  if parent is None or parent != child_parent}
         for _attempt in range(self.FRESH_ATTEMPTS):
             default = await self.observe(cross, max_age=max_age, target_loader=delivery_targets,
-                                         cached_only=cached_only)
+                                         cached_only=cached_only, admit_dependents=False)
             containment, parents = await self._parent_containment(
                 rows, default, cached_only=cached_only,
             )
             view = PrerequisiteView(
-                await self.observe(siblings, max_age=max_age, cached_only=cached_only),
+                await self.observe(siblings, max_age=max_age, cached_only=cached_only,
+                                   admit_dependents=False),
                 default, containment, parents,
                 {dep: "refs/heads/" + branch.removeprefix("refs/heads/")
                  for _tid, _parent, _child_parent, dep, branch in rows if branch},
@@ -991,7 +1014,8 @@ class DeliveryObserver:
         return result, tuple(parents.values())
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,
-                      target_loader=None, cached_only: bool = False) -> DeliveryView:
+                      target_loader=None, cached_only: bool = False,
+                      admit_dependents: bool = True) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
 
         Retake moved targets; persistent movement leaves fresh() false and callers
@@ -1035,7 +1059,10 @@ class DeliveryObserver:
             if cached_only or max_age > 0 or await view.fresh():
                 break
         if not cached_only:
-            await self._admit_delivery_dependents(view)
+            # Prerequisite reads may run while the scheduler holds dependent
+            # task locks on another connection. Never write blockedness there.
+            if admit_dependents:
+                await self._admit_delivery_dependents(view)
             # Latency telemetry only (spec section 10); nothing here reads it back.
             record = getattr(self.db, "record_delivery_observations", None)
             try:
