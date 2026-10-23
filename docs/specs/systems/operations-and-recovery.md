@@ -2,13 +2,13 @@
 tags: [spec, system, operations-and-recovery]
 system: 17
 status: current
-as_of: 2026-10-20 (dev 22cffd1b7)
+as_of: 2026-10-22 (dev 52d2efe4c)
 ---
 
 # System 17: operations-and-recovery
 
 This is a **current** system spec, not a design record. It describes what the
-code at `dev` 22cffd1b7 does. Where it and the code disagree, the code is
+code at `dev` 52d2efe4c does. Where it and the code disagree, the code is
 right and this file should be fixed. Older specs it links to, such as
 [`../setup-wizard.md`](../setup-wizard.md), [`../packaging.md`](../packaging.md)
 and [`../design/fleet-metrics.md`](../design/fleet-metrics.md), are kept for
@@ -49,7 +49,7 @@ something breaks. Concretely:
   recorded in `deploy.json` and `deploy-history.json`.
 - **Protect data**: `aq db backup` and `aq db restore`, plus the migration
   guard that stops anyone but the daemon or an operator from migrating.
-- **Observe**: `aq doctor` (122 checks, 30 with a fix), fleet metrics,
+- **Observe**: `aq doctor` (125 checks, 31 with a fix), fleet metrics,
   benchmark exports, structured logs and `aq logs`.
 - **Recover**: stranded unpushed work, orphaned playbook runs, released
   integration owners, and corrupted retained git object stores.
@@ -125,8 +125,9 @@ Discord questions appear only with `--advanced`. The CLI shows an "AQ will:"
 plan and asks "Go ahead?" (`src/cli/install.py:686-743`).
 
 **CLI flags** (`src/cli/install.py:557-623`): `--interactive`, `--dry-run`,
-`--json`, `--config`, `--with`, `--approve`, `--yes`, `--resume`, `--fresh`,
-`--repair`, `--upgrade`, `--restart-from`, `--list-steps`, `--advanced`,
+`--non-interactive`, `--json`, `--config`, `--with`, `--approve`, `--yes`,
+`--resume`, `--fresh`, `--no-resume`, `--state-file`, `--repair`, `--upgrade`,
+`--restart-from`, `--list-steps`, `--advanced`,
 `--git-name`, `--git-email`. After a run, the CLI probes provider logins,
 refreshes the profile catalogue and ensures the default worker pools
 (`src/install/pools.py`).
@@ -137,7 +138,11 @@ refreshes the profile catalogue and ensures the default worker pools
   [`../../guides/default-tuning.md`](../../guides/default-tuning.md)), and
   `sessions.provider: tmux`.
 - `.env` is mode 0600 and holds `AQ_DB_PASSWORD`. The installer never stores a
-  Discord token.
+  Discord token. When Playbooks V2 is explicitly enabled and has no private-value
+  key configuration, it also provisions a new 32-byte private-value key in
+  `.env` and records its identifier/environment-variable mapping in config.
+  It never replaces configured keys or repairs missing historical key material;
+  `config.check` and `playbooks.private_value_key` report that condition.
 - `daemon.start` runs `aq start --no-dashboard` with a 180 s limit and checks
   health at `127.0.0.1:8081`.
 
@@ -279,8 +284,9 @@ Branch tracking design:
   tag must be an ancestor of `origin/<target>` (otherwise
   `deploy_not_related`). `aq update --ref <tag>` pins one tag.
 - **Branch tracking** (`deploy.track_branch`). Fast-forward only.
-  `validate_target_migrations` checks that the target has a single Alembic
-  head, reading revisions with `git show`.
+
+Both modes use `validate_target_migrations` to check that the pinned target has
+one Alembic head, reading revisions with `git show` without executing them.
 
 `track_branch` cannot be combined with a ref, glob or recorded tag selection.
 
@@ -326,7 +332,8 @@ dashboard, then records `recovered`.
   dashboard's System Config page shows it.
 
 CLI exit codes are 0, 10 and 20. Flags: `--check`, `--yes`, `--ref`,
-`--allow-rollback`, and the hidden `--automatic`.
+`--allow-rollback`, `--no-backup`, `--resume-after-recovery`, and the hidden
+`--automatic`.
 
 **Automatic deploys.** `DeployConfig` (`src/config.py:3853-3883`) has these
 defaults: `tag_glob=None`, `target="main"`, `track_branch=None`, and
@@ -350,8 +357,10 @@ Otherwise it spawns a detached `python -m src.cli.app update --yes
 the daemon's child.
 
 When neither a glob nor a tracked branch is configured, `update_and_restart`
-falls back to a legacy path. That path runs `git pull`, pip and codegen, then
-restarts in-process. It takes no backup and has no rollback (§5).
+refuses with configuration guidance. The operator may still invoke standalone
+`aq update` for a guarded branch-following update. All updater backups delegate
+to `src/database/backup.py`, including Docker fallback and archive inspection
+before any service stops.
 
 **Releases** ([`../../contributing/releases.md`](../../contributing/releases.md)).
 `aq promote prepare|request|approve` builds a notes digest and runs the
@@ -397,17 +406,25 @@ Code: `src/database/backup.py`, `src/cli/db.py`. Reference:
 **Restore** (`aq db restore DUMP --accept-data-loss <timestamp> [--force]`).
 - Refuses while the daemon is live unless `--force` is passed.
 - Requires every agent session to have ended (`assert_sessions_ended`).
-- Takes a `pre-restore-<UTC>.dump` first.
-- Drops the `public` schema and loads the dump with
-  `psql --single-transaction`.
-- Runs no migrations; the next daemon start does.
+- Holds the daemon start lock, validates the archive timestamp and known
+  Alembic revisions, and requires the exact timestamp with `--accept-data-loss`.
+  The preview reports newer database rows that will be lost.
+- Takes a `pre-restore-<UTC>.dump` before a final session check.
+- Renders the custom archive through `pg_restore`; drops and recreates `public`
+  and loads the SQL through `psql --no-psqlrc --single-transaction` with
+  `ON_ERROR_STOP`. A SQL error rolls back the transaction.
+- Runs no migrations. Inspect `aq db current` and use the operator upgrade
+  procedure when restoring a known older revision; `--force` does not waive
+  session or revision checks.
 
 Automatic backups are taken before migrations by `aq start` (§2.3) and
-`aq update` (§2.5). `aq db import-sqlite` converts a legacy SQLite database.
+`aq update` (§2.5); manual `aq update --no-backup` skips only the updater
+backup, while automatic updates refuse that flag. `aq db import-sqlite` converts
+a legacy SQLite database.
 
 ### 2.8 Doctor
 
-Code: `src/doctor/` (models, runner, `builtin.py`, and 33 check modules);
+Code: `src/doctor/` (models, runner, `builtin.py`, and the check modules);
 handler `_cmd_doctor` in `src/commands/ops_commands.py:63-109`; CLI
 `src/cli/doctor.py`. Operator scope:
 [the operations guide](../../guides/operations.md#what-doctor-fixes--and-what-it-will-not-do).
@@ -418,12 +435,15 @@ handler `_cmd_doctor` in `src/commands/ops_commands.py:63-109`; CLI
   `plugin.<name>.<id>`), a `run`, an optional `fix`, a `timeout_s` that
   defaults to 5 and an `owner`.
 - A fix must be idempotent and must not destroy primary data.
+- Results also carry execution status, completeness, coverage and reasons.
+  Severity alone does not prove that an observation succeeded; an unavailable
+  observation can be INFO with incomplete coverage.
 - Checks receive a `DoctorContext` with the config, the database and the
   `CommandHandler`.
 
 **Registration.**
-- `default_registry()` (`src/doctor/__init__.py:88-149`) registers 29
-  factory groups in a fixed order: **122 checks, 30 with a fix**.
+- `default_registry()` (`src/doctor/__init__.py:88-149`) registers the built-in
+  factory groups in a fixed order: **125 checks, 31 with a fix**.
 - Two `worktrees.*` checks are added when `worktrees.enabled`.
 - The daemon builds the registry before `orch.initialize()`, so plugins can
   add checks through `PluginContext.register_doctor_check`
@@ -452,7 +472,9 @@ handler `_cmd_doctor` in `src/commands/ops_commands.py:63-109`; CLI
   It supports no other checks and refuses worker or agent sessions. `--fix`
   preserves the borrowed-revision downgrade, explicit stamp opt-in and retained
   migration restrictions of the online check.
-- `--json` emits `{checks, summary, exit_code}`.
+- `--json` emits the versioned envelope; its `.data` contains
+  `{checks, summary, exit_code}`.
+
 - Worker tokens get "out of scope". Operators and supervisors may run it.
 - The automatic runs are the post-start step in §2.3, and the integration
   train tick, which reuses `integration.train_batches_stalled` to open
@@ -467,6 +489,7 @@ handler `_cmd_doctor` in `src/commands/ops_commands.py:63-109`; CLI
 | Integration (`integration_checks.py`) | `integration.subjects_held`, `integration.subjects_overdue`, `integration.train_batches_stalled`, `integration.branch_origins`*, `integration.finished_branch_owners`*, `integration.promotion_stranded`, `integration.completed_undelivered` |
 | Database (`db_checks.py`, `builtin.py`) | `db.connect`, `db.migrations`, `db.alembic_orphan`* (borrows the missing revision file from up to 200 refs and runs its own `downgrade()`; with no file it refuses unless `AQ_DOCTOR_ALEMBIC_STAMP=1`) |
 | Stalls (`stall_checks.py`) | `stall.sweep`: one read-only check with a 55 s timeout and about 35 finding kinds, such as unclaimed READY work, crash-looping workers, publisher errors, orphaned PRs and stranded children ([`../operator-stall-sweep.md`](../operator-stall-sweep.md)) |
+| Verified waits (`wait_checks.py`) | `waits.schema` (report-only flags, v1 bodies and table inventory; never migrates), `waits.orphans`* (repairs via `CommandHandler`, preserving summaries and saved heads) |
 | Vault and drift | `harness.drift`*, `profiles.system_drift`, `profiles.supervisor_capability_drift`*, `skills.installed_drift`* |
 | Resources and services | `resources.orphaned_test_runs`*, `resources.jobs_cleanup`*, `daemon.autostart`, `dashboard.server.running`*, `perf.sustained_loop_lag`, `perf.health_latency` |
 
@@ -500,8 +523,33 @@ The performance block in the same package:
 
 `token_efficiency.py` is a read-only report run by
 `scripts/token-efficiency-report.py`. `MetricsConfig` is at
-`src/config.py:3092-3149`. The API is `GET /api/metrics/series`, capped at
+`src/config.py` (`MetricsConfig`). The API is `GET /api/metrics/series`, capped at
 12,000 points, and the dashboard reads it. There is no `aq metrics` command.
+
+`metrics.enabled` and `metrics.perf_enabled` default to true. The default
+`interval_seconds`, `slow_interval_seconds`, `flush_interval_seconds` and
+`rollup_interval_seconds` are 1, 5, 5 and 60. Token rates use a 300 s window,
+scaled per minute, with raw trailing-minute values beside them; subagent spawn
+rates use a 3600 s window, scaled per hour. Numeric gauges average on rollup,
+histogram buckets and sum counters add, and strings/booleans take the latest
+value. Missing and null observations remain unknown rather than becoming zero.
+
+`waits.py` adds in-place and hibernated wait counts, scheduler reasons, wake and
+escalation counts, released slot time, and resume-cost estimates. Duration and
+resume estimates use preceding 30-day cohorts. Counterfactual token savings
+require an explicit baseline and are estimates, not measured consumption.
+
+**Delivery latency** (`delivery_latency.py`) is separate from sampler rollups.
+`GET /api/metrics/delivery-latency` accepts `window=24h|7d`, optional `project_id`
+and `until`, and powers the dashboard delivery panel. It reports completion
+generations, median/p90, unknown and excluded cohorts, and overlapping slot,
+CI, train, repair and author-merge segments. The headline runs from approval
+(or task creation without a linked spec decision) to first fresh containment
+on dev, minus linked human-wait time; completion-to-dev is reported beside it.
+Transition-only `delivery.observation` events use fresh git evidence. Missing
+history is unknown, not zero; segment durations need not sum to the headline.
+The target defaults to the larger of 30 minutes and twice the prior seven-day
+p90 batch CI duration. These observations never control scheduling or cleanup.
 
 ### 2.10 Benchmarks
 
@@ -590,6 +638,9 @@ owned by [integration-and-delivery](integration-and-delivery.md)).
 - It is also scheduled at the end of each cycle by
   `schedule_ready_owner_recovery` (`core.py:4485-4487`), behind the config
   switch `integration.owner_recovery_sweep` (default true).
+- The periodic `integration_reconcile_git_truth` command is also wired in
+  `core.py`; its owner-recovery helper is gated by that same switch. Both
+  paths exist in this checkout.
 
 Its design is in the operator vault
 (`specs/2026-09-21-integration-owner-recovery-design.md` and
@@ -719,10 +770,10 @@ These hold today, and changes to this system must keep them.
    sessions kept, and the new daemon re-adopts them. Only an explicit
    `aq stop` without `--keep-sessions` kills sessions. Never update with
    `aq stop` followed by `aq start`.
-2. **Back up before the schema moves.** Every path that can migrate the
-   operator's database (`aq start` with a behind schema, `aq update` with new
-   revisions) takes a `pg_dump` first, and refuses to continue if the dump
-   fails.
+2. **Back up before the schema moves by default.** `aq start` with a behind
+   schema and the guarded updater with new revisions take a `pg_dump` first
+   and refuse on failure. Manual `aq update --no-backup` bypasses the updater
+   backup; automatic updates refuse it. The legacy command path is a gap (§5).
 3. **Only the daemon or an operator migrates.** Workers verify. `aq db
    upgrade`, `aq db restore`, `aq update`, `aq start` and `aq service` all
    refuse a worker session or worker database scope.
@@ -730,7 +781,7 @@ These hold today, and changes to this system must keep them.
    returns to the previous commit. After migrations it holds for recovery and
    does not run old code on a new schema.
 5. **Deploys are reproducible and recorded.** Tag deploys accept only
-   annotated tags that are ancestors of the target. Every deploy is in
+   annotated tags that are ancestors of the target. Guarded deploys are in
    `deploy.json` and `deploy-history.json`.
 6. **The operator's stop wins.** The `daemon.stopped` marker beats the
    watchdog, and update and daemon locks make it wait. The watchdog backs
@@ -744,7 +795,7 @@ These hold today, and changes to this system must keep them.
 9. **Doctor fixes are idempotent and verified.** A fix runs only for a
    failing check that declares one, and the check is re-run to prove it.
    Exit codes are stable (0, 1, 2, 3) so scripts and CI can rely on them.
-10. **No secrets at rest outside `.env`.** Install state, logs written by the
+10. **Installer records exclude secrets.** Install state, logs written by the
     installer and deploy records are redacted. Passwords reach `pg_dump` and
     `psql` through the environment.
 11. **Async in the daemon, synchronous before it.** The installer and
@@ -753,74 +804,23 @@ These hold today, and changes to this system must keep them.
 
 ## 5. Known gaps
 
-**Documentation that is wrong today.**
-- [`../../guides/operations.md`](../../guides/operations.md) line 162 says
-  "To update, run `aq restart --no-dashboard`". `aq restart` pulls no code;
-  the update command is `aq update` (as
-  [`../../guides/releases.md`](../../guides/releases.md) says). Line 149 says
-  `update_and_restart` launches the same updater. That is true only when a
-  tag glob or tracked branch is configured.
-- The same guide (lines 188-194, 232 and 243) tells operators to run six
-  `integration.*` checks that were removed in a99125ebc on 2026-10-04:
-  `operational`, `stranded_fences`, `stranded_delegates`, `stale_schedule`,
-  `branch_discards` and `stuck_children`. Asking for them returns ERROR
-  "unknown check id".
-- Those dead ids are also cited in:
-  - `docs/reference/modules/integration.md`;
-  - `docs/reference/database/data-lifecycle.md`;
-  - four `docs/reference/playbook-commands/integration_*.md` pages;
-  - `docs/guides/development-integration.md`;
-  - `docs/config/app-mode-train.md`;
-  - the shipped supervisor profile (`src/profiles/defaults/supervisor/profile.md:511`).
-- [`../../reference/modules/operations.md`](../../reference/modules/operations.md)
-  says some checks work with the daemon down; doctor runs only in the daemon.
-  It also lists only 22 of the 33 check modules and only two metrics modules.
-- The doctor tool description (`src/tools/definitions.py:5089-5115`) says fixes
-  never touch "tasks, vault files or branches". In fact:
-  - `git.stale_branches` deletes branches;
-  - `harness.drift`, `skills.installed_drift` and `playbooks.reviewed_bundles`
-    write vault files;
-  - `profiles.project_overrides` and `dashboard_state.orphans` delete rows;
-  - `db.alembic_orphan` downgrades the schema.
-
-  Several of these also strain the "not destructive to primary data" rule.
-- [`../design/fleet-metrics.md`](../design/fleet-metrics.md) still describes
-  SQLite. It misses config keys and the perf, host, relay and loop-watchdog
-  modules.
-- [`../packaging.md`](../packaging.md) describes version 0.1.0 and
-  `./run.sh`.
-- [`../design/retained-object-integrity.md`](../design/retained-object-integrity.md)
-  line 32 says no restoration command exists, which the guide and
-  `clear-retained-recovery` contradict.
-- [`../../contributing/installer-testing.md`](../../contributing/installer-testing.md)
-  lists a config-ownership "known gap" that is fixed.
-- The install tutorial omits the watchdog's exit 75 and the 2-hour
-  `update.lock` wait.
-- `src/cli/system_config.py:317` tells users to run `aq setup`, which no
-  longer exists.
-- The owner-recovery module cites
-  `docs/superpowers/specs/2026-09-21-integration-owner-recovery-design.md`,
-  which exists only in the vault.
+The operator guide, installer reference, module catalog and current-system
+metrics description were refreshed in the 2026-10-22 audit. Older design
+records remain explicitly historical. The following code issues remain;
+this documentation audit does not change their implementation.
 
 **Behaviour.**
-- **The legacy update path is unguarded.** Without a tag glob or tracked
-  branch, `update_and_restart` pulls, installs and restarts in-process with
-  no backup and no rollback.
 - **Messages over-promise.** The update confirmation says it "rolls back… if
   anything fails", which is false once migrations have run.
-- **Migration validation only covers branch tracking.**
-  `validate_target_migrations` (single head) runs only under `track_branch`,
-  not for tag deploys.
 - **Updates can back up twice.** An update with migrations backs up in
   `update.py`, then `aq start` backs up again because the schema is behind.
-- **There are two backup implementations.** The one in `update.py:460-505`
-  lacks the docker fallback and the header check that `backup.py` has.
 - **Backups never expire.** Nothing prunes `backups/` or the pre-deploy
   dumps, and no doctor check watches backup age or disk use.
-- **Some doctor ids are placeholders.** Three reserved ids (`sessions.stale`,
-  `tmux.server`, `leases.stale`) are never registered and always show INFO.
-  The comment in `models.py:115-116` says registering a reserved id replaces
-  its placeholder, but `register` raises on every duplicate.
+- **Some doctor ids are placeholders.** Unregistered reserved ids such as
+  `sessions.stale`, `tmux.server` and `leases.stale` report INFO without doing
+  a health probe. Placeholders are synthesized in output and do not prevent
+  a real check from registering that id.
+
 - **`stall.sweep` hard-codes values from this box.** It probes the container
   `aq-triage-test-20260831` (`stall_checks.py:57`), assumes the profile
   `deep-high-claude`, and has one uppercase finding kind,
@@ -842,113 +842,41 @@ These hold today, and changes to this system must keep them.
   - The wizard's PostgreSQL probe ignores `--config`.
   - There is no Windows-side autostart; WSL relies on cron inside the
     distribution.
-- **Releases are thin.** No GitHub Release is published from a tag, and
-  `database.schema_ahead_migrations` is not documented in the releases guide.
+- **Release publication is separate.** A deploy record is not a GitHub Release;
+  publishing a tag does not itself publish release notes.
 
-## 6. Planned work
+## 6. Shipped cutovers and roadmap context
 
-Tasks and reviews were re-queried on 2026-10-20 for this section. No open
-epic is about operations alone. The items below add operator commands,
-doctor checks, runbooks or deploy behaviour as part of other systems' work.
+The original 2026-10-20 queue snapshot is superseded by source inspection at
+the revision named above. This section records shipped behavior rather than
+asserting current task statuses; operators should inspect their own queue for
+remaining rollout and acceptance work.
 
-### 6.1 Event-driven hibernation cutover: `bold-zenith-11.22` (READY)
+- **Verified waits:** `waits.schema`, `waits.orphans`, wait metrics and the
+  [hibernation cutover runbook](../../guides/hibernation-cutover-runbook.md)
+  now ship. Schema inspection is report-only; orphan repair is the separate
+  fix. Consult the runbook for feature flags and rollback order.
+- **Integration:** generation-based delivery metrics and the dashboard panel
+  ship, as does the periodic git-truth reconciler. Owner recovery remains
+  wired alongside reconciliation (§2.12). The original fast-integration plan
+  also proposes native-storage relocation and additional operator acceptance;
+  their proposal does not imply those surfaces are present in this checkout.
+- **Held ingestion and human asks:** their operational rollout belongs to
+  [reviews-and-knowledge](reviews-and-knowledge.md) and
+  [messaging-and-human-asks](messaging-and-human-asks.md).
+- **Distributed workers and restore rehearsals:** reviewed designs describe
+  future operating procedures. `scripts/rollback_drill.py` is an executable
+  rehearsal; a reviewed proposal alone is not live acceptance evidence.
 
-Design: `2026-10-13-event-driven-agent-hibernation-and-verified-waits.md`
-(review `rev-bold-pinnacle`, *approved*, revision 2). Plan: `…-implementa.md`
-(review `rev-fleet-orbit`, *approved*, revision 1). Every other child is
-completed on `aq/epic/event-driven-hibernation-and-verified-waits-implementation`,
-which has not reached `dev`. `.22` is the operational cutover:
-
-- the defaults flip to event-driven waits;
-- v1 wait bodies are refused with `wait.upgrade_required`;
-- new doctor checks `waits.schema` and `waits.orphans` are added, with
-  `--fix`;
-- a hibernation cutover runbook gives the rollback order;
-- guides are rewritten and grants synced.
-
-It changes what an operator checks after the update that carries it.
-
-### 6.2 Fast and smooth integration: `stark-willow-95` (IN_PROGRESS)
-
-Design: `2026-10-12-fast-smooth-integration.md` (review `rev-fair-lantern`,
-*approved*, revision 2). Children that change operations:
-
-- **`.12` (DEFINED): native-storage project relocation.** Adds
-  `src/projects/relocation.py` and `project_relocation_commands.py`. The
-  operator gets a fenced preview and apply, rollback through a reverse plan,
-  verified backups beyond git bundles, and a runbook.
-- **`.4` (READY): delivery latency metrics.** Adds
-  `src/metrics/delivery_latency.py`, which tracks completion-to-`dev` latency
-  (median and p90).
-- **`.5` (DEFINED):** the dashboard delivery panel that charts `.4`.
-- **`.18` (DEFINED):** operator checklists and cutover manifests.
-- **`.19` (COMPLETED on the epic branch):** the git-truth reconciler. It
-  replaces the owner-recovery sweep entry described in §2.12 with
-  `integration_reconcile_git_truth`. When it lands, §2.12 and the
-  `owner_recovery_sweep` switch need updating.
-
-### 6.3 Held spec-ingestion batches: `calm-orbit-69.3` (DEFINED), `sharp-cascade-53.2` (PAUSED)
-
-Spec: `2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md`
-(review `rev-agile-beacon`, *approved*, revision 1; design `rev-bright-meadow`,
-revision 2). `.3` adds these operator surfaces:
-
-- `aq batch show|validate|release|review-record|update`;
-- doctor `ingestion.held_batches`;
-- doctor `ingestion.legacy_proposals`, with `--fix`.
-
-`sharp-cascade-53.2` adds the recovery side: the same checks, a migration
-downgrade guard, e2e scenario S21 and `batch_reconcile`. The behaviour belongs
-to [reviews-and-knowledge](reviews-and-knowledge.md).
-
-### 6.4 Human-ask cutover: `vivid-pinnacle-60` (PAUSED), `vivid-rapids-36` (READY)
-
-From `2026-10-11-one-place-to-ask-jack-implementation-specification.md`
-(review `rev-sharp-zenith`, *approved*, revision 1). These are operations
-phases of [messaging-and-human-asks](messaging-and-human-asks.md):
-
-- **H08-OPS** (`vivid-pinnacle-60`): the cutover and a 30-day exit window.
-- **H09-OPS** (`vivid-rapids-36`): verification and final live acceptance.
-
-### 6.5 Reviews not yet filed as tasks
-
-- **Distributed worker nodes** (`2026-10-06-distributed-worker-nodes.md`,
-  review `rev-eager-quest`, *in review*, revision 2). It would move this
-  system from one box to many: per-node install, health and deploy. The
-  containerised variant (`rev-steady-ember`) is *withdrawn*.
-- **Dev-branch releases** (review `rev-smart-lantern`, *approved*, revision
-  3; plan `2026-10-05-dev-branch-releases-plan.md`, review `rev-agile-apex`,
-  *approved*). Most of it shipped as branch tracking and the promote
-  commands. The release-history plan (`rev-amber-delta`, *in review*,
-  revision 1) would add a durable release record beyond
-  `deploy-history.json`.
-- **K14 restore rehearsals** (reviews `rev-crisp-beacon`, `rev-agile-glacier`,
-  `rev-nimble-dune` and `rev-solid-ridge`, all *approved*). They define
-  restore drills. `scripts/rollback_drill.py` is the only part in the code.
-- **Canonical-origin admission** (review `rev-prime-current`, *approved*).
-
-### 6.6 Other open work
-
-- `fleet-apex-16`: `slot_reset_failed` recovery, which belongs to
-  [projects-workspaces-git](projects-workspaces-git.md).
-- `amber-orbit-84`: a `dev` train deadlock, which belongs to
-  [integration-and-delivery](integration-and-delivery.md).
-- The promote task for staging `22cffd1b7236` and the current repair train.
-  These are operational runs, not changes to this system.
-
-The gaps in §5 are not filed as tasks. The documentation fixes are the
-smallest and the most likely to mislead an operator today, so they come first.
-
-### 6.7 The system-spec set: `eager-vault-55` (this epic)
-
-This spec is one of the 18 children of `eager-vault-55`. The inventory
-(`rev-bright-rapids`) is approved.
+This spec is one of the 18 system documents from `eager-vault-55`; the approved
+inventory is `rev-bright-rapids`. Implementation gaps in §5 remain separate
+from documentation corrections.
 
 ## 7. Further reading
 
 - [`../../guides/operations.md`](../../guides/operations.md): the operator
   manual (health layers, updates, symptoms, runbooks, metrics, logs, doctor
-  scope). Read §5 above for its known errors.
+  scope).
 - [`../../guides/releases.md`](../../guides/releases.md),
   [`../../contributing/releases.md`](../../contributing/releases.md),
   [`../design/branch-tracking-deployment.md`](../design/branch-tracking-deployment.md).

@@ -406,16 +406,20 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert grant["measured_owned_total"] == 160_825
     amendments = {item["task_id"]: item for item in exception["amendments"]}
     assert set(amendments) == {
-        "solid-impact-56", "agile-beacon-80", "nimble-torrent-12", "prime-impact-40",
-        "quick-pinnacle-97",
-        "stark-beacon-94",
-        "sharp-rapids-10",
-        "fair-dune-41",
-        "noble-flare-12",
-        "sound-forge-62",
-        "fair-flare-10",
+        "agile-beacon-80",
         "calm-rapids-50",
+        "fair-dune-41",
+        "fair-flare-10",
         "fair-harbor-71",
+        "nimble-torrent-12",
+        "noble-flare-12",
+        "prime-grove-46",
+        "prime-impact-40",
+        "quick-pinnacle-97",
+        "sharp-rapids-10",
+        "solid-impact-56",
+        "sound-forge-62",
+        "stark-beacon-94",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -720,6 +724,36 @@ def test_post_release_structure_measurement_is_exact(report, manifest):
     assert recorded["post_release_structure_measurement"] == measurement
 
 
+def test_remote_pr_base_grant_composes_only_its_exact_approved_footprint(report, manifest):
+    exception = manifest["transition_exception"]
+    grant = next(item for item in exception["amendments"] if item["task_id"] == "calm-lantern-21")
+    assert grant["decision_message_id"] == "msg-c47a1a9a635a465b8a0cb286f93cb0b0"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["operator_decision"] == "6679052c"
+    assert grant["operator_task"] == "sharp-cascade-53"
+    assert grant["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1902"
+    assert grant["previous_source_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
+    assert grant["measured_source_revision"] == exception["measured_source_revision"] == (
+        "925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3")
+    assert grant["authorized_owned_delta"] == 12
+    assert grant["authorized_engine_delta"] == 8
+    assert grant["authorized_shared_delta"] == 4
+    assert grant["authorized_table_delta"] == 0
+    for category, before, after in (("owned_total", 161_162, 161_174),
+                                    ("engine_lines", 85_543, 85_551),
+                                    ("shared_lines", 62_037, 62_041),
+                                    ("table_count", 45, 45)):
+        assert grant[f"previous_{category}"] == before
+        assert grant[f"measured_{category}"] == after
+    assert grant["measured_owned_total"] == exception["measured_owned_total"] == report["total"]
+    assert grant["measured_engine_lines"] == report["groups"]["engine"]
+    assert grant["measured_shared_lines"] == report["groups"]["shared"]
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["remote_pr_base_measurement"] == grant
+    assert ownership.budget_errors(report, manifest) == []
+
+
 @pytest.mark.parametrize("field,value", [
     ("batch_id", "another-batch"),
     ("decision_message_id", "another-decision"),
@@ -846,7 +880,8 @@ def test_restart_hold_repair_merge_preserves_exact_grant(report, manifest):
             == grant["authorized_owned_delta"] == 19)
     assert (merged["previous_owned_total"] + merged["authorized_owned_delta"]
             == merged["measured_owned_total"] == exception["measured_owned_total"]
-            == report["total"] == 161_217)
+            == 161_217)
+    assert report["total"] <= exception["measured_owned_total"]
     assert merged["authorized_engine_delta"] == merged["authorized_table_delta"] == 0
     assert (merged["previous_engine_lines"] == merged["measured_engine_lines"]
             == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_010)

@@ -1068,7 +1068,8 @@
         "msg-9f16388d39524c8b9a33d6796b88d1fb",
         "msg-5c55b72faec1497391205876fc5dfeb9",
         "msg-96fed6b8e86148f0bbf55ded244c9a0f",
-        "msg-76ff7843e72d451b9017a0b4db30c970"
+        "msg-76ff7843e72d451b9017a0b4db30c970",
+        "msg-c47a1a9a635a465b8a0cb286f93cb0b0"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
@@ -1334,6 +1335,40 @@
           "measured_engine_lines": 85543,
           "measured_table_count": 45,
           "reason": "Exact project supervisor grant for the PR1759 merge repair under size-cap-delegation-2026-10-23, with explicit delegation to record the approved grant. Preserve recovery holds through dev's manual-pause Resume path until the authorized restart READY transaction. Keep the historical frozen-batch measurements; engine and table counts remain unchanged."
+        },
+        {
+          "task_id": "prime-grove-46",
+          "decision": "size-cap-delegation-2026-10-23",
+          "previous_owned_total": 160879,
+          "authorized_owned_delta": -30,
+          "reason": "Remove the legacy updater path in clear-delta-43 / PR #1855 after merging PR #1797; re-record exactly origin/dev measured_owned_total minus 30 under the supervisor delegated size-cap decision."
+        },
+        {
+          "task_id": "calm-lantern-21",
+          "decision_message_id": "msg-c47a1a9a635a465b8a0cb286f93cb0b0",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1902",
+          "previous_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+          "previous_owned_total": 161162,
+          "previous_engine_lines": 85543,
+          "previous_shared_lines": 62037,
+          "previous_table_count": 45,
+          "authorized_owned_delta": 12,
+          "authorized_engine_delta": 8,
+          "authorized_shared_delta": 4,
+          "authorized_table_delta": 0,
+          "measured_source_revision": "925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3",
+          "measured_owned_total": 161174,
+          "measured_engine_lines": 85551,
+          "measured_shared_lines": 62041,
+          "measured_table_count": 45,
+          "charged_definitions": [
+            "src/integration/pr_repair_publication.py::PRRepairPublication",
+            "src/cli/client.py::_COMMAND_TIMEOUTS"
+          ],
+          "reason": "Authenticated current remote PR base history and repair/root-redrive CLI timeout budgets. Project supervisor approved the exact +12 owned (+8 engine, +4 shared) footprint for PR1902 under size-cap-delegation-2026-10-23; preserve historical frozen-batch measurements and classifications."
         }
       ],
       "supplemental_grants": [
@@ -14969,5 +15004,58 @@
     "measured_table_count": 45,
     "reason": "Compose the unchanged approved +19 restart hold repair grant on current dev for PR #1900. Preserve every historical grant and frozen batch measurement.",
     "previous_recorded_owned_cap": 161213
+  },
+  "updater_safety_measurement": {
+    "source_revision": "24794f2e55b12368c4616f5accfffe1a3c34d847",
+    "task_id": "prime-grove-46",
+    "authority": "size-cap-delegation-2026-10-23",
+    "dev_revision": "e7989d1aa62381a607aab67d8ce245a955ed904e",
+    "previous_measurement": {
+      "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+      "measured_owned_total": 160879,
+      "measured_engine_lines": 85316,
+      "measured_table_count": 45
+    },
+    "measured_owned_total": 160849,
+    "measured_engine_lines": 85316,
+    "measured_table_count": 45,
+    "measured_groups": {
+      "shared": 61976,
+      "companions": 11127,
+      "engine": 85316,
+      "policy_sources": 1042,
+      "policy": 493,
+      "ui": 262,
+      "guards": 633
+    },
+    "owned_delta": -30,
+    "reason": "Exact downward re-record after the guarded updater removes 30 owned lines. Fixed baseline, landing snapshot, ownership classifications and storage dispositions are unchanged."
+  },
+  "remote_pr_base_measurement": {
+    "task_id": "calm-lantern-21",
+    "decision_message_id": "msg-c47a1a9a635a465b8a0cb286f93cb0b0",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1902",
+    "previous_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+    "previous_owned_total": 161162,
+    "previous_engine_lines": 85543,
+    "previous_shared_lines": 62037,
+    "previous_table_count": 45,
+    "authorized_owned_delta": 12,
+    "authorized_engine_delta": 8,
+    "authorized_shared_delta": 4,
+    "authorized_table_delta": 0,
+    "measured_source_revision": "925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3",
+    "measured_owned_total": 161174,
+    "measured_engine_lines": 85551,
+    "measured_shared_lines": 62041,
+    "measured_table_count": 45,
+    "charged_definitions": [
+      "src/integration/pr_repair_publication.py::PRRepairPublication",
+      "src/cli/client.py::_COMMAND_TIMEOUTS"
+    ],
+    "reason": "Authenticated current remote PR base history and repair/root-redrive CLI timeout budgets. Project supervisor approved the exact +12 owned (+8 engine, +4 shared) footprint for PR1902 under size-cap-delegation-2026-10-23; preserve historical frozen-batch measurements and classifications."
   }
 }
