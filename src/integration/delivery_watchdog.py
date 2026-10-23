@@ -336,7 +336,7 @@ async def _mark_rows_on(conn, rows, *, reason: str, verification: str, now: floa
 
 
 async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
-                            repository_id: str, target_ref: str) -> str:
+                            repository_id: str, target_ref: str, hierarchy=None) -> str:
     """One agent task per generation lands the stuck work; the id makes it idempotent."""
     from src.integration.models import INTEGRATION_REPAIR_PRIORITY
     from src.models import Task, TaskStatus, TaskType
@@ -361,6 +361,8 @@ async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
         priority=INTEGRATION_REPAIR_PRIORITY, dedup_key=key,
         created_by_kind="system", created_by_id="delivery-watchdog",
     ), conn=conn)
+    if hierarchy is not None:
+        await hierarchy.reserve_ready_root_origin_on(conn, task_id)
     return task_id
 
 
@@ -400,7 +402,7 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
 
 async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any, *,
                        threshold: DeliveryThreshold, repository_id: str, target_ref: str,
-                       now: float) -> dict[str, Any]:
+                       now: float, hierarchy=None) -> dict[str, Any]:
     """Classify one owed generation and write its projection; at most one handover."""
     from src.metrics.delivery_latency import generation_of
 
@@ -440,7 +442,7 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
                 async with conn.begin_nested():
                     redrive = {"task_id": await _file_takeover_on(
                         db, conn, key=key, entry=entry, repository_id=repository_id,
-                        target_ref=target_ref), "at": now}
+                        target_ref=target_ref, hierarchy=hierarchy), "at": now}
             except Exception as exc:  # noqa: BLE001 - a refusal is the incident's evidence
                 refused = f"{type(exc).__name__}: {exc}"[:500]
         inputs.update(
@@ -482,7 +484,7 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
 
 
 async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
-                                page_size: int = PAGE_SIZE) -> dict[str, Any]:
+                                page_size: int = PAGE_SIZE, hierarchy=None) -> dict[str, Any]:
     """One bounded, oldest-first pass over projects after the persisted cursor.
 
     Projects are scanned whole, so an owed generation missing from a scanned
@@ -547,7 +549,7 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
             report["deliveries"].append(await _watch_entry(
                 db, entry, requests.get(entry["task_id"]), pending.pop(entry["task_id"], None),
                 threshold=threshold, repository_id=target["repository_id"],
-                target_ref=target_ref, now=now,
+                target_ref=target_ref, now=now, hierarchy=hierarchy,
             ))
         async with db.immediate() as conn:
             for row in pending.values():

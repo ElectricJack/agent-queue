@@ -10258,15 +10258,18 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:18f8cd11696006e2e9d36588e0f44f858995928cd4c725ac8a0e22d559f7aeb2",
+      "digest": "sha256:652bca1e21c27b498cdf37c2aa7acf2f28b484b19781c66146048b044967d0ba",
       "imports": [
         "src.database.tables",
         "src.integration.batches",
+        "src.integration.branch_materialization",
         "src.integration.canonical_reservation",
+        "src.integration.delivery_watchdog",
         "src.integration.lock",
         "src.integration.manual_control",
         "src.integration.train_policy",
         "src.integration.train_sources",
+        "src.models",
         "src.playbooks.train_policy"
       ],
       "markers": [
