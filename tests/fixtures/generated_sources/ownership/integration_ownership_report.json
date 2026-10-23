@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 161111,
+    "owned_total_cap": 161112,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1062,13 +1062,14 @@
         "msg-a337e2c905ce4f5c8a236344a4e25211",
         "msg-330ea2478c724381acbb5512fc99e4b5",
         "msg-e2dd5a423516458eb564e745a12ab30e",
-        "msg-3f6311071a6647429059f3a990750597"
+        "msg-3f6311071a6647429059f3a990750597",
+        "msg-96fed6b8e86148f0bbf55ded244c9a0f"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6",
+      "measured_source_revision": "14828bb29104d825e9ba5a75aa44a3799dd48a48",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 161111,
-      "delta": 5612,
+      "measured_owned_total": 161112,
+      "delta": 5613,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1088,7 +1089,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 2153,
+      "batch_measured_delta": 2154,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1097,7 +1098,7 @@
       ],
       "category_restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "measured_engine_lines": 85517,
+      "measured_engine_lines": 85518,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22",
       "amendments": [
@@ -1203,6 +1204,23 @@
           "measured_engine_lines": 85517,
           "measured_table_count": 45,
           "reason": "Dashboard PR snapshot quota fix; exact project supervisor amendment under size-cap-delegation-2026-10-23. No automatic ceiling increase or source relocation."
+        },
+        {
+          "task_id": "fair-harbor-71",
+          "decision_message_id": "msg-96fed6b8e86148f0bbf55ded244c9a0f",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+          "previous_owned_total": 161111,
+          "previous_engine_lines": 85517,
+          "authorized_owned_delta": 1,
+          "authorized_engine_delta": 1,
+          "authorized_table_delta": 0,
+          "measured_source_revision": "14828bb29104d825e9ba5a75aa44a3799dd48a48",
+          "measured_owned_total": 161112,
+          "measured_engine_lines": 85518,
+          "measured_table_count": 45,
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1890",
+          "reason": "Shared exact-commit check-run observations and one bounded recovery wait; plain dev merge retains dashboard badges, quota reserve and ETag behavior. Supervisor approved the exact merged +1 owned / +1 engine measurement under size-cap-delegation-2026-10-23."
         }
       ],
       "supplemental_grants": [
@@ -14477,5 +14495,22 @@
     "measured_engine_lines": 85517,
     "measured_table_count": 45,
     "reason": "Dashboard PR snapshot quota fix; exact project supervisor amendment under size-cap-delegation-2026-10-23. No automatic ceiling increase or source relocation."
+  },
+  "shared_check_runs_measurement": {
+    "task_id": "fair-harbor-71",
+    "decision_message_id": "msg-96fed6b8e86148f0bbf55ded244c9a0f",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+    "previous_owned_total": 161111,
+    "previous_engine_lines": 85517,
+    "authorized_owned_delta": 1,
+    "authorized_engine_delta": 1,
+    "authorized_table_delta": 0,
+    "measured_source_revision": "14828bb29104d825e9ba5a75aa44a3799dd48a48",
+    "measured_owned_total": 161112,
+    "measured_engine_lines": 85518,
+    "measured_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1890",
+    "reason": "Shared exact-commit check-run observations and one bounded recovery wait; plain dev merge retains dashboard badges, quota reserve and ETag behavior. Supervisor approved the exact merged +1 owned / +1 engine measurement under size-cap-delegation-2026-10-23."
   }
 }

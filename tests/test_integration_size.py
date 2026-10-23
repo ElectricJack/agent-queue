@@ -384,6 +384,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "quick-pinnacle-97",
         "stark-beacon-94",
         "sharp-rapids-10",
+        "fair-harbor-71",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -411,14 +412,33 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert snapshot["previous_owned_total"] == 161_102
     assert snapshot["authorized_owned_delta"] == 9
     assert snapshot["authorized_engine_delta"] == 0
-    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == measured
-    assert snapshot["measured_owned_total"] == measured == 161_111
+    assert (snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"]
+            == snapshot["measured_owned_total"])
+    assert snapshot["measured_owned_total"] == 161_111
     assert snapshot["previous_engine_lines"] == snapshot["measured_engine_lines"] == 85_517
-    assert snapshot["measured_engine_lines"] == exception["measured_engine_lines"]
+    assert snapshot["measured_engine_lines"] == 85_517
     assert snapshot["measured_table_count"] == 45
-    assert snapshot["measured_source_revision"] == exception["measured_source_revision"]
+    assert snapshot["measured_source_revision"] == "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6"
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["dashboard_pr_snapshot_measurement"] == snapshot
+    check_runs = amendments["fair-harbor-71"]
+    assert check_runs["decision_message_id"] == "msg-96fed6b8e86148f0bbf55ded244c9a0f"
+    assert check_runs["decision_message_id"] in exception["decision_message_ids"]
+    assert check_runs["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert check_runs["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert check_runs["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert check_runs["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    assert check_runs["authorized_owned_delta"] == check_runs["authorized_engine_delta"] == 1
+    assert check_runs["authorized_table_delta"] == 0
+    assert check_runs["previous_owned_total"] + check_runs["authorized_owned_delta"] == measured
+    assert check_runs["measured_owned_total"] == measured == 161_112
+    assert (check_runs["previous_engine_lines"] + check_runs["authorized_engine_delta"]
+            == check_runs["measured_engine_lines"] == exception["measured_engine_lines"] == 85_518)
+    assert check_runs["measured_table_count"] == 45
+    assert check_runs["measured_source_revision"] == exception["measured_source_revision"]
+    assert check_runs["measured_source_revision"] == "14828bb29104d825e9ba5a75aa44a3799dd48a48"
+    assert check_runs["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1890"
+    assert recorded["shared_check_runs_measurement"] == check_runs
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
         "quick-pinnacle-97",
@@ -454,7 +474,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     ) == snapshot["previous_owned_total"]
     assert composition["base_engine_lines"] + sum(
         delta["engine"] for delta in composition["approved_deltas"].values()
-    ) == exception["measured_engine_lines"]
+    ) == snapshot["measured_engine_lines"]
     repair = amendments["stark-beacon-94"]
     assert repair["decision_id"] == "size-cap-delegation-2026-10-23"
     assert repair["operator_decision"] == "6679052c"
