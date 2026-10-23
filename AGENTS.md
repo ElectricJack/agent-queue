@@ -75,7 +75,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   playbook-commands index, playbook schema, `openapi.json`, `packages/aq-client/`) all
   come from `scripts/regenerate-generated.sh`. On a merge or rebase conflict in one, take
   either side, resolve the sources, run it and commit what it writes; `--check` is the
-  drift check. The development publisher does the same at merge time
+  drift check. The integration train does the same at merge time
   ([docs/contributing/codegen.md](docs/contributing/codegen.md#one-command-and-never-a-hand-merge)).
 - **Async first.** Use `GitManager`'s `a`-prefixed API; never `subprocess.run()` in
   production code.

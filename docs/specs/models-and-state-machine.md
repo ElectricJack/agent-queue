@@ -11,6 +11,9 @@ tags: [spec, models, state-machine, core]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 > **Task lifecycle update (2026-10-22).** The historical tables below predate
 > `WAITING`, `HIBERNATED` and `RESUME_PENDING`: there are now twelve stored task

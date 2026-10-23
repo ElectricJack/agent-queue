@@ -48,6 +48,7 @@ EPIC_CHANGES = ROOT / "tests/fixtures/contracts/epic-integration-contract-change
 EPIC_COMMANDS = ("integration_cutover_containment", "integration_reconcile_git_truth")
 WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 INGEST_CHANGES = ROOT / "tests/fixtures/contracts/ingestion-replay-contract-changes.json"
+OBJECT_LOOP_PORT_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-port-changes.json"
 PIPELINE_CHANGES = ROOT / "tests/fixtures/contracts/default-pipeline-building-blocks-changes.json"
 HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-contract-changes.json"
 DISPATCH_CHANGES = ROOT / "tests/fixtures/contracts/dispatch-wait-contract-changes.json"
@@ -60,6 +61,7 @@ BATCH_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/batch-repair-contract-ch
 DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refresh-contract-changes.json"
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
+OBJECT_LOOP_CHANGES = ROOT / "tests/fixtures/contracts/object-loop-refactor-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
 PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
 WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
@@ -114,6 +116,39 @@ def test_structure_catalogue_preserves_reviewed_delta():
     )
 
 
+UPDATER_CHANGES = ROOT / "tests/fixtures/contracts/updater-safety-contract-changes.json"
+
+
+def _updater_changes():
+    return json.loads(UPDATER_CHANGES.read_text())
+
+
+def _before_updater_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    for name, approved in _updater_changes()["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        assert definition["description"] == approved["description"]
+        assert _digest(definition) == approved["sha256"]
+        definition["description"] = approved["previous_description"]
+        assert _digest(definition) == approved["previous_sha256"]
+    return catalogue
+
+
+def test_updater_catalogue_only_changes_guarded_update_description():
+    evidence = _updater_changes()
+    assert set(evidence["transport_definitions"]) == {"update_and_restart"}
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    assert evidence["previous_cli_catalogue_sha256"] == _pr_repair_changes()["cli_catalogue_sha256"]
+    for name, approved in evidence["transport_definitions"].items():
+        [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
+        definition["description"] = approved["description"]
+        assert _digest(definition) == approved["sha256"]
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
 def _stuck_check_changes():
     return json.loads((ROOT / "tests/fixtures/contracts/stuck-check-contract-changes.json").read_text())
 
@@ -127,7 +162,7 @@ def _restart_hold_changes():
 
 
 def _before_restart_hold_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_updater_catalogue()
     approved = _restart_hold_changes()["transport_definitions"]["restart_task"]
     [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
     assert definition == approved["definition"]
@@ -491,7 +526,8 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
         for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _restart_hold_changes()):
+                          _leaf_changes(), _completion_changes(), _restart_hold_changes(),
+                          _updater_changes()):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
                 assert approved["previous_sha256"] == digest
@@ -608,6 +644,18 @@ def test_legacy_playbook_fixtures_are_unchanged():
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
     hibernation = _hibernation_changes()["playbook_fixtures"]
+    probe_port = json.loads((
+        ROOT / "tests/fixtures/contracts/provider-usage-probe-port-changes.json"
+    ).read_text())["playbook_fixtures"]
+    assert set(probe_port) == {"tests/fixtures/playbooks/v2/provider-usage-probe/artifact.json"}
+    object_loop_port = json.loads(OBJECT_LOOP_PORT_CHANGES.read_text())["playbook_fixtures"]
+    assert set(object_loop_port) == {"tests/fixtures/playbooks/v2/object-loop/artifact.json"}
+    object_loop = json.loads(OBJECT_LOOP_CHANGES.read_text())["playbook_fixtures"]
+    assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    assert set(object_loop) == {
+        "tests/fixtures/playbooks/v2/object-loop/artifact.json",
+        "tests/fixtures/playbooks/v2/object-loop/traces.json",
+    }
     promotion_request = json.loads(PROMOTION_REQUEST_PORT.read_text())["playbook_fixtures"]
     assert set(promotion_request) == {"tests/fixtures/playbooks/v2/promotion-request/artifact.json"}
     routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
@@ -637,6 +685,25 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hibernation[path]["previous_sha256"] == digest
             assert hibernation[path]["sha256"] != digest
             digest = hibernation[path]["sha256"]
+        if path in probe_port:
+            assert probe_port[path]["previous_sha256"] == digest
+            historical = ROOT / probe_port[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert probe_port[path]["sha256"] != digest
+            digest = probe_port[path]["sha256"]
+        if path in object_loop_port:
+            change = object_loop_port[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            ported = ROOT / "tests/fixtures/playbooks/object-loop-port/ported.artifact.json"
+            assert hashlib.sha256(ported.read_bytes()).hexdigest() == change["sha256"]
+            # The two reviewed recordings derive independently from this baseline.
+            # Keep the authoring port intact while the filter recording is current.
+        if path in object_loop:
+            assert object_loop[path]["previous_sha256"] == digest
+            assert object_loop[path]["sha256"] != digest
+            digest = object_loop[path]["sha256"]
         if path in promotion_request:
             change = promotion_request[path]
             assert change["previous_sha256"] == digest
