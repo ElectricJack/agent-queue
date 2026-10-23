@@ -7,7 +7,9 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic
 from typing import Any, Callable, Literal
 from urllib.parse import urlsplit
 
@@ -26,6 +28,18 @@ from src.projects.github import GitHubError, parse_github_repository
 
 log = logging.getLogger(__name__)
 REFRESH_SECONDS = 300
+MAX_CHECK_RETRY_SECONDS = 900
+
+
+@dataclass(frozen=True)
+class _PullRequestBadges:
+    head_sha: str
+    updated_at: str | None
+    reviews: list[dict]
+    checks: list[dict]
+    confirmed_approval: bool
+    next_check_at: float
+    check_retry_seconds: float
 
 
 class PendingPullRequest(BaseModel):
@@ -150,7 +164,7 @@ class PendingPullRequestInbox:
         self.client_factory = client_factory
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
-        self._badges: dict[tuple[str, int], tuple[str, str, str, str]] = {}
+        self._badges: dict[tuple[str, int], _PullRequestBadges] = {}
 
     async def list(self, *, can_approve: bool = False) -> PendingPullRequestsResponse:
         items, updated_at = await read_pull_request_snapshot(self.db)
@@ -206,28 +220,52 @@ class PendingPullRequestInbox:
         key = (client.repository.full_name.lower(), number)
         updated_at = pull.get("updated_at")
         cached = self._badges.get(key)
-        if (not force and isinstance(updated_at, str) and cached is not None
-                and cached[:2] == (sha, updated_at)):
-            return cached[2], cached[3]
         # Invalidate before a forced read so a failed refresh is retried later.
-        self._badges.pop(key, None)
-        reviews, checks = await asyncio.gather(
-            client.paged_list(
+        if force:
+            self._badges.pop(key, None)
+            cached = None
+        reuse_reviews = (cached is not None and isinstance(updated_at, str)
+                         and cached.updated_at == updated_at)
+        same_head = cached is not None and cached.head_sha == sha
+        refresh_checks = (not same_head or (_ci_status(cached.checks) == "pending"
+                          and monotonic() >= cached.next_check_at))
+
+        async def read_reviews() -> list[dict]:
+            if reuse_reviews:
+                return cached.reviews
+            return await client.paged_list(
                 f"repos/{client.repository.full_name}/pulls/{number}/reviews?per_page=100",
                 max_pages=20,
-            ),
-            client.paged_items(
-                f"repos/{client.repository.full_name}/commits/{sha}/check-runs?per_page=100",
+            )
+
+        async def read_checks() -> list[dict]:
+            if not refresh_checks:
+                return cached.checks
+            return await client.paged_items(
+                f"repos/{client.repository.full_name}/commits/{sha}/check-runs?filter=all&per_page=100",
                 key="check_runs", max_pages=20,
-            ),
-        )
+            )
+
+        reviews, checks = await asyncio.gather(read_reviews(), read_checks())
+        ci_status = _ci_status(checks)
+        retry_seconds = self.interval
+        if refresh_checks:
+            if same_head:
+                retry_seconds = min(cached.check_retry_seconds * 2,
+                                    max(self.interval, MAX_CHECK_RETRY_SECONDS))
+            next_check_at = monotonic() + retry_seconds
+        else:
+            retry_seconds, next_check_at = cached.check_retry_seconds, cached.next_check_at
         # GitHub's review list can lag the successful approval POST. Keep its
         # confirmed exact-head decision in the cache as well as the snapshot.
-        badges = ("approved" if confirmed_approval else _review_decision(reviews, sha),
-                  _ci_status(checks))
-        if isinstance(updated_at, str):
-            self._badges[key] = (sha, updated_at, *badges)
-        return badges
+        confirmed_approval = confirmed_approval or (
+            reuse_reviews and same_head and cached.confirmed_approval
+        )
+        self._badges[key] = _PullRequestBadges(
+            sha, updated_at if isinstance(updated_at, str) else None, reviews, checks,
+            confirmed_approval, next_check_at, retry_seconds,
+        )
+        return "approved" if confirmed_approval else _review_decision(reviews, sha), ci_status
 
     async def refresh(self) -> None:
         with github_component("dashboard_pr_snapshot", background=True):
