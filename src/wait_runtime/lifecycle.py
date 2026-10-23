@@ -5,7 +5,7 @@ import json
 import asyncio
 import logging
 
-from sqlalchemy import Float, cast, func, insert, select, update
+from sqlalchemy import Float, Integer, and_, cast, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.wait_queries import register_wait
@@ -14,7 +14,9 @@ from src.waits.conditions import WaitError
 from src.waits.decision import ceiling_anchor, decide_sleep, measured_inputs, project_policy
 from src.waits.graph import lock_graph
 from src.database.queries.continuation_queries import measurement_medians
-from src.wait_runtime.hibernate import HibernationTransaction, begin_suspension
+from src.wait_runtime.hibernate import (
+    STOP_PROOF_MAX_ATTEMPTS, HibernationTransaction, begin_suspension,
+)
 from src.wait_runtime.resume import ResumeTransaction
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
@@ -31,6 +33,7 @@ class WaitLifecycle:
         self.resume = ResumeTransaction(service, clock=clock)
         self.medians = {}
         self._resume_tasks = {}
+        self._hibernate_tasks = {}
 
     async def register(self, args, *, principal, scope, handler):
         watermark = await self.db.wait_source_watermark()
@@ -216,15 +219,26 @@ class WaitLifecycle:
         self.medians.clear()
         await self.resume_pending()
         async with self.db._engine.connect() as conn:
-            ids = list((await conn.execute(select(continuations.c.wait_id).join(
+            suspensions = list((await conn.execute(select(
+                continuations.c.wait_id, continuations.c.stopped_at,
+            ).join(
                 wait_records, wait_records.c.id == continuations.c.wait_id,
             ).where(
                 # Sessionless legacy adoption has no writer to stop or checkout
                 # to release. Its server receipt is checked by resume admission.
                 wait_records.c.session_id.is_not(None),
-                continuations.c.resume_state.in_(("sleeping", "queued")),
+                or_(continuations.c.resume_state.in_(("sleeping", "queued")), and_(
+                    continuations.c.resume_state == "held",
+                    continuations.c.hold_reason == "stop_uncertain",
+                    continuations.c.stopped_at.is_(None),
+                    func.coalesce(cast(continuations.c.facts["hibernation"][
+                        "stop_proof_attempts"].astext, Integer), 0) < STOP_PROOF_MAX_ATTEMPTS,
+                    func.coalesce(cast(continuations.c.facts["hibernation"][
+                        "stop_retry_at"].astext, Float), 0) <= self.clock(),
+                )),
                 continuations.c.facts["workspace_released_at"].astext.is_(None),
-            ))).scalars())
+            ))).all())
+            ids = [wait_id for wait_id, stopped_at in suspensions if stopped_at is not None]
             # First-turn accounting can arrive after ACK. Retry only recent
             # continuations missing measured usage, at most once per 30 seconds.
             ids.extend((await conn.execute(select(continuations.c.wait_id).join(
@@ -237,8 +251,27 @@ class WaitLifecycle:
                 func.coalesce(cast(continuations.c.facts['usage_checked_at'].astext, Float), 0)
                 <= self.clock() - 30,
             ))).scalars())
+        # Finish parked accounting in this tick before source draining. Only
+        # writer stop/save needs background execution and its separate budget.
         for wait_id in ids:
             await self.service.command("wait_sleep_decide", {"wait_id": wait_id})
+        for wait_id, stopped_at in suspensions:
+            if stopped_at is not None:
+                continue
+            pending = self._hibernate_tasks.get(wait_id)
+            if pending is None or pending.done():
+                self._hibernate_tasks[wait_id] = asyncio.create_task(self._dispatch_hibernate(wait_id))
+
+    async def _dispatch_hibernate(self, wait_id):
+        """A slow stop/save cannot hide another writer behind an overdue timer."""
+        try:
+            result = await self.service.command("wait_sleep_decide", {"wait_id": wait_id})
+            if not result.get("success"):
+                logger.warning("Wait hibernation refused for %s: %s", wait_id, result)
+        except Exception:
+            logger.exception("Wait hibernation failed for %s", wait_id)
+        finally:
+            self._hibernate_tasks.pop(wait_id, None)
 
     async def resume_pending(self):
         try:
@@ -272,7 +305,7 @@ class WaitLifecycle:
             self._resume_tasks.pop(key, None)
 
     async def stop(self):
-        pending = list(self._resume_tasks.values())
+        pending = [*self._resume_tasks.values(), *self._hibernate_tasks.values()]
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)

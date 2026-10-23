@@ -17,7 +17,7 @@ from sqlalchemy import func, insert, select, update
 from src.claim_file import remove_claim_file_if_matches
 from src.database.queries.continuation_queries import degrade_checkpoint
 from src.database.tables import continuations, sessions, tasks, wait_deadlines, wait_records
-from src.sessions.provider import SessionHandle
+from src.sessions.provider import SessionError, SessionHandle
 from src.waits.checkpoint import collect_checkpoint_facts
 from src.waits.conditions import WaitError
 from src.waits.graph import lock_graph
@@ -28,6 +28,29 @@ HOLD_REASONS = frozenset({
     "stop_uncertain", "push_failed", "detach_uncertain", "resume_launch_failed",
     "resume_workspace_failed", "resume_stop_uncertain", "resume_detach_uncertain", "paused",
 })
+
+# Read-only recovery is bounded separately from the original stop transition.
+STOP_PROOF_TIMEOUT_SECONDS = 5
+STOP_PROOF_MAX_ATTEMPTS = 5
+
+
+def stop_retry_due(state, now):
+    return (state.get("stop_proof_attempts", 0) < STOP_PROOF_MAX_ATTEMPTS
+            and now >= state.get("stop_retry_at", 0))
+
+
+async def suspension_writer(conn, task, wait, intent):
+    delivery = wait["decision_inputs"].get("delivery", {})
+    session = (await conn.execute(select(sessions).where(
+        sessions.c.id == wait["session_id"],
+        sessions.c.instance_token == delivery.get("instance_token"),
+        sessions.c.task_id == task["id"],
+        sessions.c.agent_id == task["assigned_agent_id"],
+    ))).mappings().first()
+    if (not session or task["claim_epoch"] != wait["claim_epoch"]
+            or task["branch_name"] != intent["branch"]):
+        raise WaitError("continuation.stale_generation", "writer identity changed")
+    return dict(session)
 
 
 async def validate_hold_binding(conn, args):
@@ -128,6 +151,23 @@ class HibernationTransaction:
         self.db = self.orch.db
         self.clock = clock
 
+    async def prove_stopped(self, provider, handle, record):
+        """Never signal; unknown or a same-named successor retains the checkout."""
+        if (record is None or record.name != handle.name
+                or record.instance_token != handle.instance_token):
+            return False
+        try:
+            async with asyncio.timeout(STOP_PROOF_TIMEOUT_SECONDS):
+                return (await provider.confirm_instance_stopped(handle)
+                        # Instance death alone permits a same-named successor.
+                        # Such a writer must never authorize checkout release.
+                        and await provider.confirm_stopped(handle)
+                        and not await provider.process_alive(
+                            handle, self.orch.session_reconciler._process_names(record),
+                        ))
+        except (TimeoutError, OSError, RuntimeError, SessionError):
+            return False
+
     async def hold(self, conn, task, wait, intent, reason, handler, *, detail=""):
         """One incident per generation/reason; no claim/workspace release."""
         identity = f"continuation:{intent['id']}:{intent['suspension_generation']}:{reason}"
@@ -188,18 +228,13 @@ class HibernationTransaction:
                 return {"success": True, "held": True, "hold_reason": "paused"}
             if task["status"] not in {"WAITING", "IN_PROGRESS"}:
                 raise WaitError("continuation.stale_generation", "task is no longer suspendable")
-            if intent["resume_state"] == "held":
+            recovering_stop = (intent["resume_state"] == "held"
+                               and intent["hold_reason"] == "stop_uncertain")
+            state = dict(intent["facts"].get("hibernation", {}))
+            if intent["resume_state"] == "held" and (
+                    not recovering_stop or not stop_retry_due(state, now)):
                 return {"success": True, "held": True, "hold_reason": intent["hold_reason"]}
-            delivery = wait["decision_inputs"].get("delivery", {})
-            session = (await conn.execute(select(sessions).where(
-                sessions.c.id == wait["session_id"],
-                sessions.c.instance_token == delivery.get("instance_token"),
-                sessions.c.task_id == task["id"],
-                sessions.c.agent_id == task["assigned_agent_id"],
-            ))).mappings().first()
-            if (not session or task["claim_epoch"] != wait["claim_epoch"]
-                    or task["branch_name"] != intent["branch"]):
-                raise WaitError("continuation.stale_generation", "writer identity changed")
+            session = await suspension_writer(conn, task, wait, intent)
             if intent["summary"] is None and not intent["summary_degraded"]:
                 if now < intent["created_at"] + policy.transition_budget_seconds:
                     return {"success": True, "next_step": "checkpoint_then_end_turn"}
@@ -221,33 +256,67 @@ class HibernationTransaction:
             if now < state.get('push_retry_at', 0):
                 return {'success': True, 'push_pending': True}
             state.setdefault("stop_started_at", now)
+            if recovering_stop:
+                # Persist before observation: a crash cannot reset the retry budget.
+                attempts = state.get("stop_proof_attempts", 0) + 1
+                state.update(stop_proof_attempts=attempts,
+                             stop_retry_at=now + min(60, 5 * 2 ** (attempts - 1)))
             facts["hibernation"] = state
             await conn.execute(update(continuations).where(
                 continuations.c.id == intent["id"],
             ).values(facts=facts, version=continuations.c.version + 1))
-            session = dict(session)
         provider = self.orch.session_providers.create(session["provider"], self.orch.config)
         handle = SessionHandle(session["name"], session["provider"], session["instance_token"])
+        stopped = False
         try:
-            remaining = policy.transition_budget_seconds - max(0, now - state["stop_started_at"])
-            async with asyncio.timeout(max(0, remaining)):
-                await provider.stop(handle)
-                record = await self.db.get_session(session["id"])
-                reconciler = self.orch.session_reconciler
-                while True:
-                    stopped = (await provider.confirm_instance_stopped(handle)
-                               and not await provider.process_alive(
-                                   handle, reconciler._process_names(record),
-                               ))
-                    if stopped:
-                        break
-                    await asyncio.sleep(2)
-        except (TimeoutError, OSError, RuntimeError):
+            remaining = policy.transition_budget_seconds - max(
+                0, self.clock() - state["stop_started_at"],
+            )
+            # A null token is not a safe signal target (tmux treats it as a
+            # wildcard). Expiry and hold recovery only observe; never re-stop.
+            if remaining > 0 and handle.instance_token and not recovering_stop:
+                async with asyncio.timeout(remaining):
+                    await provider.stop(handle)
+                    record = await self.db.get_session(session["id"])
+                    while not (stopped := await self.prove_stopped(provider, handle, record)):
+                        await asyncio.sleep(2)
+        except (TimeoutError, OSError, RuntimeError, SessionError):
             stopped = False
+        if not stopped:
+            # An expired transition must still admit fresh, cheap death proof.
+            record = await self.db.get_session(session["id"])
+            stopped = await self.prove_stopped(provider, handle, record)
         if not stopped:
             async with self.db._engine.begin() as conn:
                 task, wait, intent = await locked_suspension(conn, wait_id)
+                if recovering_stop:
+                    return {"success": True, "held": True, "hold_reason": "stop_uncertain"}
+                state = dict(intent["facts"].get("hibernation", {}))
+                state.update(stop_proof_attempts=1, stop_retry_at=self.clock() + 5)
+                intent["facts"] = {**intent["facts"], "hibernation": state}
                 return await self.hold(conn, task, wait, intent, "stop_uncertain", handler)
+        async with self.db._engine.begin() as conn:
+            task, wait, intent = await locked_suspension(conn, wait_id)
+            await suspension_writer(conn, task, wait, intent)
+            if task["status"] == "PAUSED":
+                return {"success": True, "held": True, "hold_reason": "paused"}
+            if recovering_stop:
+                if intent["resume_state"] != "held" or intent["hold_reason"] != "stop_uncertain":
+                    raise WaitError("continuation.stale_generation", "stop hold changed")
+                incident_id = intent["facts"].get("hold_escalation_id")
+                if incident_id:
+                    resolved = await self.service.decisions.resolve_escalation(
+                        conn, {"escalation_id": incident_id, "wait_id": wait_id,
+                               "continuation_id": intent["id"]},
+                        {"note": "Fresh provider proof confirmed the suspended writer is gone"},
+                        outcome="satisfied", now=self.clock(),
+                    )
+                    if not resolved["success"]:
+                        raise WaitError("wait.unavailable", "stop recovery incident changed")
+                await conn.execute(update(continuations).where(
+                    continuations.c.id == intent["id"],
+                ).values(resume_state="sleeping", hold_reason=None,
+                         version=intent["version"] + 1))
         from src.git.manager import commit_identity
         from src.orchestrator.stranded_work import save_wip_to_task_branch
 
