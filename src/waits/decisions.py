@@ -499,6 +499,12 @@ class WaitDecisions:
             incident["id"], conn=conn, dedup_key=f"{incident['id']}:root:0", kind="root",
             payload={"replacement": False}, available_at=now, priority=0, now=now,
         )
+        # An older reconciler may have queued this root before authorization.
+        # Only a receipt proving internal suppression can be retried here; keep
+        # ambiguous or externally bound attempts intact for reconciliation.
+        await self.service.orch.db.retry_suppressed_escalation_root(
+            incident["id"], now=now, conn=conn,
+        )
         if not continuation:
             # This durable suspension request is consumed by the checkpoint /
             # hibernation owner. It grants no early release of a live writer.
