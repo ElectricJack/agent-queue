@@ -19535,13 +19535,14 @@
       "msg-330ea2478c724381acbb5512fc99e4b5",
       "msg-e2dd5a423516458eb564e745a12ab30e",
       "msg-3f6311071a6647429059f3a990750597",
-      "msg-99539879"
+      "msg-99539879",
+      "msg-2a11607018264013b97698493f53906e"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "ca7a4377c532d723b0ab9c3bb5f833707a317cf5",
+    "measured_source_revision": "0ec24f68578dbf9834fa96c0aa1133c15b6270ed",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 161113,
-    "delta": 5614,
+    "measured_owned_total": 161218,
+    "delta": 5719,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19561,7 +19562,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 2155,
+    "batch_measured_delta": 2260,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19570,7 +19571,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85517,
+    "measured_engine_lines": 85518,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22",
     "amendments": [
@@ -19697,6 +19698,27 @@
         "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1886",
         "charged_definition": "src/doctor/stall_checks.py::_check_sweep",
         "reason": "Stall-sweep alert for non-ready playbook activations. Global supervisor approved the exact +2 owned lines under size-cap-delegation-2026-10-23; project supervisor directed carrying that unchanged delta onto current dev after PR1885. Engine lines and table count remain unchanged."
+      },
+      {
+        "task_id": "fair-meadow-87",
+        "decision_message_id": "msg-2a11607018264013b97698493f53906e",
+        "confirmation_message_id": "msg-1d04c8bcd4cd4b3a8274bba7518e47d9",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "operator_task": "sharp-cascade-53",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1898",
+        "previous_source_revision": "48adaddad079a7adc2930e470590621c1575e674",
+        "previous_owned_total": 161113,
+        "previous_engine_lines": 85517,
+        "previous_table_count": 45,
+        "authorized_owned_delta": 105,
+        "authorized_engine_delta": 1,
+        "authorized_table_delta": 0,
+        "measured_source_revision": "0ec24f68578dbf9834fa96c0aa1133c15b6270ed",
+        "measured_owned_total": 161218,
+        "measured_engine_lines": 85518,
+        "measured_table_count": 45,
+        "reason": "Supervisor-owned wait delivery and independent CI observation recovery. Exact project-supervisor amendment under size-cap-delegation-2026-10-23; preserve existing ownership classifications and historical grants."
       }
     ],
     "supplemental_grants": [

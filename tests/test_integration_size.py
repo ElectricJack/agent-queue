@@ -385,6 +385,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "stark-beacon-94",
         "sharp-rapids-10",
         "fair-dune-41",
+        "fair-meadow-87",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -415,7 +416,6 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == 161_111
     assert snapshot["measured_owned_total"] == 161_111
     assert snapshot["previous_engine_lines"] == snapshot["measured_engine_lines"] == 85_517
-    assert snapshot["measured_engine_lines"] == exception["measured_engine_lines"]
     assert snapshot["measured_table_count"] == 45
     assert snapshot["measured_source_revision"] == "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6"
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
@@ -455,7 +455,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     ) == snapshot["previous_owned_total"]
     assert composition["base_engine_lines"] + sum(
         delta["engine"] for delta in composition["approved_deltas"].values()
-    ) == exception["measured_engine_lines"]
+    ) == snapshot["measured_engine_lines"]
     repair = amendments["stark-beacon-94"]
     assert repair["decision_id"] == "size-cap-delegation-2026-10-23"
     assert repair["operator_decision"] == "6679052c"
@@ -497,17 +497,48 @@ def test_activation_health_grant_carries_only_two_owned_lines(report, manifest):
     assert grant["authorized_owned_delta"] == 2
     assert grant["authorized_engine_delta"] == grant["authorized_table_delta"] == 0
     assert grant["previous_owned_total"] == 161_111
-    assert grant["previous_owned_total"] + grant["authorized_owned_delta"] == report["total"]
-    assert grant["measured_owned_total"] == exception["measured_owned_total"] == 161_113
+    assert grant["previous_owned_total"] + grant["authorized_owned_delta"] == 161_113
+    assert grant["measured_owned_total"] == 161_113
     assert grant["previous_engine_lines"] == grant["measured_engine_lines"] == 85_517
-    assert grant["measured_engine_lines"] == report["groups"]["engine"]
-    assert grant["previous_table_count"] == grant["measured_table_count"] == len(report["tables"])
-    assert grant["measured_source_revision"] == exception["measured_source_revision"]
+    assert grant["previous_table_count"] == grant["measured_table_count"] == 45
+    assert grant["measured_table_count"] == len(report["tables"])
+    assert grant["measured_source_revision"] == "ca7a4377c532d723b0ab9c3bb5f833707a317cf5"
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["playbook_activation_health_measurement"] == grant
+
+
+def test_supervisor_wait_recovery_grant_is_exact_and_preserves_prior_grants(report, manifest):
+    exception = manifest["transition_exception"]
+    amendments = {item["task_id"]: item for item in exception["amendments"]}
+    grant = amendments["fair-meadow-87"]
+    assert grant["decision_message_id"] == "msg-2a11607018264013b97698493f53906e"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["confirmation_message_id"] == "msg-1d04c8bcd4cd4b3a8274bba7518e47d9"
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["operator_decision"] == "6679052c"
+    assert grant["operator_task"] == "sharp-cascade-53"
+    assert grant["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1898"
+    assert grant["previous_source_revision"] == "48adaddad079a7adc2930e470590621c1575e674"
+    assert grant["previous_owned_total"] == amendments["fair-dune-41"]["measured_owned_total"]
+    assert grant["previous_owned_total"] == 161_113
+    assert grant["authorized_owned_delta"] == 105
+    assert grant["previous_owned_total"] + grant["authorized_owned_delta"] == report["total"]
+    assert grant["measured_owned_total"] == exception["measured_owned_total"] == 161_218
+    assert grant["previous_engine_lines"] == amendments["fair-dune-41"]["measured_engine_lines"]
+    assert grant["previous_engine_lines"] == 85_517
+    assert grant["authorized_engine_delta"] == 1
+    assert grant["previous_engine_lines"] + grant["authorized_engine_delta"] == 85_518
+    assert grant["measured_engine_lines"] == exception["measured_engine_lines"] == 85_518
+    assert grant["measured_engine_lines"] == report["groups"]["engine"]
+    assert grant["authorized_table_delta"] == 0
+    assert grant["previous_table_count"] == grant["measured_table_count"] == len(report["tables"])
+    assert grant["measured_source_revision"] == "0ec24f68578dbf9834fa96c0aa1133c15b6270ed"
+    assert grant["measured_source_revision"] == exception["measured_source_revision"]
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["supervisor_wait_recovery_measurement"] == grant
     assert ownership.budget_errors(report, manifest) == []
     assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
-        "owned total: 161,114 exceeds 161,113 in transition",
+        "owned total: 161,219 exceeds 161,218 in transition",
     ]
 
 
