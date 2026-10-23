@@ -85,7 +85,7 @@ const tiles = vi.hoisted(() => ({
    * whichever rendered last. */
   paramsByProject: {} as Record<string, unknown>,
 }));
-const extents = vi.hoisted(() => ({ pending: false }));
+const extents = vi.hoisted(() => ({ pending: false, loading: false }));
 vi.mock("../useLayoutTiles", () => ({
   useLayoutTiles: (projectId: string, params: unknown, rect: unknown) => {
     tiles.params = params;
@@ -101,7 +101,7 @@ const currentRunningTarget = vi.hoisted(() => ({ value: null as unknown }));
  * simulate the `all` variant's extent already sitting in the query cache. */
 const hiddenFinishedCount = vi.hoisted(() => ({ value: null as number | null }));
 vi.mock("../../../../api/graphLayout", () => ({
-  useLayoutExtents: (ids: string[]) => ids.map(() => extents.pending
+  useLayoutExtents: (ids: string[]) => ids.map(() => extents.loading ? undefined : extents.pending
     ? { pending: true }
     : { layout_version: 1, extent_w: 10, extent_h: 10, node_count: 3 }),
   useLayoutNode: () => layoutNode,
@@ -228,6 +228,7 @@ beforeEach(() => {
   tiles.loaded = true;
   tiles.refetchVisible = vi.fn();
   extents.pending = false;
+  extents.loading = false;
   hiddenFinishedCount.value = null;
   base.setFocus.mockClear();
   base.setShowCompleted.mockClear();
@@ -728,6 +729,31 @@ describe("LayoutCanvas", () => {
     extents.pending = false;
     view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     expect(tiles.refetchVisible).toHaveBeenCalled();
+  });
+
+  it("starts tiles before extent arrives and keeps that request when extent resolves", () => {
+    const original = globalThis.ResizeObserver;
+    let notify: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {};
+    class Stub {
+      constructor(cb: typeof notify) { notify = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+    try {
+      extents.loading = true;
+      const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
+      expect(tiles.paramsByProject).toHaveProperty("p1");
+      expect(tiles.rects.at(-1)).not.toBeNull();
+      tiles.refetchVisible.mockClear();
+      extents.loading = false;
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(tiles.refetchVisible).not.toHaveBeenCalled();
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
   });
 
   it("hands the clicked card's payload to onTaskClick so run tasks keep their routing", () => {
