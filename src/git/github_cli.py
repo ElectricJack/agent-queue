@@ -17,7 +17,10 @@ from pathlib import Path
 from time import monotonic, time
 from typing import Callable, Protocol
 
+from src.git.github_activity import GitHubActivity, caller_component, endpoint_template
+from src.git.github_cache import ConditionalResponseCache, conditional_key, frame_response
 from src.git.github import (
+    GitHubApiResponse,
     MAX_HEADER_BYTES,
     MAX_RESPONSE_BYTES,
     _command_error,
@@ -30,6 +33,7 @@ from src.git.github_contracts import (
     GitHubCredentialMode,
     GitHubRepositoryBinding,
 )
+from src.logging_config import CorrelationContext
 
 MAX_STDIN_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_BYTES = 256 * 1024
@@ -205,6 +209,8 @@ class GhRunner:
         self._clock = clock
         self._retry_at = 0.0
         self._rate_limit_status: int | None = None
+        self._activity = GitHubActivity(clock)
+        self._response_cache = ConditionalResponseCache()
         # One-second buckets bound memory even when request volume spikes.
         self._calls: dict[str, deque[tuple[int, int]]] = {}
         self._resolved_executable: str | None = None
@@ -320,6 +326,19 @@ class GhRunner:
         if any(secret in argument for secret in argument_secrets for argument in command):
             raise ValueError("GitHub credentials must not appear in process arguments")
 
+        cache_token = token
+        if identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
+            cache_token = self._base_env.get("GH_TOKEN") or self._base_env.get("GITHUB_TOKEN")
+        cache_key = conditional_key(command, identity, repository, cache_token)
+        cached = self._response_cache.get(cache_key, output_limit=stdout_limit)
+        if cached is not None:
+            validator = cached.headers.get("etag")
+            condition = (
+                f"If-None-Match: {validator}" if validator
+                else f"If-Modified-Since: {cached.headers['last-modified']}"
+            )
+            command = (*command, "--header", condition)
+
         app_config: tempfile.TemporaryDirectory[str] | None = None
         if identity.mode is GitHubCredentialMode.APP:
             app_config = tempfile.TemporaryDirectory(prefix=".config-", dir=self.cwd)
@@ -380,12 +399,31 @@ class GhRunner:
 
         safe_stderr = _scrub_diagnostic(stderr, secrets=diagnostic_secrets)
         error = _cli_error(process.returncode, stderr) if process.returncode else None
+        response = None
+        restored = False
         if command[0] == "api" and stdout.startswith(b"HTTP/"):
             response = _decode_included_response(
                 stdout,
                 max_header_bytes=MAX_HEADER_BYTES,
                 max_body_bytes=stdout_limit,
             )
+            self._activity.observe(response.headers, status=response.status)
+            if response.status == 304 and cached is not None:
+                # Retain Link and representation headers omitted by a 304, but
+                # expose current quota/validator headers from the wire response.
+                response = GitHubApiResponse(
+                    cached.status, {**cached.headers, **response.headers}, cached.body,
+                )
+                stdout = frame_response(response)
+                if len(stdout) > stdout_limit:
+                    raise GitHubAppError("transient", "GitHub response exceeded size limit")
+                error = None
+                restored = True
+            if cache_key is not None:
+                if response.status == 200 and error is None:
+                    self._response_cache.store(cache_key, response)
+                elif response.status != 304:
+                    self._response_cache.discard(cache_key)
             if response.status >= 400:
                 http_error = _http_error(
                     response.status, response.headers, self._clock(), response.body
@@ -400,18 +438,34 @@ class GhRunner:
                     error = http_error
             if strip_headers:
                 stdout = response.body
-        result = GhResult(process.returncode or 0, stdout, safe_stderr)
+        # gh versions may exit nonzero for a valid HTTP 304. The restored
+        # response is successful only when backed by this request's cache entry.
+        result = GhResult(0 if restored else process.returncode or 0,
+                          stdout, safe_stderr)
         if error is not None and error.category == "rate_limited":
+            new_episode = self._clock() >= self._retry_at
             self._defer(error)
-        if result.returncode != 0 and (
-            _command_error(result.returncode, safe_stderr).category == "rate_limited"
-        ):
-            # Diagnose real secondary limits vs mislabelled refusals; secrets scrubbed.
-            logger.warning(
-                "gh rate_limited; repository=%s stderr=%r",
-                repository.full_name if repository is not None else "github.com (account)",
-                safe_stderr[:2000],
-            )
+            if new_episode:
+                headers = response.headers if response is not None else {}
+                detail = {
+                    "endpoint": endpoint_template(self._call_key(args)),
+                    "component": caller_component(),
+                    "status": error.http_status,
+                    "x-ratelimit-remaining": headers.get("x-ratelimit-remaining"),
+                    "x-ratelimit-reset": headers.get("x-ratelimit-reset"),
+                    "retry-after": headers.get("retry-after"),
+                    "limit_kind": "primary" if headers.get("x-ratelimit-remaining") == "0"
+                                  else "secondary",
+                    "retry_at": self._retry_at,
+                }
+                with CorrelationContext(github_rate_limit=detail):
+                    logger.warning(
+                        "GitHub rate-limit backoff started (rate_limited, HTTP %s); "
+                        "credential_mode=%s repository=%s: %s",
+                        error.http_status, self.credential_identity.mode.value,
+                        repository.full_name if repository is not None else "github.com (account)",
+                        detail, extra={"github_rate_limit": detail},
+                    )
         if check and result.returncode != 0:
             assert error is not None
             self.warn_failure(error, repository=repository)
@@ -425,6 +479,7 @@ class GhRunner:
                 "rate_limited", "GitHub client is backing off after a rate limit",
                 retry_at=self._retry_at, http_status=self._rate_limit_status,
             )
+        self._activity.check_background()
 
     def _defer(self, error: GitHubAppError) -> None:
         retry_at = error.retry_at
@@ -436,6 +491,19 @@ class GhRunner:
 
     def _record_call(self, args: Sequence[str]) -> None:
         self._prune_calls()
+        self._activity.record(args[0] == "api")
+        key = self._call_key(args)
+        if key not in self._calls and len(self._calls) >= MAX_CALL_ENDPOINTS - 2:
+            key = "other endpoints" if args[0] == "api" else "gh other commands"
+        buckets = self._calls.setdefault(key, deque(maxlen=CALL_WINDOW_SECONDS + 1))
+        second = int(self._clock())
+        if buckets and buckets[-1][0] == second:
+            buckets[-1] = (second, buckets[-1][1] + 1)
+        else:
+            buckets.append((second, 1))
+
+    @staticmethod
+    def _call_key(args: Sequence[str]) -> str:
         if args[0] == "api":
             # Paths have already been scoped; omit query values from metrics.
             endpoint = "account"
@@ -461,14 +529,7 @@ class GhRunner:
             # A gh subcommand can issue several HTTP requests. Count its
             # invocations separately, without inventing underlying API counts.
             key = "gh " + " ".join(args[:2])
-        if key not in self._calls and len(self._calls) >= MAX_CALL_ENDPOINTS - 2:
-            key = "other endpoints" if args[0] == "api" else "gh other commands"
-        buckets = self._calls.setdefault(key, deque(maxlen=CALL_WINDOW_SECONDS + 1))
-        second = int(self._clock())
-        if buckets and buckets[-1][0] == second:
-            buckets[-1] = (second, buckets[-1][1] + 1)
-        else:
-            buckets.append((second, 1))
+        return key
 
     def _prune_calls(self) -> None:
         cutoff = self._clock() - CALL_WINDOW_SECONDS
@@ -483,6 +544,7 @@ class GhRunner:
         self._prune_calls()
         counts = {key: sum(count for _, count in buckets) for key, buckets in self._calls.items()}
         return {
+            **self._activity.snapshot(),
             "scope": "daemon",
             "window_seconds": CALL_WINDOW_SECONDS,
             "retry_at": self._retry_at if self._clock() < self._retry_at else None,
@@ -499,6 +561,8 @@ class GhRunner:
         repository: GitHubRepositoryBinding | None = None,
     ) -> None:
         """Warn on a classified failure, sharing a cooldown across callers."""
+        if error.category == "rate_limited" and self._clock() < self._retry_at:
+            return  # The response that started this episode already warned.
         mode = self.credential_identity.mode.value
         target = repository.full_name if repository is not None else "github.com (account)"
         key = (mode, target, error.category)
