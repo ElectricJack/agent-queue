@@ -19543,7 +19543,8 @@
       "msg-5c55b72faec1497391205876fc5dfeb9",
       "msg-96fed6b8e86148f0bbf55ded244c9a0f",
       "msg-76ff7843e72d451b9017a0b4db30c970",
-      "msg-c47a1a9a635a465b8a0cb286f93cb0b0"
+      "msg-c47a1a9a635a465b8a0cb286f93cb0b0",
+      "msg-c80bde55a6d1442791a2ba4f9597d7a0"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
     "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
@@ -19843,6 +19844,21 @@
           "src/cli/client.py::_COMMAND_TIMEOUTS"
         ],
         "reason": "Authenticated current remote PR base history and repair/root-redrive CLI timeout budgets. Project supervisor approved the exact +12 owned (+8 engine, +4 shared) footprint for PR1902 under size-cap-delegation-2026-10-23; preserve historical frozen-batch measurements and classifications."
+      },
+      {
+        "task_id": "bright-impact-14",
+        "decision_message_id": "msg-c80bde55a6d1442791a2ba4f9597d7a0",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "pr_url": "https://github.com/ElectricJack/agent-queue/pull/1861",
+        "previous_owned_total": 160837,
+        "previous_engine_lines": 85316,
+        "authorized_owned_delta": 26,
+        "authorized_engine_delta": 0,
+        "measured_owned_total": 160863,
+        "measured_engine_lines": 85316,
+        "measured_table_count": 45,
+        "reason": "PR #1861 latency instrumentation and bounded background graph waits; project supervisor approved the exact footprint under size-cap-delegation-2026-10-23. Retain features and count equality."
       }
     ],
     "supplemental_grants": [
@@ -20090,6 +20106,23 @@
       "measured_table_count": 45,
       "reason": "Compose the unchanged approved +19 restart hold repair grant on current dev for PR #1900. Preserve every historical grant and frozen batch measurement.",
       "previous_recorded_owned_cap": 161213
+    },
+    "daemon_latency_merge_measurement": {
+      "task_id": "bright-impact-14",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "operator_decision": "6679052c",
+      "operator_task": "sharp-cascade-53",
+      "pr_url": "https://github.com/ElectricJack/agent-queue/pull/1861",
+      "merged_dev_revision": "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d",
+      "measured_source_revision": "ebc184bd0922e51438cb5a048324c0631df71a08",
+      "previous_owned_total": 161213,
+      "previous_engine_lines": 85544,
+      "authorized_owned_delta": 26,
+      "authorized_engine_delta": 0,
+      "measured_owned_total": 161239,
+      "measured_engine_lines": 85544,
+      "measured_table_count": 45,
+      "reason": "PR #1861 merge refresh: retain all dev grants and the historical latency grant; exact merged footprint pre-approved in supervisor reopen feedback under size-cap-delegation-2026-10-23. No additional headroom."
     }
   },
   "storage_dispositions": {
