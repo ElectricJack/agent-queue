@@ -18700,14 +18700,17 @@
         "task-hierarchy"
       ],
       "default_arm": true,
-      "digest": "sha256:37164bf622e4b0599e08b53e8d7c0038764cf64b9cc3f43bdddb7ac1719780d4",
+      "digest": "sha256:67620bee09d4fa13a5d98fe597a4fc841ac0e07eb3cdebd4c2e8efa285d66eeb",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.admission",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.git_truth",
         "src.integration.provenance",
         "src.mcp_registration",
         "src.models"
