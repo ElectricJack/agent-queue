@@ -35,12 +35,13 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
                           'msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c',
                           'msg-a337e2c905ce4f5c8a236344a4e25211',
-                          'msg-330ea2478c724381acbb5512fc99e4b5'],
+                          'msg-330ea2478c724381acbb5512fc99e4b5',
+                          'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': '438aa36cc93945305ea291622009f6b34d4ee733',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161053,
- 'delta': 5554,
+ 'measured_owned_total': 161066,
+ 'delta': 5567,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -54,14 +55,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2095,
+ 'batch_measured_delta': 2108,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
- 'measured_engine_lines': 85468,
+ 'measured_engine_lines': 85481,
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -100,9 +101,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'authorized_owned_delta': 1,
                  'authorized_shared_delta': 1,
                  'authorized_engine_delta': 0,
-                 'reason': 'Accept repository mappings in the shared GitHub binding resolver '
-                           'for verified CI waits; supervisor approved the exact one-line '
-                           'shared footprint.'},
+                 'reason': 'Accept repository mappings in the shared GitHub binding resolver for '
+                           'verified CI waits; supervisor approved the exact one-line shared '
+                           'footprint.'},
                 {'task_id': 'prime-impact-40',
                  'decision_message_id': 'msg-a337e2c905ce4f5c8a236344a4e25211',
                  'referenced_decision': 'size-cap-delegation-2026-10-23',
@@ -122,8 +123,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'prior_owned_total_cap': 160820,
                           'authorized_delta': 5,
                           'measured_owned_total': 160825,
-                          'reason': 'Verify registered linked fixer worktrees before '
-                                    'permission bypass.'}],
+                          'reason': 'Verify registered linked fixer worktrees before permission '
+                                    'bypass.'}],
  'merge_measurement': {'task_id': 'fresh-apex-30',
                        'dev_source_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
                        'dev_owned_total': 160879,
@@ -152,25 +153,42 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                          'authorized_engine_delta': 65,
                          'reason': 'Plain merge of PR1877 preparation diagnostics from dev; '
                                    'combined totals remain unchanged and this task retains its '
-                                   'approved 65-line delta. Project grant requires '
-                                   're-recording against the combined total when dev '
-                                   'advances.'},
- 'batch_composition': {'batch_id': 'train-50e78cbb5d9d858fd62dd6971aa4b789',
-                       'starting_revision': 'a37f877271c716df04fe6cf97a8749032cf479e9',
+                                   'approved 65-line delta. Project grant requires re-recording '
+                                   'against the combined total when dev advances.'},
+ 'batch_composition': {'batch_id': 'train-c5b2c6336a66d1c101b305778daf8f1b',
+                       'starting_revision': 'dd95038cca3fef9aae70eb0092079fe24d52a062',
                        'base_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
                        'base_owned_total': 160879,
                        'base_engine_lines': 85316,
                        'approved_deltas': {'fresh-apex-30': {'owned': 5, 'engine': 5},
                                            'agile-beacon-80': {'owned': 65, 'engine': 65},
                                            'nimble-torrent-12': {'owned': 1, 'engine': 0},
-                                           'prime-impact-40': {'owned': 103, 'engine': 82}},
-                       'reason': 'Compose the existing exact grants on their common measured '
-                                 'dev tree; preserve each historical measurement below.',
+                                           'prime-impact-40': {'owned': 103, 'engine': 82},
+                                           'fleet-dune-15': {'owned': 13, 'engine': 13}},
+                       'reason': 'Compose the existing exact grants on their common measured dev '
+                                 'tree; preserve each historical measurement below.',
                        'source_revision': '438aa36cc93945305ea291622009f6b34d4ee733',
                        'member_sources': {'agile-beacon-80': '6ba25e2472d4a8c6bb145d6f9bc2e067c8ebad61',
                                           'grand-quest-20': 'd60c599767a340d3e3fd6dba2eff8451d349d7e7',
                                           'nimble-torrent-12': '9f2dd1988046baa0e40681c4457f4729b55e80c6',
-                                          'prime-impact-40': '0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8'}}}
+                                          'prime-impact-40': '0b090fb969c46143f8cce7a55dd21f7d8bf1b1d8',
+                                          'fleet-dune-15': 'c7c89e31ba8b416c1cf8d8a79ec0f004fc2f88d5'}},
+ 'authenticated_push_measurement': {'task_id': 'fleet-dune-15',
+                                    'measured_source_revision': '715a3caf99c083f80a9426a303c9336cbb264921',
+                                    'approval_message_id': 'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12',
+                                    'request_message_id': 'msg-027dff134dbc4cd8b5966c36151384ba',
+                                    'decision_id': 'size-cap-delegation-2026-10-23',
+                                    'prior_owned_total_cap': 160884,
+                                    'prior_engine_lines': 85321,
+                                    'authorized_owned_delta': 13,
+                                    'authorized_engine_delta': 13,
+                                    'measured_owned_total': 160897,
+                                    'measured_engine_lines': 85334,
+                                    'measured_table_count': 45,
+                                    'headroom': 0,
+                                    'reason': 'Persist fenced push-failure diagnostics in fixer '
+                                              'blockers and train notices.',
+                                    'restore_task': 'azure-ridge-72'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

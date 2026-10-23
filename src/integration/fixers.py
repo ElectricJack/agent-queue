@@ -19,7 +19,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import integration_batch_members, integration_batches, messages, sessions, tasks
-from src.git.manager import is_valid_git_oid
+from src.git.manager import GitError, is_valid_git_oid, safe_git_detail
 from src.integration.batches import candidate_ref
 from src.integration.lock import BranchLock
 from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
@@ -452,7 +452,20 @@ class BatchFixerService:
         deferred = (batch["fixer_queue"] or {}).get("status") in {"deferred", "companion"}
         if state["status"] != "active" or (batch["intent"] != "open" and not deferred):
             return {"success": False, "outcome": "held"}
-        return await self.runtime.push(batch, session)
+        try:
+            return await self.runtime.push(batch, session)
+        except GitError as exc:
+            async with self.db.immediate() as conn:
+                current = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == batch["id"],
+                ).with_for_update())).mappings().one()
+                bound = dict(current["fixer_state"] or {})
+                if (bound.get("session_id") == session.id
+                        and bound.get("instance_token") == session.instance_token):
+                    await self._block(
+                        conn, current, bound, f"push failed: {safe_git_detail(str(exc), limit=4608)}",
+                    )
+            raise
 
 
 def split_members(members, attributed_members, dependencies):

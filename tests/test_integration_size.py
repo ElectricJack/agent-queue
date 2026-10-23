@@ -398,6 +398,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert composition["source_revision"] == exception["measured_source_revision"]
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
+        "fleet-dune-15",
     }
     assert composition["base_revision"] == merged["dev_source_revision"]
     assert composition["base_owned_total"] == merged["dev_owned_total"]
@@ -407,6 +408,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "agile-beacon-80": {"owned": 65, "engine": 65},
         "nimble-torrent-12": {"owned": 1, "engine": 0},
         "prime-impact-40": {"owned": 103, "engine": 82},
+        "fleet-dune-15": {"owned": 13, "engine": 13},
     }
     for task_id in ("agile-beacon-80", "nimble-torrent-12", "prime-impact-40"):
         grant_delta = composition["approved_deltas"][task_id]
@@ -419,6 +421,26 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert composition["base_engine_lines"] + sum(
         delta["engine"] for delta in composition["approved_deltas"].values()
     ) == exception["measured_engine_lines"]
+    push = exception["authenticated_push_measurement"]
+    assert push["task_id"] == "fleet-dune-15"
+    assert push["measured_source_revision"] == "715a3caf99c083f80a9426a303c9336cbb264921"
+    assert push["approval_message_id"] == "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12"
+    assert push["request_message_id"] == "msg-027dff134dbc4cd8b5966c36151384ba"
+    assert push["decision_id"] == merged["decision_id"]
+    assert push["authorized_owned_delta"] == push["authorized_engine_delta"] == 13
+    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == (
+        push["prior_owned_total_cap"]
+    )
+    assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]
+            == push["prior_engine_lines"])
+    assert push["prior_owned_total_cap"] + push["authorized_owned_delta"] == 160_897
+    assert (push["prior_engine_lines"] + push["authorized_engine_delta"]
+            == 85_334)
+    assert push["measured_owned_total"] == 160_897
+    assert push["measured_engine_lines"] == 85_334
+    assert push["measured_table_count"] == exception["measured_table_count"] == 45
+    assert push["headroom"] == 0
+    assert push["restore_task"] == exception["restore_task"] == "azure-ridge-72"
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [
