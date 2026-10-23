@@ -250,6 +250,17 @@ SELECT setval(format('%I.%I', schemaname, sequencename)::regclass, start_value, 
 FROM pg_sequences WHERE schemaname = 'public' AND last_value IS NOT NULL;
 """
 
+#: Tests can delete their own rows (including by cascade) before reset sees
+#: them. Such empty heaps still carry dead pages and relation statistics;
+#: probing them in the next fixture must not pay for the previous fixture's
+#: storage. Discover them independently of the live-row DELETE list.
+_TABLES_TO_VACUUM = """
+SELECT relname FROM pg_class
+WHERE relnamespace = 'public'::regnamespace AND relkind = 'r'
+  AND relname <> 'alembic_version'
+  AND (pg_relation_size(oid) > 0 OR reltuples <> -1)
+"""
+
 #: What a truncate left the planner: each emptied table and its indexes read as
 #: never vacuumed (``reltuples = -1``, no pages).  VACUUM records them as
 #: vacuumed-empty instead, which turns off the planner's minimum-size guess for
@@ -336,8 +347,9 @@ async def reset_all(dsn: str) -> None:
     ``DELETE`` only dirties pages of files that already exist, so the fsyncs a
     worker owes stay bounded by the tables its tests touch.  Replica mode
     skips the foreign-key triggers and the schema's delete guards (all
-    origin-enabled), so tables empty in any order.  VACUUM then returns the
-    emptied heaps to zero pages and ``pg_clear_relation_stats`` their planner
+    origin-enabled), so tables empty in any order. VACUUM returns every heap
+    with storage or statistics to zero pages, including tables a test already
+    emptied, and ``pg_clear_relation_stats`` resets their planner
     statistics to never-vacuumed. Column statistics are also cleared so the
     next test cannot inherit an earlier fixture's ANALYZE distributions.
     The perf suites' buffer counts and plan shapes need that isolation.
@@ -370,11 +382,12 @@ async def reset_all(dsn: str) -> None:
             except asyncpg.exceptions.InsufficientPrivilegeError:
                 _refuse_row_reset("the PostgreSQL test role may not set session_replication_role")
             else:
-                if tables:
+                vacuum_tables = [row["relname"] for row in await conn.fetch(_TABLES_TO_VACUUM)]
+                if vacuum_tables:
                     await conn.execute(
-                        "VACUUM (INDEX_CLEANUP ON) " + ", ".join(f'"{t}"' for t in tables)
+                        "VACUUM (INDEX_CLEANUP ON) " + ", ".join(f'"{t}"' for t in vacuum_tables)
                     )
-                    await conn.execute(_CLEAR_STATS, tables)
+                    await conn.execute(_CLEAR_STATS, vacuum_tables)
                 await conn.execute(_CLEAR_ATTRIBUTE_STATS)
                 return
         await conn.execute(_TRUNCATE_ALL)
