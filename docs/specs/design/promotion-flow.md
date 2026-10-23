@@ -72,6 +72,17 @@ and say "no delivery engine for this project" for undeliverable prerequisites,
 instead of describing their delivery as ordinary pending work. Git proof remains
 the authority for dependency admission.
 
+Branch reconciliation also repairs missing origins for detached READY root tasks
+in `train` and `hierarchy` projects, including tasks filed while the train playbook
+was disabled and system delivery takeovers. It does bounded, fair passes and
+rechecks activation and task eligibility under the project hierarchy lock. An
+explicitly disabled train, attached writer, foreign repository, or repair/verifier
+delegate receives no new origin. Existing origins and checkpoints are preserved;
+published branches are adopted at their observed tips, and absent branches are
+reserved for normal fenced materialization. A failed reservation must not prevent
+unrelated tasks from reaching the claim frontier. No operator action is required
+after re-enabling the train.
+
 The reviewed policies request, gate, publish and backmerge through commands.
 They do not publish GitHub Releases or dispatch deploy hooks. Keep those optional
 `after` settings disabled for this rollout. Release tags and operator deployment

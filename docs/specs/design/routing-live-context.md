@@ -176,6 +176,21 @@ profiles. These are observational upper bounds, not reservations or a promise
 of immediate admission; identity, delivery and human gates remain authoritative.
 Zero headroom permits routing queued work and does not create another scheduler.
 
+Routing eligibility is distinct from capacity pressure. Disabled profiles, pools
+with a zero effective limit, profiles under launch quarantine, and unavailable
+providers are never selected, including by hold lanes, strict preferences and
+the final pressure fallback. The server refreshes these facts at plan and apply;
+pool enabled state and configured bounds remain visible in the live context.
+When all eligible workers are full, the existing pressure fallback still queues
+work on an eligible worker without changing scoring or balance weights.
+
+Each routing cascade also checks queued router-owned routes in ready projects.
+If their profile or provider becomes unavailable, CommandHandler clears the
+route under the same fleet routing lock and unclaimed-task guards as apply,
+then requests a fresh route. Original hints, preferences, constraints and failure
+history survive. Strict preferences continue waiting for their target. Held or
+running tasks, role routes and explicit overrides retain their authority.
+
 The active-work summary contains task-kind counts only. Output is capped at 64
 profiles, 16 providers, eight quota windows per provider, 32 classes per profile,
 and the finite task-kind vocabulary; omission is explicit. The readable summary

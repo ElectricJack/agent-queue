@@ -173,10 +173,8 @@ class MessageCommandsMixin:
         if to_kind == "session":
             if session_id and to_id == session_id:
                 return None
-            session = await self.db.get_session(session_id) if session_id else None
-            return None if (
-                session and session.lifecycle == "named" and to_id == session.name
-            ) else error
+            owner = await self.db.get_session(session_id) if session_id else None
+            return None if owner and owner.lifecycle == "named" and to_id == owner.name else error
         if to_kind == "task":
             task_id = scope.get("task_id")
             if task_id is None and session_id:

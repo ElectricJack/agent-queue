@@ -1,11 +1,11 @@
 """Task-free in-place repair survives replay, budget exhaustion and green."""
 
+import asyncio
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
-import asyncio
-import re
 import pytest
 from sqlalchemy import func, select, update
 
@@ -13,7 +13,7 @@ from src.api.auth import RequestScope
 from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.commands.principal import ExecutionPrincipal
-from src.config import MessagesConfig
+from src.config import AppConfig, MessagesConfig
 from src.database.tables import integration_batches, messages, tasks
 from src.git.manager import _git_preparation_error
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
@@ -144,6 +144,65 @@ async def register(db, state, session_state):
     ))
 
 
+@pytest.mark.parametrize("notification", ["red", "rebind", "green"])
+async def test_fixer_notifications_are_readable_by_registered_session(db, fixer, notification):
+    service, _, _ = fixer
+    await allocate(service)
+    owner = await state(db)
+    await register(db, owner, "running")
+    await db.create_profile(AgentProfile(
+        id="fixer", name="Fixer", aq_commands=["message_inbox", "message_status"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    if notification == "red":
+        await allocate(service, NEXT)
+    elif notification == "green":
+        await service.settle_green("batch-fix", HEAD)
+    else:
+        successor = Batch("successor", "p", "r", "refs/heads/dev")
+        store = BatchStore(db)
+        await store.freeze(successor, await store.members("batch-fix"),
+                           trees={"one": "e" * 40, "two": "f" * 40})
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == successor.id,
+            ).values(fixer_queue={"family_id": "batch-fix"}))
+        result = await service.allocate(successor.id, target_ref=candidate_ref(successor.id),
+                                        head_sha=NEXT, authorize=AsyncMock(return_value=True))
+        assert result["rebind_required"]
+
+    config = AppConfig()
+    config.messages.enabled = True
+    config.security.capability_enforcement = "enforce"
+    handler = CommandHandler(SimpleNamespace(db=db, bus=None, plugin_registry=None), config)
+    scope = dict(kind="session", session_id=owner["session_id"], project_id="p",
+                 session_instance_token=owner["instance_token"], task_id=None, elevated=False)
+    inbox = await handler.execute("message_inbox", {
+        "to_kind": "session", "to_id": owner["session_id"], "_scope": scope,
+    })
+    assert inbox["success"], inbox
+    assert inbox["count"] == 1, inbox
+    notice = inbox["messages"][0]
+    assert notice["to_id"] == owner["session_id"]
+
+    # Another named session in the same project must not gain access.
+    other = {**owner, "session_id": str(uuid4()), "session_name": "n-other-fixer"}
+    await register(db, other, "running")
+    denied = await handler.execute("message_status", {
+        "message_id": notice["id"], "_scope": {**scope, "session_id": other["session_id"]},
+    })
+    assert not denied["success"] and "not found" in denied["error"], denied
+    assert (await db.get_message(notice["id"])).read_at is None
+
+    result = await handler.execute("message_status", {
+        "message_id": notice["id"], "_scope": scope,
+    })
+    assert result["success"], result
+    assert result["message"]["body"] == notice["body"]
+    assert result["state"] == "acknowledged"
+    assert result["delivered_at"] is not None and result["acknowledged_at"] is not None
+
+
 @pytest.mark.parametrize("consume", ["status", "inbox"])
 async def test_fixer_renotification_can_be_read_by_named_session(db, fixer, monkeypatch, consume):
     service, runtime, now = fixer
@@ -157,7 +216,10 @@ async def test_fixer_renotification_can_be_read_by_named_session(db, fixer, monk
     await allocate(service, NEXT, brief="Tests default-6/8 failed; repair this push")
     [notice] = await notices(db)
     assert notice["id"].startswith("msg-fixer-")
-    assert notice["to_id"] == owner["session_name"]
+    # Older fixer notifications used the persisted named-session mailbox.
+    async with db.immediate() as conn:
+        await conn.execute(update(messages).where(messages.c.id == notice["id"]).values(
+            to_id=owner["session_name"]))
 
     sessions = SimpleNamespace(activity=AsyncMock(return_value="idle"),
                                nudge=AsyncMock(return_value=True))
@@ -241,7 +303,7 @@ async def test_train_visit_retries_orphaned_launch_before_repair_budget(db, fixe
     assert row["fixer_queue"]["reason"] == "launch_retry"
     assert row["fixer_state"]["launch_failures"] == 1
     assert row["fixer_state"]["status"] == "waiting_capacity"
-    assert now[0] < orphan["deadline"]
+    assert orphan["deadline"] is None
     runtime.start.assert_awaited_once()
     assert not await notices(db, supervisor=True)
     await transfer(db, frozen.id, "orphan-retry")
@@ -462,7 +524,7 @@ async def test_family_blocked_by_legacy_launch_failure_relaunches_on_successor(
     async with db.immediate() as conn:
         await conn.execute(update(integration_batches).where(integration_batches.c.id == successor.id)
                            .values(fixer_queue={"family_id": "batch-fix"}))
-    now[0] = owner["deadline"] + 5000
+    now[0] += 5000
     result = await allocate_on(service, successor.id)
     assert result["outcome"] == "filed"
     assert result["session_id"] == str(UUID(result["session_id"]))
@@ -472,7 +534,7 @@ async def test_family_blocked_by_legacy_launch_failure_relaunches_on_successor(
     assert moved["batch_id"] == successor.id and moved["starting_sha"] == NEXT
     assert moved["status"] == "active" and "blocker" not in moved
     assert moved["family_id"] == "batch-fix"
-    assert moved["deadline"] > now[0]
+    assert moved["deadline"] is None
     assert runtime.start.await_args.args[0]["session_id"] == result["session_id"]
     assert runtime.start.await_count == 2
 
@@ -630,7 +692,8 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
                        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "work"))
     config.sessions.enabled, config.sessions.provider = True, "fake"
     registry = HarnessRegistry()
-    overrides = getattr(request, "param", {})
+    overrides = dict(getattr(request, "param", {}))
+    repair_policy = overrides.pop("repair_policy", None)
     harness_id = overrides.get("id", "codex")
     permission_flag = ("--dangerously-bypass-approvals-and-sandbox" if harness_id == "codex"
                        else "--dangerously-skip-permissions")
@@ -671,7 +734,9 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
     monkeypatch.setattr(transport, "_afetch_exact_oid_with_app_auth_to_url", file_source_fetch)
     service = BatchFixerService(db, runtime)
     result = await service.allocate("real", target_ref=candidate_ref("real"), head_sha=source,
-                                    authorize=AsyncMock(return_value=True))
+                                    authorize=AsyncMock(return_value=True),
+                                    policy=(RepairPolicy.model_validate(repair_policy)
+                                            if repair_policy is not None else None))
     assert result["outcome"] == "filed", result
     row = await db.get_session(result["session_id"])
     return service, runtime, orch, row, base, source, lane
@@ -788,6 +853,7 @@ async def test_launch_pins_heads_target_start_in_daemon_namespace(db, live_fixer
 
 async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_fixer):
     from pathlib import Path
+
     from tests.test_integration_gitops import commit, git
 
     service, runtime, orch, row, _, source, _ = live_fixer
@@ -811,6 +877,7 @@ async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_
 async def test_real_publication_refuses_changed_authority_or_history(db, live_fixer, change):
     from dataclasses import replace
     from pathlib import Path
+
     from src.database.tables import projects
     from src.git.manager import GitError
     from src.integration.lock import PublishWithdrawn
@@ -874,15 +941,19 @@ async def test_failure_input_uses_frozen_file_ownership_and_ignores_observation_
 
 
 # These fixtures use real retained repositories and the ordinary publication gate.
-from tests.test_integration_batches import batch_env as batch_env  # noqa: E402
-from tests.test_integration_gitops import (  # noqa: E402
-    git_history_template as git_history_template, setup as setup,
+from tests.test_integration_batches import batch_env as batch_env
+from tests.test_integration_gitops import (
+    git_history_template as git_history_template,
+)
+from tests.test_integration_gitops import (
+    setup as setup,
 )
 
 
 @pytest.fixture
 async def split_env(batch_env):
     from dataclasses import replace
+
     from src.integration.fixer_batches import FixerBatches
     from src.integration.lock import BranchLock
     from tests.test_integration_gitops import commit, git
@@ -991,6 +1062,7 @@ async def test_deferred_unchanged_due_observation_does_not_readmit_or_lose_fixes
 
 async def test_reduced_red_reuses_one_session_and_requires_clean_fenced_rebind(db, live_fixer):
     from pathlib import Path
+
     from src.integration.lock import PublishWithdrawn
     from tests.test_integration_gitops import git
 
@@ -1056,11 +1128,12 @@ async def test_capacity_retry_reuses_unlaunched_identity_without_spending_rounds
     current = (await db.get_integration_batch(successor.id))["fixer_state"]
     assert current["red_heads"] == [NEXT]
     assert current["starting_sha"] == NEXT
-    assert current["deadline"] > now[0]
+    assert current["deadline"] is None
 
 
 async def test_deferred_writer_can_save_but_green_family_revokes_it(db, live_fixer):
     from pathlib import Path
+
     from src.integration.fixer_batches import defer_on
     from tests.test_integration_gitops import commit
 
@@ -1186,3 +1259,34 @@ async def test_capacity_retry_dashes_a_legacy_hex_identity_before_launch(db, fix
     assert result["session_id"] == dashed
     assert (await db.get_integration_batch(successor.id))["fixer_state"]["session_id"] == dashed
     assert runtime.start.await_args_list[-1].args[0]["session_id"] == dashed
+
+
+@pytest.mark.parametrize("policy", [None, RepairPolicy(
+    primary_seconds=0, primary_attempts=0, debug_intelligence_class="deep-high",
+)])
+async def test_unlimited_fixer_survives_many_red_heads_and_elapsed_time(db, fixer, policy):
+    service, runtime, now = fixer
+    first = await allocate(service, policy=policy)
+    for number in range(1, 8):
+        now[0] += 10_000
+        result = await allocate(service, f"{number:040x}", policy=policy)
+        assert result["outcome"] == "exists" and result["session_id"] == first["session_id"]
+    current = await state(db)
+    assert current["deadline"] is None and current["max_rounds"] == 0
+    assert len(current["red_keys"]) == 8
+    assert not await notices(db, supervisor=True)
+    assert len(await notices(db)) == 7
+    runtime.start.assert_awaited_once()
+
+
+async def test_fixer_honors_configured_round_budget_above_three(db, fixer):
+    service, _, _ = fixer
+    policy = RepairPolicy(primary_seconds=0, primary_attempts=5,
+                          debug_intelligence_class="deep-high")
+    await allocate(service, policy=policy)
+    for number in range(1, 5):
+        assert (await allocate(service, f"{number:040x}"))["outcome"] == "exists"
+    result = await allocate(service, "9" * 40)
+    assert result["outcome"] == "deferred"
+    assert result["reason"] == "fixer CI round budget exhausted"
+    assert len(await notices(db, supervisor=True)) == 1

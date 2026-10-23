@@ -12,6 +12,12 @@ tags: [implementation, supervisor, messages, sessions, task-graph, alembic]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Current implementation:** [Supervisors and policy](../systems/supervisors-and-policy.md)
+> and [Supervisor turn health](../supervisor-turn-health.md). The rollout
+> switches, module layout and phase status below are historical. Project
+> supervisors now use `projects.supervisor_enabled`; lifecycle comes from the
+> installed profile, not `supervisor_agent.enabled` or its idle timeout.
+
 **Status:** Draft — approved direction (2026-08-19)
 **Related:** [design/supervisor-agent](../design/supervisor-agent.md) (design), [design/session-runtime](../design/session-runtime.md) (named sessions, activity signal, nudge), [design/work-graph](../design/work-graph.md) (ids, gates, dep types), [design/aq-surface](../design/aq-surface.md) (`aq prime`), `docs/analysis/framework-overhaul-todo.md` §4/§3b
 
