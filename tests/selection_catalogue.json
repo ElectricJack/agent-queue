@@ -15612,8 +15612,10 @@
         "discord"
       ],
       "default_arm": true,
-      "digest": "sha256:c5120e6db94f2e3655b13f662ff3311ec6bdc7b2204e0126c2812843f2219fcb",
+      "digest": "sha256:8c365180a6023aea0375ac31f67c32482cbfec4638b5ccbd6c5832dfdefe0e1e",
       "imports": [
+        "src.config",
+        "src.discord.bot",
         "src.discord.rate_guard"
       ],
       "markers": [],
@@ -15986,7 +15988,7 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:53e0c200b81db878c624f68a677b5fe4982b1e067f65a42dd7a18162ef284306",
+      "digest": "sha256:1644948f36327a2e3e72de6668fab8121357b80f16645e202222f12cc9dac66b",
       "imports": [
         "src.commands.principal",
         "src.commands.report_commands",
@@ -15997,6 +15999,7 @@
         "src.digest.dispatch",
         "src.digest.eligibility",
         "src.digest.facts",
+        "src.digest.render",
         "src.escalations.transport",
         "src.models",
         "src.profiles.capabilities",

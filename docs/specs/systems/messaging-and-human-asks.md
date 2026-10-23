@@ -707,21 +707,17 @@ These hold today, and changes to this system must keep them.
 13. **Mechanism here, judgment in playbooks.** Planning, auto-resolve, the
     sweep, the watchdog and the digest are deterministic and make no LLM
     calls.
+14. **One rate tracker and one hourly budget.** Startup configures the shared
+    invalid-request tracker in place so logging and the bot count the same
+    responses. Hourly report submissions use the digest's `MAX_CHARS` budget
+    (600), including the dashboard footer and delivery marker; validation
+    messages derive the limit from that constant. Escalation diagnostics and
+    compatibility refusals both link to `/focus/asks/<id>`.
 
 ## 5. Known gaps
 
 **Probable bugs.**
 
-- **Discord's internal 429s may go uncounted.** `setup_logging`
-  (`src/logging_config.py`) attaches a `DiscordHTTPLogHandler` bound to the
-  tracker returned by `get_tracker()` at that moment. The bot later calls
-  `configure_tracker` (`src/discord/bot.py`), which replaces the module
-  singleton with a new tracker (`src/discord/rate_guard.py`). The log
-  handler keeps feeding the old one, so the rate guard never sees the 429s
-  that discord.py retries internally.
-- **The hourly report budget disagrees with itself.** `report_submit` checks
-  against the digest `MAX_CHARS` (600), but its error says "exceeds 1,200
-  characters", and the hourly playbook and guide also say 1,200.
 - **`ask_channel_enabled` ignores project and config fingerprint**
   (`src/database/queries/ask_input_queries.py`). If any project on a
   destination is in channel mode, every inbound message there goes to ask
@@ -729,8 +725,6 @@ These hold today, and changes to this system must keep them.
 - **A Discord config change permanently retires writers.** Ask delivery
   reconciliation marks every mode row whose fingerprint no longer matches as
   `delivery_disabled` and migrated, including rows still in `legacy`.
-- **Ask URLs are inconsistent.** `escalation_commands.py` builds `/asks/<id>`
-  and `_legacy_ask_decision` builds `/focus/asks/<id>`.
 
 **Design hazards.**
 
@@ -859,7 +853,7 @@ legacy ask and escalation records, per Jack's 2026-10-19 reset directive.
 
 Several §5 gaps (escalation guide drift, the two publishers, the old
 notification queries) close with this work. The ask-specific bugs in §5
-(`ask_channel_enabled`, fingerprint retirement, inconsistent URLs, the
+(`ask_channel_enabled`, fingerprint retirement, the
 missing application sweep) are not in any filed task.
 
 ### 6.2 Event-driven hibernation and verified waits: `bold-zenith-11` (IN_PROGRESS)
