@@ -2057,7 +2057,7 @@ async def test_admission_completes_while_retained_fsck_holds_repository(
         return await normal(args, **kwargs)
 
     monkeypatch.setattr(service.git, 'arun_git_result', slow_fsck)
-    monkeypatch.setattr('src.integration.delivery_observer.ADMISSION_OBSERVATION_SECONDS', 0.1)
+    monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 0.1)
     recovery = asyncio.create_task(observer.snapshot(target))
     try:
         await asyncio.wait_for(started.wait(), 10)
@@ -2077,7 +2077,7 @@ async def test_admission_completes_while_retained_fsck_holds_repository(
         await asyncio.wait_for(recovery, 10)
     # Recovery completion does not extend admission's expired request budget.
     # A new admission must acquire fresh proof and can release the dependent.
-    monkeypatch.setattr('src.integration.delivery_observer.ADMISSION_OBSERVATION_SECONDS', 5)
+    monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 5)
     assert (await observe_admission(db, ['waiting', 'independent'], service)).allowed == {
         'waiting', 'independent',
     }

@@ -26,7 +26,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.git.manager import GitError
+from src.git.manager import GitError, bounded_git_reads
 from src.integration.delivery_truth import (
     SETTLEMENT_KEY,
     DeliveryRequest,
@@ -727,49 +727,47 @@ class AdmissionView:
                 self._snapshot.stack_views.get(project_id))
 
 
+@bounded_git_reads
 async def observe_admission(
     db, candidate_ids, service, *, cached_only=False, default_mode="pull_request",
     hierarchy_modes=None, router_ready_projects=None, hierarchy_conn=None,
 ):
     """Build once, then project IDs, reasons or counts from the same decision."""
-    from src.integration.delivery_observer import (
-        admission_observation_budget, hierarchy_frontier_modes,
-    )
+    from src.integration.delivery_observer import hierarchy_frontier_modes
 
-    with admission_observation_budget():
-        ids = frozenset(candidate_ids)
-        batch = await _observe_sources(
-            db, ids, service, cached_only=cached_only, default_mode=default_mode,
-        )
-        await _observe_delivery_edges(batch, cached_only=cached_only)
-        async with db._engine.connect() as conn:
-            batch.policy_inputs, batch.hierarchy_required = await _frontier_inputs(conn, ids)
-        pids = {p[0] for p in batch.inputs[5] if p[1] in {"hierarchy", "train"}}
-        unavailable = {}
-        modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
-            db, project_ids=pids, cached_only=cached_only,
-            views=batch.hierarchy_views, stack_views=batch.stack_views,
-            display_unavailable=unavailable, conn=hierarchy_conn,
-            **({"max_age": 0} if not cached_only else {}),
-        ) if pids else {}
-        batch.hierarchy_modes = dict(modes)
-        batch.lock_ids |= set().union(*batch.hierarchy_required.values())
-        exclusions = await db.claim_frontier_exclusions_many(
-            ids, hierarchy_modes=modes, cached_only=cached_only,
-            router_ready_projects=router_ready_projects,
-            display_unavailable=unavailable,
-        )
-        for tid, reasons in exclusions.items():
-            if reasons:
-                batch.allowed.discard(tid)
-                batch.reasons.setdefault(tid, []).extend(reasons)
-        if not await batch.matches(conn=hierarchy_conn):
-            batch.changed = True
-            batch.allowed.clear()
-        return AdmissionView(
-            ids, frozenset(batch.allowed), _freeze(batch.reasons), _freeze(dict(modes)),
-            batch.changed, batch,
-        )
+    ids = frozenset(candidate_ids)
+    batch = await _observe_sources(
+        db, ids, service, cached_only=cached_only, default_mode=default_mode,
+    )
+    await _observe_delivery_edges(batch, cached_only=cached_only)
+    async with db._engine.connect() as conn:
+        batch.policy_inputs, batch.hierarchy_required = await _frontier_inputs(conn, ids)
+    pids = {p[0] for p in batch.inputs[5] if p[1] in {"hierarchy", "train"}}
+    unavailable = {}
+    modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
+        db, project_ids=pids, cached_only=cached_only,
+        views=batch.hierarchy_views, stack_views=batch.stack_views,
+        display_unavailable=unavailable, conn=hierarchy_conn,
+        **({"max_age": 0} if not cached_only else {}),
+    ) if pids else {}
+    batch.hierarchy_modes = dict(modes)
+    batch.lock_ids |= set().union(*batch.hierarchy_required.values())
+    exclusions = await db.claim_frontier_exclusions_many(
+        ids, hierarchy_modes=modes, cached_only=cached_only,
+        router_ready_projects=router_ready_projects,
+        display_unavailable=unavailable,
+    )
+    for tid, reasons in exclusions.items():
+        if reasons:
+            batch.allowed.discard(tid)
+            batch.reasons.setdefault(tid, []).extend(reasons)
+    if not await batch.matches(conn=hierarchy_conn):
+        batch.changed = True
+        batch.allowed.clear()
+    return AdmissionView(
+        ids, frozenset(batch.allowed), _freeze(batch.reasons), _freeze(dict(modes)),
+        batch.changed, batch,
+    )
 
 
 async def _observe_delivery_edges(batch, *, cached_only):

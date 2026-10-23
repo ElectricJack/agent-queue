@@ -17,8 +17,7 @@ import re
 import time
 import weakref
 from collections.abc import Iterable, Mapping
-from contextlib import contextmanager, nullcontext
-from contextvars import ContextVar
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -35,7 +34,7 @@ from src.database.tables import (
     task_completion_records,
     tasks,
 )
-from src.git.manager import GitError, RemoteRefState
+from src.git.manager import GitError, RemoteRefState, within_git_read_budget
 from src.integration.delivery_truth import (
     DeliveryEvidence,
     DeliveryRequest,
@@ -437,23 +436,6 @@ class PrerequisiteView:
 
 _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _FLIGHTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-# One admission read shares this budget across all repository/target snapshots.
-# Background observations retain their normal Git recovery budget.
-ADMISSION_OBSERVATION_SECONDS = 5.0
-_ADMISSION_DEADLINE: ContextVar[float | None] = ContextVar("admission_git_deadline", default=None)
-
-
-@contextmanager
-def admission_observation_budget():
-    deadline = asyncio.get_running_loop().time() + ADMISSION_OBSERVATION_SECONDS
-    previous = _ADMISSION_DEADLINE.get()
-    token = _ADMISSION_DEADLINE.set(min(previous, deadline) if previous is not None else deadline)
-    try:
-        yield
-    finally:
-        _ADMISSION_DEADLINE.reset(token)
-
-
 #: A branch name ``git check-ref-format`` certainly accepts. A shared observation
 #: reports any other absent ref as unknown rather than missing.
 _PLAIN_BRANCH = re.compile(r"refs/heads/(?!.*(?:\.\.|//|/\.|\.lock(?:/|$)))[\w-][\w./-]*(?<![./])")
@@ -734,21 +716,11 @@ class DeliveryObserver:
             and (recent[1].error is None or cached_only)
             and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
-        if cached_only:
-            # Interactive diagnostic reads must never queue behind a fetch or start
-            # one. Expired evidence is unknown, not evidence of non-delivery.
+        if cached_only or (shared := await within_git_read_budget(
+                self._shared_observation, target, path)) is None:
+            # Interactive or over-budget reads never wait on a fetch: unknown, not undelivered.
             return self._unavailable(target, path, "snapshot_unavailable")
-        deadline = _ADMISSION_DEADLINE.get()
-        if deadline is not None and asyncio.get_running_loop().time() >= deadline:
-            return self._unavailable(target, path, "snapshot_unavailable")
-        try:
-            async with asyncio.timeout_at(deadline):
-                snapshot, stamp, flight = await self._shared_observation(target, path)
-        except TimeoutError:
-            # _shared_observation does not cancel its flight when a reader
-            # leaves. Recovery finishes under its writer lock; this admission
-            # withholds only the work that needs its missing Git evidence.
-            return self._unavailable(target, path, "snapshot_unavailable")
+        snapshot, stamp, flight = shared
         # Each caller owns its request caches and freshness marks, as if it had
         # fetched alone; observers sharing a store read with their own transport.
         snapshot = replace(snapshot, git=self.git, _cache={}, _identities={}, _freshness={})

@@ -67,6 +67,7 @@ from src.claim_timing import timed_claim_git
 
 import asyncio
 import contextvars
+import functools
 import logging
 import math
 import os
@@ -594,6 +595,56 @@ def _object_store_fingerprint(git_dir: str) -> tuple | None:
     except OSError:
         return None
     return tuple(sorted(entries))
+
+
+#: One request's shared budget for Git reads that may queue behind a fetch or
+#: retained-store recovery. Background readers keep their own recovery budgets.
+REQUEST_GIT_READ_SECONDS = 5.0
+_REQUEST_GIT_READ_DEADLINE: ContextVar[float | None] = ContextVar(
+    "request_git_read_deadline", default=None,
+)
+
+
+def bounded_git_reads(func):
+    """Run coroutine *func* under one ``REQUEST_GIT_READ_SECONDS`` read budget.
+
+    Nested budgets keep the earlier deadline. Reads opt in through
+    :func:`within_git_read_budget`; nothing else is cancelled.
+    """
+    @functools.wraps(func)
+    async def bounded(*args, **kwargs):
+        deadline = asyncio.get_running_loop().time() + REQUEST_GIT_READ_SECONDS
+        previous = _REQUEST_GIT_READ_DEADLINE.get()
+        token = _REQUEST_GIT_READ_DEADLINE.set(
+            deadline if previous is None else min(previous, deadline))
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            _REQUEST_GIT_READ_DEADLINE.reset(token)
+    return bounded
+
+
+async def within_git_read_budget(func, *args):
+    """``await func(*args)`` within the active request budget; None once it lapses.
+
+    Without a budget this simply awaits. An expired budget never starts *func*.
+    Callers must not let cancellation abandon shared work: a shared fetch or
+    recovery keeps running under its own writer lock, and only this request
+    goes without its evidence.
+    """
+    deadline = _REQUEST_GIT_READ_DEADLINE.get()
+    if deadline is None:
+        return await func(*args)
+    if asyncio.get_running_loop().time() >= deadline:
+        return None
+    scope = asyncio.timeout_at(deadline)
+    try:
+        async with scope:
+            return await func(*args)
+    except TimeoutError:
+        if scope.expired():
+            return None
+        raise
 
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
@@ -2395,6 +2446,21 @@ class GitManager:
         self, git_dir: str, fingerprint: tuple | None, started: float,
     ) -> None:
         await asyncio.to_thread(self.record_retained_store_verified, git_dir, fingerprint, started)
+
+    async def aretained_store_baseline(self, git_dir: str) -> tuple[tuple | None, float]:
+        """The fingerprint and start time to record after a clean full fsck."""
+        return await asyncio.to_thread(_object_store_fingerprint, git_dir), time.monotonic()
+
+    async def areuse_retained_verification(self, git_dir: str, *, extend: bool) -> bool:
+        """Whether a fetch just made under writer exclusion can skip full fsck.
+
+        *extend* says the clean baseline held before that fetch and the fetch
+        succeeded: its checked additions then carry the baseline forward.
+        Otherwise only an unchanged, still-verified object store qualifies.
+        """
+        if extend:
+            return await self.aextend_retained_store_verified(git_dir)
+        return await self.aretained_store_verified(git_dir)
 
     async def aextend_retained_store_verified(self, git_dir: str) -> bool:
         """Extend a clean baseline across a checked fetch under writer exclusion.

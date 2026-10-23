@@ -2282,7 +2282,7 @@ async def test_retained_temporary_object_files_do_not_invalidate_verification(se
 async def test_retained_fingerprint_scans_run_off_event_loop(setup, monkeypatch):
     import threading
 
-    import src.git.manager as manager
+    from src.git import manager
 
     _db, service, _source, _remote, repo = setup
     store = await service.store(repo)
@@ -2296,7 +2296,6 @@ async def test_retained_fingerprint_scans_run_off_event_loop(setup, monkeypatch)
         return fingerprint(directory)
 
     monkeypatch.setattr(manager, '_object_store_fingerprint', off_loop)
-    monkeypatch.setattr('src.integration.repository_recovery._object_store_fingerprint', off_loop)
     await service.store(repo)
     service.git._retained_verified.clear()
     await service.store(repo)
