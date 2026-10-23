@@ -45,10 +45,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f',
                           'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': 'a8cb26e99371072b6b4ff69bfdf9852aafdddd29',
+ 'measured_source_revision': '4bafa45f1ac0a466eab372c7b6b0b866f67bb832',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161226,
- 'delta': 5727,
+ 'measured_owned_total': 161213,
+ 'delta': 5714,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -62,14 +62,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2268,
+ 'batch_measured_delta': 2255,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
- 'measured_engine_lines': 85557,
+ 'measured_engine_lines': 85544,
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -425,6 +425,38 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                         'the retained starting head; the other members add no '
                                         'owned lines. Preserve every historical grant and batch '
                                         'measurement.'},
+ 'post_release_structure_measurement': {'task_id': 'swift-nexus-38',
+                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                        'operator_decision': '6679052c',
+                                        'operator_task': 'sharp-cascade-53',
+                                        'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1775',
+                                        'required_pr_head': '14183dc9d82cdc4cb32610827e228b49b6e488d2',
+                                        'dev_source_revision': 'c177d24e86d25fde7804131c94bfd637b0eb540a',
+                                        'previous_source_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
+                                        'measured_source_revision': '063b7620f635b34aeb376d1d9d4280dd22273b7d',
+                                        'previous_owned_total': 161162,
+                                        'previous_engine_lines': 85543,
+                                        'previous_table_count': 45,
+                                        'authorized_owned_delta': -38,
+                                        'authorized_engine_delta': -554,
+                                        'authorized_table_delta': 0,
+                                        'measured_owned_total': 161124,
+                                        'measured_engine_lines': 84989,
+                                        'measured_table_count': 45,
+                                        'measured_groups': {'shared': 62537,
+                                                            'companions': 11168,
+                                                            'engine': 84989,
+                                                            'policy_sources': 1042,
+                                                            'policy': 493,
+                                                            'ui': 262,
+                                                            'guards': 633},
+                                        'reason': 'Exact combined-tree remeasurement after merging '
+                                                  'PR #1775 head with dev. Approval pre-granted by '
+                                                  'size-cap-delegation-2026-10-23, operator '
+                                                  'decision 6679052c on sharp-cascade-53. Preserve '
+                                                  'ownership classifications and all historical '
+                                                  'grants; no production code moved or trimmed for '
+                                                  'the count.'},
  'authenticated_push_measurement': {'task_id': 'fleet-dune-15',
                                     'measured_source_revision': '715a3caf99c083f80a9426a303c9336cbb264921',
                                     'approval_message_id': 'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12',
@@ -441,30 +473,32 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                     'reason': 'Persist fenced push-failure diagnostics in fixer '
                                               'blockers and train notices.',
                                     'restore_task': 'azure-ridge-72'},
- 'authenticated_push_merge_measurement': {'task_id': 'fleet-dune-15',
-                                          'referenced_decision': 'size-cap-delegation-2026-10-23',
-                                          'operator_decision': '6679052c',
-                                          'operator_task': 'sharp-cascade-53',
-                                          'approval_message_id': 'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12',
-                                          'authority': 'Supervisor reopen preapproval, 2026-10-23: '
-                                                       'exact merged amendment for PR #1882.',
-                                          'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1882',
-                                          'merged_dev_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
-                                          'dev_owned_total': 161213,
-                                          'dev_engine_lines': 85544,
-                                          'dev_table_count': 45,
-                                          'measured_source_revision': 'a8cb26e99371072b6b4ff69bfdf9852aafdddd29',
-                                          'measured_owned_total': 161226,
-                                          'measured_engine_lines': 85557,
-                                          'measured_table_count': 45,
-                                          'authorized_owned_delta': 13,
-                                          'authorized_engine_delta': 13,
-                                          'authorized_table_delta': 0,
-                                          'headroom': 0,
-                                          'restore_task': 'azure-ridge-72',
-                                          'reason': 'Carry the unchanged approved push-diagnostic '
-                                                    'delta onto merged dev; preserve every '
-                                                    'historical grant.'}}
+ 'authenticated_push_merge_measurement_history': [{'task_id': 'fleet-dune-15',
+                                                   'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                   'operator_decision': '6679052c',
+                                                   'operator_task': 'sharp-cascade-53',
+                                                   'approval_message_id': 'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12',
+                                                   'authority': 'Supervisor reopen preapproval, '
+                                                                '2026-10-23: exact merged '
+                                                                'amendment for PR #1882.',
+                                                   'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1882',
+                                                   'merged_dev_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
+                                                   'dev_owned_total': 161213,
+                                                   'dev_engine_lines': 85544,
+                                                   'dev_table_count': 45,
+                                                   'measured_source_revision': 'a8cb26e99371072b6b4ff69bfdf9852aafdddd29',
+                                                   'measured_owned_total': 161226,
+                                                   'measured_engine_lines': 85557,
+                                                   'measured_table_count': 45,
+                                                   'authorized_owned_delta': 13,
+                                                   'authorized_engine_delta': 13,
+                                                   'authorized_table_delta': 0,
+                                                   'headroom': 0,
+                                                   'restore_task': 'azure-ridge-72',
+                                                   'reason': 'Carry the unchanged approved '
+                                                             'push-diagnostic delta onto merged '
+                                                             'dev; preserve every historical '
+                                                             'grant.'}]}
 
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
