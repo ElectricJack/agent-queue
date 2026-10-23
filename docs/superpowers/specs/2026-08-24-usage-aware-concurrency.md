@@ -12,6 +12,10 @@ date: 2026-08-24
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
 
+For shipped behavior, see [scheduling and provider availability](../../concepts/scheduling.md)
+and [worker pools](../../guides/worker-pools.md). This proposal does not describe
+the current fleet sizing algorithm or replace its configured ceilings.
+
 ## 1. Goal
 
 Concurrency should be bounded by **how much quota is left before the next reset**,

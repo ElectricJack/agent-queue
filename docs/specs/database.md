@@ -904,6 +904,32 @@ the table and restores per-row charging; ledger rows survive.
 The legacy SQLite importer excludes this table because it was introduced after
 SQLite removal.
 
+Revision `a00000000121` adds `idx_transcript_usage_calls_updated`
+(`updated_at`, `usage_key`) for bounded retention scans. Calls from sessions
+stopped for more than 30 days, with counters untouched for more than 30 days,
+may be archived and replaced atomically by permanent replay fences.
+
+### Table: `transcript_usage_fences`
+
+Permanent exact membership batches for archived transcript call identities
+(Alembic `a00000000121`). Ingestion ignores fenced keys, including replay under
+another session or with higher counters. Live calls retain per-call maxima.
+Fences have no session or ledger foreign keys and never expire with those rows.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID identifying the compaction batch |
+| `usage_keys` | JSONB | NOT NULL | Object mapping each sealed usage key to `true` |
+| `archived_at` | REAL | NOT NULL | Compaction timestamp |
+| `archive_path` | TEXT | NOT NULL | Durable gzip JSONL archive containing the original counters |
+
+`idx_transcript_usage_fences_keys` is a GIN containment index using
+`jsonb_path_ops`. Archive publication and fsync precede the short transaction
+that revalidates eligibility and atomically inserts the fence and deletes the
+counter rows. Downgrade refuses to drop populated fences. The legacy SQLite
+importer excludes this table because it was introduced after SQLite removal.
+See [session runtime](design/session-runtime.md) for retention and replay semantics.
+
 ### Table: `benchmark_stage_spans`
 
 Idempotent monotonic stage measurements recorded through `benchmark_stage_record`.
@@ -2376,12 +2402,12 @@ drives it yet, and every subject defaults to the `legacy` engine. Typed model:
 | `writer_claimed_at` | REAL | nullable | When the writer was claimed |
 | `writer_last_push_at` | REAL | nullable | Writer's last observed push |
 | `writer_stop_proof` | JSONB | nullable | Proof the writer stopped |
-| `budget_ordinal` | INTEGER | nullable, `>= 0` | Current writer ordinal; the budget columns are all set or all NULL |
+| `budget_ordinal` | INTEGER | nullable, `>= 0` | Current writer ordinal; requires class and start, with optional limits |
 | `budget_class` | TEXT | nullable | Intelligence class of the ordinal |
 | `budget_started_at` | REAL | nullable | Budget clock start |
-| `budget_deadline_at` | REAL | nullable, `>= budget_started_at` | Budget clock deadline |
+| `budget_deadline_at` | REAL | nullable, `>= budget_started_at` when set | Budget deadline; NULL means unlimited time |
 | `budget_attempts` | INTEGER | NOT NULL, default 0, `>= 0` | Counted conclusive exact-head attempts |
-| `budget_attempt_limit` | INTEGER | nullable, `> 0` | Attempt bound of the ordinal |
+| `budget_attempt_limit` | INTEGER | nullable, `> 0` | Attempt bound of the ordinal; NULL means unlimited attempts |
 | `version` | INTEGER | NOT NULL, default 0, never decreases | Optimistic-concurrency token of visit writes |
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
@@ -2740,7 +2766,7 @@ a fence, then accepted into the next revision.
 | `operation_id` | TEXT | NOT NULL | With `stage_ordinal` REFERENCES `integration_repair_stages` ON DELETE RESTRICT |
 | `operation_episode_id` | TEXT | NOT NULL | Repair operation episode |
 | `stage_ordinal` | INTEGER | NOT NULL, `>= 0` | Repair stage that reserved the resolution; any retained successor stage |
-| `stage_deadline_at` | REAL | NOT NULL | Stage deadline the resolution must land by |
+| `stage_deadline_at` | REAL | nullable | Stage deadline the resolution must land by; NULL for an unlimited stage |
 | `project_id` | TEXT | NOT NULL | Project |
 | `repair_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Delegate task |
 | `repair_session_id` | TEXT | NOT NULL REFERENCES sessions(id) | Delegate session |
