@@ -60,6 +60,29 @@ DEV_HIBERNATION_CHANGES = ROOT / "tests/fixtures/contracts/hibernation-main-refr
 SUPERVISOR_HEALTH_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-health-contract-changes.json"
 TARGET_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/target-repair-contract-changes.json"
 PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contract-changes.json"
+POOL_DELETE_CHANGES = ROOT / "tests/fixtures/contracts/pool-delete-contract-changes.json"
+
+
+def _pool_delete_changes():
+    return json.loads(POOL_DELETE_CHANGES.read_text())
+
+
+def _before_pool_delete_catalogue():
+    evidence = _pool_delete_changes()
+    catalogue = json.loads(render_command_catalogue())
+    definitions = catalogue["explicit"]
+    index = next(i for i, row in enumerate(definitions) if row["name"] == evidence["command"])
+    assert definitions.pop(index) == evidence["transport_definition"]
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["category"]
+    return catalogue
+
+
+def test_pool_delete_catalogue_only_adds_reviewed_command():
+    evidence = _pool_delete_changes()
+    previous = json.dumps(_before_pool_delete_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
 
 
 def _stuck_check_changes():
@@ -72,7 +95,7 @@ def _pr_repair_changes():
 
 def _before_pr_repair_catalogue():
     evidence = _pr_repair_changes()
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_pool_delete_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -414,7 +437,9 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     assert stuck_check["previous_cli_catalogue_sha256"] == completion["cli_catalogue_sha256"]
     pr_repair = _pr_repair_changes()
     assert pr_repair["previous_cli_catalogue_sha256"] == stuck_check["cli_catalogue_sha256"]
-    assert actual == pr_repair["cli_catalogue_sha256"]
+    pool_delete = _pool_delete_changes()
+    assert pool_delete["previous_cli_catalogue_sha256"] == pr_repair["cli_catalogue_sha256"]
+    assert actual == pool_delete["cli_catalogue_sha256"]
     previous = json.dumps(_before_batch_fix_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == dispatch["cli_catalogue_sha256"]
     previous = json.dumps(_before_dispatch_catalogue(), indent=2) + "\n"
