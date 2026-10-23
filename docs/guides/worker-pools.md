@@ -1308,7 +1308,7 @@ aq doctor --check profiles.project_overrides --fix      # promote and delete
 Prose sections an override added (a custom `## Role`, say) are **not** merged;
 the check names them so you can hand-merge before or after. Two projects that
 overrode the same profile differently collapse into one definition — check the
-result with `aq agent get-profile <id>` and re-scale if the surviving numbers
+result with `aq agent get-profile --profile-id <id>` and re-scale if the surviving numbers
 are not the ones you want.
 
 ---
@@ -1324,22 +1324,25 @@ capabilities copied once per rung, drifting the moment anyone edited one.
 They are now a **cross-product**, derived at startup and by `aq install`:
 
 ```
-(intelligence class) x (harness whose CLI is installed and authenticated)
+(compatible intelligence class) x (Claude or Codex harness available on this host)
 ```
 
 A class yields a rung for a harness only when it has a slice naming a model
-for that harness's provider — so `astra-*`, which is OpenAI-only, produces no
-Claude rung, and nothing from the deep tier upward produces a Gemini one. That
-is not a rule in the code; it is what the class files say.
+for that harness's provider. `astra-*` is OpenAI-only and produces no Claude
+rung. Derivation currently supports Claude and Codex only: no Gemini template
+ships, and the shipped OpenCode template is for operator-configured harnesses.
+Install-time authentication probes record which derived profiles may activate;
+startup also honors existing routes and retired ids.
 
 | Piece | Id | What it holds |
 |---|---|---|
-| Template | `worker-claude`, `worker-codex` | role, rules, capabilities, harness, workspaces |
+| Worker template | `worker-claude`, `worker-codex`, `worker-opencode` | shared role, rules, capabilities and harness defaults |
+| Operator template | `operator-claude`, `operator-codex` | scoped operator grants; derives only standard-high/deep-high operator rungs |
 | Rung | `<class>-<harness>`, e.g. `deep-high-claude` | its class, and its pool state |
 
 A rung is a stub of about ten lines:
 
-```markdown
+````markdown
 ---
 id: deep-high-claude
 name: "Claude · Deep · High"
@@ -1350,7 +1353,7 @@ extends: worker-claude
 ```json
 {"default_class": "deep-high", "lifecycle": "task"}
 ```
-```
+````
 
 `extends` is resolved on the way into the database, so **editing a template
 changes every rung of that harness at once, with nothing to regenerate**. The
@@ -1358,11 +1361,14 @@ only thing that ever rewrites a rung file is a change to its own state —
 `aq pool scale` writes the bounds there, never into the template.
 
 A template carries `template: true`: it is never synced to `agent_profiles`
-and nothing can be routed to it. The runnable workers are exactly the rungs.
+and nothing can be routed to it. Derived rungs and operator-authored compatible
+worker profiles can run tasks; scoped operator rungs only run operator work.
 
 **Adding a class.** Drop a file in `vault/intelligence-classes/` and its rungs
-appear at the next daemon start (or `aq install`) — one per harness whose
-provider it has a slice for.
+appear at the next daemon start (or `aq install`) for supported Claude/Codex
+harnesses with compatible slices. A valid existing profile serving the same
+route suppresses duplicate seeding. A class must also be in the router policy
+to become routable.
 
 **Codex service tier.** A class's `codex` mapping may set
 `"service_tier": "fast"` (or `"default"`). A Codex pool profile can override
@@ -1373,7 +1379,10 @@ Codex session receives `-c service_tier="…"` when a value is set; existing
 sessions keep their launch setting, and `~/.codex/config.toml` is untouched.
 `aq pool status` and the dashboard pool row show the effective explicit tier.
 
-**Removing a class.** Its rungs are *disabled*, not deleted: a rung can own a
+**Removing a class.** Use `aq system delete-intelligence-class --class-id <id>`
+with the revision from `list-intelligence-classes`; it refuses agents, profiles
+and non-terminal tasks that still reference the class. Repoint those first.
+When startup finds an orphaned rung, it is *disabled*, not deleted: a rung can own a
 running pool session, an in-flight task and an agent row, and removing the
 profile under a live worker orphans all three. Work in flight finishes; the
 rung takes nothing new. Delete the directory once it is idle.
@@ -1390,7 +1399,8 @@ silently on `claude`), then provider-explicit
 (`worker-<tier>-<level>-<provider>`). Neither renames itself.
 
 An existing vault keeps its old directories, and seeding is write-if-absent,
-so an upgrade adds the derived rungs alongside whatever you already had.
+so an upgrade preserves them. A valid existing profile serving a class/harness
+route suppresses the duplicate derived rung; retired ids are skipped.
 Migrate deliberately:
 
 **1. See what you have.**
@@ -1433,10 +1443,11 @@ id, so startup seeding has nothing to seed it from.
 
 **5. Check what the classes did.** The class ladder collapsed in the same
 release — `fast-{off,medium}`, `standard-{off,low,medium}` and
-`deep-{off,medium}` are gone. The daemon repoints profiles and live task pins
-to the surviving class in the same tier on first start, and moves each retired
-class file to `<id>.md.retired` in the vault rather than deleting it. A class
-file you had marked `customized: true` is left alone.
+`deep-{off,medium}` are gone. Startup repoints generic profile defaults to the
+surviving class in the same tier and disables rungs whose ids name a retired
+class. Old task class pins are updated by the database migration, not startup
+vault sync. Each retired class file moves to `<id>.md.retired` rather than
+being deleted. A class file you had marked `customized: true` is left alone.
 
 ```bash
 aq system list-intelligence-classes
@@ -1445,17 +1456,18 @@ ls ~/.agent-queue/vault/intelligence-classes/*.retired   # your old bytes
 
 ### A shipped profile that gained a new grant
 
-`ensure_default_profiles()` is write-if-absent, and so is every reseed path:
-once `vault/agent-types/<id>/profile.md` exists, an upgrade never touches it.
-That is the right default for operator edits, but it means a release that adds
-a *capability* to a shipped profile — a new command in `## Config.aq_commands`
-— reaches a fresh install and no existing one.
+`ensure_default_profiles()` seeds absent files and preserves existing profile
+content. Explicit full reseeds can replace that content. A release adding a
+capability in `## Capabilities.aq_commands` needs additive capability sync or
+a grants-only repair to reach an existing vault copy. The supervisor and all
+shipped worker templates receive additive sync by default; other shipped
+profiles can opt in, and `capability_sync: false` opts out.
 
 The graph-visibility release is exactly that case: the shipped worker,
 planner, supervisor, reviewer and pipeline profiles gained
 `task_subtask_add` / `task_subtasks` / `task_subtask_get` /
 `task_subtask_update` and `phase_create` / `phase_list`. On an upgraded box
-the vault copies keep their old command lists, so a worker told by prime to
+an unsynced or opted-out vault copy can keep its old command list, so a worker told by prime to
 run `aq task subtask-done N` gets `capability_denied`, and then a
 `subtasks.open` refusal when it tries to close. (Prime itself now omits the
 "report progress" line for a profile that lacks `task_subtask_update`, so the
@@ -1504,11 +1516,12 @@ remains for that legacy-`## Tools` case, or for any other divergence you'd
 rather just take the shipped version of — it overwrites the whole file (also
 behind a `.bak-<epoch>`), so reconcile edits from the backup afterwards.
 
-**The supervisor is merged automatically.** Every control a release adds for
+**Synced profiles receive grants automatically.** This includes the supervisor,
+all shipped worker templates and opted-in shipped profiles. Every control a release adds for
 the supervisor (`integration_eject`, `review_dispatch`, …) used to stay
 `capability denied` until someone hand-edited its vault copy. The daemon now
-runs the same additive merge as `--grants-only` on the supervisor's vault
-profile at every start and every time the vault watcher reloads that file
+runs the same additive merge as `--grants-only` on each synced vault
+profile/template at every start and every time the vault watcher reloads it
 (`src/profiles/capability_sync.py`). It adds only the missing shipped names:
 nothing is removed, no other section changes, the write is atomic, a
 `.bak-<epoch>` is kept, and the log line and a `profile.capabilities_synced`
