@@ -66,6 +66,7 @@ PR_REPAIR_CHANGES = ROOT / "tests/fixtures/contracts/pr-repair-publication-contr
 PROMOTION_REQUEST_PORT = ROOT / "tests/fixtures/contracts/promotion-request-port-changes.json"
 FAILOVER_CHANGES = ROOT / "tests/fixtures/contracts/provider-failover-playbook-changes.json"
 TRIAGE_CHANGES = ROOT / "tests/fixtures/contracts/supervisor-triage-artifact-changes.json"
+MORNING_CHANGES = ROOT / "tests/fixtures/contracts/morning-report-building-block-changes.json"
 WAIT_REQUEUE_CHANGES = ROOT / "tests/fixtures/contracts/wait-requeue-contract-changes.json"
 RESTART_HOLD_CHANGES = ROOT / "tests/fixtures/contracts/restart-hold-contract-changes.json"
 ROUTING_CHANGES = ROOT / "tests/fixtures/contracts/routing-building-blocks-artifact-changes.json"
@@ -125,8 +126,8 @@ def _updater_changes():
     return json.loads(UPDATER_CHANGES.read_text())
 
 
-def _before_updater_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+def _before_updater_catalogue(catalogue=None):
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
     for name, approved in _updater_changes()["transport_definitions"].items():
         [definition] = [item for item in catalogue["explicit"] if item["name"] == name]
         assert definition["description"] == approved["description"]
@@ -164,7 +165,7 @@ def _restart_hold_changes():
 
 
 def _before_restart_hold_catalogue():
-    catalogue = _before_updater_catalogue()
+    catalogue = _before_parallel_catalogue()
     approved = _restart_hold_changes()["transport_definitions"]["restart_task"]
     [definition] = [item for item in catalogue["explicit"] if item["name"] == "restart_task"]
     assert definition == approved["definition"]
@@ -485,8 +486,15 @@ def test_legacy_execution_documents_and_fingerprints():
         if name in changes:
             assert expected["previous_fingerprint"] == old["fingerprint"]
             assert expected["fingerprint"] != old["fingerprint"]
-        for recording in (_hibernation_changes(), _dispatch_changes(), _merge_changes(),
-                          _leaf_changes(), _completion_changes(), _structure_changes()):
+        for recording in (
+            _hibernation_changes(),
+            _dispatch_changes(),
+            _merge_changes(),
+            _leaf_changes(),
+            _completion_changes(),
+            _restart_hold_changes(),
+            _updater_changes(),
+        ):
             later = recording["contracts"].get(name)
             if later:
                 assert later["previous_fingerprint"] == expected["fingerprint"]
@@ -669,6 +677,12 @@ def test_legacy_playbook_fixtures_are_unchanged():
     assert set(failover) == {"tests/fixtures/playbooks/v2/provider-failover/artifact.json"}
     triage = json.loads(TRIAGE_CHANGES.read_text())["playbook_fixtures"]
     assert set(triage) == {"tests/fixtures/playbooks/v2/supervisor-failure-triage/artifact.json"}
+    morning = json.loads(MORNING_CHANGES.read_text())["playbook_fixtures"]
+    assert set(morning) == {"tests/fixtures/playbooks/v2/morning-report/artifact.json"}
+    hourly = json.loads(
+        (ROOT / "tests/fixtures/contracts/discord-report-contract-changes.json").read_text()
+    )["playbook_fixtures"]
+    assert set(hourly) == {"tests/fixtures/playbooks/v2/supervisor-hourly-report/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
@@ -722,6 +736,16 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert triage[path]["sha256"] != digest
             digest = triage[path]["sha256"]
+        if path in morning:
+            assert morning[path]["previous_sha256"] == digest
+            historical = ROOT / morning[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert morning[path]["sha256"] != digest
+            digest = morning[path]["sha256"]
+        if path in hourly:
+            assert hourly[path]["previous_sha256"] == digest
+            assert hourly[path]["sha256"] != digest
+            digest = hourly[path]["sha256"]
         if path in promotion_request:
             change = promotion_request[path]
             assert change["previous_sha256"] == digest
@@ -1303,3 +1327,51 @@ def test_original_pr_1842_legacy_playbook_fixtures_are_unchanged():
             assert pipeline[path]["sha256"] != digest
             digest = pipeline[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+POOL_DELETE_CHANGES = ROOT / "tests/fixtures/contracts/pool-delete-contract-changes.json"
+
+
+def _pool_delete_changes():
+    return json.loads(POOL_DELETE_CHANGES.read_text())
+
+
+def _before_pool_delete_catalogue(catalogue=None):
+    evidence = _pool_delete_changes()
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    definitions = catalogue["explicit"]
+    index = next(i for i, row in enumerate(definitions) if row["name"] == evidence["command"])
+    assert definitions.pop(index) == evidence["transport_definition"]
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["category"]
+    return catalogue
+
+
+def test_pool_delete_catalogue_only_adds_reviewed_command():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    previous = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+
+
+def test_pool_delete_original_catalogue_evidence():
+    evidence = _pool_delete_changes()
+    catalogue = _before_wait_requeue_catalogue()
+    template = json.loads(render_command_catalogue())
+    explicit = {row["name"]: row for row in catalogue["explicit"]}
+    explicit[evidence["command"]] = evidence["transport_definition"]
+    catalogue["explicit"] = [explicit[row["name"]] for row in template["explicit"]
+                             if row["name"] in explicit]
+    categories = {**catalogue["tool_categories"], evidence["command"]: evidence["category"]}
+    catalogue["tool_categories"] = {name: categories[name] for name in template["tool_categories"]
+                                    if name in categories}
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _before_parallel_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_updater_catalogue(catalogue)
+    catalogue = _before_pool_delete_catalogue(catalogue)
+    return catalogue

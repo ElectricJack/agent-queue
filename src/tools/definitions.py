@@ -446,6 +446,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_rename": "pool",
+    "pool_delete": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",
@@ -7391,6 +7392,31 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
+        },
+    },
+    {
+        "name": "pool_delete",
+        "description": (
+            "Delete a global worker pool, stop its sessions through guarded teardown and "
+            "return routed tasks to their router. Running work is interrupted. Retires the "
+            "profile so install/update cannot recreate it. Backs `aq pool delete`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Pool profile ID to delete."},
+                "depth": {
+                    "type": "string",
+                    "enum": ["profile", "directory"],
+                    "default": "profile",
+                    "description": (
+                        "profile removes profile.md and preserves other vault content; "
+                        "directory removes the entire profile directory. Both retire the pool."
+                    ),
+                },
+                "reason": {"type": "string", "description": "Optional retirement reason."},
+            },
+            "required": ["profile_id"],
         },
     },
     {

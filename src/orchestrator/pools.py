@@ -298,7 +298,9 @@ class PoolsMixin:
             for p in system_profiles
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
-        measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        measurement.pool_sessions = await self.db.list_sessions(
+            lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
+        )
         from src.waits.occupancy import continuation_occupancy, evictable_sessions
         evictable = await evictable_sessions(self.db, self.config)
         resuming, reserved = await continuation_occupancy(self.db, self.config)

@@ -47,6 +47,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-c47a1a9a635a465b8a0cb286f93cb0b0',
                           'msg-c45ccf8341f946819758858c7bff488d',
                           'msg-625e460c4a7c456983e5eb114ea22446',
+                          'msg-c80bde55a6d1442791a2ba4f9597d7a0',
                           'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': 'a36c389c39a33ff60bffa98cc019591298bdcfa9',
@@ -395,7 +396,22 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            'healthy remainder and refresh the original source. Project supervisor '
                            'approved the exact merged footprint under '
                            'size-cap-delegation-2026-10-23; no headroom, new tables or storage '
-                           'categories. Preserve all historical grants and final caps.'}],
+                           'categories. Preserve all historical grants and final caps.'},
+                {'task_id': 'bright-impact-14',
+                 'decision_message_id': 'msg-c80bde55a6d1442791a2ba4f9597d7a0',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'operator_decision': '6679052c',
+                 'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1861',
+                 'previous_owned_total': 160837,
+                 'previous_engine_lines': 85316,
+                 'authorized_owned_delta': 26,
+                 'authorized_engine_delta': 0,
+                 'measured_owned_total': 160863,
+                 'measured_engine_lines': 85316,
+                 'measured_table_count': 45,
+                 'reason': 'PR #1861 latency instrumentation and bounded background graph waits; '
+                           'project supervisor approved the exact footprint under '
+                           'size-cap-delegation-2026-10-23. Retain features and count equality.'}],
  'supplemental_grants': [{'task_id': 'fresh-apex-30',
                           'approval_message_id': 'msg-4e25c0d3',
                           'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
@@ -595,6 +611,25 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                                      '#1900. Preserve every historical grant and '
                                                      'frozen batch measurement.',
                                            'previous_recorded_owned_cap': 161213},
+ 'daemon_latency_merge_measurement': {'task_id': 'bright-impact-14',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'operator_decision': '6679052c',
+                                      'operator_task': 'sharp-cascade-53',
+                                      'pr_url': 'https://github.com/ElectricJack/agent-queue/pull/1861',
+                                      'merged_dev_revision': 'dae4a86819d8c4ed6ec70d0d9349f3895f284c4d',
+                                      'measured_source_revision': 'ebc184bd0922e51438cb5a048324c0631df71a08',
+                                      'previous_owned_total': 161213,
+                                      'previous_engine_lines': 85544,
+                                      'authorized_owned_delta': 26,
+                                      'authorized_engine_delta': 0,
+                                      'measured_owned_total': 161239,
+                                      'measured_engine_lines': 85544,
+                                      'measured_table_count': 45,
+                                      'reason': 'PR #1861 merge refresh: retain all dev grants '
+                                                'and the historical latency grant; exact merged '
+                                                'footprint pre-approved in supervisor reopen '
+                                                'feedback under size-cap-delegation-2026-10-23. '
+                                                'No additional headroom.'},
  'authenticated_push_measurement': {'task_id': 'fleet-dune-15',
                                     'measured_source_revision': '715a3caf99c083f80a9426a303c9336cbb264921',
                                     'approval_message_id': 'msg-49a7a4f4f8a5420eb80abf1d4d8b4a12',

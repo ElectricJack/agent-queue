@@ -408,6 +408,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert set(amendments) == {
         'agile-beacon-80',
         'azure-cascade-22',
+        'bright-impact-14',
         'calm-lantern-21',
         'calm-rapids-50',
         'fair-dune-41',
@@ -921,6 +922,7 @@ def test_original_pr_1907_batch_exception_is_exact_and_has_no_remaining_headroom
     assert set(amendments) == {
         'agile-beacon-80',
         'azure-cascade-22',
+        'bright-impact-14',
         'calm-lantern-21',
         'calm-rapids-50',
         'fair-dune-41',
@@ -1187,6 +1189,7 @@ def test_original_pr_1908_batch_exception_is_exact_and_has_no_remaining_headroom
     assert set(amendments) == {
         'agile-beacon-80',
         'azure-cascade-22',
+        'bright-impact-14',
         'calm-lantern-21',
         'calm-rapids-50',
         'fair-dune-41',
@@ -1462,6 +1465,7 @@ def test_original_pr_1882_batch_exception_is_exact_and_has_no_remaining_headroom
     assert set(amendments) == {
         'agile-beacon-80',
         'azure-cascade-22',
+        'bright-impact-14',
         'calm-lantern-21',
         'calm-rapids-50',
         'fair-dune-41',

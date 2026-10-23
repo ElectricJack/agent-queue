@@ -27,8 +27,9 @@ published and what delivered to main separately. Every shipment claim needs a
 delivery reference; label inference and pending/unknown delivery. Omitted facts
 are omissions, not proof that nothing happened. Prior narrative is context only.
 Do not initiate code work for a report. The server inserts links and the marker,
-neutralizes mentions, and enforces the 1,200-character final budget. Deadline or
-pump claim freezes the winner; there is one logical post and no later edit.
+neutralizes mentions, and enforces the digest budget (600 characters including
+links and marker). Deadline or pump claim freezes the winner; there is one
+logical post and no later edit.
 
 ## Rule: request-window
 

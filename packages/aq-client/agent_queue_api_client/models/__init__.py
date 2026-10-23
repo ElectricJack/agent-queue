@@ -1116,6 +1116,8 @@ from .onboard_project_response_source_type import OnboardProjectResponseSourceTy
 from .onboarding_error_info import OnboardingErrorInfo
 from .onboarding_error_info_details import OnboardingErrorInfoDetails
 from .onboarding_error_info_field_errors_item import OnboardingErrorInfoFieldErrorsItem
+from .operation_perf import OperationPerf
+from .operation_perf_outcomes import OperationPerfOutcomes
 from .operator_decision_dto import OperatorDecisionDTO
 from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .operator_decision_record import OperatorDecisionRecord
@@ -1153,6 +1155,7 @@ from .pending_pull_request_ci_status import PendingPullRequestCiStatus
 from .pending_pull_request_review_decision import PendingPullRequestReviewDecision
 from .pending_pull_requests_response import PendingPullRequestsResponse
 from .perf_metrics import PerfMetrics
+from .perf_metrics_operations import PerfMetricsOperations
 from .perf_sampler_cost import PerfSamplerCost
 from .phase_create_request import PhaseCreateRequest
 from .phase_create_response import PhaseCreateResponse
@@ -1307,6 +1310,9 @@ from .policy_export_response_422 import PolicyExportResponse422
 from .policy_export_warning import PolicyExportWarning
 from .policy_file_preview import PolicyFilePreview
 from .policy_review_receipt import PolicyReviewReceipt
+from .pool_delete_request import PoolDeleteRequest
+from .pool_delete_response import PoolDeleteResponse
+from .pool_delete_response_422 import PoolDeleteResponse422
 from .pool_gauges import PoolGauges
 from .pool_instance_status import PoolInstanceStatus
 from .pool_policy import PoolPolicy
@@ -3329,6 +3335,8 @@ __all__ = (
     "OnboardProjectResponse",
     "OnboardProjectResponse422",
     "OnboardProjectResponseSourceType",
+    "OperationPerf",
+    "OperationPerfOutcomes",
     "OperatorDecisionDTO",
     "OperatorDecisionDTOOptionsItem",
     "OperatorDecisionRecord",
@@ -3366,6 +3374,7 @@ __all__ = (
     "PendingPullRequestReviewDecision",
     "PendingPullRequestsResponse",
     "PerfMetrics",
+    "PerfMetricsOperations",
     "PerfSamplerCost",
     "PhaseCreateRequest",
     "PhaseCreateResponse",
@@ -3520,6 +3529,9 @@ __all__ = (
     "PolicyExportWarning",
     "PolicyFilePreview",
     "PolicyReviewReceipt",
+    "PoolDeleteRequest",
+    "PoolDeleteResponse",
+    "PoolDeleteResponse422",
     "PoolGauges",
     "PoolInstanceStatus",
     "PoolPolicy",
