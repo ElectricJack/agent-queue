@@ -138,6 +138,134 @@ async def register(db, state, session_state):
     ))
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_train_visit_retries_orphaned_launch_before_repair_budget(db, fixer, legacy):
+    from tests import test_integration_train as train_tests
+
+    service, runtime, now = fixer
+    runtime.start.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await allocate(service)
+    orphan = await state(db)
+    assert orphan["status"] == "launching"
+    assert await db.get_session(orphan["session_id"]) is None
+    if legacy:
+        orphan.pop("launch_started_at")
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "batch-fix",
+            ).values(fixer_state=orphan))
+    # New service instance, with no memory of the interrupted runtime.start.
+    restarted = BatchFixerService(db, runtime, clock=lambda: now[0])
+    now[0] += 119
+    assert (await allocate(restarted))["outcome"] == "exists"
+    now[0] += 1
+    frozen = Batch.from_row(await db.get_integration_batch("batch-fix"))
+    members = await BatchStore(db).members(frozen.id)
+    target = train_tests.TrainTarget("p", "r", "refs/heads/dev")
+    train = train_tests.train(train_tests.Targets(target),
+        train_tests.Batches({target.key: (frozen, members)}), {
+            target.key: train_tests.lane(train_tests.Conflicting(
+                {"outcome": "conflict", "head": HEAD}, candidate=HEAD)),
+        }, repair=restarted)
+    visit = await train.visit(target)
+    assert visit.repair["outcome"] == "deferred"
+    row = await db.get_integration_batch(frozen.id)
+    assert row["fixer_queue"]["reason"] == "launch_retry"
+    assert row["fixer_state"]["launch_failures"] == 1
+    assert row["fixer_state"]["status"] == "waiting_capacity"
+    assert now[0] < orphan["deadline"]
+    runtime.start.assert_awaited_once()
+    assert not await notices(db, supervisor=True)
+    await transfer(db, frozen.id, "orphan-retry")
+    now[0] += row["fixer_queue"]["revisit_seconds"]
+    runtime.start.side_effect = None
+    assert (await allocate_on(restarted, "orphan-retry"))["outcome"] == "filed"
+    retried = (await db.get_integration_batch("orphan-retry"))["fixer_state"]
+    assert retried["session_id"] == orphan["session_id"]
+    assert retried["instance_token"] == orphan["instance_token"]
+    assert retried["launch_started_at"] == now[0]
+    assert retried["members"] == orphan["members"]
+
+
+@pytest.mark.parametrize("session_state", ["starting", "running", "stopped"])
+async def test_stale_launch_retries_only_confirmed_stopped_registration(db, fixer, session_state):
+    service, runtime, now = fixer
+    runtime.start.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await allocate(service)
+    orphan = await state(db)
+    await register(db, orphan, session_state)
+    now[0] += 120
+    result = await allocate(BatchFixerService(db, runtime, clock=lambda: now[0]))
+    runtime.start.assert_awaited_once()
+    current = await state(db)
+    if session_state == "stopped":
+        assert result["outcome"] == "deferred"
+        assert current["status"] == "waiting_capacity"
+        assert current["session_id"] != orphan["session_id"]
+        assert current["instance_token"] != orphan["instance_token"]
+    else:
+        assert result["outcome"] == "exists"
+        assert current == orphan
+    assert not await notices(db, supervisor=True)
+
+
+@pytest.mark.parametrize("late_error", [False, True])
+async def test_late_launch_result_cannot_overwrite_retry(db, fixer, late_error):
+    service, runtime, now = fixer
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def delayed(launch):
+        started.set()
+        await finish.wait()
+        if late_error:
+            raise RuntimeError("late launch failure")
+        return {"work_dir": "/old/preparation"}
+
+    runtime.start.side_effect = delayed
+    pending = asyncio.create_task(allocate(service))
+    try:
+        await started.wait()
+        now[0] += 120
+        restarted = BatchFixerService(db, runtime, clock=lambda: now[0])
+        assert (await allocate(restarted))["outcome"] == "deferred"
+        await transfer(db, "batch-fix", "replacement")
+        now[0] += 300
+        runtime.start.side_effect = None
+        assert (await allocate_on(restarted, "replacement"))["outcome"] == "filed"
+        replacement = await db.get_integration_batch("replacement")
+        finish.set()
+        assert (await pending)["outcome"] == "withdrawn"
+        assert (await db.get_integration_batch("replacement"))["fixer_state"] == (
+            replacement["fixer_state"])
+        assert await state(db) is None
+        assert not await notices(db, supervisor=True)
+    finally:
+        finish.set()
+        await pending
+
+
+async def test_each_launch_retry_gets_a_fresh_grace_period(db, fixer):
+    service, runtime, now = fixer
+    runtime.start.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await allocate(service)
+    now[0] += 120
+    assert (await allocate(service))["outcome"] == "deferred"
+    await transfer(db, "batch-fix", "retry-grace")
+    now[0] += 300
+    with pytest.raises(asyncio.CancelledError):
+        await allocate_on(service, "retry-grace")
+    now[0] += 119
+    assert (await allocate_on(service, "retry-grace"))["outcome"] == "exists"
+    now[0] += 1
+    assert (await allocate_on(service, "retry-grace"))["outcome"] == "deferred"
+    current = (await db.get_integration_batch("retry-grace"))["fixer_state"]
+    assert current["launch_failures"] == 2
+    assert runtime.start.await_count == 2
+
+
 async def transfer(db, source, successor_id):
     """What the due resume observer does with an unlaunched identity."""
     store = BatchStore(db)
@@ -513,6 +641,27 @@ async def test_registered_named_launch_has_no_claim_and_preserves_checkout(db, l
     assert not await db.get_task("real")
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(tasks)) == 0
+
+
+@pytest.mark.parametrize("changed", ["instance_token", "launch_started_at"])
+async def test_late_registration_refuses_changed_launch_fence(db, live_fixer, monkeypatch, changed):
+    from src.integration.lock import PublishWithdrawn
+
+    _, runtime, orch, row, _, _, _ = live_fixer
+    original = (await db.get_integration_batch("real"))["fixer_state"]
+    current = {**original, "status": "launching",
+               changed: "replacement" if changed == "instance_token" else runtime.clock() + 120}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "real",
+        ).values(fixer_state=current))
+    monkeypatch.setattr(db, "get_session", AsyncMock(return_value=None))
+    provider = orch.session_providers.create("fake")
+    starts = len(provider.starts)
+    with pytest.raises(PublishWithdrawn, match="registration authority was withdrawn"):
+        await runtime.start(original)
+    assert len(provider.starts) == starts
+    assert (await db.get_integration_batch("real"))["fixer_state"] == current
 
 
 @pytest.mark.parametrize("checkout", ["unregistered", "primary"])

@@ -14,9 +14,13 @@ assignment metadata key are refused.
 
 A repair push defaults to the assigned candidate, revalidates the assignment
 under a bounded per-ref lease, and must fast-forward the exact current remote
-candidate. Its existing history is the validation base; only added commits are
-subject to task identity and reserved-path checks. Caller-provided expected OIDs
-must match that observed candidate and cannot enable a rewrite. Another live
+candidate. Its existing history is the validation base for reserved-path checks.
+Identity validation also inherits the assigned batch target's published history:
+the target is observed remotely under the candidate lease and its exact SHA must
+resolve to a local commit. Missing or unavailable target evidence refuses the
+push. Repair-only commits still require the task's committer identity.
+Caller-provided expected OIDs must match that observed candidate and cannot
+enable a rewrite. Another live
 writer, unavailable/missing ref, stale assignment or divergent history refuses
 publication.
 

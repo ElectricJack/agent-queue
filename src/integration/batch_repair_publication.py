@@ -153,11 +153,23 @@ class BatchRepairAssignments:
                         checkout, remote.oid, tip, strict=True,
                     ) is not True:
                         raise GitError("batch repair push must fast-forward the current candidate")
+                    inherited = await git.als_remote_ref(
+                        checkout, binding["target_ref"].removeprefix("refs/heads/"),
+                        repository_url=binding["repository_url"],
+                    )
+                    if inherited.state is not RemoteRefState.PRESENT or not inherited.oid:
+                        raise GitError("batch repair target is missing or could not be observed")
+                    # The target's published history may include upstream merge
+                    # committers; repair-only commits must still match the policy.
+                    await git._arun(
+                        ["cat-file", "-e", f"{inherited.oid}^{{commit}}"], cwd=checkout,
+                    )
                     oid = await git.apush_validated_delivery(
                         checkout, remote.oid, tip, binding["branch"],
                         expected_remote_oid=remote.oid, repository_url=binding["repository_url"],
                         identity_policy=policy, event_bus=event_bus,
-                        project_id=binding["project_id"], inherited_oids=(remote.oid,),
+                        project_id=binding["project_id"],
+                        inherited_oids=(remote.oid, inherited.oid),
                     )
                     if oid != tip:
                         raise GitError("batch repair push did not confirm its immutable tip")

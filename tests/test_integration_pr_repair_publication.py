@@ -48,13 +48,14 @@ class _GitHub:
     def __init__(self) -> None:
         self.pulls: dict[int, dict] = {}
 
-    def open(self, number: int, branch: str, sha: str, *, repo_id: int = 7):
+    def open(self, number: int, branch: str, sha: str, *, repo_id: int = 7,
+             base_sha: str | None = None):
         self.pulls[number] = {
             "number": number,
             "state": "open",
             "merged_at": None,
             "head": {"ref": branch, "sha": sha, "repo": {"id": repo_id}},
-            "base": {"ref": "main", "repo": {"id": 7}},
+            "base": {"ref": "main", "sha": base_sha or sha, "repo": {"id": 7}},
         }
 
     async def pull_request(self, pr_url: str) -> dict:
@@ -131,7 +132,7 @@ async def _scenario(env, *, repair_start="aq/root"):
     await _task(env, "root", "aq/root", pr_url=PR_URL)
     await _task(env, "repair", "aq/repair")
     await _completion(env, "repair", "aq/repair", tip)
-    env.github.open(PR, "aq/root", old)
+    env.github.open(PR, "aq/root", old, base_sha=_remote_head(env, "main"))
     return old, tip
 
 
@@ -368,6 +369,85 @@ async def test_a_foreign_committer_is_refused_by_the_publish_identity(env):
     assert result["outcome"] == "blocked"
     assert "Git identity" in result["reason"]
     assert _remote_head(env, "aq/root") == old
+
+
+@pytest.mark.parametrize("foreign_repair", [False, True])
+@pytest.mark.parametrize("base_branch", ["main", "dev"])
+async def test_published_base_merge_is_inherited_but_repair_only_commits_are_checked(
+    env, foreign_repair, base_branch,
+):
+    old, _ = await _scenario(env)
+    if base_branch != "main":
+        _git("branch", base_branch, "main", cwd=env.work)
+    env.github.pulls[PR]["base"]["ref"] = base_branch
+    _git("switch", "-c", "upstream-topic", base_branch, cwd=env.work)
+    _commit(env, "upstream.txt", "upstream\n")
+    _git("switch", base_branch, cwd=env.work)
+    _git("merge", "--no-ff", "-m", "GitHub merge", "upstream-topic", cwd=env.work,
+         committer=("GitHub", "noreply@github.com"))
+    base = _git("rev-parse", "HEAD", cwd=env.work)
+    _git("push", "origin", base_branch, cwd=env.work)
+    env.github.pulls[PR]["base"]["sha"] = base
+    _git("switch", "aq/repair", cwd=env.work)
+    _git("merge", "--no-ff", "-m", "inherit published base", base_branch, cwd=env.work)
+    if foreign_repair:
+        _git("commit", "--allow-empty", "-m", "foreign repair", cwd=env.work,
+             committer=("Someone", "someone@example.test"))
+    tip = _git("rev-parse", "HEAD", cwd=env.work)
+    _git("push", "origin", "aq/repair", cwd=env.work)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(task_completion_records).values(commits=json.dumps([tip])))
+
+    result = await _apply(env, old)
+
+    if foreign_repair:
+        assert result["outcome"] == "blocked"
+        assert tip[:12] in result["reason"] and "Git identity" in result["reason"]
+        assert base[:12] not in result["reason"]
+        assert _remote_head(env, "aq/root") == old
+        assert await _published_events(env) == []
+    else:
+        assert result["outcome"] == "published", result
+        assert _remote_head(env, "aq/root") == tip
+        assert len(await _published_events(env)) == 1
+
+
+@pytest.mark.parametrize("base,expected", [
+    ({"ref": "main", "sha": None, "repo": {"id": 7}}, "not_eligible"),
+    ({"ref": "main", "sha": "not-an-oid", "repo": {"id": 7}}, "not_eligible"),
+    ({"ref": "main", "sha": "f" * 40, "repo": {"id": 7}}, "blocked"),
+])
+async def test_missing_or_invalid_base_evidence_refuses(env, base, expected):
+    old, _ = await _scenario(env)
+    env.github.pulls[PR]["base"] = base
+
+    result = await _apply(env, old)
+
+    assert result["outcome"] == expected
+    assert _remote_head(env, "aq/root") == old
+    assert await _published_events(env) == []
+
+
+@pytest.mark.parametrize("change", ["ref", "sha"])
+async def test_base_identity_is_rechecked_under_the_publication_fence(env, monkeypatch, change):
+    old, tip = await _scenario(env)
+    read = env.github.pull_request
+    reads = 0
+
+    async def changed_base(url):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            env.github.pulls[PR]["base"][change] = "other-base" if change == "ref" else tip
+        return await read(url)
+
+    monkeypatch.setattr(env.github, "pull_request", changed_base)
+
+    result = await _apply(env, old)
+
+    assert result["outcome"] == "changed"
+    assert _remote_head(env, "aq/root") == old
+    assert await _published_events(env) == []
 
 
 async def test_a_project_outside_train_mode_refuses(env):

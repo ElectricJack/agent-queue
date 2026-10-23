@@ -15,14 +15,16 @@ Read [the CLI contract](README.md) for the rules these commands obey, and
 `aq prime` prints one markdown document: the complete startup context for one
 task. Role, rules, task, spec sections, workspace, pending messages, tool
 guidance and the completion protocol — assembled in a fixed order, from the
-vault and the database, with no LLM call and no writes.
+vault and the database, with no LLM call. Delivery can mark rendered messages
+read and record a knowledge-context delivery receipt.
 
 ```bash
 aq prime
 ```
 
-Inside a session no flags are needed: the task comes from `AQ_TASK_ID` and the
-daemon URL and bearer token from `AQ_API_URL` / `AQ_API_TOKEN`. Outside one,
+Inside a session no flags are needed: the daemon resolves the task from the held
+claim/session scope (or the CLI supplies `AQ_TASK_ID` for a fixed task),
+and credentials come from `AQ_API_URL` / `AQ_API_TOKEN`. Outside one,
 pass `--task-id`; `--session-id` and `--work-dir` are optional overrides.
 
 For `context.required_over_budget`, `aq prime --json` includes configured
@@ -36,24 +38,20 @@ When knowledge context is enabled for the project, worker prime reduces pageable
 description, ordinary context and historical handoff excerpts as needed to fit
 the aggregate budget. Follow every shortened field's `aq task show --field …`
 command through `next_offset: null` before acting. Handoff pointers retain the
-stored row ID. Role/Rules, full task comments, live repair authority, pending
+stored row ID. Ordinary prime includes all task comments; continuation prime
+keeps a newest-comment tail bounded to 64 KiB with a full-history retrieval pointer.
+Role/Rules, the required comment projection, live repair authority, pending
 messages, result/wait pointers, current facts and completion instructions remain
 inline; if they cannot fit, prime still refuses delivery.
 
-### Two consumers, one renderer
+### Startup and continuation
 
-The document is built by [`src/prime/`](../../../src/prime/), and two things
-render it:
-
-1. **`aq prime`** — the CLI command, backed by the `prime` daemon command
-   ([`src/commands/surface_commands.py`](../../../src/commands/surface_commands.py)).
-2. **The session prompt-file writer** — the session runtime calls
-   `PrimeRenderer` in-process and writes the same body to
-   `<work_dir>/.aq/prompt.md` before the harness launches, so a fresh worker's
-   first prompt already contains it.
-
-That is why a fresh start does *not* also run the hook: it would deliver the
-same body twice. See [suppression](#hook-modes-and-suppression).
+The document is built by [`src/prime/`](../../../src/prime/) behind the `prime`
+daemon command in
+[`surface_commands.py`](../../../src/commands/surface_commands.py). A fresh
+session receives a small bootstrap prompt instructing it to run `aq prime`.
+The launcher does not write `.aq/prompt.md`. Resume and compaction hooks invoke
+the same command to refresh the brief.
 
 ### Sections, in order
 
@@ -70,7 +68,7 @@ as a template variable to a [project override](#per-project-override-aqprimemd).
 | 5 | Workspaces | `work_dir`, `branch`, `pr_url` and any other attached workspace kinds. |
 | 6 | Messages | Pending messages plus the latest handoff note. |
 | 7 | Facts | *Reserved for L1 memory. Renders empty while the memory subsystem is paused (`memory.enabled` defaults to false).* |
-| 8 | Topic Context | *Reserved for L2 memory. Same.* |
+| 8 | Topic Context | Knowledge context when enabled for the project; otherwise empty. |
 | 9 | Tool Guidance | Static template, [`src/prime/templates/tool_guidance.md`](../../../src/prime/templates/tool_guidance.md). |
 | 10 | Completion Protocol | Static template, [`completion_protocol.md`](../../../src/prime/templates/completion_protocol.md), with the task id substituted. |
 
@@ -95,7 +93,7 @@ Section 10 is assembled, not fixed:
   deny. The check fails *open* on anything unresolvable — an unknown profile
   is not a reason to drop a long-standing instruction.
 
-Section 6 is the one section with a side effect. When prime is asked to mark
+Section 6 handles message-delivery side effects. When prime is asked to mark
 messages delivered, each rendered message is marked with `via="prime"` by
 compare-and-set — that is what makes prime a genuine delivery method rather
 than a peek. It reads three inboxes (task, profile, session), merges and
@@ -129,13 +127,13 @@ close.
 |---|---|
 | `aq prime` | The markdown body. |
 | `aq prime --hook-json` | The Claude Code `SessionStart` envelope: `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "<body>"}}`. |
-| `aq prime --hook-format <harness>` | That harness's envelope. `claude` is the JSON above; a harness with no structured hook output gets plain text. |
+| `aq prime --hook-format <harness>` | That harness's envelope. `claude` and `codex` use structured SessionStart JSON; an unsupported harness gets plain text. |
 
-**Suppression.** When `AQ_STARTUP_PROMPT_DELIVERED=1` is set *and* a hook mode
-was requested, the body is suppressed — an empty `additionalContext`. The
-session's bootstrap prompt already delivered `.aq/prompt.md`, and delivering it
-again would waste exactly the tokens this design saves. Wrapping is pure
-presentation
+**Suppression.** A hook-mode call with `AQ_STARTUP_PROMPT_DELIVERED=1` returns
+an empty `additionalContext` only when the hook source is neither `resume` nor
+`compact`. Those continuation sources always re-prime. The marker prevents
+duplicate startup delivery; it is not proof that a prompt file exists.
+Wrapping is pure presentation
 ([`src/prime/hook_envelopes.py`](../../../src/prime/hook_envelopes.py)), so a
 suppressed hook call answers without touching the daemon at all.
 
@@ -151,6 +149,8 @@ ships today:
 | `claude` | `SessionStart` (matcher `resume\|compact`) | `aq prime --hook-json` |
 | `claude` | `PreCompact` | `aq handoff --auto` |
 | `claude` | `SubagentStart`, `SubagentStop` | `aq subagent event --hook-json` |
+| `codex` | `SessionStart` (matcher `resume\|compact`) | `aq prime --hook-json --hook-format codex` |
+| `codex` | `PreCompact` | `aq handoff --auto` |
 | `codex` | `SubagentStart`, `SubagentStop` | `aq subagent event --hook-json` |
 
 Three deliberate absences:
@@ -173,10 +173,11 @@ Three deliberate absences:
 aq handoff "Ran the migration" "Blocked on the alembic head; see task comment 4."
 ```
 
-Writes a `task_context(type=handoff)` row on the current task — subject,
-detail, timestamp and session id. The next `aq prime` for that task renders it
-verbatim in section 6. This is how work state survives a compaction or a
-session restart.
+Writes a structured `task_context(type=handoff)` row on the held task: agent
+notes plus daemon facts about ownership, checkout, jobs, waits and gates. Input
+is capped at 8 KiB; the next prime quotes a bounded projection in section 6
+with retrieval pointers for omitted material. An empty automatic hook is a
+no-op and preserves the useful note.
 
 Shortened handoff projections identify the retained context row and point to
 `aq task show TASK --field context --offset 0 --limit 4096`. Follow `next_offset`
@@ -188,7 +189,7 @@ Ordinary task-show output is a preview for workers and may omit note content.
 | Form | Effect |
 |---|---|
 | `aq handoff --auto …` | Note only. **Never** requests a restart. This is the `PreCompact` form; restarting on every compaction loops forever. |
-| `aq handoff …` | Note **plus** a restart request. It records intent; whether and how to recycle the session is the session runtime's decision. |
+| `aq handoff …` | Note **plus** a restart request. It emits `session.restart_requested`; currently no subscriber performs that restart. |
 
 Task and session default from `AQ_TASK_ID` / `AQ_SESSION_ID`, and the command
 is claim-fenced like the other worker mutators.
@@ -234,7 +235,7 @@ broken".
 
 | State | Written by | Where it lives |
 |---|---|---|
-| The prime document | Nobody — it is assembled per call | Not persisted. `<work_dir>/.aq/prompt.md` is a copy written once at session start. |
+| The prime document | Nobody — it is assembled per call | No launcher-written `.aq/prompt.md`; source records remain in the vault and database. |
 | Role and rules | An operator or a profile command | `vault/agent-types/<id>/profile.md`, and the project override path |
 | Task context and spec sections | `task_set`, spec ingest, playbooks | `task_context` rows |
 | Handoff note | `aq handoff` | `task_context` rows, `type=handoff` |

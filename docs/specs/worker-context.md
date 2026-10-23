@@ -3,9 +3,10 @@
 Task: `azure-vault-92.3` (2026-10-01).
 
 Long workers checkpoint continuation state before native harness compaction.
-The daemon never clears, kills, restarts or releases a live worker to reduce
-context. Claims, waits, workspaces, routing and human/verification gates retain
-their existing owners and semantics. Small tasks remain whole.
+The native-compaction mechanism does not clear, kill, restart or release a
+live worker to reduce context. Separate guarded context-thrash recovery and
+verified-wait hibernation can stop a session. Claims, waits, workspaces, routing
+and human/verification gates retain their existing owners and semantics. Small tasks remain whole.
 
 `sessions.worker_context_compact_tokens` defaults to 160000, accepts 100000–1000000,
 and accepts 0 to inherit harness defaults. It applies only at new task/pool
@@ -45,8 +46,8 @@ watch a 120 k threshold from a metric AQ never measured for it.
 
 Both shipped harnesses use PreCompact to save an automatic, note-only snapshot,
 and SessionStart on compact/resume to re-prime before continuing. Empty automatic
-hooks save facts-only recovery without displacing useful agent notes. A snapshot
-contains task/claim/session/workspace/branch/HEAD, active jobs, active waits
+hooks are a no-op, preserving useful agent notes. Non-empty automatic hooks
+save a note and current facts. A snapshot contains task/claim/session/workspace/branch/HEAD, active jobs, active waits
 and result pointers, open gates, subtask progress and metric provenance.
 Stores that cannot be read are explicitly unknown, not an empty success.
 
@@ -71,6 +72,10 @@ Native controls verified against [Codex configuration](https://learn.chatgpt.com
 [Claude environment variables](https://code.claude.com/docs/en/env-vars).
 
 ## Verification evidence
+
+The following is the recorded implementation evidence from 2026-10-01. The
+current empty-auto-hook behavior is described above; earlier facts-only-hook
+simulation results do not imply that an empty hook still writes a row.
 
 The operator's corrected audit confirms 368 calls for the largest sampled worker,
 mean request input context 349868.73 tokens and peak 588548 tokens. This is the

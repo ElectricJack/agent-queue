@@ -381,6 +381,8 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     amendments = {item["task_id"]: item for item in exception["amendments"]}
     assert set(amendments) == {
         "solid-impact-56", "agile-beacon-80", "nimble-torrent-12", "prime-impact-40",
+        "quick-pinnacle-97",
+        "stark-beacon-94",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -398,6 +400,8 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert composition["source_revision"] == exception["measured_source_revision"]
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
+        "quick-pinnacle-97",
+        "stark-beacon-94",
     }
     assert composition["base_revision"] == merged["dev_source_revision"]
     assert composition["base_owned_total"] == merged["dev_owned_total"]
@@ -407,8 +411,19 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "agile-beacon-80": {"owned": 65, "engine": 65},
         "nimble-torrent-12": {"owned": 1, "engine": 0},
         "prime-impact-40": {"owned": 103, "engine": 82},
+        "quick-pinnacle-97": {"owned": 28, "engine": 28},
+        "stark-beacon-94": {"owned": 21, "engine": 21},
     }
-    for task_id in ("agile-beacon-80", "nimble-torrent-12", "prime-impact-40"):
+    # Keep historical member measurements separate from the combined exact grant.
+    orphan_launch = amendments["quick-pinnacle-97"]
+    assert orphan_launch["previous_owned_total"] == 161_053
+    assert orphan_launch["measured_owned_total"] == 161_081
+    assert orphan_launch["measured_engine_lines"] == 85_496
+    assert orphan_launch["measured_table_count"] == 45
+    assert orphan_launch["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert orphan_launch["decision_message_id"] == "msg-e2dd5a423516458eb564e745a12ab30e"
+    assert orphan_launch["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1884"
+    for task_id in ("agile-beacon-80", "nimble-torrent-12", "prime-impact-40", "quick-pinnacle-97"):
         grant_delta = composition["approved_deltas"][task_id]
         assert grant_delta["owned"] == amendments[task_id]["authorized_owned_delta"]
         assert grant_delta["engine"] == amendments[task_id]["authorized_engine_delta"]
@@ -419,6 +434,16 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert composition["base_engine_lines"] + sum(
         delta["engine"] for delta in composition["approved_deltas"].values()
     ) == exception["measured_engine_lines"]
+    repair = amendments["stark-beacon-94"]
+    assert repair["decision_id"] == "size-cap-delegation-2026-10-23"
+    assert repair["operator_decision"] == "6679052c"
+    assert repair["operator_task"] == "sharp-cascade-53"
+    assert repair["pr_url"] == "https://github.com/ElectricJack/agent-queue/pull/1817"
+    assert repair["previous_owned_total"] + repair["authorized_owned_delta"] == 161_074
+    assert (repair["previous_engine_lines"] + repair["authorized_engine_delta"]
+            == 85_489)
+    assert repair["previous_table_count"] + repair["authorized_table_delta"] == 45
+    assert repair["measured_source_revision"] == "24d081eecf0c00a912a064e37ba616334382e263"
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [

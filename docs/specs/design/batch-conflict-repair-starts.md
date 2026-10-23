@@ -44,3 +44,14 @@ named in the filed brief, preserve the existing candidate on failed or refused
 transport, and repeat visits after an unchanged completion missing the target
 without allocating a successor. Exercise live managed leases and changed
 completion sources too.
+
+Task-free fixer launch reservations survive a daemon restart. On a conclusive
+repair visit, a reservation still `launching` after 120 seconds enters the
+existing launch retry path if no session was registered or its registration
+is confirmed stopped. The grace period starts again for each launch attempt;
+older reservations use `created_at`. Retry preserves the retained input and
+checkout and releases the lane with bounded backoff. A registered session that
+may still have a process remains retained. Registration and launch completion
+must match the session id, instance token and launch start timestamp, so a late
+attempt cannot register or overwrite its replacement. Exact green and withdrawn
+publication authority retain their existing precedence.

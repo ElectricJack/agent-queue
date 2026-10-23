@@ -9,7 +9,7 @@
       "spec-ingest": "sha256:bd6f4a3e6f2e0cc2c23aff75ee9a695dd506ffaa3ce1bd8853a86e43dff78180"
     }
   },
-  "compiled_at": "2026-10-21T08:37:00.750525Z",
+  "compiled_at": "2026-10-23T07:33:48.673040Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "default-pipeline",
   "purpose": "routine",
@@ -19,11 +19,11 @@
       "id": "spec-ingest-on-approve",
       "name": "spec-ingest-on-approve",
       "source": {
-        "end_line": 27,
+        "end_line": 31,
         "excerpt": "## Rule: spec-ingest-on-approve",
         "heading": "Rule: spec-ingest-on-approve",
         "path": "default-pipeline.md",
-        "start_line": 27
+        "start_line": 31
       },
       "trigger": {
         "event_type": "spec.approved"
@@ -34,11 +34,11 @@
       "id": "proposal-ready-gate",
       "name": "proposal-ready-gate",
       "source": {
-        "end_line": 55,
+        "end_line": 59,
         "excerpt": "## Rule: proposal-ready-gate",
         "heading": "Rule: proposal-ready-gate",
         "path": "default-pipeline.md",
-        "start_line": 55
+        "start_line": 59
       },
       "trigger": {
         "event_type": "proposal.ready"
@@ -57,11 +57,11 @@
       "id": "commit-on-gate-resolve",
       "name": "commit-on-gate-resolve",
       "source": {
-        "end_line": 70,
+        "end_line": 74,
         "excerpt": "## Rule: commit-on-gate-resolve",
         "heading": "Rule: commit-on-gate-resolve",
         "path": "default-pipeline.md",
-        "start_line": 70
+        "start_line": 74
       },
       "trigger": {
         "event_type": "gate.resolved",
@@ -79,7 +79,7 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:b761ab57cc68323dbe0d62b9ef55e05ad16b655a1aa09bfe737e9bda4733ce02",
+  "source_hash": "sha256:58b1df380eb21e7162101c4e98173ad0703ab29b12ef3eb13f9657b647042303",
   "steps": {
     "commit-on-gate-resolve--commit_proposal": {
       "command": "task_batch_commit",
@@ -99,11 +99,11 @@
       },
       "rule": "commit-on-gate-resolve",
       "source": {
-        "end_line": 80,
+        "end_line": 84,
         "excerpt": "1. Call `task_batch_commit` with `proposal_id` taken from the resolved gate's",
         "heading": "Rule: commit-on-gate-resolve",
         "path": "default-pipeline.md",
-        "start_line": 80
+        "start_line": 84
       },
       "title": "commit_proposal",
       "transitions": {
@@ -119,11 +119,11 @@
       "outcome": "completed",
       "rule": "commit-on-gate-resolve",
       "source": {
-        "end_line": 88,
+        "end_line": 92,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "default-pipeline.md",
-        "start_line": 88
+        "start_line": 92
       },
       "title": "Completed",
       "type": "terminal"
@@ -132,11 +132,11 @@
       "outcome": "failed",
       "rule": "commit-on-gate-resolve",
       "source": {
-        "end_line": 88,
+        "end_line": 92,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "default-pipeline.md",
-        "start_line": 88
+        "start_line": 92
       },
       "title": "Failed",
       "type": "terminal"
@@ -145,11 +145,11 @@
       "outcome": "completed",
       "rule": "proposal-ready-gate",
       "source": {
-        "end_line": 88,
+        "end_line": 92,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "default-pipeline.md",
-        "start_line": 88
+        "start_line": 92
       },
       "title": "Completed",
       "type": "terminal"
@@ -158,11 +158,11 @@
       "outcome": "failed",
       "rule": "proposal-ready-gate",
       "source": {
-        "end_line": 88,
+        "end_line": 92,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "default-pipeline.md",
-        "start_line": 88
+        "start_line": 92
       },
       "title": "Failed",
       "type": "terminal"
@@ -206,11 +206,11 @@
       },
       "rule": "proposal-ready-gate",
       "source": {
-        "end_line": 64,
+        "end_line": 68,
         "excerpt": "1. Call `gate_create` in the event's `project_id` with `gate_type` `human`,",
         "heading": "Rule: proposal-ready-gate",
         "path": "default-pipeline.md",
-        "start_line": 64
+        "start_line": 68
       },
       "title": "proposal_ready_gate",
       "transitions": {
@@ -226,11 +226,11 @@
       "outcome": "completed",
       "rule": "spec-ingest-on-approve",
       "source": {
-        "end_line": 88,
+        "end_line": 92,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "default-pipeline.md",
-        "start_line": 88
+        "start_line": 92
       },
       "title": "Completed",
       "type": "terminal"
@@ -239,11 +239,11 @@
       "outcome": "failed",
       "rule": "spec-ingest-on-approve",
       "source": {
-        "end_line": 88,
+        "end_line": 92,
         "excerpt": "## Failure handling",
         "heading": "Failure handling",
         "path": "default-pipeline.md",
-        "start_line": 88
+        "start_line": 92
       },
       "title": "Failed",
       "type": "terminal"
@@ -266,11 +266,11 @@
       },
       "rule": "spec-ingest-on-approve",
       "source": {
-        "end_line": 31,
+        "end_line": 35,
         "excerpt": "1. Call `ensure_spec_ingest` with the event's `project_id`, `decision_id`",
         "heading": "Rule: spec-ingest-on-approve",
         "path": "default-pipeline.md",
-        "start_line": 31
+        "start_line": 35
       },
       "title": "spec_ingest_gate",
       "transitions": {
@@ -281,6 +281,13 @@
       },
       "type": "command"
     }
+  },
+  "trusted_execution": {
+    "required_capabilities": [
+      "ensure_spec_ingest",
+      "gate_create",
+      "task_batch_commit"
+    ]
   },
   "version": 1
 }

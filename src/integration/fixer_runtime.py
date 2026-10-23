@@ -255,8 +255,12 @@ class DaemonFixerRuntime:
             current = (await conn.execute(select(integration_batches).where(
                 integration_batches.c.id == state["batch_id"],
             ).with_for_update())).mappings().one()
-            if (current["intent"] != "open" or current["fixer_state"]["status"] != "launching"
-                    or current["fixer_state"]["session_id"] != row.id):
+            binding = current["fixer_state"] or {}
+            if (current["intent"] != "open" or binding.get("status") != "launching"
+                    or binding.get("session_id") != row.id
+                    or binding.get("instance_token") != row.instance_token
+                    or binding.get("launch_started_at")
+                    != state.get("launch_started_at")):
                 raise PublishWithdrawn("fixer registration authority was withdrawn")
             await self.db.create_session(row, conn=conn)
             # Commit the checkout/session binding before the harness can call
