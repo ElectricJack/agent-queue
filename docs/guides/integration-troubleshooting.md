@@ -20,6 +20,22 @@ Historical Subject rows retain their gates and ownership evidence. A restart
 or configuration edit never grants authority to bypass a hold. Status can read
 Git to verify delivery but never advances a target.
 
+The retained Subject diagnostics still inspect unfinished rows in
+`integration_subjects`:
+
+```bash
+aq doctor --check integration.subjects_overdue
+aq doctor --check integration.subjects_held
+```
+
+`integration.subjects_overdue` reports rows whose `next_due_at` is more than
+60 seconds overdue; `integration.subjects_held` reports rows with no
+`next_due_at`. Inspect their `wait_reason` and `gate_id` for the recorded blocker.
+These checks expose historical Subject state; use the train diagnostics above
+for current delivery progress. For a stranded branch owner, preview the separate
+ownership proof with `aq integration release-owner --task-id TASK_ID --dry-run`
+as described below.
+
 Inspect App credentials and branch protection with `aq integration app-verify
 PROJECT_ID`. `app-setup` prints the fixes; applying GitHub settings is a separate
 repository administrator action. See [App-mode setup](../config/app-mode-train.md).
