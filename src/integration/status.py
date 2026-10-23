@@ -1154,7 +1154,7 @@ class IntegrationStatusService:
             policy = RepairPolicy.model_validate(current["policy"])
             ordinal = int(current["ordinal"])
             limit = policy.primary_attempts if ordinal == 0 else policy.debug_attempts
-            if current["state"] == "active" and int(current["attempts"]) >= limit:
+            if current["state"] == "active" and limit and int(current["attempts"]) >= limit:
                 blockers.append(
                     _blocker(
                         "budget_exhausted",

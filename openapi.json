@@ -20412,8 +20412,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
-        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
+        "summary": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
+        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
         "operationId": "reparent_task",
         "requestBody": {
           "content": {
@@ -20459,8 +20459,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
-        "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+        "summary": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
+        "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
         "operationId": "restart_task",
         "requestBody": {
           "content": {
@@ -21791,6 +21791,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/split": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        "description": "Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        "operationId": "task_split",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSplitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSplitResponse"
                 }
               }
             }
@@ -46397,7 +46444,8 @@
               "disabled",
               "observe",
               "hierarchy",
-              "train"
+              "train",
+              "development"
             ],
             "title": "Hierarchical Integration Mode"
           },
@@ -70903,6 +70951,30 @@
             "title": "Root",
             "description": "",
             "default": false
+          },
+          "expected_old_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Old Generation",
+            "description": "Hierarchical projects: the old parent's integration generation."
+          },
+          "expected_new_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected New Generation",
+            "description": "Hierarchical projects: the new parent's integration generation."
           }
         },
         "type": "object",
@@ -71772,6 +71844,30 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task ID to restart"
+          },
+          "override_hold": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Hold",
+            "description": "Explicitly release the recovery hold (operator/global supervisor only)"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Required reason for overriding a recovery hold"
           }
         },
         "type": "object",
@@ -83189,6 +83285,149 @@
         "title": "TaskShowResponse",
         "description": "``task_show`` \u2014 ``get_task`` plus the composed sections.\n\n``claimed_by`` is ``None`` when the task is unclaimed."
       },
+      "TaskSplitRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "retained_acceptance": {
+            "items": {},
+            "type": "array",
+            "title": "Retained Acceptance",
+            "description": "Exact source criteria retained; together with moved.acceptance, an exhaustive partition."
+          },
+          "moved": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Moved",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "expected_generation": {
+            "type": "integer",
+            "title": "Expected Generation",
+            "description": "Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "retained_acceptance",
+          "moved",
+          "reason",
+          "expected_generation"
+        ],
+        "title": "TaskSplitRequest"
+      },
+      "TaskSplitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "moved_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moved Task Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "safe_continuation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safe Continuation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "TaskSplitResponse"
+      },
       "TaskStatusSummary": {
         "properties": {
           "total": {
@@ -85853,7 +86092,8 @@
               "wake",
               "cancel",
               "reroute",
-              "escalate_to_human"
+              "escalate_to_human",
+              "requeue"
             ],
             "title": "Decision"
           },
@@ -85899,6 +86139,18 @@
               }
             ],
             "title": "Expected Generation"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
           }
         },
         "additionalProperties": false,
