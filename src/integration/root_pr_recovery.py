@@ -117,21 +117,13 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
         history = json.loads(stored) if stored else {}
         heads = list(history.get("heads", ()))
         policy = (observation.policy.get("root") or {}).get("repair") or {}
-        source_repaired = await conn.scalar(select(task_context.c.id).where(
-            task_context.c.task_id == request.task_id,
-            task_context.c.label == "Source CI Repair",
-            task_context.c.type == "reopen_feedback",
-        ).limit(1))
-        legacy_delegate = await conn.scalar(select(integration_source_ci.c.task_id).where(
-            integration_source_ci.c.repair_task_id == request.task_id,
-        ).limit(1))
         source_attempt = await conn.scalar(select(integration_source_ci.c.task_id).where(
             integration_source_ci.c.task_id == request.task_id,
+            integration_source_ci.c.repository_id == request.repository_id,
+            integration_source_ci.c.source_head == observation.source_sha,
             integration_source_ci.c.repair_attempt > 0,
         ).limit(1))
-        source_budget = bool(policy.get("source_ci") or source_repaired or source_attempt or legacy_delegate
-                             or task["created_by_kind"] == "source_ci_repair")
-        limit = 1 if source_budget else policy.get("primary_attempts", 3)
+        limit = policy.get("primary_attempts", 3)
         container = False
         for table in (tasks, archived_tasks):
             if await conn.scalar(select(table.c.id).where(
@@ -139,19 +131,15 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
             ).limit(1)):
                 container = True
                 break
-        reason = ("source_ci_repair_exhausted" if source_budget and (
-                      source_repaired or source_attempt or legacy_delegate
-                      or task["created_by_kind"] == "source_ci_repair" or len(heads) >= limit
-                  ) else "root_pr_checks_need_repair" if container else
-                  "root_pr_checks_unchanged" if observation.source_sha in heads else
-                  "root_pr_checks_recovery_exhausted" if len(heads) >= limit
+        reason = ("root_pr_checks_need_repair" if container else
+                  "root_pr_checks_unchanged" if observation.source_sha in heads or source_attempt else
+                  "root_pr_checks_recovery_exhausted" if limit and len(heads) >= limit
                   and policy.get("on_exhausted", "human") != "continue" else None)
         if reason:
             identity = hashlib.sha256(repr((request.task_id, request.completion_id,
                 observation.source_sha, reason)).encode()).hexdigest()
             await insert_message_with_source_event(conn, pg_insert(messages).values(
-                id=("msg-source-ci-budget-" + request.task_id
-                    if reason == "source_ci_repair_exhausted" else f"root-pr-checks-{identity}"),
+                id=f"root-pr-checks-{identity}",
                 project_id=request.project_id,
                 from_kind="system", from_id="integration-admission", to_kind="session",
                 to_id=f"supervisor-{request.project_id}",
