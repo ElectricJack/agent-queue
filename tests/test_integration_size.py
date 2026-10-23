@@ -384,6 +384,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "quick-pinnacle-97",
         "stark-beacon-94",
         "sharp-rapids-10",
+        "fair-dune-41",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -411,12 +412,12 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert snapshot["previous_owned_total"] == 161_102
     assert snapshot["authorized_owned_delta"] == 9
     assert snapshot["authorized_engine_delta"] == 0
-    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == measured
-    assert snapshot["measured_owned_total"] == measured == 161_111
+    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == 161_111
+    assert snapshot["measured_owned_total"] == 161_111
     assert snapshot["previous_engine_lines"] == snapshot["measured_engine_lines"] == 85_517
     assert snapshot["measured_engine_lines"] == exception["measured_engine_lines"]
     assert snapshot["measured_table_count"] == 45
-    assert snapshot["measured_source_revision"] == exception["measured_source_revision"]
+    assert snapshot["measured_source_revision"] == "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6"
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["dashboard_pr_snapshot_measurement"] == snapshot
     assert set(composition["member_sources"]) == {
@@ -481,6 +482,33 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     ]
     # The exception is an upper bound: later genuine reductions still pass.
     assert ownership.budget_errors({**report, "total": measured - 1}, manifest) == []
+
+
+def test_activation_health_grant_carries_only_two_owned_lines(report, manifest):
+    exception = manifest["transition_exception"]
+    grant = next(item for item in exception["amendments"] if item["task_id"] == "fair-dune-41")
+    assert grant["decision_message_id"] == "msg-99539879"
+    assert grant["decision_message_id"] in exception["decision_message_ids"]
+    assert grant["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert grant["charged_definition"] == "src/doctor/stall_checks.py::_check_sweep"
+    assert grant["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert grant["original_approved_owned_total"] == 161_053
+    assert grant["original_measured_owned_total"] == 161_055
+    assert grant["authorized_owned_delta"] == 2
+    assert grant["authorized_engine_delta"] == grant["authorized_table_delta"] == 0
+    assert grant["previous_owned_total"] == 161_111
+    assert grant["previous_owned_total"] + grant["authorized_owned_delta"] == report["total"]
+    assert grant["measured_owned_total"] == exception["measured_owned_total"] == 161_113
+    assert grant["previous_engine_lines"] == grant["measured_engine_lines"] == 85_517
+    assert grant["measured_engine_lines"] == report["groups"]["engine"]
+    assert grant["previous_table_count"] == grant["measured_table_count"] == len(report["tables"])
+    assert grant["measured_source_revision"] == exception["measured_source_revision"]
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["playbook_activation_health_measurement"] == grant
+    assert ownership.budget_errors(report, manifest) == []
+    assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
+        "owned total: 161,114 exceeds 161,113 in transition",
+    ]
 
 
 @pytest.mark.parametrize("field,value", [

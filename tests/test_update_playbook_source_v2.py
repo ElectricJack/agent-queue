@@ -90,6 +90,58 @@ async def test_update_source_is_a_v2_command_that_compiles_and_activates(tmp_pat
     assert activation["health"] == "ready"
 
 
+async def test_contract_drift_alert_clears_after_source_recompile(
+    tmp_path, reuse_database, monkeypatch,
+) -> None:
+    from dataclasses import replace
+    import time
+
+    from src.doctor.models import DoctorContext
+    from src.doctor.stall_checks import _activation_findings
+
+    handler = _Handler(tmp_path)
+    handler.db = await reuse_database("activation-drift-alert")
+    await handler.db.set_playbook_activation(
+        playbook_id="router", scope="system", scope_identifier="",
+        artifact_sha256=None, enabled=True, activated_by="test",
+        health="unavailable", reasons="[]",
+    )
+    args = {"playbook_id": "router", "markdown": SOURCE,
+            "expected_source_hash": source_digest(SOURCE)}
+    initial = await handler._cmd_update_playbook_source(args)
+    assert initial["compiled"] is True, initial
+    ctx = DoctorContext(db=handler.db, handler=handler, config=handler.config)
+    assert await _activation_findings(ctx, time.time()) == []
+
+    class ChangedContracts(RegistryContractLookup):
+        def get(self, name):
+            info = super().get(name)
+            if name == "gate_create":
+                return replace(info, execution_fingerprint="sha256:" + "f" * 64)
+            return info
+
+    monkeypatch.setattr(handler, "_v2_lookups", AsyncMock(return_value=(
+        ChangedContracts(), shipped_profile_lookup(), RegisteredEventLookup(),
+    )))
+    [alert] = await _activation_findings(ctx, time.time())
+    assert alert["health"] == "stale_contract"
+    assert alert["playbook_id"] == "router"
+    assert alert["activation_age_seconds"] >= 0
+    assert alert["reasons"][0]["code"] == "command_contract_changed"
+    assert alert["reasons"][0]["subject"] == "gate_create"
+    assert "gate_create" in alert["detail"]
+
+    rebuilt = await handler._cmd_update_playbook_source(args)
+    assert rebuilt["compiled"] is True, rebuilt
+    assert rebuilt["version"] > initial["version"]
+    assert await _activation_findings(ctx, time.time()) == []
+    contracts, profiles, _events = await handler._v2_lookups()
+    from src.playbooks.activation import load_activation_health
+
+    [health] = await load_activation_health(handler.db, contracts=contracts, profiles=profiles)
+    assert health.health.value == "ready"
+
+
 async def test_command_handler_dispatches_update_source_instead_of_returning_unknown(
     tmp_path,
 ) -> None:

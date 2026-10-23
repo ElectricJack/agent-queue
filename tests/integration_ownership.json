@@ -19534,13 +19534,14 @@
       "msg-a337e2c905ce4f5c8a236344a4e25211",
       "msg-330ea2478c724381acbb5512fc99e4b5",
       "msg-e2dd5a423516458eb564e745a12ab30e",
-      "msg-3f6311071a6647429059f3a990750597"
+      "msg-3f6311071a6647429059f3a990750597",
+      "msg-99539879"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "43b3e220a2a1ac6e8d5b7543d3f83063c7c747f6",
+    "measured_source_revision": "ca7a4377c532d723b0ab9c3bb5f833707a317cf5",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 161111,
-    "delta": 5612,
+    "measured_owned_total": 161113,
+    "delta": 5614,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19560,7 +19561,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 2153,
+    "batch_measured_delta": 2155,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19675,6 +19676,27 @@
         "measured_engine_lines": 85517,
         "measured_table_count": 45,
         "reason": "Dashboard PR snapshot quota fix; exact project supervisor amendment under size-cap-delegation-2026-10-23. No automatic ceiling increase or source relocation."
+      },
+      {
+        "task_id": "fair-dune-41",
+        "decision_message_id": "msg-99539879",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+        "previous_owned_total": 161111,
+        "previous_engine_lines": 85517,
+        "previous_table_count": 45,
+        "authorized_owned_delta": 2,
+        "authorized_engine_delta": 0,
+        "authorized_table_delta": 0,
+        "original_approved_owned_total": 161053,
+        "original_measured_owned_total": 161055,
+        "measured_source_revision": "ca7a4377c532d723b0ab9c3bb5f833707a317cf5",
+        "measured_owned_total": 161113,
+        "measured_engine_lines": 85517,
+        "measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1886",
+        "charged_definition": "src/doctor/stall_checks.py::_check_sweep",
+        "reason": "Stall-sweep alert for non-ready playbook activations. Global supervisor approved the exact +2 owned lines under size-cap-delegation-2026-10-23; project supervisor directed carrying that unchanged delta onto current dev after PR1885. Engine lines and table count remain unchanged."
       }
     ],
     "supplemental_grants": [

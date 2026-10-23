@@ -6462,11 +6462,12 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:3c41f9834d4a60825f5b2f14b80fa03e3efb3e826a93b346c7a0bb4f29cf49ed",
+      "digest": "sha256:bec03d8c8a6ca05cbf4082948828310cf5f862fb20201b69b5c96bfba542d92b",
       "imports": [
         "src.config",
         "src.doctor.models",
         "src.models",
+        "src.playbooks.activation",
         "src.workspace_disable"
       ],
       "markers": [
@@ -19306,11 +19307,14 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:f1d34ee6b343a4a593676fe887cab533cd067893eee9c91d5dcaa342780701cb",
+      "digest": "sha256:042f2181214e7014186b60ee3d0f58e918b33e9a0800ba5ecfa8593e9b8c1e72",
       "imports": [
         "src.commands.handler",
         "src.commands.playbook_commands",
         "src.commands.playbook_v2_commands",
+        "src.doctor.models",
+        "src.doctor.stall_checks",
+        "src.playbooks.activation",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.profiles",
