@@ -14,9 +14,7 @@ from src.waits.conditions import WaitError
 from src.waits.decision import ceiling_anchor, decide_sleep, measured_inputs, project_policy
 from src.waits.graph import lock_graph
 from src.database.queries.continuation_queries import measurement_medians
-from src.wait_runtime.hibernate import (
-    STOP_PROOF_MAX_ATTEMPTS, HibernationTransaction, begin_suspension,
-)
+from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS, HibernationTransaction, begin_suspension
 from src.wait_runtime.resume import ResumeTransaction
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
@@ -84,14 +82,11 @@ class WaitLifecycle:
         )
         if not receipt["success"] or scope.owner_kind != "task":
             return receipt
-        wait = (await conn.execute(select(wait_records).where(
-            wait_records.c.id == receipt["wait_id"],
-        ))).mappings().one()
+        wait = (await conn.execute(
+            select(wait_records).where(wait_records.c.id == receipt["wait_id"]))).mappings().one()
         if wait["cleared_at"] is not None or wait["outcome"] != "pending":
             return receipt
-        task = (await conn.execute(select(tasks).where(
-            tasks.c.id == scope.owner_id,
-        ))).mappings().one()
+        task = (await conn.execute(select(tasks).where(tasks.c.id == scope.owner_id))).mappings().one()
         if wait["sleep_decision"] == "hibernate":
             if not policy.hibernation_enabled:
                 raise WaitError("wait.disabled", "forced hibernation is not enabled")
@@ -118,9 +113,8 @@ class WaitLifecycle:
 
         async with self.db._engine.begin() as conn:
             await lock_graph(conn)
-            wait = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == args['wait_id'],
-            ))).mappings().first()
+            wait = (await conn.execute(
+                select(wait_records).where(wait_records.c.id == args['wait_id']))).mappings().first()
             if wait is None:
                 raise WaitError('wait.source_unresolved', 'wait disappeared')
             if wait['cleared_at'] is not None:
@@ -128,14 +122,12 @@ class WaitLifecycle:
             evicted = wait['decision_reason'] == 'evicted'
             if wait['sleep_decision'] == 'in_place':
                 policy = project_policy(self.orch.config.wait_policy, wait['project_id'])
-                task = (await conn.execute(select(tasks).where(
-                    tasks.c.id == wait['owner_id'],
-                ).with_for_update())).mappings().first()
+                task = (await conn.execute(select(tasks).where(tasks.c.id == wait['owner_id'])
+                                          .with_for_update())).mappings().first()
                 if not task:
                     return {'success': True, 'decision': 'in_place'}
                 wait = (await conn.execute(select(wait_records).where(
-                    wait_records.c.id == args['wait_id'],
-                ).with_for_update())).mappings().one()
+                    wait_records.c.id == args['wait_id']).with_for_update())).mappings().one()
                 medians = await measurement_medians(conn, wait['project_id'], now=self.clock())
                 decision = decide_sleep(measured_inputs(
                     Condition.from_record(wait['condition']), None, policy=policy, medians=medians,
@@ -149,10 +141,9 @@ class WaitLifecycle:
         result = await self.hibernate.advance(args["wait_id"], handler=handler)
         if result.get('parked'):
             await capture_costs(self, args['wait_id'])
-        if result.get('parked') and evicted:
-            # The suspension is now proved. Complete the waiting arbitration
-            # immediately from fresh occupancy, rather than waiting a pool tick.
-            await self.orch._reconcile_pools()
+            if evicted:
+                # Proved suspension permits arbitration from fresh occupancy.
+                await self.orch._reconcile_pools()
         return result
 
     async def evict(self, args, *, principal, scope, handler):
@@ -169,9 +160,8 @@ class WaitLifecycle:
             return {'success': True, 'suspended': False, 'reason': 'flag'}
         if wait['sleep_decision'] != 'in_place' or wait['outcome'] != 'pending':
             return {'success': True, 'suspended': False}
-        task = (await conn.execute(select(tasks).where(
-            tasks.c.id == wait['owner_id'],
-        ).with_for_update())).mappings().first()
+        task = (await conn.execute(select(tasks).where(tasks.c.id == wait['owner_id'])
+                                  .with_for_update())).mappings().first()
         if wait['owner_kind'] != 'task' or not task:
             return {'success': True, 'suspended': False}
         await fence_owner(conn, wait, task, parked_required=False)

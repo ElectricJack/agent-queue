@@ -124,17 +124,14 @@ async def begin_suspension(conn, wait, task, *, now, budget):
 async def locked_suspension(conn, wait_id):
     """Global graph then task, wait, continuation; never invert dispatch's locks."""
     await lock_graph(conn)
-    initial = (await conn.execute(select(wait_records).where(
-        wait_records.c.id == wait_id,
-    ))).mappings().first()
+    initial = (await conn.execute(
+        select(wait_records).where(wait_records.c.id == wait_id))).mappings().first()
     if not initial or initial["owner_kind"] != "task":
         raise WaitError("wait.out_of_scope", "suspension requires a task wait")
-    task = (await conn.execute(select(tasks).where(
-        tasks.c.id == initial["owner_id"],
-    ).with_for_update())).mappings().first()
-    wait = (await conn.execute(select(wait_records).where(
-        wait_records.c.id == wait_id,
-    ).with_for_update())).mappings().one()
+    task = (await conn.execute(select(tasks).where(tasks.c.id == initial["owner_id"])
+                              .with_for_update())).mappings().first()
+    wait = (await conn.execute(select(wait_records).where(wait_records.c.id == wait_id)
+                              .with_for_update())).mappings().one()
     intent = (await conn.execute(select(continuations).where(
         continuations.c.wait_id == wait_id,
         continuations.c.resume_state.not_in(("acknowledged", "failed", "cancelled")),
@@ -207,12 +204,12 @@ class HibernationTransaction:
             return await self._advance_locked(wait_id, handler=handler)
 
     async def _advance_locked(self, wait_id, *, handler):
+        c = continuations.c
         now = self.clock()
         policy = self.orch.config.wait_policy
         async with self.db._engine.connect() as conn:
-            parked = (await conn.execute(select(continuations).where(
-                continuations.c.wait_id == wait_id, continuations.c.stopped_at.is_not(None),
-                continuations.c.resume_state.in_(("sleeping", "queued", "held")),
+            parked = (await conn.execute(select(continuations).where(c.wait_id == wait_id,
+                c.stopped_at.is_not(None), c.resume_state.in_(("sleeping", "queued", "held")),
             ))).mappings().first()
         if parked:
             return await self.cleanup(dict(parked))
@@ -221,10 +218,8 @@ class HibernationTransaction:
             if intent["stopped_at"] is not None:
                 return {"success": True, "parked": True}
             if task["status"] == "PAUSED":
-                await conn.execute(update(continuations).where(
-                    continuations.c.id == intent["id"],
-                ).values(resume_state="held", hold_reason="paused",
-                         version=intent["version"] + 1))
+                await conn.execute(update(continuations).where(c.id == intent["id"])
+                    .values(resume_state="held", hold_reason="paused", version=intent["version"] + 1))
                 return {"success": True, "held": True, "hold_reason": "paused"}
             if task["status"] not in {"WAITING", "IN_PROGRESS"}:
                 raise WaitError("continuation.stale_generation", "task is no longer suspendable")
@@ -246,13 +241,11 @@ class HibernationTransaction:
                     generation=intent["suspension_generation"], now=now,
                     transition_budget_seconds=policy.transition_budget_seconds, facts=facts,
                 )
-                intent = dict((await conn.execute(select(continuations).where(
-                    continuations.c.id == intent["id"],
-                ))).mappings().one())
+                intent = dict((await conn.execute(
+                    select(continuations).where(c.id == intent["id"]))).mappings().one())
             # Record intent BEFORE signaling. A crash cannot authorize an in-place
             # delivery after this point. External stop/save effects are idempotent.
-            facts = dict(intent["facts"] or {})
-            state = dict(facts.get("hibernation", {}))
+            state = dict(intent["facts"].get("hibernation", {}))
             if now < state.get('push_retry_at', 0):
                 return {'success': True, 'push_pending': True}
             state.setdefault("stop_started_at", now)
@@ -261,17 +254,14 @@ class HibernationTransaction:
                 attempts = state.get("stop_proof_attempts", 0) + 1
                 state.update(stop_proof_attempts=attempts,
                              stop_retry_at=now + min(60, 5 * 2 ** (attempts - 1)))
-            facts["hibernation"] = state
-            await conn.execute(update(continuations).where(
-                continuations.c.id == intent["id"],
-            ).values(facts=facts, version=continuations.c.version + 1))
+            await conn.execute(update(continuations).where(c.id == intent["id"]).values(
+                facts={**intent["facts"], "hibernation": state}, version=c.version + 1))
         provider = self.orch.session_providers.create(session["provider"], self.orch.config)
         handle = SessionHandle(session["name"], session["provider"], session["instance_token"])
         stopped = False
         try:
-            remaining = policy.transition_budget_seconds - max(
-                0, self.clock() - state["stop_started_at"],
-            )
+            elapsed = max(0, self.clock() - state["stop_started_at"])
+            remaining = policy.transition_budget_seconds - elapsed
             # A null token is not a safe signal target (tmux treats it as a
             # wildcard). Expiry and hold recovery only observe; never re-stop.
             if remaining > 0 and handle.instance_token and not recovering_stop:
@@ -286,17 +276,15 @@ class HibernationTransaction:
             # An expired transition must still admit fresh, cheap death proof.
             record = await self.db.get_session(session["id"])
             stopped = await self.prove_stopped(provider, handle, record)
-        if not stopped:
-            async with self.db._engine.begin() as conn:
-                task, wait, intent = await locked_suspension(conn, wait_id)
+        async with self.db._engine.begin() as conn:
+            task, wait, intent = await locked_suspension(conn, wait_id)
+            if not stopped:
                 if recovering_stop:
                     return {"success": True, "held": True, "hold_reason": "stop_uncertain"}
                 state = dict(intent["facts"].get("hibernation", {}))
                 state.update(stop_proof_attempts=1, stop_retry_at=self.clock() + 5)
                 intent["facts"] = {**intent["facts"], "hibernation": state}
                 return await self.hold(conn, task, wait, intent, "stop_uncertain", handler)
-        async with self.db._engine.begin() as conn:
-            task, wait, intent = await locked_suspension(conn, wait_id)
             await suspension_writer(conn, task, wait, intent)
             if task["status"] == "PAUSED":
                 return {"success": True, "held": True, "hold_reason": "paused"}
@@ -313,10 +301,8 @@ class HibernationTransaction:
                     )
                     if not resolved["success"]:
                         raise WaitError("wait.unavailable", "stop recovery incident changed")
-                await conn.execute(update(continuations).where(
-                    continuations.c.id == intent["id"],
-                ).values(resume_state="sleeping", hold_reason=None,
-                         version=intent["version"] + 1))
+                await conn.execute(update(continuations).where(c.id == intent["id"])
+                    .values(resume_state="sleeping", hold_reason=None, version=intent["version"] + 1))
         from src.git.manager import commit_identity
         from src.orchestrator.stranded_work import save_wip_to_task_branch
 
@@ -334,15 +320,13 @@ class HibernationTransaction:
             with commit_identity(self.orch.git.resolve_commit_identity(project)):
                 saved = await save_wip_to_task_branch(
                     self.orch.git, session["work_dir"], intent["branch"], f"hibernate:{wait_id}",
-                    repository_url=repository.url, event_bus=self.orch.bus,
-                    project_id=task["project_id"],
+                    repository_url=repository.url, event_bus=self.orch.bus, project_id=task["project_id"],
                 )
             if saved.status in {"clean", "pushed"} and saved.commit:
                 async with self.db._engine.begin() as conn:
                     _, _, current = await locked_suspension(conn, wait_id)
-                    await conn.execute(update(continuations).where(
-                        continuations.c.id == current["id"],
-                    ).values(saved_head=saved.commit, version=current["version"] + 1))
+                    await conn.execute(update(continuations).where(c.id == current["id"])
+                        .values(saved_head=saved.commit, version=current["version"] + 1))
         # A failed push can still leave a newly committed local head. Record
         # that recovery evidence without treating it as publication proof.
         local_head = saved.commit or await self.orch.git.arev_parse(session["work_dir"], "HEAD")
@@ -373,31 +357,26 @@ class HibernationTransaction:
                              push_retry_at=self.clock() + min(30, 2 ** min(attempts, 5)))
                 facts = {**intent["facts"], "local_head": local_head,
                          'hibernation': state, 'push_error': saved.error}
-                await conn.execute(update(continuations).where(
-                    continuations.c.id == intent["id"],
-                ).values(facts=facts))
+                await conn.execute(update(continuations).where(c.id == intent["id"]).values(facts=facts))
                 if self.clock() < intent['created_at'] + policy.transition_budget_seconds:
                     return {'success': True, 'push_pending': True}
-                return await self.hold(conn, task, wait, {**intent, "facts": facts},
-                                       "push_failed", handler,
-                                       detail=saved.error or "No published head proof")
+                return await self.hold(conn, task, wait, {**intent, "facts": facts}, "push_failed",
+                                       handler, detail=saved.error or "No published head proof")
             if not detached:
                 return await self.hold(conn, task, wait, intent, "detach_uncertain", handler)
             await self.db.park_task_for_continuation(
                 conn, task_id=task["id"], wait_id=wait_id, continuation_id=intent["id"],
                 generation=intent["suspension_generation"], session_id=session["id"],
                 instance_token=session["instance_token"], claim_epoch=wait["claim_epoch"],
-                saved_head=saved.commit, now=self.clock(),
-                detached_workspace_id=workspace.id,
+                saved_head=saved.commit, now=self.clock(), detached_workspace_id=workspace.id,
             )
         return await self.cleanup(intent)
 
     async def cleanup(self, intent):
         """Retry cleanup after a crash between parking and releasing the folder."""
         async with self.db._engine.connect() as conn:
-            wait = (await conn.execute(select(wait_records).where(
-                wait_records.c.id == intent["wait_id"],
-            ))).mappings().one()
+            wait = (await conn.execute(
+                select(wait_records).where(wait_records.c.id == intent["wait_id"]))).mappings().one()
         session = await self.db.get_session(wait["session_id"])
         if (session is None or session.state != "stopped" or session.end_reason != "hibernated"
                 or session.instance_token != wait["decision_inputs"]["delivery"]["instance_token"]):
@@ -415,9 +394,8 @@ class HibernationTransaction:
             facts = {**current["facts"], "workspace_released_at": self.clock(),
                      "costs": {**current['facts'].get('costs', {}),
                                'teardown_seconds': max(0, self.clock() - wait['created_at'])}}
-            await conn.execute(update(continuations).where(
-                continuations.c.id == current["id"],
-            ).values(facts=facts, version=current["version"] + 1))
+            await conn.execute(update(continuations).where(continuations.c.id == current["id"])
+                               .values(facts=facts, version=current["version"] + 1))
             from src.waits.measurements import update_sample
 
             await update_sample(conn, wait, {**current, 'facts': facts})
