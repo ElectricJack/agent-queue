@@ -22,7 +22,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
 | Commands (the single entry point) | `src/commands/` (handler + mixins, `contracts/builtin.py`) | `docs/specs/design/aq-surface.md` |
 | Task graph: hierarchy, phases, subtasks, formulas | `src/database/queries/hierarchy_queries.py`, `src/task_graph/`, `src/commands/phase_commands.py`, `task_subtask_commands.py` | `docs/specs/design/work-graph.md` |
 | Claims and the frontier | `src/database/queries/claim_queries.py`, `src/orchestrator/pools.py`, `src/claim_file.py` | `docs/guides/worker-pools.md`, `docs/guides/e2e-swarm.md` |
-| Playbooks (V2 only) | `src/playbooks/`; shipped markdown and reviewed bundles in `src/prompts/` | `docs/specs/design/playbooks.md` |
+| Playbooks (V2 only) | `src/playbooks/`; shipped markdown and reviewed bundles in `src/prompts/` | `docs/concepts/playbooks.md`, `docs/guides/playbook-building-blocks.md` |
 | Profiles, intelligence classes, MCP registry | `src/profiles/`, `src/intelligence_classes/`, `src/prompts/default_intelligence_classes/` | `docs/specs/design/profiles.md`, `docs/guides/worker-pools.md` §7b |
 | Sessions and harnesses | `src/sessions/` (`default_harnesses/`) | `docs/specs/design/session-runtime.md`, `docs/reference/harnesses.md` |
 | Integration, delivery, branch cleanup | `src/integration/`, `src/commands/ci_commands.py` | `docs/guides/hierarchical-integration-trains.md` |
@@ -39,7 +39,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
 - **Every state change goes through `CommandHandler`** (`src/commands/`), behind CLI,
   MCP, API and Discord alike. Commands return `{"success": bool, ...}` dicts.
 - **Mechanism in code, policy in playbooks.** Scheduling is deterministic and makes no
-  LLM calls; judgment (reflection, failover, escalation) is a playbook driving commands.
+  LLM calls; judgment (routing, failover, triage) is a playbook driving commands.
   Playbooks are V2 only — `tests/test_v1_removal.py` is the ratchet.
 - **Every agent is a tmux session** selected by the profile's `harness` (`claude`,
   `codex`, `gemini`). There is no in-process runtime: `src/runtimes/` is an injection
@@ -57,8 +57,9 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   shipped grants its vault copy lacks on every start and profile reload, additively
   (`src/profiles/capability_sync.py`; frontmatter `capability_sync: false` opts out).
 - **Reviewed playbook bundles** (`tests/fixtures/playbooks/v2/<id>/`): after editing, run
-  `scripts/rebuild-reviewed-playbook-artifacts.py`, update the `manifest.md` digests, and
-  review the recorded inputs in `tests/fixtures/generated_sources/playbooks/<id>/`.
+  `python scripts/rebuild-reviewed-playbook-artifacts.py <id>`; it updates fixture
+  manifests, recorded inputs and shipped copies. Review the diff and recorded inputs
+  in `tests/fixtures/generated_sources/playbooks/<id>/`.
   The authoring command refreshes the fixture and shipped copies; assembly uses
   `scripts/generate-recorded-artifacts.py` to project these approved inputs unchanged.
   `src/prompts/reviewed_playbooks/<id>/` is the only path an install imports from.
@@ -104,7 +105,7 @@ agent on the machine. Rationale and the baseline workflow:
   (`-m "not perf and not migration and not slow and not tmux and not integration"`),
   and passes every non-`--aq-*` argument to pytest untouched.
   ```bash
-  aq test tests/test_playbook_runner.py                  # the file for the module you changed
+  aq test tests/test_v2_engine.py                       # the file for the module you changed
   aq test tests/test_claim_queries.py tests/test_pools.py
   aq test tests/ -k "schema_setup or run_schema"         # by name, across files
   aq test tests/test_x.py -x                             # stop at the first failure
