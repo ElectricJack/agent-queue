@@ -17956,14 +17956,21 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:c9a0ad91ff3c66758d2afda433d70c621f5acd1540b94760c41aaa1ea706bd36",
+      "digest": "sha256:bc42f024e92a2a1938b30465d93ee543198493691fd1f86d12093d029f1dedbb",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
         "src.playbooks.authoring",
-        "src.playbooks.definition"
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Reviewed supervisor-failure-triage artifact and internal command contract."
     },
     "tests/test_supervisor_global_lifecycle.py": {
