@@ -9,6 +9,17 @@ reviewer: Jack (dashboard /reviews)
 
 # Discord as a chat extension of the supervisor
 
+<!-- aq:historical -->
+> **Historical design snapshot.** The `draft` frontmatter records this repository
+> copy's provenance, not current implementation status. Project/global supervisor
+> routing, main-channel conversations and the supervisor-authored digest have
+> shipped behind their documented flags. Read the [current system spec](../../specs/systems/messaging-and-human-asks.md),
+> [conversation guide](../../guides/discord-conversations.md) and
+> [digest guide](../../guides/escalations.md) for supported behavior. The proposed
+> move of digest records to `outbound_deliveries` is incomplete: delivery shares
+> the scheduler while retaining `digest_windows`. Inventory and task statuses
+> below are dated design evidence, not a live deployment receipt.
+
 ## Intent (Jack, 2026-10-03, condensed)
 
 Discord notifications and chat are one of the weakest parts of AQ: messages are massive
