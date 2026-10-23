@@ -11,6 +11,9 @@ tags: [spec, database]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -901,7 +904,7 @@ the table and restores per-row charging; ledger rows survive.
 The legacy SQLite importer excludes this table because it was introduced after
 SQLite removal.
 
-Revision `a00000000121` adds `idx_transcript_usage_calls_updated`
+Revision `a00000000122` adds `idx_transcript_usage_calls_updated`
 (`updated_at`, `usage_key`) for bounded retention scans. Calls from sessions
 stopped for more than 30 days, with counters untouched for more than 30 days,
 may be archived and replaced atomically by permanent replay fences.
@@ -909,7 +912,7 @@ may be archived and replaced atomically by permanent replay fences.
 ### Table: `transcript_usage_fences`
 
 Permanent exact membership batches for archived transcript call identities
-(Alembic `a00000000121`). Ingestion ignores fenced keys, including replay under
+(Alembic `a00000000122`). Ingestion ignores fenced keys, including replay under
 another session or with higher counters. Live calls retain per-call maxima.
 Fences have no session or ledger foreign keys and never expire with those rows.
 

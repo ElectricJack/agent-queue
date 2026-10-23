@@ -1,0 +1,37 @@
+{
+  "source_base": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473",
+  "reason": "Add pool deletion through CommandHandler; preserve every existing catalogue entry and historical contract recording.",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "ea5ee305ba4e79f08a8eb28bfe4dfaffc7222e942bb58e78f8876c07b19ffbe1",
+  "command": "pool_delete",
+  "category": "pool",
+  "transport_definition": {
+    "name": "pool_delete",
+    "description": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "description": "Pool profile ID to delete."
+        },
+        "depth": {
+          "type": "string",
+          "enum": [
+            "profile",
+            "directory"
+          ],
+          "default": "profile",
+          "description": "profile removes profile.md and preserves other vault content; directory removes the entire profile directory. Both retire the pool."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional retirement reason."
+        }
+      },
+      "required": [
+        "profile_id"
+      ]
+    }
+  }
+}

@@ -1,0 +1,1623 @@
+[
+  {
+    "id": "timer.5m-rerouted-no-notice",
+    "event": {
+      "event_type": "timer.5m",
+      "event_id": "timer.5m-rerouted-no-notice"
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-sweep"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "timer.5m-held-no-notice",
+    "event": {
+      "event_type": "timer.5m",
+      "event_id": "timer.5m-held-no-notice"
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-sweep"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "timer.5m-idle-no-notice",
+    "event": {
+      "event_type": "timer.5m",
+      "event_id": "timer.5m-idle-no-notice"
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-sweep"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "timer.5m-disabled-no-notice",
+    "event": {
+      "event_type": "timer.5m",
+      "event_id": "timer.5m-disabled-no-notice"
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-sweep"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "timer.5m-rejected-no-notice",
+    "event": {
+      "event_type": "timer.5m",
+      "event_id": "timer.5m-rejected-no-notice"
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": false,
+        "error": "injected refusal"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-sweep"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "timer.5m-runtime_error-no-notice",
+    "event": {
+      "event_type": "timer.5m",
+      "event_id": "timer.5m-runtime_error-no-notice"
+    },
+    "responses": {
+      "provider_reroute": "runtime_error"
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-sweep"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-flapping",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-flapping",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flapping",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-already_notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-already_notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "already_notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-flap_damped",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-flap_damped",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flap_damped",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-not_a_half_change",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-not_a_half_change",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "not_a_half_change",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-messages_disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-messages_disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "messages_disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-rejected",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-rejected",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": {
+        "success": false,
+        "error": "injected refusal"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rerouted-runtime_error",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rerouted-runtime_error",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "rerouted"
+      },
+      "provider_availability_notify": "runtime_error"
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-flapping",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-flapping",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flapping",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-already_notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-already_notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "already_notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-flap_damped",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-flap_damped",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flap_damped",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-not_a_half_change",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-not_a_half_change",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "not_a_half_change",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-messages_disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-messages_disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "messages_disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-rejected",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-rejected",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": {
+        "success": false,
+        "error": "injected refusal"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-held-runtime_error",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-held-runtime_error",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "held"
+      },
+      "provider_availability_notify": "runtime_error"
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-flapping",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-flapping",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flapping",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-already_notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-already_notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "already_notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-flap_damped",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-flap_damped",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flap_damped",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-not_a_half_change",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-not_a_half_change",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "not_a_half_change",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-messages_disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-messages_disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "messages_disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-rejected",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-rejected",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": {
+        "success": false,
+        "error": "injected refusal"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-idle-runtime_error",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-idle-runtime_error",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "idle"
+      },
+      "provider_availability_notify": "runtime_error"
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-flapping",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-flapping",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flapping",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-already_notified",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-already_notified",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "already_notified",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-flap_damped",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-flap_damped",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "flap_damped",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-not_a_half_change",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-not_a_half_change",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "not_a_half_change",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-messages_disabled",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-messages_disabled",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": true,
+        "outcome": "messages_disabled",
+        "provider": "codex",
+        "generation": 7
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "completed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-rejected",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-rejected",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": {
+        "success": false,
+        "error": "injected refusal"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-disabled-runtime_error",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-disabled-runtime_error",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": true,
+        "outcome": "disabled"
+      },
+      "provider_availability_notify": "runtime_error"
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ],
+      [
+        "provider_availability_notify",
+        {
+          "provider": "codex",
+          "generation": 7
+        }
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-rejected-no-notice",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-rejected-no-notice",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": {
+        "success": false,
+        "error": "injected refusal"
+      }
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "provider.state_changed-runtime_error-no-notice",
+    "event": {
+      "event_type": "provider.state_changed",
+      "event_id": "provider.state_changed-runtime_error-no-notice",
+      "provider": "codex",
+      "generation": 7
+    },
+    "responses": {
+      "provider_reroute": "runtime_error"
+    },
+    "calls": [
+      [
+        "provider_reroute",
+        {}
+      ]
+    ],
+    "rules": [
+      "reroute-on-change"
+    ],
+    "lifecycles": [
+      "failed"
+    ]
+  },
+  {
+    "id": "unrelated-event",
+    "event": {
+      "event_type": "timer.15m",
+      "event_id": "ignored"
+    },
+    "responses": {},
+    "calls": [],
+    "rules": [],
+    "lifecycles": []
+  }
+]

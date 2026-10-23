@@ -111,11 +111,11 @@
         }
       }
     },
-    "/plans/{task_id}": {
+    "/api/plans/{task_id}": {
       "get": {
-        "summary": "Plan Viewer",
-        "description": "Serve plan content as an HTML page.",
-        "operationId": "plan_viewer_plans__task_id__get",
+        "summary": "Plan Content",
+        "description": "Return plan markdown as data for the standalone dashboard viewer.",
+        "operationId": "getPlan",
         "parameters": [
           {
             "name": "task_id",
@@ -132,7 +132,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlanContentResponse"
+                }
               }
             }
           },
@@ -11671,6 +11673,53 @@
         }
       }
     },
+    "/api/pool/delete": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+        "description": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+        "operationId": "pool_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/pool/rename": {
       "post": {
         "tags": [
@@ -18408,8 +18457,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
-        "description": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "summary": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "description": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
         "operationId": "update_and_restart",
         "requestBody": {
           "content": {
@@ -54904,6 +54953,7 @@
                 "counters": {},
                 "pool": {}
               },
+              "operations": {},
               "host": {
                 "psi": {},
                 "stale": false,
@@ -56703,6 +56753,39 @@
         ],
         "title": "OnboardingErrorInfo"
       },
+      "OperationPerf": {
+        "properties": {
+          "latency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcomes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Outcomes",
+            "default": {}
+          },
+          "in_flight": {
+            "type": "number",
+            "title": "In Flight",
+            "default": 0
+          },
+          "peak_in_flight": {
+            "type": "number",
+            "title": "Peak In Flight",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "OperationPerf",
+        "description": "Bounded operation timing; coarser tiers average concurrency gauges."
+      },
       "OperatorDecisionDTO": {
         "properties": {
           "step_id": {
@@ -57743,6 +57826,14 @@
               "pool": {}
             }
           },
+          "operations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OperationPerf"
+            },
+            "type": "object",
+            "title": "Operations",
+            "default": {}
+          },
           "host": {
             "$ref": "#/components/schemas/HostPerf",
             "default": {
@@ -58106,6 +58197,24 @@
           "description"
         ],
         "title": "Placeholder"
+      },
+      "PlanContentResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "content"
+        ],
+        "title": "PlanContentResponse"
       },
       "PlaybookActivateRequest": {
         "properties": {
@@ -61446,6 +61555,116 @@
           "review_id"
         ],
         "title": "PolicyReviewReceipt"
+      },
+      "PoolDeleteRequest": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Pool profile ID to delete."
+          },
+          "depth": {
+            "type": "string",
+            "title": "Depth",
+            "description": "profile removes profile.md and preserves other vault content; directory removes the entire profile directory. Both retire the pool.",
+            "default": "profile"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Optional retirement reason."
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id"
+        ],
+        "title": "PoolDeleteRequest"
+      },
+      "PoolDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted"
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
+          },
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PoolDeleteResponse"
       },
       "PoolGauges": {
         "properties": {

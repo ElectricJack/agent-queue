@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.escalations.facts import (
+    INTERNAL_DELIVERY_ERROR,
     KIND_ACK,
     KIND_RELAY,
     KIND_RESOLUTION,
@@ -282,6 +283,8 @@ class EscalationDeliveryService:
                 return []
             incident = row
         facts = EscalationFacts.from_row(incident)
+        if facts.source_kind == "wait" and facts.wants_human_delivery:
+            await self.db.retry_suppressed_escalation_root(facts.id, now=self._clock())
         deliveries = await self.db.list_escalation_deliveries(facts.id)
         messages = await self.db.list_escalation_messages(facts.id)
         plan = plan_deliveries(
@@ -510,7 +513,7 @@ class EscalationDeliveryService:
                 row,
                 report,
                 status="unknown",
-                last_error="operational incident is internal-only; nothing was sent",
+                last_error=INTERNAL_DELIVERY_ERROR,
             )
             return
         channel_id = self._channel_id

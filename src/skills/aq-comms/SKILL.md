@@ -27,9 +27,9 @@ Every session that starts with a bearer token gets an automatic inbox.
 Nothing renders it at every prompt boundary: the `UserPromptSubmit` hook
 that ran `aq inbox --inject` was removed on 2026-08-27. Pending messages
 reach you when `aq prime` runs (start, resume, post-compact) and through
-the cascade's nudge, which types a one-line pointer into the session once it
-goes idle: ``Handle `aq message status <id> --json`.`` Run that command to
-read the body. The nudge records a notification attempt; the message stays
+the independent message-delivery service, which nudges the session once it
+goes idle: ``Handle `aq message status <id> --json` (running it marks the message read).``
+Run that command to read the body. The nudge records a notification attempt; the message stays
 in `aq message inbox` until its recipient reads it or inbox/prime injects
 the body. Unread notifications retry with bounded backoff, then alert the
 global supervisor once. Operator status inspections do not consume mail.
@@ -37,7 +37,8 @@ A plain session may read the status
 only of messages addressed to its own session, held task or profile;
 anything else answers "not found". `aq inbox --inject` is still a supported command,
 so run it yourself when you want the queue rendered inline mid-task;
-`aq message inbox` is the same queue as data.
+`aq message inbox` is the same queue as data. Injection stamps delivery but
+leaves `via` and `read_at` unset. A nudge alone consumes nothing.
 
 ## Send
 
@@ -130,47 +131,54 @@ aq message reply <original_msg_id> "Yes, proceed. I've cleared the gate."
 
 ## Report a blocker
 
-The old ask_human command was retired. For a mid-task
-blocking question, report the blocker through the supported message queue:
+The old ask_human command was retired. A worker reports a blocking decision to
+its owning project supervisor with the held task ID and evidence:
 
 ```bash
-aq message send --to user:dashboard --project <pid> --body "Blocked: should I use the v1 or v2 schema for the migration?"
+aq message send --to session:supervisor-<pid> --project <pid> \
+  --thread-id BLOCKER_THREAD_ID --json \
+  --body "Blocked on task <task-id>: <evidence and decision needed>."
 ```
 
-Include the task id and the decision needed in the message body so the
-supervisor or human can respond through the supported message flow.
+Choose a unique `BLOCKER_THREAD_ID`. Record the finding in a task comment too.
+Preserve held work; when prime enables
+waits, register one durable message wait on the report's unique thread and returned
+`created_seq`, then end the turn awaiting delivery. Do not poll. A message to
+`user:dashboard` informs the operator but does not create a tracked decision.
 
-## Escalations: when a human decision is required
+## Human asks and legacy escalations
 
-A message to `user:dashboard` is how you *tell* a human something. It is not how
-a blocking decision gets tracked. When work is genuinely stopped until a person
-chooses, the durable record is an **escalation**, and creating one is the owning
-project supervisor's job, not a worker's:
-
-- A worker reports the blocker (message, task comment, or a `fail` outcome with
-  the reason) and stops. The blocked-task playbook routes it to
-  `session:supervisor-<pid>`.
-- The supervisor investigates, and only if a human must decide does it call
-  `escalation_create`.
-- The human replies — in the dashboard, or in the Discord thread the escalation
-  opened. Either way the reply is persisted as verified human evidence and
-  queued back to the supervisor.
-- The supervisor applies that evidence with `escalation_apply_reply` and records
-  the outcome.
-
-Two consequences for you as a worker: a Discord reply never reaches your
-terminal directly, and `question_answer` refuses a *human* caller outright —
-a person replies with `escalation_reply` instead. The owning supervisor may
-answer a narrow factual question itself; anything needing a person goes up with
-`aq question escalate <question-id> --reason "…"`, which creates or reuses the
-durable escalation for that question.
+The canonical decision record is a **human ask**. The supervisor investigates and
+publishes/escalates the source only when a human must decide. The dashboard's
+Needs-you view and scoped ask commands expose current context:
 
 ```bash
-aq escalation list --states needs_human,reply_received   # waiting on a person
-aq escalation get --escalation-id <id>                   # conversation and history
+aq ask list --project-id <pid> --view needs_you --json
+aq ask show --ask-id <ask-id> --json
+aq escalation list --states '["needs_human","reply_received"]'
+aq escalation get --escalation-id <id>
 ```
 
-See `docs/guides/escalations.md` for the full model.
+These are operator/supervisor surfaces; workers have no ask-decision authority.
+Human text is verified evidence, never a supervisor-authored assertion of approval.
+Prepare/decide binds the selected choice to a current source version, preview and
+idempotency key. Compatibility `escalation_apply_reply` requires this context too
+and only applies an exact stored declared choice. Unknown operations reconcile
+rather than blindly retrying.
+
+Legacy escalation threads and choice buttons accept replies only while that
+destination retains legacy ownership. Ask channel mode owns inbound text and
+buttons exclusively, posts without creating threads, and never falls back to
+conversation intake. Inspect `aq ask cutover-status` before diagnosing missing
+thread replies; workers must not change modes or reset production history.
+
+The shipped `supervisor-failure-triage` playbook handles task failures; the old
+`blocked-task-escalation` recording is retired. A narrow factual worker question
+can be answered by its supervisor; when human authority is required,
+`aq question escalate <question-id> --reason "…"` links it to the decision path.
+A human cannot bypass that path with `question_answer`.
+
+See `docs/guides/escalations.md` and `docs/guides/human-asks-rollout.md`.
 
 ## Message delivery model (why messages are reliable)
 
@@ -205,12 +213,14 @@ and installed grant/skill drift workflow.
 
 - Every message row is persisted before dispatch — daemon restarts don't
   lose them.
-- Delivery is per-`to_kind` (session / task / user). The daemon retries
-  transient failures.
-- If a session is asleep or mid-turn when a message arrives, the message
-  parks. It is rendered when the session next primes, or when the
-  cascade nudges the idle session; `aq inbox --inject` renders the same
-  parked messages on demand. No hook injects them at a prompt boundary.
+- Delivery is per-`to_kind` (session / task / profile / user). Task mail nudges
+  the active holder; absent task mail waits without spawning a worker. Profile
+  mail is pull-only. The daemon retries transient failures.
+- If a session is asleep or mid-turn, mail stays pending. A supervisor can be
+  woken; busy sessions wait for inbox/prime or an idle nudge from the independent
+  delivery service. Absent session mail is archived after 24 hours, with a return
+  notice only for human senders. `aq inbox --inject` renders pending bodies.
+  No hook injects them at a prompt boundary.
 - Chat messages between the dashboard and a supervisor session use the
   thread id `dashboard:<project_id>` — filter by that thread id when
   you want to see the current live chat.

@@ -21,7 +21,9 @@ from src.database.tables import (
 from src.integration.stacked_branches import shared_stack_inputs
 from src.waits.admission import AdmissionReader, branch_holders
 from src.waits.conditions import Condition, NodeKey, Scope, SleepDecision, WaitError, canonical
-from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from
+from src.waits.graph import (
+    add_edges, background_graph_work, clear_edges, lock_graph, recompute_from,
+)
 from src.waits.registry import build_registry
 from src.waits.reservations import SchedulerPolicy, enabled
 
@@ -52,6 +54,7 @@ class SchedulerWaitService:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
 
     @shared_stack_inputs()
+    @background_graph_work()
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]

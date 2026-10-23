@@ -507,17 +507,12 @@ class WaitDecisions:
             incident["id"], conn=conn, dedup_key=f"{incident['id']}:root:0", kind="root",
             payload={"replacement": False}, available_at=now, priority=0, now=now,
         )
-        # A pre-conversion legacy row may have been fenced by the supervisor-
-        # first dispatcher. Re-arm only that proven no-send result; preserve
-        # ambiguous or confirmed deliveries and their binding.
-        await conn.execute(update(escalation_deliveries).where(
-            escalation_deliveries.c.escalation_id == incident["id"],
-            escalation_deliveries.c.kind == "root",
-            escalation_deliveries.c.status == "unknown",
-            escalation_deliveries.c.last_error == "operational incident is internal-only; nothing was sent",
-            escalation_deliveries.c.root_message_id.is_(None),
-        ).values(status="pending", next_attempt_at=now, attempt_count=0,
-                 last_error=None, updated_at=now))
+        # An older reconciler may have queued this root before authorization.
+        # Only a receipt proving internal suppression can be retried here; keep
+        # ambiguous or externally bound attempts intact for reconciliation.
+        await self.service.orch.db.retry_suppressed_escalation_root(
+            incident["id"], now=now, conn=conn,
+        )
         if not continuation:
             # This durable suspension request is consumed by the checkpoint /
             # hibernation owner. It grants no early release of a live writer.
