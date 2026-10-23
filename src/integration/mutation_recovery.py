@@ -16,6 +16,7 @@ from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.engine import RootEngineOwnership
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
+from src.integration.row_query import select_row
 from src.integration.train import TrainTarget
 from src.integration.train_sources import project_snapshot
 
@@ -25,49 +26,23 @@ class ExpiredMutationRecovery:
         self.db, self.snapshot, self.clock = db, snapshot, clock
 
     async def _identity_on(self, conn, request):
-        row = (
-            (
-                await conn.execute(
-                    select(t.integration_candidate_ref_mutations)
-                    .where(
-                        t.integration_candidate_ref_mutations.c.id == request.mutation_id,
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
+        row = await select_row(
+            conn,
+            t.integration_candidate_ref_mutations,
+            t.integration_candidate_ref_mutations.c.id == request.mutation_id,
+            lock=True,
         )
         if row is None:
             raise ValueError("mutation does not exist")
-        batch = (
-            (
-                await conn.execute(
-                    select(t.integration_batches)
-                    .where(
-                        t.integration_batches.c.id == row["batch_id"],
-                        t.integration_batches.c.project_id == request.project_id,
-                        t.integration_batches.c.repository_id == row["repository_id"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
+        batch = await select_row(
+            conn,
+            t.integration_batches,
+            t.integration_batches.c.id == row['batch_id'],
+            t.integration_batches.c.project_id == request.project_id,
+            t.integration_batches.c.repository_id == row['repository_id'],
+            lock=True,
         )
-        project = (
-            (
-                await conn.execute(
-                    select(t.projects)
-                    .where(
-                        t.projects.c.id == request.project_id,
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        project = await select_row(conn, t.projects, t.projects.c.id == request.project_id, lock=True)
         if (
             batch is None
             or project is None
@@ -89,20 +64,13 @@ class ExpiredMutationRecovery:
             "repair_handoff",
         ):
             raise ValueError("mutation purpose requires its original publication recovery control")
-        operation = (
-            (
-                await conn.execute(
-                    select(t.integration_repair_operations)
-                    .where(
-                        t.integration_repair_operations.c.id == row["operation_id"],
-                        t.integration_repair_operations.c.batch_id == batch["id"],
-                        t.integration_repair_operations.c.episode_id == row["operation_episode_id"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
+        operation = await select_row(
+            conn,
+            t.integration_repair_operations,
+            t.integration_repair_operations.c.id == row['operation_id'],
+            t.integration_repair_operations.c.batch_id == batch['id'],
+            t.integration_repair_operations.c.episode_id == row['operation_episode_id'],
+            lock=True,
         )
         if operation is None or operation["state"] not in ("completed", "cancelled"):
             raise ValueError("the owning operation has not ended")

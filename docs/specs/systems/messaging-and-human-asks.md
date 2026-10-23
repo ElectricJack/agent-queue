@@ -699,7 +699,9 @@ These hold today, and changes to this system must keep them.
    ledger. An unknown application is reconciled, never retried blindly.
 10. **Mode changes are generation compare-and-sets** under an advisory lock.
     A migrated destination never returns to `legacy`, and the compatibility
-    deadline is never extended.
+    deadline is never extended. [Project/configuration fencing](../design/ask-channel-config-fencing.md)
+    requires current ownership for the ask's project and preserves unrelated
+    destinations and legacy rows during configuration reconciliation.
 11. **Escalations outrank everything else**, and the shared rate guard is
     never bypassed.
 12. **Reports have a fallback before an author is woken**, carry no URLs in
@@ -722,13 +724,6 @@ These hold today, and changes to this system must keep them.
 - **The hourly report budget disagrees with itself.** `report_submit` checks
   against the digest `MAX_CHARS` (600), but its error says "exceeds 1,200
   characters", and the hourly playbook and guide also say 1,200.
-- **`ask_channel_enabled` ignores project and config fingerprint**
-  (`src/database/queries/ask_input_queries.py`). If any project on a
-  destination is in channel mode, every inbound message there goes to ask
-  intake.
-- **A Discord config change permanently retires writers.** Ask delivery
-  reconciliation marks every mode row whose fingerprint no longer matches as
-  `delivery_disabled` and migrated, including rows still in `legacy`.
 - **Ask URLs are inconsistent.** `escalation_commands.py` builds `/asks/<id>`
   and `_legacy_ask_decision` builds `/focus/asks/<id>`.
 
@@ -858,9 +853,9 @@ legacy ask and escalation records, per Jack's 2026-10-19 reset directive.
   A01–A18.
 
 Several §5 gaps (escalation guide drift, the two publishers, the old
-notification queries) close with this work. The ask-specific bugs in §5
-(`ask_channel_enabled`, fingerprint retirement, inconsistent URLs, the
-missing application sweep) are not in any filed task.
+notification queries) close with this work. Task `amber-torrent-90` addresses
+channel admission and configuration retirement; inconsistent URLs and the
+missing application sweep remain separate gaps.
 
 ### 6.2 Event-driven hibernation and verified waits: `bold-zenith-11` (IN_PROGRESS)
 
