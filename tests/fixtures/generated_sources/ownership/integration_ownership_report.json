@@ -1071,7 +1071,7 @@
         "msg-08efc39cceeb430cafb8636f1acb85f1"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+      "measured_source_revision": "22683db44827d0807102f18d46df95081153e4fb",
       "original_owned_total_cap": 155499,
       "measured_owned_total": 161399,
       "delta": 5900,
@@ -14848,7 +14848,8 @@
       "authorized_engine_delta": 4,
       "authority": "size-cap-delegation-2026-10-23",
       "operator_decision": "6679052c",
-      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1858"
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1858",
+      "source_revision": "22683db44827d0807102f18d46df95081153e4fb"
     }
   }
 }
