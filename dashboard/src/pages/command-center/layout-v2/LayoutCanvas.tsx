@@ -151,6 +151,7 @@ interface LayerElements {
 }
 
 interface LayerProps {
+  layoutReady: boolean;
   projectId: string;
   projectNames: ReadonlyMap<string, string>;
   offsetY: number;
@@ -189,7 +190,7 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  */
 function ProjectLayer({
   projectId, projectNames, offsetY, params, viewport, width, height, focusId, upTarget, handlers,
-  onElements, density, hideEdgeLabels,
+  onElements, density, hideEdgeLabels, layoutReady,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
@@ -209,7 +210,7 @@ function ProjectLayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rect = useMemo<Rect | null>(() => rawRect, [coverage]);
 
-  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect);
+  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect, layoutReady);
 
   useEffect(
     () => registerLayoutRefetch(projectId, refetchVisible),
@@ -316,26 +317,6 @@ function Inner(props: LayoutCanvasProps) {
     // rebuilds on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectIds, heightsKey]);
-
-  // Extent and initial tiles load concurrently. Only an explicit 202 means
-  // the layout is building: the first extent response must not abort and
-  // restart the independent tiles request.
-  const pendingExtents = projectIds.map((_, i) => {
-    const extent = extents[i];
-    return !extent ? "loading" : "pending" in extent ? "pending" : "ready";
-  }).join(",");
-  const previousPendingRef = useRef<string | null>(null);
-  useEffect(() => {
-    const previous = previousPendingRef.current?.split(",");
-    previousPendingRef.current = pendingExtents;
-    if (!previous) return;
-    pendingExtents.split(",").forEach((value, i) => {
-      const pid = projectIds[i];
-      if (pid && previous[i] === "pending" && value === "ready") refetchLayout(pid);
-    });
-    // projectIds is covered by pendingExtents' positional identity.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingExtents]);
 
   // One scope per view: the project root, or the container entered. Nothing
   // is ever expanded in place, so `expanded` is always empty and no zoom
@@ -734,8 +715,9 @@ function Inner(props: LayoutCanvasProps) {
         showEmpty={false} loading={pending} error={layerError} />}
       <div ref={wrapRef} role="region" aria-label="Task graph" tabIndex={0} onKeyDown={onKeyDown}
         className="relative min-h-0 flex-1 outline-none">
-        {projectIds.map((pid) => (
+        {projectIds.map((pid, i) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
+            layoutReady={!!extents[i] && !("pending" in extents[i]!)}
             viewport={viewport} width={size.w} height={size.h} focusId={focusId} upTarget={upTarget} handlers={handlers}
             onElements={onElements} density={density} hideEdgeLabels={hideEdgeLabels} />
         ))}
