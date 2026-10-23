@@ -27,7 +27,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
 | Sessions and harnesses | `src/sessions/` (`default_harnesses/`) | `docs/specs/design/session-runtime.md`, `docs/reference/harnesses.md` |
 | Integration, delivery, branch cleanup | `src/integration/`, `src/commands/ci_commands.py` | `docs/guides/hierarchical-integration-trains.md` |
 | Provider availability and failover | `src/providers/` | `docs/specs/provider-failover.md` |
-| Escalations, digest, Discord, messages | `src/escalations/`, `src/digest/`, `src/discord/`, `src/messages/` | `docs/guides/escalations.md` |
+| Messages, human asks, Discord, reports | `src/messages/`, `src/asks/`, `src/conversations/`, `src/delivery/`, `src/escalations/`, `src/digest/`, `src/reports/`, `src/discord/` | `docs/specs/systems/messaging-and-human-asks.md`, `docs/guides/escalations.md` |
 | Resource gating, fleet metrics | `src/resources/`, `src/metrics/` | `docs/guides/resource-gating.md`, `docs/specs/design/fleet-metrics.md` |
 | Graph layout | `src/task_graph/layout/`, `src/api/graph_layout.py`, `dashboard/src/pages/command-center/layout-v2/` | `docs/superpowers/specs/2026-09-01-task-graph-spatial-layout-design.md` |
 | API, generated clients, dashboard server | `src/api/` (`spec.py`), `packages/`, `src/dashboard_server/` | `docs/contributing/codegen.md`, `docs/specs/dashboard-server.md` |

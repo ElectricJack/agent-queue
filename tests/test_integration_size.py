@@ -408,6 +408,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert set(amendments) == {
         "agile-beacon-80",
         "bright-impact-14",
+        "calm-lantern-21",
         "calm-rapids-50",
         "fair-dune-41",
         "fair-flare-10",
