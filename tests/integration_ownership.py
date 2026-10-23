@@ -44,6 +44,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-5c55b72faec1497391205876fc5dfeb9',
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f',
                           'msg-76ff7843e72d451b9017a0b4db30c970',
+                          'msg-f06302bed6424579bdb6b51290cbed1e',
+                          'msg-8f9cda4b9dcc460f8bcf006a22bfa2e0',
                           'msg-98d8517c56104e8fbf87e1330d2d5c1a',
                           'size-cap-delegation-2026-10-23',
                           'msg-000c812477994a65a62633a4a051224c',
@@ -313,6 +315,18 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            'Resume path until the authorized restart READY transaction. Keep the '
                            'historical frozen-batch measurements; engine and table counts remain '
                            'unchanged.'},
+                {'task_id': 'stark-grove-42',
+                 'decision_message_id': 'msg-8f9cda4b9dcc460f8bcf006a22bfa2e0',
+                 'referenced_decision': 'msg-f06302bed6424579bdb6b51290cbed1e',
+                 'previous_owned_total': 160837,
+                 'previous_engine_lines': 85316,
+                 'authorized_owned_delta': -9,
+                 'authorized_engine_delta': -486,
+                 'reason': "Held-ingestion P4 merged onto dev: dev's retirements plus three "
+                           'orphaned helpers removed; supervisor approved recording the exact '
+                           'lower footprint under size-cap-delegation-2026-10-23.',
+                 'global_decision': '907cdbb6-a78a-4d3f-9fd0-063b0cd050d6',
+                 'global_grant': 'msg-178ee4e85b0140598410d0cb16005443'},
                 {'task_id': 'nimble-meadow-99',
                  'decision_message_id': 'msg-98d8517c56104e8fbf87e1330d2d5c1a',
                  'operator_decision_id': 'c363ba40-0d03-4303-8667-e192e92091ad',

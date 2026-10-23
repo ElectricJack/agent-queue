@@ -1069,6 +1069,8 @@
         "msg-5c55b72faec1497391205876fc5dfeb9",
         "msg-96fed6b8e86148f0bbf55ded244c9a0f",
         "msg-76ff7843e72d451b9017a0b4db30c970",
+        "msg-f06302bed6424579bdb6b51290cbed1e",
+        "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
         "msg-98d8517c56104e8fbf87e1330d2d5c1a",
         "size-cap-delegation-2026-10-23",
         "msg-000c812477994a65a62633a4a051224c",
@@ -1338,6 +1340,18 @@
           "measured_engine_lines": 85543,
           "measured_table_count": 45,
           "reason": "Exact project supervisor grant for the PR1759 merge repair under size-cap-delegation-2026-10-23, with explicit delegation to record the approved grant. Preserve recovery holds through dev's manual-pause Resume path until the authorized restart READY transaction. Keep the historical frozen-batch measurements; engine and table counts remain unchanged."
+        },
+        {
+          "task_id": "stark-grove-42",
+          "decision_message_id": "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
+          "referenced_decision": "msg-f06302bed6424579bdb6b51290cbed1e",
+          "previous_owned_total": 160837,
+          "previous_engine_lines": 85316,
+          "authorized_owned_delta": -9,
+          "authorized_engine_delta": -486,
+          "reason": "Held-ingestion P4 merged onto dev: dev's retirements plus three orphaned helpers removed; supervisor approved recording the exact lower footprint under size-cap-delegation-2026-10-23.",
+          "global_decision": "907cdbb6-a78a-4d3f-9fd0-063b0cd050d6",
+          "global_grant": "msg-178ee4e85b0140598410d0cb16005443"
         },
         {
           "task_id": "nimble-meadow-99",
@@ -15058,6 +15072,18 @@
     "measured_table_count": 45,
     "reason": "Compose the unchanged approved +19 restart hold repair grant on current dev for PR #1900. Preserve every historical grant and frozen batch measurement.",
     "previous_recorded_owned_cap": 161213
+  },
+  "held_ingestion_p4_merge_measurement": {
+    "source_revision": "0dab21a95dca65432375d7ced2fa818a56c856eb",
+    "measured_owned_total": 160828,
+    "measured_engine_lines": 84830,
+    "measured_table_count": 45,
+    "authority": "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
+    "task_id": "stark-grove-42",
+    "referenced_decision": "msg-f06302bed6424579bdb6b51290cbed1e",
+    "standing_rule": "size-cap-delegation-2026-10-23",
+    "global_decision": "907cdbb6-a78a-4d3f-9fd0-063b0cd050d6",
+    "global_grant": "msg-178ee4e85b0140598410d0cb16005443"
   },
   "workspace_ownership_measurement": {
     "task_id": "nimble-meadow-99",
