@@ -558,6 +558,166 @@ async def completed_source_ci_repair(world, source, tid="repair"):
     return await completed(world, tid, head=git(clone, "rev-parse", "HEAD"))
 
 
+async def pair_conflict_branch(world, tid, text, *, base=None, needs=()):
+    origin = world.origin
+    base = base or git(origin.url, "rev-parse", "main")
+    git(origin.clone, "checkout", "-q", "-B", f"aq/{tid}", base)
+    (origin.clone / "base.txt").write_text(text + "\n")
+    git(origin.clone, "commit", "-qam", tid)
+    git(origin.clone, "push", "-q", "origin", f"aq/{tid}")
+    return await completed(world, tid, head=git(origin.clone, "rev-parse", "HEAD"),
+                           source_base=base, needs=needs)
+
+
+async def test_build_conflict_drops_transitive_and_git_dependents_and_lands_remainder(world):
+    train, github, _ = await hosted_train(world)
+    base = git(world.origin.url, "rev-parse", "main")
+    a = await pair_conflict_branch(world, "a", "first")
+    b = await pair_conflict_branch(world, "b", "conflict")
+    await completed(world, "middle", needs=("b",), land=True)
+    await completed(world, "c", needs=("middle",))
+    await pair_conflict_branch(world, "d", "stacked", base=b, needs=("b",))
+    z = await completed(world, "z")
+    target = git(world.origin.url, "rev-parse", "main")
+    refresh = AsyncMock(return_value={"success": True, "outcome": "requested"})
+    train.batches.refresh_conflict = refresh
+    original = await train.batches.open_batch(MAIN, await snapshot(world),
+                                              (await train.lane_for(MAIN)).service, seal_now=True)
+    first = await train.visit(MAIN)
+    assert first.state == "testing", first
+    assert first.batch_id != original.batch.id
+    assert first.detail["dispatch"]["batch_id"] == first.batch_id
+    assert [m["task_id"] for m in first.detail["dispatch"]["members"]] == ["a", "z"]
+    assert first.detail["ejections"][0]["code"] == "pair_conflict:b"
+    assert first.detail["ejections"][0]["ejected_members"] == ["b", "c", "d"]
+    store = BatchStore(world.db)
+    assert [m.task_id for m in await store.members(first.batch_id)] == ["a", "z"]
+    assert {m.task_id for m in await store.members(original.batch.id)} == {"a", "b", "c", "d", "z"}
+    old = await world.db.get_integration_batch(original.batch.id)
+    assert old["intent"] == "aborted" and old["human_abort_reason"] == "pair_conflict:b"
+    assert old["ejection_record"]["pair_conflict"]["target_sha"] == target
+    assert old["ejection_record"]["pair_conflict"]["sources"]["b"] == b
+    assert refresh.await_count == 1
+    assert git(world.origin.url, "rev-parse", "main") == target
+    for head in (a, z):
+        git(world.origin.clone, "merge-base", "--is-ancestor", head, first.candidate_sha)
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", b, first.candidate_sha],
+                          cwd=world.origin.clone).returncode == 1
+    github.runs[first.candidate_sha] = "success"
+    delivered = await train.visit(MAIN)
+    assert (delivered.state == "delivered"
+            or delivered.detail.get("settled_batch_id") == first.batch_id), delivered
+    assert git(world.origin.url, "rev-parse", "main") == first.candidate_sha
+    assert old["repair_attempt_count"] == 0
+    assert not any(t.id.startswith("repair-") for t in await world.db.list_tasks(project_id="p"))
+    assert base != target
+
+
+@pytest.mark.parametrize("change", ["source", "target"])
+async def test_pair_conflict_exclusion_survives_restart_until_either_head_changes(world, change):
+    from src.integration.delivery_truth import load_delivery_requests
+
+    train, _, _ = await hosted_train(world)
+    source = await pair_conflict_branch(world, "bad", "source")
+    origin = world.origin
+    git(origin.clone, "checkout", "-q", "-B", "main", "origin/main")
+    (origin.clone / "base.txt").write_text("target\n")
+    git(origin.clone, "commit", "-qam", "target moves")
+    git(origin.clone, "push", "-q", "origin", "main")
+    target = git(origin.url, "rev-parse", "main")
+    first = await train.visit(MAIN)
+    assert first.state == "blocked" and first.detail["ejections"], first
+    assert (await world.db.get_integration_batch(first.batch_id))["repair_attempt_count"] == 0
+    for _ in range(2):
+        restarted = fixture_batches(world.db)
+        blockers = []
+        assert await restarted.pending(MAIN, await snapshot(world), blockers=blockers) is None
+        assert [b["code"] for b in blockers] == ["pair_conflict:bad"]
+        service = (await train.lane_for(MAIN)).service
+        requests = await load_delivery_requests(
+            world.db, ["bad"], repository_id="r", target_ref=MAIN.target_ref, reduced=True)
+        with pytest.raises(ValueError, match="pair_conflict"):
+            await service.freeze_inputs(
+                Batch("retry", "p", "r", MAIN.target_ref),
+                await BatchStore(world.db).members(first.batch_id),
+                requests=requests, snapshot=await snapshot(world))
+    if change == "target":
+        git(origin.clone, "checkout", "-q", "-B", "main", target)
+        commit(origin.clone, {"unrelated": "tip changed"})
+        git(origin.clone, "push", "-q", "origin", "main")
+    else:
+        git(origin.clone, "checkout", "-q", "-B", "aq/bad", source)
+        commit(origin.clone, {"unrelated": "source changed"})
+        git(origin.clone, "push", "-q", "origin", "aq/bad")
+        await world.db.transition_task("bad", TaskStatus.IN_PROGRESS, force=True)
+        await close(world.db, "bad", [git(origin.clone, "rev-parse", "HEAD")],
+                    close_id="close-bad-refreshed", origin=origin)
+    assert await fixture_batches(world.db).pending(MAIN, await snapshot(world)) is not None
+
+
+async def test_build_conflict_drops_each_bad_member_without_a_batch_fixer(world):
+    train, _, _ = await hosted_train(world)
+    await pair_conflict_branch(world, "a", "first")
+    await pair_conflict_branch(world, "b", "second")
+    await pair_conflict_branch(world, "c", "third")
+    await completed(world, "z")
+    train.batches.refresh_conflict = AsyncMock(return_value={"success": True})
+    visit = await train.visit(MAIN)
+    assert visit.state == "testing", visit
+    assert [item["code"] for item in visit.detail["ejections"]] == [
+        "pair_conflict:b", "pair_conflict:c"]
+    assert [m.task_id for m in await BatchStore(world.db).members(visit.batch_id)] == ["a", "z"]
+    assert train.batches.refresh_conflict.await_count == 2
+    assert visit.repair is None
+
+
+async def test_pair_conflict_refresh_retries_after_restart_without_replacing_healthy_batch(world):
+    train, _, _ = await hosted_train(world)
+    await pair_conflict_branch(world, "a", "first")
+    await pair_conflict_branch(world, "b", "second")
+    train.batches.refresh_conflict = AsyncMock(side_effect=RuntimeError("temporary failure"))
+    first = await train.visit(MAIN)
+    old_id = first.detail["ejections"][0]["batch_id"]
+    old = await world.db.get_integration_batch(old_id)
+    assert old["ejection_record"]["pair_conflict"]["refresh_status"] == "pending"
+    train.batches = fixture_batches(world.db)
+    refresh = AsyncMock(return_value={"success": True, "outcome": "requested"})
+    train.batches.refresh_conflict = refresh
+    restarted = await train.visit(MAIN)
+    assert restarted.batch_id == first.batch_id and restarted.state == "testing", restarted
+    refresh.assert_awaited_once()
+    old = await world.db.get_integration_batch(old_id)
+    assert old["ejection_record"]["pair_conflict"]["refresh_status"] == "requested"
+    await train.visit(MAIN)
+    refresh.assert_awaited_once()
+
+
+async def test_pair_conflict_refresh_reopens_original_once_preserving_pr(world):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    train, _, _ = await hosted_train(world)
+    await pair_conflict_branch(world, "a", "first")
+    b = await pair_conflict_branch(world, "b", "second")
+    before = await world.db.get_task("b")
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    train.batches.refresh_conflict = handler.refresh_integration_pair_conflict
+    first = await train.visit(MAIN)
+    assert first.state == "testing", first
+    task = await world.db.get_task("b")
+    assert task.status == TaskStatus.READY
+    assert task.pr_url == before.pr_url and task.branch_name == before.branch_name
+    assert "Pair-conflict refresh:" in task.description and b in task.description
+    record = first.detail["ejections"][0]
+    old = await world.db.get_integration_batch(record["batch_id"])
+    assert old["ejection_record"]["pair_conflict"]["refresh_result"]["outcome"] == "reopened"
+    # Replay the request as if the daemon stopped after the READY transaction.
+    ejection = old["ejection_record"]
+    assert (await handler.refresh_integration_pair_conflict(old["id"], ejection))["outcome"] == (
+        "already_requested")
+    assert (await world.db.get_task("b")).description == task.description
+
+
 @pytest.mark.parametrize("status", ["READY", "IN_PROGRESS", "PAUSED", "COMPLETED"])
 @pytest.mark.parametrize("reopen", ["feedback", "restart", "update"])
 async def test_reopen_retires_source_ci_repairs_atomically(world, status, reopen):
@@ -7863,7 +8023,7 @@ async def test_unadmitted_conflicting_child_exposes_blocker_instead_of_idle(worl
     assert git(world.origin.url, "rev-parse", "aq/epic") == target
 
 
-async def test_one_repair_keeps_every_conflicting_source_until_combined_candidate_passes(world):
+async def test_existing_repair_keeps_every_conflicting_source_until_combined_candidate_passes(world):
     """Three completed branches conflict with main and each other, including
     generated artifacts. Partial repair, trailers and green partial CI cannot
     deliver; one worker retains the whole frozen batch through final checks."""
@@ -7895,7 +8055,11 @@ async def test_one_repair_keeps_every_conflicting_source_until_combined_candidat
         github.reviews.append({"id": index + 1, "commit_id": head, "state": "APPROVED",
                                "user": {"login": ("alice", "bob", "jack")[index],
                                         "type": "User"}})
+    # Recover a repair already started by an older daemon. A6 must not replace
+    # a batch while its existing repair writer owns the candidate.
+    train.batches.drop_conflict = AsyncMock(return_value=None)
     first = await train.visit(MAIN)
+    del train.batches.drop_conflict
     assert first.state == "repair", first
     frozen = await BatchStore(world.db).members(first.batch_id)
     assert [(m.task_id, m.source_sha) for m in frozen] == list(zip(("a", "b", "c"), sources))
@@ -8035,16 +8199,23 @@ async def conflicting_epic_pr(case, *, content_conflict=False):
 
 
 @pytest.mark.parametrize("content_conflict", [False, True])
-async def test_conflicting_epic_joins_root_batch_without_author_refresh(collected_epic, content_conflict):
+async def test_conflicting_epic_does_not_block_unrelated_root(collected_epic, content_conflict):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.database.tables import messages
+
     case = collected_epic
     head, default, _ = await conflicting_epic_pr(case, content_conflict=content_conflict)
     leaf = await completed(case.world, "leaf")
     case.github.reviews.append({"id": 100, "state": "APPROVED", "commit_id": leaf,
                                "user": {"login": "alice", "type": "User"}})
+    handler = IntegrationCommandsMixin()
+    handler.db = case.db
+    case.train.batches.refresh_conflict = handler.refresh_integration_pair_conflict
     visit = await case.train.visit(MAIN)
-    assert visit.state == ("repair" if content_conflict else "testing"), visit
+    assert visit.state == "testing", visit
     members = await BatchStore(case.db).members(visit.batch_id)
-    assert [(m.task_id, m.source_sha) for m in members] == [("epic", head), ("leaf", leaf)]
+    assert [(m.task_id, m.source_sha) for m in members] == (
+        [("leaf", leaf)] if content_conflict else [("epic", head), ("leaf", leaf)])
     async with case.db._engine.connect() as conn:
         assert not (await conn.execute(select(integration_batches.c.id).where(
             integration_batches.c.id.like("train-epic-refresh-%")))).first()
@@ -8053,11 +8224,25 @@ async def test_conflicting_epic_joins_root_batch_without_author_refresh(collecte
     assert git(case.origin.url, "rev-parse", "aq/epic") == head
     assert git(case.origin.url, "rev-parse", "main") == default
     if content_conflict:
-        repair = await case.db.get_task(visit.repair["task_id"])
-        assert repair.branch_name == candidate_ref(visit.batch_id).removeprefix("refs/heads/")
-        assert head in repair.description and leaf in repair.description
+        assert visit.repair is None
+        [ejection] = visit.detail["ejections"]
+        assert ejection["code"] == "pair_conflict:epic"
+        old = await case.db.get_integration_batch(ejection["batch_id"])
+        assert old["ejection_record"]["pair_conflict"]["refresh_result"]["outcome"] == (
+            "supervisor_notified")
         again = await case.train.visit(MAIN)
-        assert again.repair["task_id"] == repair.id and again.repair["attempt_count"] == 1
+        assert again.batch_id == visit.batch_id and again.state == "testing", again
+        async with case.db._engine.connect() as conn:
+            notices = (await conn.execute(select(messages).where(
+                messages.c.body_kind == "integration_pair_conflict"))).mappings().all()
+        assert len(notices) == 1 and "Refresh ejected source epic" == notices[0]["subject"]
+        assert (await case.db.get_task("epic")).status == TaskStatus.COMPLETED
+        case.github.runs[visit.candidate_sha] = "success"
+        delivered = await case.train.visit(MAIN)
+        assert (delivered.state == "delivered"
+                or delivered.detail.get("settled_batch_id") == visit.batch_id), delivered
+        assert git(case.origin.url, "rev-parse", "main") == visit.candidate_sha
+        git(case.origin.url, "merge-base", "--is-ancestor", leaf, "main")
     else:
         case.github.runs[visit.candidate_sha] = "success"
         assert (await case.train.visit(MAIN)).state == "delivered"
