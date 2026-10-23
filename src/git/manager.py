@@ -2357,41 +2357,75 @@ class GitManager:
         full check holds the repository lock for many seconds on a large store,
         so repeating it on every no-op fetch starves the integration train.
         """
-        if self.retained_store_verified(git_dir):
-            return
-        fingerprint = _object_store_fingerprint(git_dir)
-        started = time.monotonic()
-        for attempt in range(2):
-            try:
-                await self._run_isolated_import_git(
-                    [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
-                     "--no-reflogs", "--no-progress"],
-                    home=home, deadline=deadline, verify_integrity=True,
-                )
-                break
-            except GitError as exc:
-                if attempt or not str(exc).startswith("retained Git object integrity"):
-                    raise
-                # A linked worktree shares objects with independent writers.
-                # Re-run the full gate once after a transient pack/ref change;
-                # the original acquisition deadline still bounds both checks.
-                await asyncio.sleep(0)
-                fingerprint = _object_store_fingerprint(git_dir)
-        self.record_retained_store_verified(git_dir, fingerprint, started)
-
-    def retained_store_verified(self, git_dir: str) -> bool:
-        """Whether a clean full fsck of *git_dir*'s unchanged object store is reusable."""
-        verified = self.__dict__.setdefault("_retained_verified", {})
+        # One full check per store at a time: concurrent fetches into the same
+        # store wait for it and reuse a clean result instead of each running
+        # their own. The object-store walks run off the event loop.
         key = os.path.realpath(git_dir)
+        lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
+            key, asyncio.Lock())
+        try:
+            async with asyncio.timeout_at(deadline):
+                await lock.acquire()
+        except TimeoutError as exc:
+            raise GitError("authenticated Git push preparation failed") from exc
+        try:
+            fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+            if self._retained_verified_matches(key, fingerprint):
+                return
+            started = time.monotonic()
+            for attempt in range(2):
+                try:
+                    await self._run_isolated_import_git(
+                        [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                         "--no-reflogs", "--no-progress"],
+                        home=home, deadline=deadline, verify_integrity=True,
+                    )
+                    break
+                except GitError as exc:
+                    if attempt or not str(exc).startswith("retained Git object integrity"):
+                        raise
+                    # A linked worktree shares objects with independent writers.
+                    # Re-run the full gate once after a transient pack/ref change;
+                    # the original acquisition deadline still bounds both checks.
+                    fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+            after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+            self._record_retained_verified(key, fingerprint, after, started)
+        finally:
+            lock.release()
+
+    def _retained_verified_matches(self, key: str, fingerprint: tuple | None) -> bool:
+        verified = self.__dict__.setdefault("_retained_verified", {})
         cached = verified.get(key)
         if cached is None:
             return False
-        fingerprint, at = cached
+        recorded, at = cached
         if (time.monotonic() - at < _RETAINED_VERIFY_TTL_SECONDS
-                and fingerprint is not None and _object_store_fingerprint(git_dir) == fingerprint):
+                and fingerprint is not None and fingerprint == recorded):
             return True
         verified.pop(key, None)
         return False
+
+    def _record_retained_verified(
+        self, key: str, fingerprint: tuple | None, after: tuple | None, started: float,
+    ) -> None:
+        # Nothing is recorded when the store changed while the check ran.
+        if fingerprint is None or after != fingerprint:
+            return
+        self.__dict__.setdefault("_retained_verified", {})[key] = (fingerprint, started)
+
+    def retained_store_verified(self, git_dir: str) -> bool:
+        """Whether a clean full fsck of *git_dir*'s unchanged object store is reusable.
+
+        Walks the object store synchronously; async callers use
+        :meth:`aretained_store_verified`.
+        """
+        return self._retained_verified_matches(
+            os.path.realpath(git_dir), _object_store_fingerprint(git_dir))
+
+    async def aretained_store_verified(self, git_dir: str) -> bool:
+        """:meth:`retained_store_verified` with the walk off the event loop."""
+        fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        return self._retained_verified_matches(os.path.realpath(git_dir), fingerprint)
 
     def record_retained_store_verified(
         self, git_dir: str, fingerprint: tuple | None, started: float,
@@ -2400,10 +2434,15 @@ class GitManager:
 
         Nothing is recorded when the store changed while the check ran.
         """
-        if fingerprint is None or _object_store_fingerprint(git_dir) != fingerprint:
-            return
-        self.__dict__.setdefault("_retained_verified", {})[
-            os.path.realpath(git_dir)] = (fingerprint, started)
+        self._record_retained_verified(
+            os.path.realpath(git_dir), fingerprint, _object_store_fingerprint(git_dir), started)
+
+    async def arecord_retained_store_verified(
+        self, git_dir: str, fingerprint: tuple | None, started: float,
+    ) -> None:
+        """:meth:`record_retained_store_verified` with the walk off the event loop."""
+        after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        self._record_retained_verified(os.path.realpath(git_dir), fingerprint, after, started)
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,
@@ -5219,6 +5258,26 @@ class GitManager:
         )
         return tip_oid or expected_old_oid
 
+    async def _apush_borrowable_objects(
+        self, checkout: Path, *, home: Path, deadline: float,
+    ) -> Path | None:
+        """The object store a push from *checkout* may borrow, or None to import.
+
+        A shallow or partial store lacks history its tips name, so those still
+        import the exact graph (which fails loudly on a missing object).
+        """
+        try:
+            resolved = (await self._run_isolated_import_git(
+                ["-C", str(checkout), "rev-parse", "--path-format=absolute",
+                 "--git-common-dir", "--is-shallow-repository"],
+                home=home, deadline=deadline,
+            )).decode("utf-8", errors="replace").splitlines()
+        except GitError:
+            return None
+        if len(resolved) != 2:
+            return None
+        return self._borrowable_objects(*resolved)
+
     async def _apush_refs_with_app_auth_to_url(
         self,
         checkout_path: str,
@@ -5295,7 +5354,20 @@ class GitManager:
                 home=home,
                 deadline=_deadline,
             )
-            if imports:
+            borrowed = (
+                await self._apush_borrowable_objects(checkout, home=home, deadline=_deadline)
+                if imports else None
+            )
+            if borrowed is not None:
+                # Borrow the checkout's object store read-only rather than
+                # copying each tip's whole history.  send-pack leaves out only
+                # the advertised remote tips it holds, and an import holds just
+                # the tips' own history: once the remote moved past it, every
+                # push re-sent the full graph (two full packs per push).
+                alternates = repository / "objects" / "info" / "alternates"
+                alternates.parent.mkdir(parents=True, exist_ok=True)
+                alternates.write_text(f"{borrowed}\n", encoding="utf-8")
+            elif imports:
                 # One import carries every tip's graph; shared history is
                 # copied once rather than once per head.  Git 2.47+ ends a
                 # fetch with a detached ``maintenance run --auto``: it calls
@@ -5327,14 +5399,15 @@ class GitManager:
                     )
                     if imported.decode("ascii", errors="replace") != tip_oid:
                         raise GitError("authenticated Git push preparation failed")
-                    target = next(branch for tip, branch, _old in validated if tip == tip_oid)
-                    kind = await self._run_isolated_import_git(
-                        [f"--git-dir={repository}", "cat-file", "-t", tip_oid],
-                        home=home, deadline=_deadline,
-                    )
-                    expected_kind = "tag" if _qualified_refs and target.startswith("refs/tags/") else "commit"
-                    if kind.decode("ascii") != expected_kind:
-                        raise GitError("authenticated Git push preparation has wrong object type")
+            for tip_oid, _ref in imports:
+                target = next(branch for tip, branch, _old in validated if tip == tip_oid)
+                kind = await self._run_isolated_import_git(
+                    [f"--git-dir={repository}", "cat-file", "-t", tip_oid],
+                    home=home, deadline=_deadline,
+                )
+                expected_kind = "tag" if _qualified_refs and target.startswith("refs/tags/") else "commit"
+                if kind.decode("ascii") != expected_kind:
+                    raise GitError("authenticated Git push preparation has wrong object type")
 
             topology = (
                 None

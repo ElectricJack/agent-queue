@@ -4076,6 +4076,36 @@ async def test_active_control_status_reads_no_git_and_omits_epic_distance(world,
     assert control == {key: value for key, value in full.items() if key != "epics"}
 
 
+async def test_train_status_bounds_git_and_reuses_a_recent_fetch(world, monkeypatch):
+    """A status read never waits out a slow fetch: epic distance degrades to unknown."""
+    from src.integration import status as status_module
+    from src.integration import train_sources
+
+    await cross_epic_world(world)
+    service = IntegrationStatusService(world.db, git_first="active")
+    seen = []
+    real = train_sources.project_snapshot
+
+    async def recorded(db, target, **kwargs):
+        seen.append(kwargs)
+        return await real(db, target, **kwargs)
+
+    monkeypatch.setattr(train_sources, "project_snapshot", recorded)
+    await service.train_status("p")
+    assert seen and seen[0]["read"] is True
+
+    async def stalled(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(train_sources, "project_snapshot", stalled)
+    monkeypatch.setattr(status_module, "_TRAIN_GIT_BUDGET", 0.05)
+    started = time.monotonic()
+    result = await service.train_status("p")
+    assert time.monotonic() - started < 5
+    epic = next(item for item in result["epics"] if item["task_id"] == "epic")
+    assert epic == {"task_id": "epic", "behind": None, "state": "unknown"}
+
+
 async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     from src.integration.stacked_branches import EpicRefresh
 
