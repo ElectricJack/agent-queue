@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -1691,3 +1692,24 @@ async def test_authenticated_user_requires_human_credentials_and_fixed_endpoint(
     with pytest.raises(ValueError, match="existing-login"):
         await GitHubClient(REPOSITORY, runner=app_runner).authenticated_user()
     assert not app_runner.calls
+
+
+async def test_gather_inherits_component_and_does_not_attribute_loop_host(tmp_path):
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(200, {}), [1000.0])
+    runner = access.runner
+
+    async def child():
+        await runner.run(["api", "repos/acme/widgets/pulls/7"], repository=REPOSITORY)
+
+    # Model the daemon event-loop frame beneath an otherwise unattributed task.
+    namespace = {"__name__": "src.main", "asyncio": asyncio}
+    exec("async def host(child):\n    await child()\n    await asyncio.gather(child())", namespace)
+    await namespace["host"](child)
+    assert runner.activity()["api_calls_per_hour"] == {"unattributed": 2}
+    assert runner.activity()["api_calls_per_minute"] == {"GET repos/acme/widgets/pulls/7": 2}
+    with github_component("dashboard_pr_snapshot", background=True):
+        await namespace["host"](child)
+    assert runner.activity()["api_calls_per_hour"] == {
+        "unattributed": 2, "dashboard_pr_snapshot": 2,
+    }
