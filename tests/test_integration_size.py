@@ -422,6 +422,28 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert push["measured_table_count"] == exception["measured_table_count"] == 45
     assert push["headroom"] == 0
     assert push["restore_task"] == exception["restore_task"] == "azure-ridge-72"
+    push_merge = exception["authenticated_push_merge_measurement"]
+    assert push_merge["task_id"] == push["task_id"]
+    assert push_merge["referenced_decision"] == push["decision_id"]
+    assert push_merge["operator_decision"] == "6679052c"
+    assert push_merge["operator_task"] == "sharp-cascade-53"
+    assert push_merge["approval_message_id"] == push["approval_message_id"]
+    assert push_merge["approval_message_id"] in exception["decision_message_ids"]
+    assert push_merge["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1882"
+    assert push_merge["merged_dev_revision"] == "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d"
+    assert push_merge["measured_source_revision"] == exception["measured_source_revision"]
+    assert push_merge["dev_owned_total"] == 161_213
+    assert push_merge["dev_engine_lines"] == 85_544
+    assert push_merge["authorized_owned_delta"] == push["authorized_owned_delta"] == 13
+    assert push_merge["authorized_engine_delta"] == push["authorized_engine_delta"] == 13
+    assert push_merge["dev_owned_total"] + 13 == push_merge["measured_owned_total"] == measured
+    assert (push_merge["dev_engine_lines"] + 13 == push_merge["measured_engine_lines"]
+            == exception["measured_engine_lines"])
+    assert push_merge["dev_table_count"] == push_merge["measured_table_count"] == 45
+    assert push_merge["authorized_table_delta"] == push_merge["headroom"] == 0
+    assert push_merge["restore_task"] == exception["restore_task"]
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["authenticated_push_merge_measurement"] == push_merge
     composition = exception["batch_composition"]
     assert composition["source_revision"] == "4e98fa0b96d561cfa7de934541c3e66df430b2a6"
     # sharp-rapids-10's exact +9/+0 is composed on top of dev's frozen batch record.
@@ -732,7 +754,7 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     batch = exception["resume_batch_composition"]
     assert batch["batch_id"] == "train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8"
     assert batch["starting_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
-    assert batch["source_revision"] == exception["measured_source_revision"]
+    assert batch["source_revision"] == "4bafa45f1ac0a466eab372c7b6b0b866f67bb832"
     assert batch["member_sources"] == {
         "calm-rapids-50": "45626ba27ff1c7711f5aa17893f7ce997928da5f",
         "fair-crest-95": "63163a7d4fd4aa5611c18ae139580902abf32770",
@@ -752,12 +774,17 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     assert batch["base_owned_total"] == 161_162
     assert batch["base_engine_lines"] == 85_543
     assert batch["base_table_count"] == 45
+    push_merge = exception["authenticated_push_merge_measurement"]
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_213
+    ) == push_merge["dev_owned_total"] == 161_213
+    assert (push_merge["dev_owned_total"] + push_merge["authorized_owned_delta"]
+            == exception["measured_owned_total"] == report["total"] == 161_226)
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_544
+    ) == push_merge["dev_engine_lines"] == 85_544
+    assert (push_merge["dev_engine_lines"] + push_merge["authorized_engine_delta"]
+            == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_557)
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45

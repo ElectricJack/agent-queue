@@ -19543,10 +19543,10 @@
       "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+    "measured_source_revision": "a8cb26e99371072b6b4ff69bfdf9852aafdddd29",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 161213,
-    "delta": 5714,
+    "measured_owned_total": 161226,
+    "delta": 5727,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19566,7 +19566,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 2255,
+    "batch_measured_delta": 2268,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19575,7 +19575,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85544,
+    "measured_engine_lines": 85557,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22",
     "amendments": [
@@ -19994,6 +19994,29 @@
       "headroom": 0,
       "reason": "Persist fenced push-failure diagnostics in fixer blockers and train notices.",
       "restore_task": "azure-ridge-72"
+    },
+    "authenticated_push_merge_measurement": {
+      "task_id": "fleet-dune-15",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "operator_decision": "6679052c",
+      "operator_task": "sharp-cascade-53",
+      "approval_message_id": "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12",
+      "authority": "Supervisor reopen preapproval, 2026-10-23: exact merged amendment for PR #1882.",
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1882",
+      "merged_dev_revision": "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d",
+      "dev_owned_total": 161213,
+      "dev_engine_lines": 85544,
+      "dev_table_count": 45,
+      "measured_source_revision": "a8cb26e99371072b6b4ff69bfdf9852aafdddd29",
+      "measured_owned_total": 161226,
+      "measured_engine_lines": 85557,
+      "measured_table_count": 45,
+      "authorized_owned_delta": 13,
+      "authorized_engine_delta": 13,
+      "authorized_table_delta": 0,
+      "headroom": 0,
+      "restore_task": "azure-ridge-72",
+      "reason": "Carry the unchanged approved push-diagnostic delta onto merged dev; preserve every historical grant."
     }
   },
   "storage_dispositions": {
