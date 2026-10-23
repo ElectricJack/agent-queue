@@ -312,11 +312,11 @@ async def test_ordinary_preparation_preserves_activation_loss(handler, db, tmp_p
 
 
 @pytest.mark.parametrize("change", ["hold", "development"])
-@pytest.mark.parametrize("response_seconds", [60.0, 0.0], ids=["in_window", "outlived"])
+@pytest.mark.parametrize("response_seconds", [0, 60], ids=["background", "foreground"])
 async def test_ordinary_preparation_rechecks_policy_and_holds(
     handler, db, tmp_path, monkeypatch, change, response_seconds,
 ):
-    """A changed policy rejects the old epoch on either side of the HTTP response."""
+    """A worker retries moved policy even when preparation outlives its response."""
     monkeypatch.setattr(
         "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
     )
@@ -336,24 +336,27 @@ async def test_ordinary_preparation_rechecks_policy_and_holds(
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
     worker = scoped(handler, sid)
-    result = await settled_claim(worker, {"next": True})
-    if change == "development" and response_seconds == 0.0:
-        # settled_claim observes the first preparation, not the worker's next
-        # request. A moved policy finishing after the response needs that
-        # request to re-enter admission, as in the real pool claim loop.
-        assert result["result"] == "no_ready_work", result
-        assert result["reason"] == "delivery_snapshot_changed"
-        assert resets == 1
-        assert (await db.get_session(sid)).claims == 0
-        assert (await db.get_session(sid)).claim_phase is None
+    if response_seconds == 0:
+        progress = await worker._cmd_task_claim({"next": True})
+        assert progress["result"] == "claim_in_progress", progress
+        preparation = handler.orchestrator.claim_preparations[
+            (sid, progress["task_id"], progress["claim_epoch"])
+        ]
+        rejected = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+        assert rejected["result"] == "no_ready_work", rejected
+        assert rejected["reason"] == "delivery_snapshot_changed", rejected
+        session = await db.get_session(sid)
+        assert session.claims == 0 and session.claim_phase is None
+        assert session.task_id is None
         assert (await db.get_task("dependent")).status is TaskStatus.READY
         assert not (work_dir / ".aq" / "claim.json").exists()
-        result = await settled_claim(worker, {"next": True})
+        assert resets == 1
+        # Collect the completed generation through the worker API. A policy
+        # change retries admission; an operator hold must still refuse it.
+    result = await settled_claim(worker, {"next": True})
     if change == "hold":
         assert result["result"] == "no_ready_work", result
         assert (await db.get_session(sid)).claims == 0
-        assert resets == 1
-        assert not (work_dir / ".aq" / "claim.json").exists()
     else:
         # Re-enter admission for the new policy before activating a new epoch.
         assert result["result"] == "claimed", result
