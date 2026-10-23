@@ -1056,7 +1056,8 @@
         "msg-381054d695e64055979a687c4d811e7e",
         "msg-ab86b9766c2f42b9ba4920aba585b577",
         "msg-21784b3e56aa4f54bf1042b7c9af4aaf",
-        "msg-a337e2c905ce4f5c8a236344a4e25211"
+        "msg-a337e2c905ce4f5c8a236344a4e25211",
+        "msg-330ea2478c724381acbb5512fc99e4b5"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "measured_source_revision": "f12a1f07560d3d0cd6458c078007bda21eca8080",
@@ -1117,7 +1118,8 @@
           "authorized_owned_delta": 103,
           "authorized_engine_delta": 82,
           "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
-          "supersedes_message_id": "msg-ac47a08407a6462bb411326ecefeab44"
+          "supersedes_message_id": "msg-ac47a08407a6462bb411326ecefeab44",
+          "grant_source_message_id": "msg-330ea2478c724381acbb5512fc99e4b5"
         }
       ]
     }
@@ -14210,6 +14212,7 @@
     "live_check_run_reads_per_minute": 91,
     "live_review_reads_per_minute": 83,
     "live_snapshot_sha256": "4cf00bfb8c425ace07212f8ff33d38f5eb28709e079781810eb241c3d974e6c2",
-    "post_delivery_followup": "Supervisor collects two hourly caller windows via aq integration status agent-queue --control-only (github.api_calls_per_hour); accepted in msg-78d52ce2244446e3b5f45549aaa713de."
+    "post_delivery_followup": "Supervisor collects two hourly caller windows via aq integration status agent-queue --control-only (github.api_calls_per_hour); accepted in msg-78d52ce2244446e3b5f45549aaa713de.",
+    "grant_source_message_id": "msg-330ea2478c724381acbb5512fc99e4b5"
   }
 }

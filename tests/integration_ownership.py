@@ -31,7 +31,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-381054d695e64055979a687c4d811e7e',
                           'msg-ab86b9766c2f42b9ba4920aba585b577',
                           'msg-21784b3e56aa4f54bf1042b7c9af4aaf',
-                          'msg-a337e2c905ce4f5c8a236344a4e25211'],
+                          'msg-a337e2c905ce4f5c8a236344a4e25211',
+                          'msg-330ea2478c724381acbb5512fc99e4b5'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
  'measured_source_revision': 'f12a1f07560d3d0cd6458c078007bda21eca8080',
  'original_owned_total_cap': 155499,
@@ -83,7 +84,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'reason': 'GitHub caller diagnostics, shared background quota reserve and '
                            'inventory reuse; exact supervisor grant under '
                            'size-cap-delegation-2026-10-23.',
-                 'supersedes_message_id': 'msg-ac47a08407a6462bb411326ecefeab44'}]}
+                 'supersedes_message_id': 'msg-ac47a08407a6462bb411326ecefeab44',
+                 'grant_source_message_id': 'msg-330ea2478c724381acbb5512fc99e4b5'}]}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
