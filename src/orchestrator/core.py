@@ -4278,6 +4278,7 @@ class Orchestrator(
                                exc_info=True)
             reports: list[BranchSweepReport] = []
             failures: list[str] = []
+            skipped_detached: list[str] = []
             unregistered: dict[str, list[str]] = {}
             retired: list[tuple[str, str | None]] = []
             migrations: list[dict] = []
@@ -4397,6 +4398,15 @@ class Orchestrator(
                 if common_path in seen_common_dirs:
                     continue
                 try:
+                    if not workspace.is_slot:
+                        git_dir = await self.git._arun(["rev-parse", "--git-dir"], cwd=checkout)
+                        if str((Path(checkout) / git_dir).resolve()) != common_path:
+                            branch, dirty = await self.git.aread_status_summary(checkout)
+                            if branch == "HEAD" and not dirty:
+                                # Foreign linked worktrees need no push preparation.
+                                # Leave the common directory eligible for its base/slots.
+                                skipped_detached.append(checkout)
+                                continue
                     retained_origin = retained_origins.get(str(Path(checkout).resolve()))
                     if retained_origin:
                         await ensure_retained_origin(self.git, checkout, retained_origin)
@@ -4507,6 +4517,11 @@ class Orchestrator(
             ]
             if failures:
                 lines.append(f"Failures ({len(failures)}): " + "; ".join(failures[:10]))
+            if skipped_detached:
+                lines.append(
+                    f"Skipped clean detached non-slot worktrees ({len(skipped_detached)}): "
+                    + "; ".join(skipped_detached[:10])
+                )
             new_notices = [detail for key, detail in missing_notices.items()
                            if key not in previous_notices]
             if new_notices:
