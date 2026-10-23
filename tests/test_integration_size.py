@@ -384,6 +384,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "quick-pinnacle-97",
         "stark-beacon-94",
         "sharp-rapids-10",
+        "calm-rapids-50",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -411,14 +412,26 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert snapshot["previous_owned_total"] == 161_102
     assert snapshot["authorized_owned_delta"] == 9
     assert snapshot["authorized_engine_delta"] == 0
-    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == measured
-    assert snapshot["measured_owned_total"] == measured == 161_111
+    assert snapshot["previous_owned_total"] + snapshot["authorized_owned_delta"] == 161_111
+    assert snapshot["measured_owned_total"] == 161_111
     assert snapshot["previous_engine_lines"] == snapshot["measured_engine_lines"] == 85_517
     assert snapshot["measured_engine_lines"] == exception["measured_engine_lines"]
     assert snapshot["measured_table_count"] == 45
     assert snapshot["measured_source_revision"] == exception["measured_source_revision"]
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["dashboard_pr_snapshot_measurement"] == snapshot
+    resume = amendments["calm-rapids-50"]
+    assert resume["decision_message_id"] == "msg-5c55b72faec1497391205876fc5dfeb9"
+    assert resume["decision_message_id"] in exception["decision_message_ids"]
+    assert resume["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert resume["operator_decision"] == "6679052c"
+    assert resume["pull_request"] == 1814
+    assert resume["merged_dev_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert resume["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert resume["authorized_owned_delta"] == 50
+    assert resume["previous_owned_total"] + resume["authorized_owned_delta"] == measured == 161_161
+    assert resume["authorized_engine_delta"] == 0
+    assert resume["previous_engine_lines"] == exception["measured_engine_lines"]
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
         "quick-pinnacle-97",
