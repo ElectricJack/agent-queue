@@ -9105,12 +9105,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a005c4bf07b08110b40d801b29d95f5f4b02cc3e1b4bc89aa261f1645896b243",
+      "digest": "sha256:3c1c9ae16a1db00cba0d3a120ac473efdbd2d2ca164bbd7c87b47da4bc048639",
       "imports": [
         "src.commands",
         "src.commands.principal",
         "src.config",
         "src.database.tables",
+        "src.escalations",
+        "src.git.github_contracts",
         "src.integration.batches",
         "src.integration.checks",
         "src.integration.dispatch_waits",
@@ -9118,7 +9120,8 @@
         "src.integration.runtime_contracts",
         "src.integration.train",
         "src.wait_runtime.service",
-        "src.waits.conditions"
+        "src.waits.conditions",
+        "src.waits.graph"
       ],
       "markers": [],
       "summary": "The train's shared waits use verified sources and survive policy replacement."
@@ -19997,11 +20000,12 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:dc5accba4cdb745e213ea3054efc2532b25de09c89374388435b161dffafcbe9",
+      "digest": "sha256:d9dfe6cdb76ac788ca7457ba236f24bc1ef7d78f24e26f173a1f92eb69f1202a",
       "imports": [
         "src.config",
         "src.database.queries.continuation_queries",
         "src.database.tables",
+        "src.escalations",
         "src.event_schemas",
         "src.handoffs",
         "src.messages.delivery",
