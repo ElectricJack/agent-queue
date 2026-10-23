@@ -1,7 +1,7 @@
 ---
 playbook_id: promotion-continuous
-artifact_sha256: sha256:5d1b280c3c398315a49e6dfe5bdb2ef260c44abb9ba3e83694c42940547d4b00
-source_sha256: sha256:92457830a080559adc64d10202394da69ff316921263c53421b786262fdb0744
+artifact_sha256: sha256:9ee8305be49614df34963e148c60902671f6641ab84697ca7974e7edc6e9c99d
+source_sha256: sha256:dbaa0490455aec9247e062f6a9cab887bc295cbb946294a04d70debbd6035c12
 contract_fingerprint: sha256:0fe70d5e2def4bd1e7282c1713a1a5971a64309b5f8ebfd40b11536e3670d3a8
 questions_resolved: 0
 capabilities_granted:
@@ -33,3 +33,24 @@ notification refusal still terminates as failed without a retry. The refreshed
 contract fingerprints include `integration_backmerge_source`. Engine regression
 coverage exercises request, hotfix, backmerge and continuous-source refusals.
 This records the repository review only; neither bundle is activated by this repair.
+
+
+Typed-source port: the six existing commands are now explicitly declared in
+`required_capabilities`, with exact binding paths, recipients and terminal
+outcomes stated in the source. This enables strict source-policy alignment.
+Executable rules, steps, command contracts and feature requirements are unchanged;
+only source provenance, source identity, compilation time and capability metadata
+change. `message_send` remains once per durable event; namespace suppression,
+collection scans, diagnostics and scripts would add behavior this policy does
+not have. No state schema version is introduced.
+
+The baseline is the shipped graph at 52d2efe4cb5380e6c1889b80f2bf2cce04af9473,
+source sha256:92457830a080559adc64d10202394da69ff316921263c53421b786262fdb0744.
+The observed installed source was older,
+sha256:7cb8531f574f8242dd7cb42a9649b5a1ab004fec74f072bb76e28d53553223f3;
+it lacked the migration-refusal paragraph. This port retains the shipped repair.
+`tests/test_promotion_continuous_equivalence.py` compares the complete executable
+graph and runs 42 recorded scenarios against both artifacts through the V2 engine.
+The frozen baseline and scenario expectations live under
+`tests/fixtures/playbooks/promotion-continuous-equivalence/`.
+This is repository evidence only; no installation or activation was performed.

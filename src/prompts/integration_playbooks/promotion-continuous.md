@@ -4,6 +4,13 @@ name: Promotion continuous
 version: 1
 scope: system
 enabled: false
+required_capabilities:
+  - integration_promotion_policy_input
+  - promote_request
+  - promote_cancel
+  - integration_promotion_publish
+  - integration_backmerge_source
+  - message_send
 triggers:
   - promotion.source_settled
   - promotion.request_due
@@ -23,6 +30,23 @@ Command argument names are `project_id`, `step_id`, `batch_id`, `from_task`,
 `source_sha`, `request_id`, `notes_reviewed`, `to_kind`, `to_id`, `from_kind`,
 `from_id` and `body`. The result binding is `input.policy`.
 
+## Typed building blocks
+
+Use typed command steps and deterministic decisions. Save the
+`integration_promotion_policy_input` result as `input`; read its exact paths
+`policy.backmerge_pending`, `policy.newer_source`, `policy.active_request_id`
+and `policy.source_sha`. Test the first three with `exists` in `truthy` mode,
+in the rule's stated order. Do not infer facts from a summary string or add a
+`payload` wrapper. Command outcomes choose the next step.
+
+The source capability declaration pins these six existing commands for review;
+it grants no authority. There is no collection scan, diagnostic sweep or host
+program here, so no foreach, snapshot, doctor or script step is needed.
+Keep `message_send` rather than notification episodes: independent durable
+events must still notify independently. No state namespace or schema version
+is introduced. The server retains promotion intents, backmerge debt, exact-head
+evidence and replay identity.
+
 ## Rule: advance-source
 
 On `promotion.source_settled`, continuous steps read
@@ -39,7 +63,7 @@ On `promotion.request_due`, read `integration_promotion_policy_input`; outstandi
 backmerge debt waits and notifies. A current intent waits. Otherwise run
 `promote_request` with the source returned by the mechanism and the explicit
 `event.notes_reviewed` acknowledgement. The input bindings are `input.policy`
-and `requested.batch_id`; a refusal notifies once for this durable event.
+only; the request result is not saved. A refusal notifies once for this durable event.
 
 ## Rule: hotfix-completed
 
@@ -83,3 +107,16 @@ Every missing fact, daemon refusal, and runtime error ends visibly failed or
 waits and notifies once per event. Message delivery is `message_send` to the
 operator user; durable command replay prevents duplicate messages for that event.
 Publication and target movement remain server-owned mechanisms.
+
+Preserve the existing notification inputs exactly: `to_kind` = `user`,
+`to_id` = `user`, `from_kind` = `system`, `from_id` = `promotion-continuous`,
+and `project_id` = `event.project_id`. The `body` is:
+"Promotion needs operator attention. Inspect aq promote status; use prepare, approve or cancel after resolving the named hold."
+
+A `queued` notification ends completed; a `rejected` notification or
+`runtime_error` ends failed, without retrying. Other command refusals reach
+that notification once, while their `runtime_error` ends failed directly.
+Successful typed command outcomes advance normally, except publication `held`
+and `unknown`, which notify. Publication `testing` ends completed for this
+event so the train can reobserve; it is not proof of publication. This preserves
+the shipped graph's terminal outcomes as well as its command calls.
