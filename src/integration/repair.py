@@ -69,6 +69,8 @@ from src.integration.models import (
     Fence,
     HierarchicalIntegrationPolicy,
     RepairPolicy,
+    repair_deadline,
+    repair_deadline_due,
 )
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
@@ -297,7 +299,10 @@ class OrdinaryRepairService:
                 if stage == "debug":
                     intelligence_class = policy.debug_intelligence_class
                 repair_input.update(stage=stage, budget_seconds=seconds)
-                brief += (render_task_template("ordinary-repair-budget", stage=stage, seconds=seconds))
+                if seconds:
+                    brief += render_task_template(
+                        "ordinary-repair-budget", stage=stage, seconds=seconds,
+                    )
             if sync_default_branch:
                 repair_input["sync_default_branch"] = dict(sync_default_branch)
             fence = await self.locks.acquire_on(
@@ -1018,7 +1023,7 @@ class RepairService:
                 if context is None:
                     return {"outcome": "stale", "operation_id": operation_id}
                 policy, boundary, subject = context
-                deadline_at = activated_at + boundary.repair.primary_seconds
+                deadline_at = repair_deadline(activated_at, boundary.repair.primary_seconds)
                 row = {
                     "operation_id": operation_id,
                     "ordinal": 0,
@@ -1204,7 +1209,7 @@ class RepairService:
         """
         ordinal = int(plan["ordinal"])
         starting_sha = conflict["expected_target"]
-        deadline_at = now + plan["timeout_seconds"]
+        deadline_at = repair_deadline(now, plan["timeout_seconds"])
         dossier = await self._initial_dossier_on(
             conn,
             operation=operation,
@@ -1324,8 +1329,7 @@ class RepairService:
             or stage["state"] not in {"active", "awaiting_completion"}
             or stage["writer_kind"] != "repair_delegate"
             or not stage["repair_task_id"]
-            or stage["deadline_at"] is None
-            or now >= float(stage["deadline_at"])
+            or repair_deadline_due(stage["deadline_at"], now)
         ):
             return None
         try:
@@ -1686,7 +1690,7 @@ class RepairService:
                         dossier=dossier,
                     )
                 )
-            elif counted and evidence["conclusion"] == "failure" and attempts >= limit:
+            elif counted and evidence["conclusion"] == "failure" and limit and attempts >= limit:
                 if int(stage["ordinal"]) == 0 or RepairPolicy.model_validate(stage["policy"]).on_exhausted == "continue":
                     outcome = "escalate"
                     action = "dispatch_debug"
@@ -1843,7 +1847,7 @@ class RepairService:
         repair = boundary.repair
         ordinal = 0
         intelligence_class = boundary.primary_intelligence_class
-        deadline_at = now + repair.primary_seconds
+        deadline_at = repair_deadline(now, repair.primary_seconds)
         if settled is not None:
             ordinal = int(
                 (
@@ -1855,7 +1859,7 @@ class RepairService:
                 ).scalar_one()
             ) + 1
             intelligence_class = repair.debug_intelligence_class
-            deadline_at = now + repair.debug_seconds
+            deadline_at = repair_deadline(now, repair.debug_seconds)
         dossier = await self._initial_dossier_on(
             conn,
             operation=operation,
@@ -3752,7 +3756,7 @@ class RepairService:
         policy = RepairPolicy.model_validate(stage["policy"])
         seconds = self._deferral_seconds(policy, ordinal, reason)
         previous = float(stage["deadline_at"])
-        deadline = max(previous, now) + seconds
+        deadline = repair_deadline(max(previous, now), seconds)
         entry = {
             "reason": reason,
             "at": now,
@@ -4230,7 +4234,9 @@ class RepairService:
                     detail=f"stopped session {claimed} still holds a claim on {task_id}",
                 )
             policy = RepairPolicy.model_validate(row["policy"])
-            deadline = now + (policy.primary_seconds if stage == 0 else policy.debug_seconds)
+            deadline = repair_deadline(
+                now, policy.primary_seconds if stage == 0 else policy.debug_seconds,
+            )
             dossier = dict(row["dossier"] or {})
             dossier["writer_refiles"] = list(dossier.get("writer_refiles") or []) + [{
                 "task_id": task_id,
@@ -4610,7 +4616,7 @@ class RepairService:
         )
         if stage["state"] not in {"active", "awaiting_completion"}:
             raise ValueError("batch repair stage is no longer active")
-        if stage["state"] == "active" and now >= float(stage["deadline_at"]):
+        if stage["state"] == "active" and repair_deadline_due(stage["deadline_at"], now):
             raise ValueError("batch repair stage is no longer active")
         if stage["current_subject"] != self._batch_subject(revision):
             raise ValueError("batch repair subject changed during close")
@@ -4798,7 +4804,7 @@ class RepairService:
             "operation_id": operation_id,
             "stage": int(stage["ordinal"]),
             "subject": subject,
-            "deadline_due": observed_at >= float(stage["deadline_at"]),
+            "deadline_due": repair_deadline_due(stage["deadline_at"], observed_at),
         }
 
     async def bind_current_parent_subject_on(
@@ -4916,7 +4922,7 @@ class RepairService:
             "operation_id": operation_id,
             "stage": int(stage["ordinal"]),
             "subject": subject,
-            "deadline_due": observed_at >= float(stage["deadline_at"]),
+            "deadline_due": repair_deadline_due(stage["deadline_at"], observed_at),
             "changed": changed,
         }
 
@@ -5853,7 +5859,7 @@ class RepairService:
         trigger_id: str,
         boundary,
         started_at: float,
-        deadline_at: float,
+        deadline_at: float | None,
     ) -> dict[str, Any]:
         if operation["target_kind"] == "parent":
             manifest = {
@@ -6060,7 +6066,7 @@ class RepairService:
         debug_dossier["budget"] = {
             "ordinal": next_ordinal,
             "started_at": now,
-            "deadline_at": now + boundary.repair.debug_seconds,
+            "deadline_at": repair_deadline(now, boundary.repair.debug_seconds),
             "attempt_limit": boundary.repair.debug_attempts,
             "attempts": 0,
         }
@@ -6106,7 +6112,7 @@ class RepairService:
             "success_subject": None,
             "success_evidence_id": None,
             "started_at": now,
-            "deadline_at": now + boundary.repair.debug_seconds,
+            "deadline_at": repair_deadline(now, boundary.repair.debug_seconds),
             "attempts": 0,
             "dossier": debug_dossier,
             "state": "active",
@@ -6558,5 +6564,5 @@ class RepairService:
             "stage": int(stage["ordinal"]),
             "starting_sha": stage["starting_sha"],
             "started_at": float(stage["started_at"]),
-            "deadline_at": float(stage["deadline_at"]),
+            "deadline_at": stage["deadline_at"],
         }

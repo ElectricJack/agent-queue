@@ -106,7 +106,7 @@ MEMBER_LIMIT = 200
 # Leave time in the visit deadline to freeze and advance an admitted prefix: a
 # cooperative quantum (not a fenced writer's deadline) that red roots do not spend.
 SELECTION_WORK_SECONDS = 60.0
-_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted",
+_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted", "source_ci_repair_unchanged",
     "root_pr_checks_need_repair", "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted"})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
