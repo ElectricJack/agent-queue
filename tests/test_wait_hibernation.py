@@ -66,8 +66,17 @@ async def env():
                 created_at=NOW,
             )
         )
-    yield SimpleNamespace(db=db, scope=scope, wait_id=result["wait_id"])
-    await db.close()
+    context = SimpleNamespace(db=db, scope=scope, wait_id=result["wait_id"])
+    try:
+        yield context
+    finally:
+        if getattr(context, 'legacy_null_tokens', False):
+            async with db._engine.begin() as conn:
+                await conn.execute(update(sessions).where(sessions.c.instance_token.is_(None)).values(
+                    instance_token='restored-test-token'))
+                await conn.exec_driver_sql(
+                    'ALTER TABLE sessions ALTER COLUMN instance_token SET NOT NULL')
+        await db.close()
 
 
 async def intent(env):
@@ -798,6 +807,52 @@ async def test_slow_resume_does_not_block_another_parked_task_and_shutdown_joins
     assert not service.lifecycle._resume_tasks
 
 
+async def test_slow_hibernation_does_not_block_overdue_writer_or_duplicate_attempts(env):
+    from src.database.tables import wait_deadlines
+    from tests.test_wait_dispatch import runtime
+
+    second = await owner(env.db, task_id='second', session_id='s2', agent_id='a2')
+    async with env.db._engine.begin() as conn:
+        receipt = await register_wait(conn, scope=second,
+            condition={'kind': 'task', 'task_id': 'source'}, idempotency_key='second',
+            registry=build_registry(clock=lambda: NOW), policy=Policy(), now=NOW,
+            source_watermark=0, decide_sleep=lambda *_: SleepDecision('hibernate', 'test', {}))
+        await conn.execute(insert(continuations).values(
+            id='c2', task_id='second', wait_id=receipt['wait_id'], suspension_generation=1,
+            facts={}, branch='aq/second', prior_status='IN_PROGRESS', held_cursor_seq=0,
+            resume_state='sleeping', created_at=NOW))
+        await conn.execute(insert(wait_deadlines).values(
+            id='overdue', wait_id=receipt['wait_id'], deadline_type='transition',
+            due_at=NOW + 120, generation=1))
+    service = runtime(env, clock=lambda: NOW + 10000, registry=build_registry())
+    first, other = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def suspend(name, args):
+        assert name == 'wait_sleep_decide'
+        calls.append(args['wait_id'])
+        if args['wait_id'] == env.wait_id:
+            first.set()
+            await asyncio.Event().wait()
+        other.set()
+        return {'success': True}
+
+    service.command = suspend
+    try:
+        await service.lifecycle.tick()
+        await asyncio.wait_for(first.wait(), 5)
+        await asyncio.wait_for(other.wait(), 5)
+        await service.lifecycle.tick()
+        assert calls.count(env.wait_id) == 1
+        assert env.wait_id in service.lifecycle._hibernate_tasks
+        async with env.db._engine.connect() as conn:
+            assert await conn.scalar(select(wait_deadlines.c.fired_at).where(
+                wait_deadlines.c.id == 'overdue')) is None
+    finally:
+        await service.lifecycle.stop()
+    assert not service.lifecycle._hibernate_tasks
+
+
 async def test_maintenance_retries_after_a_transient_failure(env):
     from tests.test_wait_dispatch import runtime
 
@@ -871,8 +926,7 @@ async def test_begin_suspension_is_idempotent_and_binds_registration_cursor(env)
         assert current['suspension_generation'] == 1
 
 
-@pytest.mark.parametrize('failure', [None, 'push', 'stop', 'detach', 'push_retry'])
-async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, monkeypatch, failure):
+async def suspension_case(env, monkeypatch, failure=None):
     from src.wait_runtime.hibernate import HibernationTransaction
 
     await capture(env)
@@ -886,7 +940,8 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
         integration_repository_id='repo')))
     monkeypatch.setattr(env.db, 'get_repo', AsyncMock(return_value=SimpleNamespace(
         url='remote', default_branch='main')))
-    provider = SimpleNamespace(stop=AsyncMock(), confirm_instance_stopped=AsyncMock(
+    provider = SimpleNamespace(stop=AsyncMock(), confirm_stopped=AsyncMock(return_value=True),
+                              confirm_instance_stopped=AsyncMock(
         return_value=failure != 'stop'), process_alive=AsyncMock(return_value=False))
     saved = SimpleNamespace(status='failed' if failure == 'push' else 'pushed',
                             commit='a' * 40, error='push failed')
@@ -913,6 +968,15 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
     )
     handler = SimpleNamespace(wait_escalation_create=AsyncMock(return_value={'success': True}))
     driver = HibernationTransaction(SimpleNamespace(orch=orch), clock=lambda: NOW + 1)
+    return SimpleNamespace(driver=driver, orch=orch, handler=handler, provider=provider,
+                           save=save, workspace=workspace)
+
+
+@pytest.mark.parametrize('failure', [None, 'push', 'stop', 'detach', 'push_retry'])
+async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, monkeypatch, failure):
+    case = await suspension_case(env, monkeypatch, failure)
+    driver, orch, handler = case.driver, case.orch, case.handler
+    save, workspace = case.save, case.workspace
     result = await driver.advance(env.wait_id, handler=handler)
     if failure == 'push_retry':
         assert result['push_pending']
@@ -939,6 +1003,170 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
         orch._release_workspace_and_cleanup.assert_awaited_once_with(workspace)
         orch.token_store.revoke_session.assert_awaited_once_with('s')
         assert (await intent(env))['facts']['workspace_released_at'] == NOW + 1
+
+
+async def expire_stop(env, token):
+    async with env.db._engine.begin() as conn:
+        if token is None:
+            # Reproduce the legacy rows from the incident. Current metadata
+            # requires tokens; restore its constraint before returning the lease.
+            await conn.exec_driver_sql(
+                'ALTER TABLE sessions ALTER COLUMN instance_token DROP NOT NULL')
+            env.legacy_null_tokens = True
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        await conn.execute(update(wait_records).values(decision_inputs={
+            **wait['decision_inputs'], 'delivery': {
+                **wait['decision_inputs']['delivery'], 'instance_token': token}}))
+        await conn.execute(update(sessions).where(sessions.c.id == 's').values(instance_token=token))
+        await conn.execute(update(continuations).values(
+            facts={'hibernation': {'stop_started_at': NOW - 120}}))
+
+
+@pytest.mark.parametrize('token', [None, 'token'])
+@pytest.mark.parametrize('proof', ['gone', 'alive', 'unavailable', 'timeout', 'successor'])
+async def test_expired_stop_budget_uses_read_only_proof(env, monkeypatch, token, proof):
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, token)
+    if proof == 'alive':
+        case.provider.process_alive.return_value = True
+    elif proof == 'unavailable':
+        case.provider.confirm_instance_stopped.side_effect = RuntimeError('unavailable')
+    elif proof == 'timeout':
+        monkeypatch.setattr('src.wait_runtime.hibernate.STOP_PROOF_TIMEOUT_SECONDS', 0.01)
+
+        async def stuck_probe(*args):
+            await asyncio.Event().wait()
+
+        case.provider.confirm_instance_stopped.side_effect = stuck_probe
+    elif proof == 'successor':
+        # The instance-specific probe accepts a successor for a known old token;
+        # name absence must still be proved before touching the checkout.
+        case.provider.confirm_instance_stopped.return_value = token is not None
+        case.provider.confirm_stopped.return_value = False
+    result = await case.driver.advance(env.wait_id, handler=case.handler)
+    case.provider.stop.assert_not_awaited()
+    if proof == 'gone':
+        assert result['parked']
+        case.save.assert_awaited_once()
+        assert (await intent(env))['stopped_at'] == NOW + 1
+    else:
+        assert result['held'] and result['hold_reason'] == 'stop_uncertain'
+        case.save.assert_not_awaited()
+        case.orch._release_workspace_and_cleanup.assert_not_awaited()
+        assert (await env.db.get_task('owner')).claim_epoch == 1
+
+
+@pytest.mark.parametrize('resolved', [False, True])
+@pytest.mark.parametrize('token', [None, 'token'])
+async def test_held_stop_recovers_on_later_tick_and_withdraws_incident(
+    env, monkeypatch, resolved, token,
+):
+    from src.database.tables import escalations
+    from tests.test_wait_dispatch import runtime
+
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, token)
+    now = [NOW + 1]
+    service = runtime(env, clock=lambda: now[0], registry=build_registry())
+    # Exercise the real command boundary, incident creation and withdrawal.
+    service.orch.__dict__.update(case.orch.__dict__)
+    service.orch.config = AppConfig()
+    service.lifecycle.hibernate.clock = lambda: now[0]
+    driver, handler = service.lifecycle.hibernate, service.orch._command_handler
+    case.provider.process_alive.return_value = True
+    assert (await driver.advance(env.wait_id, handler=handler))['held']
+    held = await intent(env)
+    incident_id = held['facts']['hold_escalation_id']
+    if resolved:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=now[0]))
+    try:
+        case.provider.process_alive.return_value = False
+        # Restart the lifecycle to prove that the backoff lives in the database.
+        from src.wait_runtime.lifecycle import WaitLifecycle
+        service.lifecycle = WaitLifecycle(service, clock=lambda: now[0])
+        await service.lifecycle.tick()
+        assert not service.lifecycle._hibernate_tasks
+        assert (await intent(env))['resume_state'] == 'held'
+        now[0] += 5
+        await service.lifecycle.tick()
+        await asyncio.gather(*service.lifecycle._hibernate_tasks.values())
+    finally:
+        await service.lifecycle.stop()
+    row = await intent(env)
+    assert row['stopped_at'] == now[0] and row['hold_reason'] is None
+    assert row['resume_state'] == ('queued' if resolved else 'sleeping')
+    assert (await env.db.get_task('owner')).status.value == (
+        'RESUME_PENDING' if resolved else 'HIBERNATED')
+    async with env.db._engine.connect() as conn:
+        [incident] = (await conn.execute(select(escalations))).mappings().all()
+    assert incident['id'] == incident_id and incident['state'] == 'cancelled'
+    assert incident['terminal_outcome'] == 'source_satisfied'
+    case.provider.stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize('proof', ['alive', 'unavailable'])
+async def test_stop_proof_retries_exhaust_without_releasing_checkout(env, monkeypatch, proof):
+    from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS
+    from tests.test_wait_dispatch import runtime
+
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, 'token')
+    case.provider.process_alive.return_value = True
+    if proof == 'unavailable':
+        case.provider.confirm_instance_stopped.side_effect = RuntimeError('unavailable')
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    for attempt in range(2, STOP_PROOF_MAX_ATTEMPTS + 1):
+        state = (await intent(env))['facts']['hibernation']
+        assert state['stop_proof_attempts'] == attempt - 1
+        case.driver.clock = lambda: state['stop_retry_at']
+        assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    service = runtime(env, clock=lambda: NOW + 10000, registry=build_registry())
+    service.command = AsyncMock()
+    await service.lifecycle.tick()
+    assert not service.lifecycle._hibernate_tasks
+    case.driver.clock = lambda: NOW + 10000
+    probes = case.provider.confirm_instance_stopped.await_count
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    assert case.provider.confirm_instance_stopped.await_count == probes == STOP_PROOF_MAX_ATTEMPTS
+    case.handler.wait_escalation_create.assert_awaited_once()
+    case.save.assert_not_awaited()
+    case.orch.token_store.revoke_session.assert_not_awaited()
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+
+
+async def test_null_token_never_signals_even_with_stop_budget_remaining(env, monkeypatch):
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, None)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={}))
+    case.provider.confirm_instance_stopped.return_value = False
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['held']
+    case.provider.stop.assert_not_awaited()
+
+
+async def test_writer_identity_changed_during_stop_proof_never_saves(env, monkeypatch):
+    case = await suspension_case(env, monkeypatch)
+    await expire_stop(env, None)
+
+    async def successor(*args):
+        await env.db.update_session('s', instance_token='successor-token')
+        return True
+
+    case.provider.confirm_instance_stopped.side_effect = successor
+    with pytest.raises(WaitError, match='writer identity changed'):
+        await case.driver.advance(env.wait_id, handler=case.handler)
+    case.save.assert_not_awaited()
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+
+
+async def test_failed_stop_signal_with_fresh_death_proof_still_parks(env, monkeypatch):
+    case = await suspension_case(env, monkeypatch)
+    case.provider.stop.side_effect = OSError('stop response lost')
+    assert (await case.driver.advance(env.wait_id, handler=case.handler))['parked']
+    case.provider.stop.assert_awaited_once()
+    case.save.assert_awaited_once()
+    case.handler.wait_escalation_create.assert_not_awaited()
 
 
 async def bound_resume(env):

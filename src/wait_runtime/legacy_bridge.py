@@ -99,6 +99,15 @@ class LegacyWaitBridge:
             policy = project_policy(self.orch.config.wait_policy, old['project_id'])
             if not policy.v2_enabled:
                 raise WaitError('wait.disabled', 'verified waits are disabled for this project')
+            if old['state'] in {'satisfied', 'expired', 'cancelled'} and (
+                    session is None or session['state'] == 'stopped'):
+                # There is no live recipient to adopt. Settle migration with
+                # explicit evidence while preserving the historical outcome and
+                # outbox; no new wait, delivery or owner transition is needed.
+                return {'success': True, 'legacy_id': legacy_id,
+                        'disposition': 'terminal_session_unavailable',
+                        'legacy_state': old['state'], 'session_id': old['session_id'],
+                        'session_state': session['state'] if session else 'missing'}
             scope = Scope(old['project_id'], 'task' if task else 'session', old['owner_id'],
                           old['session_id'], old['session_instance_token'], old['claim_epoch'],
                           elevated=old['owner_kind'] == 'supervisor')

@@ -27,6 +27,7 @@ from src.database.tables import (
 from src.git.manager import RemoteRefState
 from src.integration.finished_owners import _stop_proof_blocker
 from src.integration.repair_lineage import introduced_repair_commits_on
+from src.integration.row_query import select_row
 
 
 async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
@@ -76,15 +77,7 @@ async def stale_parent_claim_on(conn, operation, owner, *, confirm_stopped):
     ):
         raise ValueError("stale parent holder still has a workspace or lock")
     if holder["agent_id"]:
-        agent = (
-            (
-                await conn.execute(
-                    select(agents).where(agents.c.id == holder["agent_id"]).with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        agent = await select_row(conn, agents, agents.c.id == holder['agent_id'], lock=True)
         if agent and agent["current_task_id"] not in {None, parent_id}:
             raise ValueError("stale parent holder's agent has different work")
     children = (
@@ -144,15 +137,7 @@ async def _stopped_claim_record_holder_on(conn, task_id: str):
         session_id = None
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("stale parent leaf claim has no recorded holder")
-    holder = (
-        (
-            await conn.execute(
-                select(sessions).where(sessions.c.id == session_id).with_for_update()
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
+    holder = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
     if holder is None:
         raise ValueError("stale parent leaf claim names a holder that is gone")
     # The record names one holder; which of two sessions claiming the parent
@@ -192,15 +177,7 @@ async def delegate_proof_on(
         raise ValueError("current repair stage introduced commits")
     task = None
     for table in (tasks, archived_tasks):
-        task = (
-            (
-                await conn.execute(
-                    select(table).where(table.c.id == stage["repair_task_id"]).with_for_update()
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        task = await select_row(conn, table, table.c.id == stage['repair_task_id'], lock=True)
         if task is not None:
             break
     if (
@@ -300,24 +277,12 @@ async def delegate_proof_on(
         )
         if count != 1:
             raise ValueError("archived repair has ambiguous completion history")
-    owner = (
-        (
-            await conn.execute(
-                select(integration_branch_owners)
-                .where(
-                    integration_branch_owners.c.repository_id == task["repo_id"],
-                    integration_branch_owners.c.ref.in_(
-                        (
-                            task["branch_name"].removeprefix("refs/heads/"),
-                            "refs/heads/" + task["branch_name"].removeprefix("refs/heads/"),
-                        )
-                    ),
-                )
-                .with_for_update()
-            )
-        )
-        .mappings()
-        .one_or_none()
+    owner = await select_row(
+        conn,
+        integration_branch_owners,
+        integration_branch_owners.c.repository_id == task['repo_id'],
+        integration_branch_owners.c.ref.in_((task['branch_name'].removeprefix('refs/heads/'), 'refs/heads/' + task['branch_name'].removeprefix('refs/heads/'))),
+        lock=True,
     )
     if (
         owner is None

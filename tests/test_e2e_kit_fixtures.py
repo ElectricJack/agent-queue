@@ -1518,6 +1518,10 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
             raise failure
 
     monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {
+        "assignment_playbook_id": "project-router",
+    })
+    monkeypatch.setattr(smoke, "observe_scheduler_cycles", lambda _: calls.append(("cycle",)))
     monkeypatch.setattr(smoke, "_s16", manual_sweep)
     monkeypatch.setattr(smoke, "_restore_providers", lambda: calls.append(("restore providers",)))
     monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
@@ -1530,9 +1534,12 @@ def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
         assert smoke.s16_provider_failover({}) == "manual sweep complete"
     assert calls == [
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--no-enabled"),
+        ("cycle",),
         ("manual sweep",),
         ("restore providers",),
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "project-router", "--enabled"),
         ("readiness",),
     ]
 
