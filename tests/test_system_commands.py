@@ -193,69 +193,43 @@ class TestUpdateAndRestart:
         assert result["status"] == "up_to_date"
         launch.assert_not_awaited()
 
-    @pytest.mark.parametrize("pull_output", ["Already up to date.", "Local commits retained."])
-    async def test_without_selector_preserves_pull_and_restart(
-        self, handler, monkeypatch, pull_output
+    @pytest.mark.parametrize("was_paused", [False, True])
+    @pytest.mark.parametrize("args", [{}, {"wait_for_tasks": True}, {"automatic": True}])
+    async def test_unconfigured_update_refuses_without_mutation(
+        self, handler, monkeypatch, args, was_paused
     ):
         from src.commands import system_commands
         from src.install import update
 
-        monkeypatch.setattr(
-            update, "plan_update", lambda *a, **k: pytest.fail("selector is opt-in")
-        )
-        run = AsyncMock(side_effect=[(0, pull_output, ""), (0, "", ""), (0, "", "")])
-        monkeypatch.setattr(system_commands, "_run_subprocess", run)
+        planning = MagicMock(side_effect=AssertionError("unconfigured update planned"))
+        monkeypatch.setattr(update, "plan_update", planning)
+        launch = AsyncMock()
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
         kill = MagicMock()
         monkeypatch.setattr(system_commands.os, "kill", kill)
-        handler.orchestrator._emit_text_notify = AsyncMock()
-        result = await handler._cmd_update_and_restart({})
-        assert result["status"] == "updating" and result["pull_output"] == pull_output
-        assert run.await_args_list[0].args == ("git", "pull", "--ff-only")
-        assert run.await_count == 3
-        assert handler.orchestrator._restart_requested
-        kill.assert_called_once()
-
-    @pytest.mark.parametrize(
-        "stage,error", [(0, "git pull"), (1, "pip install"), (2, "TypeScript client")]
-    )
-    async def test_legacy_update_failures_do_not_restart_or_pause(
-        self, handler, monkeypatch, stage, error
-    ):
-        from src.commands import system_commands
-
-        run = AsyncMock(side_effect=[(0, "", "")] * stage + [(1, "", "fixture failure")])
-        monkeypatch.setattr(system_commands, "_run_subprocess", run)
-        kill = MagicMock()
-        monkeypatch.setattr(system_commands.os, "kill", kill)
-        result = await handler._cmd_update_and_restart({"wait_for_tasks": True})
-        assert error in result["error"]
-        assert not handler.orchestrator._paused
-        kill.assert_not_called()
-
-    @pytest.mark.parametrize("failure", ["wait", "cancel", "signal"])
-    @pytest.mark.parametrize("was_paused", [False, True])
-    async def test_interrupted_legacy_update_restores_prior_scheduling(
-        self, handler, monkeypatch, failure, was_paused
-    ):
-        from src.commands import system_commands
-
-        monkeypatch.setattr(system_commands, "_run_subprocess", AsyncMock(return_value=(0, "", "")))
         orch = handler.orchestrator
         orch._paused = was_paused
         orch._running_tasks = {"fixture": object()}
-        orch._emit_text_notify = AsyncMock()
         orch.wait_for_running_tasks = AsyncMock()
-        exception = asyncio.CancelledError if failure == "cancel" else RuntimeError
-        kill = MagicMock()
-        if failure == "signal":
-            kill.side_effect = exception("fixture signal failure")
+        orch._emit_text_notify = AsyncMock()
+
+        result = await handler._cmd_update_and_restart(args)
+
+        assert result["success"] is False
+        if args.get("automatic"):
+            assert result["error"] == "automatic branch deployment is disabled"
         else:
-            orch.wait_for_running_tasks.side_effect = exception("fixture wait failure")
-        monkeypatch.setattr(system_commands.os, "kill", kill)
-        with pytest.raises(exception):
-            await handler._cmd_update_and_restart({"wait_for_tasks": True})
+            assert result["error"] == "deployment_not_configured"
+            assert "deploy.tag_glob" in result["remediation"]
+            assert "deploy.track_branch" in result["remediation"]
+            assert "aq update" in result["remediation"]
         assert orch._paused is was_paused
-        assert orch._restart_requested is False
+        assert not orch._restart_requested
+        planning.assert_not_called()
+        launch.assert_not_awaited()
+        kill.assert_not_called()
+        orch.wait_for_running_tasks.assert_not_awaited()
+        orch._emit_text_notify.assert_not_awaited()
 
     @pytest.mark.parametrize("exit_code", [0, 10, 20, -15])
     @pytest.mark.parametrize("was_paused", [False, True])
