@@ -312,7 +312,13 @@ async def test_ordinary_preparation_preserves_activation_loss(handler, db, tmp_p
 
 
 @pytest.mark.parametrize("change", ["hold", "development"])
-async def test_ordinary_preparation_rechecks_policy_and_holds(handler, db, tmp_path, change):
+async def test_ordinary_preparation_rechecks_policy_and_holds(
+    handler, db, tmp_path, change, monkeypatch,
+):
+    # The bounded re-admission loop runs inside one request. On a loaded box a
+    # preparation outlasting the 0.5s response window returns claim_in_progress,
+    # and settled_claim then observes the first generation's moved-target refusal.
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60)
     await mktask(db, "dependent", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     resets = 0
