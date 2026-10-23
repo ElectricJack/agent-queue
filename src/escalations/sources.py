@@ -4,16 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
-
-from src.database.tables import (
-    admission_reservations,
-    continuations,
-    integration_batches,
-    wait_escalations,
-    wait_records,
-)
-
 OPERATIONAL_SOURCES = frozenset({
     "wait", "continuation", "integration_train_stall", "integration_delivery_stuck",
 })
@@ -21,6 +11,17 @@ OPERATIONAL_SOURCES = frozenset({
 
 async def operational_source(db, incident) -> dict[str, Any] | None:
     """Return a proven cleared cause, never treating an unreadable source as absent."""
+    # Rendering and CLI discovery import this module without the database runtime.
+    from sqlalchemy import select
+
+    from src.database.tables import (
+        admission_reservations,
+        continuations,
+        integration_batches,
+        wait_escalations,
+        wait_records,
+    )
+
     kind = incident.get("source_kind")
     identity = str(incident.get("source_identity") or "")
     project_id = incident["project_id"]
