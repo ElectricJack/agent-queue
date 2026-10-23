@@ -518,6 +518,11 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         # Human ask revisions require the existing review, escalation, input and outbox
         # ledgers. Recreate those dependencies without their later additions.
         restored_metadata = MetaData()
+        # Revision 56 already supplied call maxima in a real revision-84 archive.
+        # Copy columns only: revision 121 must add its retention index on upgrade.
+        calls = Table("transcript_usage_calls", restored_metadata, *(
+            column._copy() for column in metadata.tables["transcript_usage_calls"].c
+        ))
         Table("projects", restored_metadata, Column("id", Text, primary_key=True))
         Table("messages", restored_metadata, Column("id", Text, primary_key=True))
         for name in (
@@ -547,6 +552,10 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
                 column._copy() for column in metadata.tables[name].c if column.name not in absent
             ))
         await conn.run_sync(restored_metadata.create_all)
+        await conn.execute(calls.insert().values(
+            usage_key="historical-call", input_tokens=23, output_tokens=4,
+            cache_read_tokens=0, cache_write_tokens=0, updated_at=1.0,
+        ))
         await conn.execute(restored_metadata.tables["integration_check_evidence"].insert().values(
             id="historical-check", producer_id="trusted-ci", workflow_id="workflow", run_id="run-1",
             attempt=1, required_check_version="v1", checks={}, conclusion="success",
@@ -614,6 +623,16 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         assert await conn.scalar(text("SELECT to_regclass('public.agent_cron')")) == "agent_cron"
         assert await conn.scalar(text("SELECT to_regclass('public.ask_decisions')")) == "ask_decisions"
         assert await conn.scalar(text("SELECT to_regclass('public.ingest_batches')")) == "ingest_batches"
+        assert await conn.scalar(text(
+            "SELECT to_regclass('public.transcript_usage_fences')"
+        )) == "transcript_usage_fences"
+        assert await conn.scalar(text(
+            "SELECT to_regclass('public.idx_transcript_usage_calls_updated')"
+        )) == "idx_transcript_usage_calls_updated"
+        assert (await conn.execute(text(
+            "SELECT input_tokens, output_tokens FROM transcript_usage_calls "
+            "WHERE usage_key='historical-call'"
+        ))).one() == (23, 4)
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
         assert (await conn.execute(text(
             "SELECT priority, effective_priority FROM tasks WHERE id='original'"

@@ -21,7 +21,7 @@ const withdrawApi = vi.hoisted(() => ({ mutateAsync: vi.fn(), isPending: false }
 vi.mock("../../../api/asks", () => ({ useAsks: (filters: Record<string, string | undefined>) => {
   reviewsApi.filters.push(filters);
   const data = askPage();
-  data.items = reviewsApi.reviews.map(row => ({ ...data.items[0]!, id: String(row.id), context: { title: String(row.title) }, held_while_paused: Boolean(row.held_while_paused) }));
+  data.items = reviewsApi.reviews.map(row => ({ ...data.items[0]!, id: String(row.id), context: { title: String(row.title) }, created_at: Number(row.created_at), updated_at: row.updated_at == null ? Number(row.created_at) : Number(row.updated_at), held_while_paused: Boolean(row.held_while_paused) }));
   return { data: { ...data, count: data.items.length } };
 } }));
 
@@ -166,6 +166,15 @@ describe("ReviewsInbox", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not load pull requests.");
     expect(screen.queryByText("No active projects with GitHub repositories.")).not.toBeInTheDocument();
     expect(screen.getByText("Architecture proposal")).toBeInTheDocument();
+  });
+
+  it("puts the most recently updated document reviews first in every view", () => {
+    renderInbox();
+    const newer = screen.getByRole("link", { name: "Delegated design" });
+    const older = screen.getByRole("link", { name: "Architecture proposal" });
+    expect(newer.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    expect(newer.compareDocumentPosition(older) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("uses the shared document filter and canonical links", () => {

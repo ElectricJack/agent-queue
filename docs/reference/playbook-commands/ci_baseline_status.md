@@ -22,7 +22,7 @@
 |---|---|---|---|---|
 | `project_id` | `string` | yes | — | Project |
 | `ref` | `string \| null` | no | `null` | Branch or commit |
-| `max_attempts` | `integer \| null` | no | `null` | Repair attempts before escalating |
+| `max_attempts` | `integer \| null` | no | `null` | Repair attempts before escalating (0 = unlimited; default) |
 
 ## Result
 

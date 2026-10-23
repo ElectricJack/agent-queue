@@ -28,8 +28,9 @@ message body.
 - It does not pause or hold other tasks.
 - It does not change pool scheduling or grant a stall exemption.
 - It does not give a member access to the daemon or to another task's files.
-- It does not survive a member task's `MISSING`, `ARCHIVED`, or terminal state
-  — the daemon closes it.
+- A member task becoming terminal does not itself close the thread. Waits can
+  resolve with an unavailable-peer outcome; explicit removal, the message budget
+  or the thread deadline closes the thread.
 
 ## Creating a thread (operator / supervisor)
 
@@ -143,14 +144,31 @@ Constraints on each message:
 
 ## Waiting for a reply
 
-`aq message wait` is a **60-second long-poll**. It does not give back a
-durable wait you can check later — the turn ends when it times out and the
-thread remains available. That is sufficient for most collaboration turns:
-the worker ends its turn, the daemon delivers a nudge when the next message
-arrives, and the session resumes to read `--after <last-seq>`.
+Use generic verified message registration for a new wait:
 
 ```bash
-# Poll for up to 60 s for the next message after seq 42:
+aq wait register \
+  --kind message \
+  --ref <THREAD_ID> \
+  --after-seq 42 \
+  --idempotency-key "reply-after-42" \
+  --claim-epoch 7
+```
+
+Register once and end the turn. AQ verifies the source and chooses an in-place
+`WAITING` session or hibernation. A hibernated task releases its pool seat and
+workspace; its continuation resumes in a fresh session. Inspect the returned
+result pointer and acknowledge the exact outcome. Operational deadlines escalate
+to the supervisor without waking the worker. See [agent waits](agent-waits.md)
+for checkpoints, acknowledgement and supervisor decisions.
+
+### Collaboration-specific long-poll (legacy wait storage)
+
+`aq message wait` registers a **durable `agent_waits` row** directly, then
+long-polls that row for up to 60 seconds. It currently bypasses the v2 verified
+wait path even when v2 is enabled. A long-poll timeout does not cancel its row.
+
+```bash
 aq message wait \
   --thread <THREAD_ID> \
   --after 42 \
@@ -158,39 +176,30 @@ aq message wait \
   --claim-epoch 7
 ```
 
-If you need a **durable** wait that survives turn-end and the session
-restarts, use the generic wait registration:
+If the response says `state: waiting`, retain its `wait.id`, end the turn and
+follow its `next_step`. On notification, use
+`aq wait show WAIT_ID --consume --json`; a repeated attachment with the same
+cursor/key reuses the existing wait. This legacy path retains the current claim
+and renews its lease until its deadline; it does not perform verified-wait
+hibernation or outcome acknowledgement.
 
-```bash
-aq wait register \
-  --kind message \
-  --ref <THREAD_ID> \
-  --after-seq 42 \
-  --timeout 3600 \
-  --idempotency-key "durable-wait-42" \
-  --claim-epoch 7
-```
+### Legacy collaboration wait terminal reasons
 
-This keeps the task `IN_PROGRESS`, retains the claim and pool seat, and the
-daemon scans for the condition. See [agent-waits.md](agent-waits.md) for the
-full semantics of durable waits.
+In addition to receiving a new message, the collaboration-specific wait can
+resolve with an explicit unavailable-peer/source reason. These reasons do not
+prove the peer completed the requested work, and do not themselves close an
+otherwise active thread:
 
-### Collaboration wait terminal reasons
+| reason | meaning |
+|---|---|
+| `peer_failed` | At least one peer task is **FAILED** or **BLOCKED**. |
+| `peer_gone` | All peer tasks are terminal, archived or missing. |
+| `thread_closed` | The thread is closed or expired, or its deadline passed. |
+| `partner_not_running` | No peer task is running after the 120-second grace period. |
 
-When the daemon resolves a collaboration message wait (durable or long-poll),
-the result carries a terminal state. The four collaboration-specific
-reasons (listed in the [waits guide](agent-waits.md)) resolve the wait
-**without success** and the thread is no longer available for nudges:
-
-| reason                | meaning                                                                  |
-|-----------------------|--------------------------------------------------------------------------|
-| `peer_failed`         | At least one peer task transitioned to **FAILED** or **BLOCKED**.        |
-| `peer_gone`           | All peer tasks are now terminal (`COMPLETED`), `ARCHIVED`, or `MISSING`. |
-| `thread_closed`       | Thread state is `closed` (manual close, `budget_exhausted`, `members_below_two`) or `expired`, or the deadline passed. |
-| `partner_not_running` | No peer task is running after the 120-second grace period.               |
-
-In every case **do not re-register** the wait and do not try to send
-messages on the thread. Continue with your own task.
+Continue your own task using that evidence. Do not re-register the same wait to
+hide an unavailable peer; ask the supervisor to resolve the coordination need.
+A thread that is closed or expired cannot accept further messages.
 
 ## Closing the thread
 
@@ -215,8 +224,8 @@ A thread with `message_count == message_budget` is automatically closed with
 ## Error codes
 
 All collaboration errors are returned in the standard command envelope with
-`success: false`, an `error` field, and (where applicable) an `error.code`
-field. The full set:
+`success: false`, an `error` string and an `error_code` field in the command
+result (under `data` in the CLI JSON envelope). The full set:
 
 | code                        | when it occurs                                                              |
 |-----------------------------|-----------------------------------------------------------------------------|
@@ -227,10 +236,9 @@ field. The full set:
 | `collaboration.stale_claim` | `claim_epoch` does not match the pool session's live epoch.               |
 | `collaboration.not_member`  | Caller's task is not a member of the thread, or recipient is not a member. |
 | `collaboration.not_accepted`| Caller has not run `aq collaboration accept` for the current claim.       |
-| `collaboration.closed`      | Thread state is `closed` or `expired`.                                      |
+| `collaboration.closed` | Thread is closed or expired, including message-budget exhaustion. |
 | `collaboration.message_too_large` | Body exceeds 4096 bytes.                                            |
 | `collaboration.rate_limited`  | Sender already sent 5 messages in the last 60 seconds.                    |
-| `collaboration.budget_exhausted`| Thread budget exhausted; further sends rejected.                         |
 
 ## Working loop — example
 
@@ -351,14 +359,16 @@ To verify end-to-end before relying on the guide:
 #  - accepts
 #  - shows (goal must be non-empty)
 #  - sends one message (body ≤ 512 bytes)
-#  - waits 60 s for the other's reply
+#  - registers one verified message wait and ends the turn
 #  - shows again and reads the partner's message
 # Measure wall time between partner's send and acceptor's read:
 #   target: p95 < 10 seconds
 
-# Verify no pool-seat leak:
-aq wait list --json | jq '.waits | map(select(.status=="waiting" and .kind=="message" and (.thread_id|startswith("collab-")))) | length'
-# expect: 0 active waits still holding seats after thread closure
+# Inspect the returned wait IDs and retained outcomes:
+aq wait list --json
+aq wait show <WAIT_ID> --json
+# Confirm that thread closure resolves each wait; inspect the result reference.
+# For a legacy aq message wait row, also consume with --consume.
 
 # Cleanup:
 aq collaboration close --all-active --project "$AQ_PROJECT_ID"

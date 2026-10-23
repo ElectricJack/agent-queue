@@ -1,5 +1,11 @@
 # Dashboard performance — measured causes and fixes
 
+<!-- aq:historical -->
+> **Historical measurement record.** These timings describe the September 2026 builds
+> and workload named below; they are not current latency guarantees. See the
+> [current system spec](../../specs/systems/dashboard.md#210-performance-work) for the
+> later evidence and remaining measurement gap.
+
 Task `steady-bridge` (2026-09-23): "the dashboard feels laggy; make the
 interface snappy, terminals excepted." Measure first, then fix the biggest
 causes. This page records the method, the baseline, what was found, what was
