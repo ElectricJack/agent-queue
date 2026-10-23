@@ -5599,6 +5599,92 @@ async def test_collected_epic_automatically_refreshes_before_aggregate_checks(
     assert (await case.db.get_task_completion("epic")).id == completion.id
 
 
+@pytest.mark.parametrize("entry", ["automatic", "apply", "aggregate", "merge-only"])
+async def test_delivered_epic_skips_empty_refresh(collected_epic, entry):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head = await collect_epic(case)
+    case.origin.land("epic")
+    default = case.origin.work("default-move")
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    if entry == "merge-only":
+        # A private no-op commit need not be an ancestor of the delivery target.
+        head = git(case.origin.clone, "commit-tree", f"{head}^{{tree}}", "-p", head,
+                   "-m", "no content change")
+        git(case.origin.clone, "push", "origin", f"{head}:aq/epic")
+    assert not git(case.origin.url, "diff", f"main...{head}")
+    refresh = EpicRefresh(case.db, case.train)
+    if entry == "aggregate":
+        visit = await case.train.visit(case.target)
+        assert visit.batch_id is None
+        assert "epic_refresh_pending" not in {b["code"] for b in visit.detail.get("blockers", ())}
+    else:
+        result = (await refresh.start("epic") if entry in {"automatic", "merge-only"} else
+                  await refresh.refresh("epic", dry_run=False))
+        assert (result["outcome"], result["reason"]) == ("skipped", "delivered")
+    assert await DatabaseBatches(case.db).current(case.target) is None
+    assert git(case.origin.url, "rev-parse", "aq/epic") == head
+    async with case.db._engine.connect() as conn:
+        observations = list((await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "integration.epic_refresh"))).scalars())
+    [observation] = [json.loads(payload) for payload in observations
+                     if json.loads(payload).get("reason") == "delivered"]
+    assert observation["detail"] == "refresh skipped: delivered"
+    assert observation["target_sha"] == head and observation["delivery_sha"] == default
+
+
+@pytest.mark.parametrize("pending", ["content", "open-epic", "open-child", "undelivered-child"])
+async def test_delivered_epic_refresh_preserves_pending_work(collected_epic, pending):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head = await collect_epic(case)
+    case.origin.land("epic")
+    default = case.origin.work("default-move")
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    if pending == "content":
+        case.origin.work("epic", "undelivered")
+    elif pending == "open-epic":
+        async with case.db._engine.begin() as conn:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == "epic").values(status="IN_PROGRESS"))
+    else:
+        await completed(case.world, "new-child", parent="epic",
+                        done=pending == "undelivered-child")
+    if pending != "content":
+        assert not git(case.origin.url, "diff", f"main...{head}")
+    started = await EpicRefresh(case.db).start("epic")
+    assert started["outcome"] == "started"
+    current = await DatabaseBatches(case.db).current(case.target)
+    assert current.epic_refresh and current.id == started["batch_id"]
+
+
+async def test_delivered_epic_refresh_after_abort_does_not_refreeze(collected_epic):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    await collect_epic(case)
+    default = case.origin.work("default-move")
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    refresh = EpicRefresh(case.db)
+    started = await refresh.start("epic")
+    assert started["outcome"] == "started"
+    await TrainControls(case.db).abort_batch(started["batch_id"], dry_run=False,
+                                           operator_id="operator", reason="already delivered")
+    case.origin.land("epic")
+    for index in range(2):
+        # Different default heads would produce different deterministic batch IDs.
+        default = case.origin.work(f"default-after-delivery-{index}")
+        git(case.origin.clone, "push", "origin", f"{default}:main")
+        result = await EpicRefresh(case.db).start("epic")
+        assert result["outcome"] == "skipped" and result["reason"] == "delivered"
+    async with case.db._engine.connect() as conn:
+        batches = (await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.id.like("train-epic-refresh-%")))).scalars().all()
+    assert batches == [started["batch_id"]]
+
+
 @pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
 async def test_obsolete_archive_settles_work_but_requires_fresh_collected_completion(
     collected_epic, monkeypatch

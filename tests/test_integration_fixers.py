@@ -8,13 +8,15 @@ import asyncio
 import pytest
 from sqlalchemy import func, select, update
 
+from src.commands.handler import CommandHandler
 from src.commands.principal import ExecutionPrincipal
+from src.config import AppConfig
 from src.database.tables import integration_batches, messages, tasks
 from src.git.manager import _git_preparation_error
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
 from src.integration.fixers import BatchFixerService, split_members
 from src.integration.models import RepairPolicy
-from src.models import Project, RepoConfig, RepoSourceType
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType
 
 HEAD = "a" * 40
 NEXT = "b" * 40
@@ -136,6 +138,65 @@ async def register(db, state, session_state):
         epoch="test", instance_token=state["instance_token"], started_at=1, task_id=None,
         state=session_state, desired_state="stopped" if session_state == "stopped" else "running",
     ))
+
+
+@pytest.mark.parametrize("notification", ["red", "rebind", "green"])
+async def test_fixer_notifications_are_readable_by_registered_session(db, fixer, notification):
+    service, _, _ = fixer
+    await allocate(service)
+    owner = await state(db)
+    await register(db, owner, "running")
+    await db.create_profile(AgentProfile(
+        id="fixer", name="Fixer", aq_commands=["message_inbox", "message_status"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    if notification == "red":
+        await allocate(service, NEXT)
+    elif notification == "green":
+        await service.settle_green("batch-fix", HEAD)
+    else:
+        successor = Batch("successor", "p", "r", "refs/heads/dev")
+        store = BatchStore(db)
+        await store.freeze(successor, await store.members("batch-fix"),
+                           trees={"one": "e" * 40, "two": "f" * 40})
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == successor.id,
+            ).values(fixer_queue={"family_id": "batch-fix"}))
+        result = await service.allocate(successor.id, target_ref=candidate_ref(successor.id),
+                                        head_sha=NEXT, authorize=AsyncMock(return_value=True))
+        assert result["rebind_required"]
+
+    config = AppConfig()
+    config.messages.enabled = True
+    config.security.capability_enforcement = "enforce"
+    handler = CommandHandler(SimpleNamespace(db=db, bus=None, plugin_registry=None), config)
+    scope = dict(kind="session", session_id=owner["session_id"], project_id="p",
+                 session_instance_token=owner["instance_token"], task_id=None, elevated=False)
+    inbox = await handler.execute("message_inbox", {
+        "to_kind": "session", "to_id": owner["session_id"], "_scope": scope,
+    })
+    assert inbox["success"], inbox
+    assert inbox["count"] == 1, inbox
+    notice = inbox["messages"][0]
+    assert notice["to_id"] == owner["session_id"]
+
+    # Another named session in the same project must not gain access.
+    other = {**owner, "session_id": str(uuid4()), "session_name": "n-other-fixer"}
+    await register(db, other, "running")
+    denied = await handler.execute("message_status", {
+        "message_id": notice["id"], "_scope": {**scope, "session_id": other["session_id"]},
+    })
+    assert not denied["success"] and "not found" in denied["error"], denied
+    assert (await db.get_message(notice["id"])).read_at is None
+
+    result = await handler.execute("message_status", {
+        "message_id": notice["id"], "_scope": scope,
+    })
+    assert result["success"], result
+    assert result["message"]["body"] == notice["body"]
+    assert result["state"] == "acknowledged"
+    assert result["delivered_at"] is not None and result["acknowledged_at"] is not None
 
 
 @pytest.mark.parametrize("legacy", [False, True])

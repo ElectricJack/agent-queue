@@ -1248,6 +1248,19 @@ transcript_usage_calls = Table(
         "AND cache_read_tokens >= 0 AND cache_write_tokens >= 0",
         name="ck_transcript_usage_calls_nonnegative",
     ),
+    Index("idx_transcript_usage_calls_updated", "updated_at", "usage_key"),
+)
+
+# Permanent exact membership fence: batches replace old per-call counter rows.
+transcript_usage_fences = Table(
+    "transcript_usage_fences",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("usage_keys", JSONB, nullable=False),
+    Column("archived_at", Float, nullable=False),
+    Column("archive_path", Text, nullable=False),
+    Index("idx_transcript_usage_fences_keys", "usage_keys", postgresql_using="gin",
+          postgresql_ops={"usage_keys": "jsonb_path_ops"}),
 )
 
 benchmark_stage_spans = Table(

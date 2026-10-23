@@ -652,8 +652,8 @@ class IntegrationCommandsMixin:
             return _failure("unavailable", "the integration train is not active")
         visit_now = args.get("now")
         now = time.time() if visit_now is None else visit_now
-        # The check reads durable batches even when every snapshot fails before
-        # selection. It is independent of lane errors and retry scheduling.
+        # Durable batches expose stalls even when snapshots fail before selection;
+        # this check runs independently of lane errors and retry scheduling.
         checked_at = getattr(self, "_train_stall_checked_at", None)
         if (getattr(self, "db", None) is not None
                 and (checked_at is None or now < checked_at or now - checked_at >= 60)):
@@ -666,9 +666,9 @@ class IntegrationCommandsMixin:
 
                 from src.integration.delivery_watchdog import scan_stuck_deliveries
 
-                # The watchdog only observes and hands over; it never holds the train.
                 try:
-                    await scan_stuck_deliveries(self.db, observer=observer, now=now)
+                    await scan_stuck_deliveries(self.db, observer=observer, now=now,
+                                              hierarchy=self._hierarchy_integration_service())
                 except Exception:
                     logging.getLogger(__name__).exception("delivery watchdog scan failed")
             self._train_stall_checked_at = now

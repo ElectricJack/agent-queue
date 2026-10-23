@@ -43,13 +43,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-9f16388d39524c8b9a33d6796b88d1fb',
                           'msg-5c55b72faec1497391205876fc5dfeb9',
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f',
+                          'msg-76ff7843e72d451b9017a0b4db30c970',
                           'msg-98d8517c56104e8fbf87e1330d2d5c1a',
                           'size-cap-delegation-2026-10-23'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '9b8ad6e58179dde7ac486d12d446e116e8120187',
+ 'measured_source_revision': 'a36c389c39a33ff60bffa98cc019591298bdcfa9',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161342,
- 'delta': 5843,
+ 'measured_owned_total': 161217,
+ 'delta': 5718,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -63,7 +64,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2384,
+ 'batch_measured_delta': 2255,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -80,9 +81,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'previous_engine_lines': 85301,
                  'authorized_owned_delta': 17,
                  'authorized_engine_delta': 15,
-                 'reason': 'Memoize stack authorization inputs within one '
-                           'scheduler sync pass; supervisor approved exact net '
-                           'footprint after removing an unused parent query.',
+                 'reason': 'Memoize stack authorization inputs within one scheduler sync pass; '
+                           'supervisor approved exact net footprint after removing an unused '
+                           'parent query.',
                  'global_request': 'msg-9f895e0d',
                  'global_grant': 'msg-7f2f68c1',
                  'grant_delivery_message_id': 'msg-21784b3e56aa4f54bf1042b7c9af4aaf'},
@@ -94,10 +95,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'previous_engine_lines': 85316,
                  'authorized_owned_delta': 65,
                  'authorized_engine_delta': 65,
-                 'reason': 'Bounded retry of provably unlaunched batch fixers '
-                           'and recovery of expired legacy family owners; '
-                           'global supervisor approved the exact +65-line '
-                           'exception under the project supervisor delegation.',
+                 'reason': 'Bounded retry of provably unlaunched batch fixers and recovery of '
+                           'expired legacy family owners; global supervisor approved the exact '
+                           '+65-line exception under the project supervisor delegation.',
                  'grant_delivery_message_id': 'msg-1984d09ec70e479c9d0cc14c57e828c3',
                  'project_grant_message_id': 'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
                  'operator_decision': '6679052c',
@@ -110,9 +110,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'authorized_owned_delta': 1,
                  'authorized_shared_delta': 1,
                  'authorized_engine_delta': 0,
-                 'reason': 'Accept repository mappings in the shared GitHub '
-                           'binding resolver for verified CI waits; supervisor '
-                           'approved the exact one-line shared footprint.'},
+                 'reason': 'Accept repository mappings in the shared GitHub binding resolver for '
+                           'verified CI waits; supervisor approved the exact one-line shared '
+                           'footprint.'},
                 {'task_id': 'prime-impact-40',
                  'decision_message_id': 'msg-a337e2c905ce4f5c8a236344a4e25211',
                  'referenced_decision': 'size-cap-delegation-2026-10-23',
@@ -120,9 +120,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'previous_engine_lines': 85316,
                  'authorized_owned_delta': 103,
                  'authorized_engine_delta': 82,
-                 'reason': 'GitHub caller diagnostics, shared background quota '
-                           'reserve and inventory reuse; exact supervisor '
-                           'grant under size-cap-delegation-2026-10-23.',
+                 'reason': 'GitHub caller diagnostics, shared background quota reserve and '
+                           'inventory reuse; exact supervisor grant under '
+                           'size-cap-delegation-2026-10-23.',
                  'supersedes_message_id': 'msg-ac47a08407a6462bb411326ecefeab44',
                  'grant_source_message_id': 'msg-330ea2478c724381acbb5512fc99e4b5'},
                 {'task_id': 'quick-pinnacle-97',
@@ -139,12 +139,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'measured_table_count': 45,
                  'measured_source_revision': '344a85b9d8388521975af9b830e4d8b17817562e',
                  'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1884',
-                 'reason': 'Recover orphaned launching fixer reservations '
-                           'after a per-attempt grace period; fence late '
-                           'registration and completion by session, instance '
-                           'and launch timestamp. Exact self-approved '
-                           'measurement under the project supervisor '
-                           'delegation.'},
+                 'reason': 'Recover orphaned launching fixer reservations after a per-attempt '
+                           'grace period; fence late registration and completion by session, '
+                           'instance and launch timestamp. Exact self-approved measurement under '
+                           'the project supervisor delegation.'},
                 {'task_id': 'stark-beacon-94',
                  'decision_id': 'size-cap-delegation-2026-10-23',
                  'operator_decision': '6679052c',
@@ -157,12 +155,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'authorized_owned_delta': 21,
                  'authorized_engine_delta': 21,
                  'authorized_table_delta': 0,
-                 'reason': 'Exclude published base history from repair '
-                           'identity checks; supervisor granted the exact '
-                           'measured footprint for PR #1817 under the '
-                           'delegated operator decision. Plain merge retains '
-                           'the existing implementation and all dev '
-                           'amendments.',
+                 'reason': 'Exclude published base history from repair identity checks; supervisor '
+                           'granted the exact measured footprint for PR #1817 under the delegated '
+                           'operator decision. Plain merge retains the existing implementation and '
+                           'all dev amendments.',
                  'base_revision': 'dd95038cca3fef9aae70eb0092079fe24d52a062',
                  'previous_source_revision': '438aa36cc93945305ea291622009f6b34d4ee733'},
                 {'task_id': 'sharp-rapids-10',
@@ -180,10 +176,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'measured_owned_total': 161111,
                  'measured_engine_lines': 85517,
                  'measured_table_count': 45,
-                 'reason': 'Dashboard PR snapshot quota fix; exact project '
-                           'supervisor amendment under '
-                           'size-cap-delegation-2026-10-23. No automatic '
-                           'ceiling increase or source relocation.'},
+                 'reason': 'Dashboard PR snapshot quota fix; exact project supervisor amendment '
+                           'under size-cap-delegation-2026-10-23. No automatic ceiling increase or '
+                           'source relocation.'},
                 {'task_id': 'fair-dune-41',
                  'decision_message_id': 'msg-99539879',
                  'referenced_decision': 'size-cap-delegation-2026-10-23',
@@ -202,13 +197,11 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'measured_table_count': 45,
                  'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1886',
                  'charged_definition': 'src/doctor/stall_checks.py::_check_sweep',
-                 'reason': 'Stall-sweep alert for non-ready playbook '
-                           'activations. Global supervisor approved the exact '
-                           '+2 owned lines under '
-                           'size-cap-delegation-2026-10-23; project supervisor '
-                           'directed carrying that unchanged delta onto '
-                           'current dev after PR1885. Engine lines and table '
-                           'count remain unchanged.'},
+                 'reason': 'Stall-sweep alert for non-ready playbook activations. Global '
+                           'supervisor approved the exact +2 owned lines under '
+                           'size-cap-delegation-2026-10-23; project supervisor directed carrying '
+                           'that unchanged delta onto current dev after PR1885. Engine lines and '
+                           'table count remain unchanged.'},
                 {'task_id': 'noble-flare-12',
                  'decision_message_id': 'msg-68ccb1d50ee04851a7268dd58e9d4459',
                  'operator_decision': '6679052c',
@@ -225,12 +218,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'measured_owned_total': 161134,
                  'measured_engine_lines': 85539,
                  'measured_table_count': 45,
-                 'reason': 'Bound cached tile readiness to visible candidates '
-                           'and stack proof sources; exact project supervisor '
-                           'approval under size-cap-delegation-2026-10-23. '
-                           'Preserve scheduler shared inputs and fail-closed '
-                           'authorization. No new storage or automatic cap '
-                           'increase.'},
+                 'reason': 'Bound cached tile readiness to visible candidates and stack proof '
+                           'sources; exact project supervisor approval under '
+                           'size-cap-delegation-2026-10-23. Preserve scheduler shared inputs and '
+                           'fail-closed authorization. No new storage or automatic cap increase.'},
                 {'task_id': 'sound-forge-62',
                  'decision_message_id': 'msg-9f16388d39524c8b9a33d6796b88d1fb',
                  'referenced_decision': 'size-cap-delegation-2026-10-23',
@@ -254,9 +245,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'original_task_engine_lines': 85472,
                  'original_task_base_owned_total': 161053,
                  'original_task_base_engine_lines': 85468,
-                 'reason': 'Explicit supervisor approval of the exact retained '
-                           'Git filing resolver footprint; compose the '
-                           'unchanged +26 owned/+4 engine grant on dev, '
+                 'reason': 'Explicit supervisor approval of the exact retained Git filing resolver '
+                           'footprint; compose the unchanged +26 owned/+4 engine grant on dev, '
                            'preserving historical grants.'},
                 {'task_id': 'calm-rapids-50',
                  'decision_message_id': 'msg-5c55b72faec1497391205876fc5dfeb9',
@@ -268,9 +258,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'previous_engine_lines': 85517,
                  'authorized_owned_delta': 50,
                  'authorized_engine_delta': 0,
-                 'reason': 'Bounded transient retry of resume workspace '
-                           'preparation and the fenced supervisor requeue of '
-                           'held continuations; supervisor approved exact '
+                 'reason': 'Bounded transient retry of resume workspace preparation and the fenced '
+                           'supervisor requeue of held continuations; supervisor approved exact '
                            'footprint after trimming from +109.',
                  'request_message_id': 'msg-f3ef547cbf48428abcab2266d7fe8df6',
                  'grant_delivery_message_id': 'msg-6cbd33a9db9846f29816f2fc0df8f8fd',
@@ -290,15 +279,38 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'measured_engine_lines': 85518,
                  'measured_table_count': 45,
                  'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1890',
-                 'reason': 'Shared exact-commit check-run observations and one '
-                           'bounded recovery wait; plain dev merge retains '
-                           'dashboard badges, quota reserve and ETag behavior. '
-                           'Supervisor approved the exact merged +1 owned / +1 '
-                           'engine measurement under '
-                           'size-cap-delegation-2026-10-23.',
+                 'reason': 'Shared exact-commit check-run observations and one bounded recovery '
+                           'wait; plain dev merge retains dashboard badges, quota reserve and ETag '
+                           'behavior. Supervisor approved the exact merged +1 owned / +1 engine '
+                           'measurement under size-cap-delegation-2026-10-23.',
                  'operator_decision': '6679052c',
                  'operator_task': 'sharp-cascade-53',
                  'grant_delivery_message_id': 'msg-3a0b0c6448ef44699f7a7d7c43777642'},
+                {'task_id': 'fair-flare-10',
+                 'root_task_id': 'prime-crest-79',
+                 'decision_message_id': 'msg-76ff7843e72d451b9017a0b4db30c970',
+                 'implementation_message_id': 'msg-9a7a03cd',
+                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1759',
+                 'previous_source_revision': 'c177d24e86d25fde7804131c94bfd637b0eb540a',
+                 'previous_measurement_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
+                 'previous_owned_total': 161162,
+                 'previous_engine_lines': 85543,
+                 'previous_table_count': 45,
+                 'authorized_owned_delta': 19,
+                 'authorized_shared_delta': 19,
+                 'authorized_engine_delta': 0,
+                 'authorized_table_delta': 0,
+                 'measured_source_revision': '10af37472a90cd488707c483047c9c97e2f7a5db',
+                 'measured_owned_total': 161181,
+                 'measured_engine_lines': 85543,
+                 'measured_table_count': 45,
+                 'reason': 'Exact project supervisor grant for the PR1759 merge repair under '
+                           'size-cap-delegation-2026-10-23, with explicit delegation to record the '
+                           "approved grant. Preserve recovery holds through dev's manual-pause "
+                           'Resume path until the authorized restart READY transaction. Keep the '
+                           'historical frozen-batch measurements; engine and table counts remain '
+                           'unchanged.'},
                 {'task_id': 'nimble-meadow-99',
                  'decision_message_id': 'msg-98d8517c56104e8fbf87e1330d2d5c1a',
                  'operator_decision_id': 'c363ba40-0d03-4303-8667-e192e92091ad',
@@ -307,10 +319,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'authorized_owned_delta': 144,
                  'authorized_engine_delta': 0,
                  'measured_source_revision': '07988d776f3dd68759d34c8152dd684099ff7298',
-                 'reason': 'Exact remaining ownership-fence footprint after '
-                           'sharing session predicates and reusing transaction '
-                           'row reads; no change to baseline, final caps or '
-                           'storage categories.',
+                 'reason': 'Exact remaining ownership-fence footprint after sharing session '
+                           'predicates and reusing transaction row reads; no change to baseline, '
+                           'final caps or storage categories.',
                  'grant_baseline_owned_total': 160820,
                  'grant_maximum_delta': 172,
                  'measured_delta_from_grant_baseline': 161},
@@ -331,12 +342,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'authorized_owned_delta': 129,
                  'authorized_engine_delta': -534,
                  'authorized_table_delta': 0,
-                 'reason': 'Exact combined-tree remeasurement after merging '
-                           'origin/dev into PR #1802. Preapproved by '
-                           'size-cap-delegation-2026-10-23, operator decision '
-                           '6679052c on sharp-cascade-53. Preserve every '
-                           'historical grant and classification; no code '
-                           'trimmed or moved for the count.'}],
+                 'reason': 'Exact combined-tree remeasurement after merging origin/dev into PR '
+                           '#1802. Preapproved by size-cap-delegation-2026-10-23, operator '
+                           'decision 6679052c on sharp-cascade-53. Preserve every historical grant '
+                           'and classification; no code trimmed or moved for the count.'}],
  'supplemental_grants': [{'task_id': 'fresh-apex-30',
                           'approval_message_id': 'msg-4e25c0d3',
                           'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
@@ -344,8 +353,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'prior_owned_total_cap': 160820,
                           'authorized_delta': 5,
                           'measured_owned_total': 160825,
-                          'reason': 'Verify registered linked fixer worktrees '
-                                    'before permission bypass.'}],
+                          'reason': 'Verify registered linked fixer worktrees before permission '
+                                    'bypass.'}],
  'merge_measurement': {'task_id': 'fresh-apex-30',
                        'dev_source_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
                        'dev_owned_total': 160879,
@@ -353,8 +362,8 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                        'authorized_owned_delta': 5,
                        'authorized_engine_delta': 5,
                        'approval_message_id': 'msg-a10c7ab8ff2946f8b1f27528a407524c',
-                       'reason': 'Carry forward the unchanged approved fixer '
-                                 'delta onto the measured dev tree.',
+                       'reason': 'Carry forward the unchanged approved fixer delta onto the '
+                                 'measured dev tree.',
                        'decision_id': 'size-cap-delegation-2026-10-23'},
  'merge_remeasurement': {'task_id': 'agile-beacon-80',
                          'authority': 'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
@@ -372,32 +381,23 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                          'measured_table_count': 45,
                          'authorized_owned_delta': 65,
                          'authorized_engine_delta': 65,
-                         'reason': 'Plain merge of PR1877 preparation '
-                                   'diagnostics from dev; combined totals '
-                                   'remain unchanged and this task retains its '
-                                   'approved 65-line delta. Project grant '
-                                   'requires re-recording against the combined '
-                                   'total when dev advances.'},
+                         'reason': 'Plain merge of PR1877 preparation diagnostics from dev; '
+                                   'combined totals remain unchanged and this task retains its '
+                                   'approved 65-line delta. Project grant requires re-recording '
+                                   'against the combined total when dev advances.'},
  'batch_composition': {'batch_id': 'train-854bd30527fc85b1edc0e2c7047bd673',
                        'starting_revision': 'bd8fcfe183d6a59ea90f4498cda2bee80a7222f4',
                        'base_revision': '4e50c276fca68cbe92ba4fc704363ec6026db7dc',
                        'base_owned_total': 160879,
                        'base_engine_lines': 85316,
-                       'approved_deltas': {'fresh-apex-30': {'owned': 5,
-                                                             'engine': 5},
-                                           'agile-beacon-80': {'owned': 65,
-                                                               'engine': 65},
-                                           'nimble-torrent-12': {'owned': 1,
-                                                                 'engine': 0},
-                                           'prime-impact-40': {'owned': 103,
-                                                               'engine': 82},
-                                           'quick-pinnacle-97': {'owned': 28,
-                                                                 'engine': 28},
-                                           'stark-beacon-94': {'owned': 21,
-                                                               'engine': 21}},
-                       'reason': 'Compose the existing exact grants on their '
-                                 'common measured dev tree; preserve each '
-                                 'historical measurement below.',
+                       'approved_deltas': {'fresh-apex-30': {'owned': 5, 'engine': 5},
+                                           'agile-beacon-80': {'owned': 65, 'engine': 65},
+                                           'nimble-torrent-12': {'owned': 1, 'engine': 0},
+                                           'prime-impact-40': {'owned': 103, 'engine': 82},
+                                           'quick-pinnacle-97': {'owned': 28, 'engine': 28},
+                                           'stark-beacon-94': {'owned': 21, 'engine': 21}},
+                       'reason': 'Compose the existing exact grants on their common measured dev '
+                                 'tree; preserve each historical measurement below.',
                        'source_revision': '4e98fa0b96d561cfa7de934541c3e66df430b2a6',
                        'member_sources': {'agile-beacon-80': '6ba25e2472d4a8c6bb145d6f9bc2e067c8ebad61',
                                           'grand-quest-20': 'd60c599767a340d3e3fd6dba2eff8451d349d7e7',
@@ -431,11 +431,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                                                      'engine': 4,
                                                                      'shared': 22,
                                                                      'tables': 0}},
-                              'reason': 'Compose both unchanged approved '
-                                        'member grants on the retained '
-                                        'starting head, which already includes '
-                                        'fair-dune-41. Preserve every '
-                                        'historical grant and measurement.'},
+                              'reason': 'Compose both unchanged approved member grants on the '
+                                        'retained starting head, which already includes '
+                                        'fair-dune-41. Preserve every historical grant and '
+                                        'measurement.'},
  'dashboard_pr_snapshot_merge_measurement': {'task_id': 'fair-crest-95',
                                              'referenced_decision': 'size-cap-delegation-2026-10-23',
                                              'grant_id': 'sharp-rapids-10-cap-epoch2-2026-10-23',
@@ -452,17 +451,11 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                              'measured_owned_total': 161111,
                                              'measured_engine_lines': 85517,
                                              'measured_table_count': 45,
-                                             'reason': 'Plain merge of '
-                                                       'origin/dev into '
-                                                       'accepted PR 1889. '
-                                                       'Compose the existing '
-                                                       'sharp-rapids-10 grant '
-                                                       'with dev; '
-                                                       'fair-crest-95 '
-                                                       'contributes zero owned '
-                                                       'or engine lines. '
-                                                       'Reopen instructions '
-                                                       'cite '
+                                             'reason': 'Plain merge of origin/dev into accepted PR '
+                                                       '1889. Compose the existing sharp-rapids-10 '
+                                                       'grant with dev; fair-crest-95 contributes '
+                                                       'zero owned or engine lines. Reopen '
+                                                       'instructions cite '
                                                        'size-cap-delegation-2026-10-23.'},
  'resume_batch_composition': {'batch_id': 'train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8',
                               'starting_revision': 'c177d24e86d25fde7804131c94bfd637b0eb540a',
@@ -490,11 +483,9 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                                   'sharp-vault-27': {'owned': 0,
                                                                      'engine': 0,
                                                                      'tables': 0}},
-                              'reason': 'Compose the unchanged resume and '
-                                        'shared-check grants on the retained '
-                                        'starting head; the other members add '
-                                        'no owned lines. Preserve every '
-                                        'historical grant and batch '
+                              'reason': 'Compose the unchanged resume and shared-check grants on '
+                                        'the retained starting head; the other members add no '
+                                        'owned lines. Preserve every historical grant and batch '
                                         'measurement.'},
  'post_release_structure_measurement': {'task_id': 'swift-nexus-38',
                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
@@ -521,18 +512,38 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                                             'policy': 493,
                                                             'ui': 262,
                                                             'guards': 633},
-                                        'reason': 'Exact combined-tree '
-                                                  'remeasurement after merging '
-                                                  'PR #1775 head with dev. '
-                                                  'Approval pre-granted by '
-                                                  'size-cap-delegation-2026-10-23, '
-                                                  'operator decision 6679052c '
-                                                  'on sharp-cascade-53. '
-                                                  'Preserve ownership '
-                                                  'classifications and all '
-                                                  'historical grants; no '
-                                                  'production code moved or '
-                                                  'trimmed for the count.'}}
+                                        'reason': 'Exact combined-tree remeasurement after merging '
+                                                  'PR #1775 head with dev. Approval pre-granted by '
+                                                  'size-cap-delegation-2026-10-23, operator '
+                                                  'decision 6679052c on sharp-cascade-53. Preserve '
+                                                  'ownership classifications and all historical '
+                                                  'grants; no production code moved or trimmed for '
+                                                  'the count.'},
+ 'restart_hold_repair_merge_measurement': {'task_id': 'fair-flare-10',
+                                           'root_task_id': 'prime-crest-79',
+                                           'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1900',
+                                           'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                           'operator_decision': '6679052c',
+                                           'operator_task': 'sharp-cascade-53',
+                                           'decision_message_id': 'msg-76ff7843e72d451b9017a0b4db30c970',
+                                           'previous_source_revision': 'd60c0f238c8205f495a384c0bd77c322a8fc89ac',
+                                           'previous_measurement_revision': '4bafa45f1ac0a466eab372c7b6b0b866f67bb832',
+                                           'previous_owned_total': 161198,
+                                           'previous_engine_lines': 85010,
+                                           'previous_table_count': 45,
+                                           'authorized_owned_delta': 19,
+                                           'authorized_shared_delta': 19,
+                                           'authorized_engine_delta': 0,
+                                           'authorized_table_delta': 0,
+                                           'measured_source_revision': 'a36c389c39a33ff60bffa98cc019591298bdcfa9',
+                                           'measured_owned_total': 161217,
+                                           'measured_engine_lines': 85010,
+                                           'measured_table_count': 45,
+                                           'reason': 'Compose the unchanged approved +19 restart '
+                                                     'hold repair grant on current dev for PR '
+                                                     '#1900. Preserve every historical grant and '
+                                                     'frozen batch measurement.',
+                                           'previous_recorded_owned_cap': 161213}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

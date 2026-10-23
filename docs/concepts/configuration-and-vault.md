@@ -137,7 +137,8 @@ silent truncation. See [src/prompt_builder.py](../../src/prompt_builder.py).
 | State | Canonical owner | Derived/runtime consumers |
 |---|---|---|
 | Runtime settings and overlay selection | YAML and .env beside config.yaml | typed AppConfig, config schema/editor |
-| Profiles, playbooks, knowledge, facts, overrides, harnesses | Vault Markdown | watcher handlers, registries, prompt assembly |
+| Profiles, knowledge, facts, overrides, harnesses | Vault Markdown | watcher handlers, registries, prompt assembly |
+| Playbook source | Vault Markdown | explicit proposal/import; a file save does not enqueue compilation (pipeline `update-source` also compiles and replaces the activation) |
 | Tasks, claims, attempts, integrations | PostgreSQL | dashboard, CLI, orchestrator |
 | Semantic chunks, scoped KV, search results | Optional external aq-memory plugin | L1/L2 prompt inputs and vault projections |
 | Vault hubs and README summaries | Generated Markdown under the vault | Obsidian navigation and supervisor context |
@@ -178,7 +179,9 @@ a direct LLM call, guarded by a source hash to skip unchanged content. See
 [src/reference_stub_enricher.py](../../src/reference_stub_enricher.py).
 
 > **Shipped defaults.** In-tree prompt templates, default playbooks, intelligence
-> classes, profiles, harnesses, and vault templates seed only a missing local copy.
+> classes, profiles, harnesses, and vault templates have their own seeding rules.
+> Playbooks use a one-shot [initial-install receipt](playbooks.md#shipped-policy-local-policy-and-compatibility):
+> restart never fills in a deleted source or bundle and never refreshes active policy.
 
 > **Configured local policy.** data_dir, environment/profile overlays, and local vault
 > content are installation choices.
