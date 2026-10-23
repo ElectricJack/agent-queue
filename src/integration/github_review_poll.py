@@ -28,7 +28,7 @@ import time
 from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import and_, select
@@ -143,13 +143,15 @@ class RootPullRequestGate:
             ).join(projects, projects.c.id == tasks.c.project_id).where(
                 tasks.c.id == member.task_id,
             ))).mappings().one()
-            request = None
-            if self.failure_handler is not None and not repaired_source:
-                from src.integration.delivery_truth import load_delivery_requests
+            from src.integration.delivery_truth import load_delivery_requests
+            from src.integration.root_pr_refresh import admission_source_on
 
-                request = (await load_delivery_requests(self.db, [member.task_id],
-                    repository_id=target.repository_id, target_ref=target.target_ref,
-                    conn=conn, reduced=True)).get(member.task_id)
+            request = (await load_delivery_requests(self.db, [member.task_id],
+                repository_id=target.repository_id, target_ref=target.target_ref,
+                conn=conn, reduced=True)).get(member.task_id)
+            checked_sha = (await admission_source_on(conn, request, member.source_sha,
+                row["hierarchical_integration_generation"],
+                row["hierarchical_integration_policy"] or {}) if request else member.source_sha)
         policy = row["hierarchical_integration_policy"] or {}
         url = row["pr_url"]
         observed_target = _PR_TARGET.get()
@@ -228,6 +230,11 @@ class RootPullRequestGate:
                              reason=mismatch)
             if pull.get("draft"):
                 return defer("pr_draft")
+            if (pull_request_conflicts(pull) or pull.get("mergeable") == "CONFLICTING"
+                    or pull.get("mergeStateStatus") == "DIRTY"):
+                return defer("pr_conflicting")
+            if pull.get("mergeable") is None:
+                return computing()
             from src.integration.models import integration_ci_policy
 
             ci = integration_ci_policy(policy)
@@ -240,35 +247,28 @@ class RootPullRequestGate:
             async def review_state():
                 reviews = await client.paged_list(
                     f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
-                return await observe_pull_request_review_state(reviews, member.source_sha,
+                return await observe_pull_request_review_state(reviews, checked_sha,
                     client=client, binding=binding, requirements=self.review_requirements)
 
             if local:
                 state = await review_state()
                 if state != "approved":
                     return defer(state)
-            exact = await self.checks(target, member, policy, binding)
+            exact = await self.checks(target, replace(member, source_sha=checked_sha), policy, binding)
             if exact is None:
                 raise ValueError("PR required checks observer is unavailable")
             result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,
-                ref="refs/heads/" + pull["head"]["ref"], sha=member.source_sha, generation=0))
-            # A successful authenticated listing can prove that no PR workflow
-            # exists for this exact head. GitHub suppresses that workflow for
-            # dirty PRs; the frozen candidate owns integration and its own CI.
-            # An outage, an executing run or a genuine failure never qualifies.
-            suppressed = (pull_request_conflicts(pull) and bool(result.checks)
-                          and all(check.detail.get("missing_pr_run") is True
-                                  for check in result.checks)
-                          and result.state.value in {"pending", "unknown"})
-            if not result.green and not suppressed and result.state.value != "red":
+                ref="refs/heads/" + pull["head"]["ref"], sha=checked_sha, generation=0))
+            if not result.green and result.state.value != "red":
                 if result.state.value != "unknown" and pull.get("mergeable") is None:
                     return computing()
-            if result.state.value == "unknown" and not suppressed:
+            if result.state.value == "unknown":
                 return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
             repaired_red = repaired_source and result.state.value == "red"
-            if not result.green and not suppressed and not repaired_red:
+            if not result.green and not repaired_red:
                 recovery = {}
-                if result.state.value == "red" and request is not None:
+                if (result.state.value == "red" and request is not None
+                        and self.failure_handler is not None and checked_sha == member.source_sha):
                     from src.integration.checks import Conclusion
                     from src.integration.root_pr_recovery import RootPRCheckFailure
 

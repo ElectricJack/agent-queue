@@ -376,12 +376,22 @@ GitHub runs no `pull_request` workflows for a PR that conflicts with its base, s
 a conflicting root PR would wait for checks forever. When the PR read reports it
 conflicting, the root's blocker is `pr_conflicting`, with the PR URL and the
 default-branch SHA; a still-computing mergeability is a short `awaiting_pr_checks`
-retry. For an epic root the train's next visit starts the same attested refresh as
-`refresh-epic --apply`, once per (epic head, default head) pair, and the blocker's
-`refresh` names its batch. The refreshed head is held for its own review and its
-own exact-head PR checks. For a leaf root nothing is started: merge the default
-branch into the task branch, push it and close the task again. Push-event runs
+retry. For leaves and epics the train first tries a mechanical merge using the
+regenerating drivers. A clean result is pushed as a bot merge, retaining the
+original authored head's PR checks and approvals for admission. Batch-tip CI
+still gates delivery. A real source conflict reopens the original task on its
+own branch with the conflicting paths and default tip; its worker merges,
+runs targeted tests only and closes. The train never reopens the same
+(head, default tip) pair twice, including after a daemon restart, and preserves
+the task's original age. The hot-file fix (Phase A5) must ship before or with
+this policy. Explicit `refresh-epic --apply` remains available. Push-event runs
 never count as PR checks.
+
+Root admission first probes the fetched target and source with local `merge-tree`.
+A source conflict reports `pr_conflicting` without a GitHub read; conflicts confined
+to files marked `merge=aq-generated` follow the build's regeneration policy instead.
+An unavailable probe reports unknown. Conflicting refusals refund the selection
+work quantum, leaving time to admit clean sources in the same visit.
 
 For an existing historical root subject, `engine-transfer` offers a forward-only
 audited ownership transfer to `reconciler`. It does not install a publisher.

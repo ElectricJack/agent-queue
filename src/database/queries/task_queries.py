@@ -1849,6 +1849,7 @@ class TaskQueryMixin:
         accepted_close: dict | None = None,
         integration_delivery=None,
         allow_missing_provenance_reopen: bool = False,
+        _preserve_collected_children: bool = False,
         _defer_recovery_supersession: bool = False,
         _recovery_hold_override: dict | None = None,
         pr_merge_gate: str | None = None,
@@ -1983,6 +1984,10 @@ class TaskQueryMixin:
                 task_id, "reopen", conn=conn, delivery=integration_delivery,
                 allow_missing_provenance_reopen=(
                     allow_missing_provenance_reopen and context == "reopen_with_feedback"
+                    and new_status == TaskStatus.READY
+                ),
+                preserve_collected_children=(
+                    _preserve_collected_children and context == "reopen_with_feedback"
                     and new_status == TaskStatus.READY
                 ),
             )

@@ -18,14 +18,13 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, replace
+from pathlib import Path
 from typing import Any
 
 import yaml
 from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from src.waits.sources import execute_task_status_mutation
-from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -72,21 +71,27 @@ from src.integration.delivery_truth import (
     undeliverable_repairs_on,
 )
 from src.integration.epics import (
-    EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks, playbook_epic_checks_on,
+    EpicGraphReader,
+    EpicPolicy,
+    EpicReadinessEvaluator,
+    HeadChecks,
+    playbook_epic_checks_on,
 )
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.manual_control import train_write
 from src.integration.models import (
-    BranchKey, RepairPolicy, integration_ci_policy,
+    BranchKey,
+    RepairPolicy,
+    integration_ci_policy,
 )
 from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND, generated_paths
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
-from src.integration.selection_metrics import selection_count, selection_stage
 from src.integration.runtime_contracts import Subject
+from src.integration.selection_metrics import selection_count, selection_stage
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -95,6 +100,7 @@ from src.integration.train import (
     TrainTarget,
 )
 from src.projects.github import GitHubError
+from src.waits.sources import execute_batch_mutation, execute_task_status_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +111,9 @@ TRAIN_HOLDER = "service:integration-train"
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
 # Leave time in the visit deadline to freeze and advance an admitted prefix: a
-# cooperative quantum (not a fenced writer's deadline) that red roots do not spend.
+# cooperative quantum (not a fenced writer's deadline) that red or conflicting roots do not spend.
 SELECTION_WORK_SECONDS = 60.0
-_RED_PR_REFUSALS = frozenset({"pr_checks_red", "source_ci_repair_exhausted", "source_ci_repair_unchanged",
+_REFUNDED_PR_REFUSALS = frozenset({"pr_conflicting", "pr_checks_red", "source_ci_repair_exhausted", "source_ci_repair_unchanged",
     "root_pr_checks_need_repair", "root_pr_checks_unchanged", "root_pr_checks_recovery_exhausted"})
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
@@ -571,31 +577,26 @@ def _conflict_action(refusal, snapshot, *, epic: bool, refresh=None):
     """Name who resolves a root PR that conflicts with the default branch."""
     if refusal.get("code") != "pr_conflicting":
         return refusal
-    action = "merge the default branch into the task branch, push it and close the task again"
+    action = "the train tries a mechanical merge, then reopens the original task for real conflicts"
     detail = {}
-    if epic:
-        action = "the train will try to refresh the epic from the default branch"
-        if refresh is not None:
-            action = {
-                "started": "the train started an epic refresh from the default branch",
-                "running": "an epic refresh is running on the epic branch",
-                "pending": "another batch owns the epic; the train will retry its refresh "
-                           "after that batch settles",
-                "settled": "the refresh for this head pair has settled; the epic still needs "
-                           "a conflict-free PR with green exact-head checks",
-                "current": "the epic already contains the default branch; its PR still needs "
-                           "green exact-head checks",
-                "skipped": "refresh skipped: delivered",
-                "unavailable": f"the epic refresh is unavailable ({refresh.get('reason')}); "
-                               "the train will retry",
-            }[refresh["outcome"]]
-            detail["refresh"] = refresh
-            if refresh["outcome"] == "unavailable":
-                detail.update(code="refresh_unavailable", retry_at=refresh["retry_at"],
-                              retry_seconds=refresh["retry_seconds"])
+    if refresh is not None:
+        detail["refresh"] = refresh
+        outcome = refresh.get("outcome")
+        action = {
+            "reopened": "the original task was reopened on its branch; run targeted tests only",
+            "refreshed": "the bot merged and pushed the default branch; reobserve the new source",
+            "already_handled": "this head/default pair was already handled; awaiting a new head",
+            "stale": "source or default tip changed; reobserve before refreshing",
+        }.get(outcome, "mechanical refresh unavailable; the train will retry")
+        if not refresh.get("success"):
+            detail["code"] = "refresh_unavailable"
+            detail.update({key: refresh[key] for key in ("retry_at", "retry_seconds")
+                           if key in refresh})
     return {**refusal, **detail, "default_sha": snapshot.target_oid, "epic": epic, "action": action,
             "detail": f"root {refusal['task_id']} PR conflicts with the default branch at "
                       f"{snapshot.target_oid}: {action}"}
+
+
 class BackmergeAdmission:
     """Daemon-authored immutable sources use the lower branch's ordinary PR gate."""
 
@@ -778,8 +779,8 @@ class DatabaseBatches:
         # Refusal diagnostics only, never input to admission or publication.
         # Frozen visits retain explicitly dated observations without rescanning.
         self._frontier_observations: dict[tuple[str, str, str], tuple[dict, ...]] = {}
-        #: epic task id -> ((epic head, default head), refresh detail)
-        self._conflict_refreshes: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
+        self.conflict_handler = None
+        self._refresh_backoff = {}
 
     async def refresh_pair_conflicts(self, target):
         """Retry the durable source-refresh request, never a batch fixer."""
@@ -907,63 +908,53 @@ class DatabaseBatches:
             "replacement_batch_id": replacement.id if replacement else None,
         },))
 
-    async def _refresh_conflicting_epics(self, target, snapshot, blockers) -> None:
-        """Start one epic refresh per conflicting (epic head, default head) pair.
-
-        GitHub runs no pull_request checks for a PR that conflicts with its
-        base, so the root PR of a stale epic would wait for them forever. The
-        refresh is the attested one ``refresh-epic --apply`` starts: a frozen
-        batch on the epic that this train's own visits test and publish. The
-        refreshed head then needs its own exact-head PR checks.
-        """
-        from src.integration.stacked_branches import EpicRefresh
+    async def _refresh_conflicting_prs(self, target, snapshot, blockers, service) -> None:
+        """Let CommandHandler merge first and dispatch only a real source conflict."""
+        if self.conflict_handler is None:
+            return
+        from src.integration.root_pr_refresh import RootPRConflict
 
         for index, blocker in enumerate(blockers):
-            if blocker.get("code") != "pr_conflicting" or not blocker.get("epic"):
+            if blocker.get("code") not in {"pr_conflicting", "root_pr_refresh_pending"}:
                 continue
             task_id = blocker["task_id"]
-            pair = (blocker["source_sha"], blocker["default_sha"])
-            cached = self._conflict_refreshes.get(task_id)
-            previous = cached[1] if cached is not None and cached[0] == pair else None
-            refresh = previous
+            pair = (task_id, blocker["source_sha"], blocker.get("default_sha", snapshot.target_oid))
+            previous = self._refresh_backoff.get(pair)
+            if previous and self.clock() < previous["retry_at"]:
+                blockers[index] = _conflict_action({**blocker, "code": "pr_conflicting"}, snapshot,
+                    epic=blocker.get("epic", False), refresh=previous)
+                continue
+            async with self.db._engine.connect() as conn:
+                request = (await load_delivery_requests(self.db, [task_id],
+                    repository_id=target.repository_id, target_ref=target.target_ref,
+                    conn=conn, reduced=True)).get(task_id)
+                project = (await conn.execute(select(projects).where(
+                    projects.c.id == target.project_id))).mappings().one()
+                base = await conn.scalar(select(task_branch_origins.c.base_sha).where(
+                    task_branch_origins.c.task_id == task_id,
+                    task_branch_origins.c.repository_id == target.repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                ).limit(1))
+            if request is None or not base or not blocker.get("pr_url"):
+                continue
             try:
-                if refresh is not None and refresh["outcome"] in {"started", "running"}:
-                    async with self.db._engine.connect() as conn:
-                        open_id = await conn.scalar(_open_batch_rows(
-                            target.project_id, target.repository_id,
-                        ).with_only_columns(integration_batches.c.id).where(
-                            integration_batches.c.id == refresh["batch_id"]))
-                    # A running batch can belong to an older head pair. Once
-                    # it settles, start() must reconsider this pair. Its durable
-                    # batch identity still prevents repeating a settled pair.
-                    refresh = {**refresh, "outcome": "running"} if open_id else None
-                if (refresh is not None and refresh["outcome"] == "unavailable"
-                        and self.clock() >= refresh["retry_at"]):
-                    refresh = None
-                if refresh is None:
-                    result = await EpicRefresh(self.db, clock=self.clock).start(
-                        task_id, snapshot=snapshot)
-                    refresh = {key: result[key] for key in ("outcome", "batch_id") if key in result}
-                    if result["outcome"] == "started":
-                        await self.db.log_event(
-                            "integration.epic_refresh", project_id=target.project_id,
-                            task_id=task_id, payload=json.dumps({
-                                **result, "trigger": "pr_conflicting", "pr_url": blocker["pr_url"]}))
+                result = await self.conflict_handler(RootPRConflict(
+                    request, blocker["source_sha"], base,
+                    blocker.get("default_sha", snapshot.target_oid), blocker["pr_url"],
+                    project["hierarchical_integration_generation"],
+                    project["hierarchical_integration_policy"] or {},
+                ), service.gitops, snapshot)
             except Exception as exc:
-                # A local refresh failure withholds only this epic, allowing
-                # unrelated roots through their own PR gates. Retry with capped
-                # backoff; exception text can contain credentials or DB inputs.
-                logger.warning("Automatic epic refresh unavailable for %s", task_id,
-                               exc_info=True)
+                logger.warning("Mechanical root refresh unavailable for %s", task_id, exc_info=True)
+                result = {"success": False, "outcome": "unavailable", "reason": type(exc).__name__}
+            if not result.get("success"):
                 delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
-                refresh = {"outcome": "unavailable", "reason": type(exc).__name__,
-                           "retry_at": self.clock() + delay, "retry_seconds": delay}
-            # An ordinary child batch still owns the epic: try again next visit.
-            if refresh["outcome"] in {"pending", "skipped"}:
-                self._conflict_refreshes.pop(task_id, None)
+                result = {**result, "retry_at": self.clock() + delay, "retry_seconds": delay}
+                self._refresh_backoff[pair] = result
             else:
-                self._conflict_refreshes[task_id] = (pair, refresh)
-            blockers[index] = _conflict_action(blocker, snapshot, epic=True, refresh=refresh)
+                self._refresh_backoff.pop(pair, None)
+            blockers[index] = _conflict_action({**blocker, "code": "pr_conflicting"}, snapshot,
+                                               epic=blocker.get("epic", False), refresh=result)
 
     async def prepare_speculative(self, target, service, parent, base, snapshot):
         frozen = await service.store.members(parent.id)
@@ -1118,7 +1109,9 @@ class DatabaseBatches:
                                              evaluated_ids=evaluated_ids,
                                              selection_deadline=(self._selection_clock() + SELECTION_WORK_SECONDS
                                                                  if current is None else None))
-            await _finish_on_cancel(self._refresh_conflicting_epics(target, snapshot, blockers))
+            if current is None:
+                await _finish_on_cancel(self._refresh_conflicting_prs(
+                    target, snapshot, blockers, service))
             if current is None:
                 self._frontier_observations[target.key] = tuple({
                     **blocker, "observation": "last_selection", "observed_at": self.clock(),
@@ -1385,9 +1378,8 @@ class DatabaseBatches:
 
     async def _supersede_removed_checks(self, target, snapshot, service, batch, members):
         """Release obsolete check pins without rewriting frozen policy or sources."""
-        from src.operator_decisions import OperatorDecisions
-
         from src.integration.train_policy import load_train_policy
+        from src.operator_decisions import OperatorDecisions
 
         # Live playbook policy applies to this same candidate, without a requeue.
         if (await load_train_policy(self.db, target.project_id)).policy is not None:
@@ -1599,6 +1591,39 @@ class DatabaseBatches:
                 ids = list(dict.fromkeys([*ids, *frozen_ids]))
         return ids
 
+    async def _local_pr_conflict(self, snapshot, member):
+        """Screen exact fetched inputs without running source code or reading GitHub.
+
+        Like gitops, read generated-path attributes from the merged tree. Those
+        artifacts are rebuilt during construction; only source conflicts need
+        an author refresh. An unavailable probe withholds admission as unknown.
+        """
+        observed = snapshot.observation
+        blocker = {"task_id": member.task_id, "ref": member.task_id,
+                   "source_sha": member.source_sha}
+        try:
+            result = await observed.git.arun_git_result(
+                ["--no-replace-objects", "merge-tree", "--write-tree", "--name-only", "-z",
+                 snapshot.target_oid, member.source_sha], cwd=observed.store,
+            )
+            if result.returncode not in {0, 1}:
+                raise GitError(result.stderr or "local PR merge inspection failed")
+            tree = result.stdout.split("\0", 1)[0]
+            if not is_valid_git_oid(tree):
+                raise GitError("local PR merge inspection did not produce a tree OID")
+            if result.returncode:
+                conflicts = set(result.stdout.split("\0\0", 1)[0].split("\0")[1:]) - {""}
+                if not conflicts:
+                    raise GitError("local PR merge inspection did not name conflicting files")
+                generated = await generated_paths(observed.git, Path(observed.store), tree, conflicts)
+                if conflicts - generated:
+                    return {**blocker, "code": "pr_conflicting", "files": sorted(conflicts - generated),
+                            "detail": "Source conflicts with the fetched target"}
+        except (GitError, OSError, ValueError) as exc:
+            return {**blocker, "code": "unknown", "detail": "Local PR merge inspection unavailable",
+                    "reason": str(exc)}
+        return None
+
     async def pending(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
         blockers: list[dict[str, Any]] | None = None, gate_pr: bool = True,
@@ -1638,6 +1663,15 @@ class DatabaseBatches:
                 if not ids:
                     return None
             epics = await _epic_branches_on(conn, ids)
+            pr_urls = dict((await conn.execute(select(tasks.c.id, tasks.c.pr_url).where(
+                tasks.c.id.in_(ids),
+            ))).all())
+            from src.integration.root_pr_refresh import REFRESH_KEY
+
+            refreshes = {tid: json.loads(value) for tid, value in (await conn.execute(
+                select(task_metadata.c.task_id, task_metadata.c.value).where(
+                    task_metadata.c.task_id.in_(ids), task_metadata.c.key == REFRESH_KEY,
+                ))).all()} if gate_pr and target.kind == "root" else {}
             # The latest aborted batch still withholding each exact source.
             # Only its ejection or an explicit operator release frees it.
             withheld = {(row.task_id, row.source_sha): row for row in (await conn.execute(
@@ -1741,6 +1775,17 @@ class DatabaseBatches:
                         "detail": "Completed source needs a current delivery request and exact origin base",
                     })
                 continue
+            prepared = next((pair for pair in refreshes.get(task_id, {}).get("pairs", {}).values()
+                if pair["outcome"] == "prepared"
+                and pair["source_sha"] == request.reported_source
+                and pair["source_completion_id"] == request.completion_id), None)
+            if prepared is not None:
+                if blockers is not None:
+                    blockers.append({"code": "root_pr_refresh_pending", "ref": task_id,
+                        "task_id": task_id, "source_sha": prepared["source_sha"],
+                        "default_sha": prepared["default_sha"], "pr_url": pr_urls.get(task_id),
+                        "epic": task_id in epics, "detail": "Finish the prepared bot refresh"})
+                continue
             with selection_stage("target_delivery", items=1):
                 evidence = await snapshot.strict_is_delivered(request, source_base=base)
             if evidence.satisfied:
@@ -1815,14 +1860,19 @@ class DatabaseBatches:
                 continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
-                with (selection_stage("pr_admission", items=1),
-                      root_pr_target_scope(target, snapshot.target_oid)):
-                    refusal = (await self.pr_gate(target, member) if self.pr_gate else {
-                        "code": "unknown", "ref": task_id, "task_id": task_id,
-                        "detail": "root PR admission observer is unavailable",
-                    })
+                with selection_stage("local_pr_merge", items=1):
+                    refusal = await self._local_pr_conflict(snapshot, member)
                 if refusal:
-                    if selection_deadline is not None and refusal["code"] in _RED_PR_REFUSALS:
+                    refusal["pr_url"] = pr_urls.get(task_id)
+                else:
+                    with (selection_stage("pr_admission", items=1),
+                          root_pr_target_scope(target, snapshot.target_oid)):
+                        refusal = (await self.pr_gate(target, member) if self.pr_gate else {
+                            "code": "unknown", "ref": task_id, "task_id": task_id,
+                            "detail": "root PR admission observer is unavailable",
+                        })
+                if refusal:
+                    if selection_deadline is not None and refusal["code"] in _REFUNDED_PR_REFUSALS:
                         selection_deadline += self._selection_clock() - candidate_started
                     if refusal["code"] == "pr_checks_red":
                         refused_sources[task_id] = (member, refusal)
@@ -2248,6 +2298,12 @@ class DatabaseBatches:
             notes = json.loads(record["notes"])
             if source is not None and json.loads(record["commits"]) != [source]:
                 return False
+            if refresh := notes.get("root_pr_refresh"):
+                # The bot merge inherits the exact collected epic and its
+                # unchanged child graph. Its new combined tree owes batch-tip
+                # CI, rather than another pre-admission full check/review.
+                return await self._epic_current_on(conn, task_id, refresh["completion_id"],
+                                                   source=refresh["source_sha"])
             if snapshot is None and notes["graph_sha256"] != epic_graph_digest(graph):
                 return False
             if snapshot is not None:
@@ -2691,6 +2747,8 @@ class DaemonLanes:
         self.truth = GitTruth(orchestrator.git, share_fetches=True)
         self.store = BatchStore(self.db, clock=clock, require_enabled=True)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
+        if self.batches is not None:
+            self.batches.conflict_handler = getattr(orchestrator, "_refresh_root_pr", None)
         if self.batches is not None and self.batches.pr_gate is None:
             from src.integration.github_review_poll import RootPullRequestGate
 
@@ -3267,7 +3325,10 @@ class DaemonLanes:
     async def _observe_promotion_source(self, target, retained, gitops, snapshot):
         """Notify reviewed continuous policy when exact source push CI becomes green."""
         from src.integration.promotion_steps import (
-            FlowSchema, PromotionSourceRefusal, check_source_green, promotion_policy_event,
+            FlowSchema,
+            PromotionSourceRefusal,
+            check_source_green,
+            promotion_policy_event,
             step_required_checks,
         )
         from src.playbooks.services import resolve_integration_route
@@ -3388,9 +3449,9 @@ class DaemonLanes:
         Candidate trees must match the boundary's configured CI producer. The
         default branch itself supplies promotion trust, as in promote_request.
         """
+        from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
         from src.integration.attestation import _MAX_TRUST_BYTES, _parse_trust_manifest
         from src.integration.ci import TRUST_MANIFEST_PATH
-        from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
 
         if not is_valid_git_oid(sha):
             raise SubjectTrustError("identity_mismatch", "subject head is not a Git OID")
@@ -3616,9 +3677,9 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
     config = orchestrator.config.integration
     if getattr(config, "git_first", "shadow") != "active":
         return None
-    from src.integration.fixers import BatchFixerService
-    from src.integration.fixer_runtime import DaemonFixerRuntime
     from src.integration.dispatch_waits import DispatchWaits
+    from src.integration.fixer_runtime import DaemonFixerRuntime
+    from src.integration.fixers import BatchFixerService
 
     async def refresh_conflict(batch_id_, record):
         handler = getattr(orchestrator, "_command_handler", None)
