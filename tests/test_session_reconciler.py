@@ -5300,6 +5300,8 @@ async def test_slow_wait_bridge_never_delays_reaping_a_killed_session(
         release.set()
         await asyncio.wait_for(orch.cycle_waits.task, timeout=5)
         await orch._reconcile_sessions()
+        # The replacement pass starts asynchronously and first reconciles agent waits.
+        await asyncio.wait_for(orch.cycle_waits.task, timeout=5)
         assert started == [True, True]
     finally:
         release.set()
