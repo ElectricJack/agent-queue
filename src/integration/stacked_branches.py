@@ -11,6 +11,8 @@ import hashlib
 import heapq
 import json
 import time
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +56,28 @@ class StackPrerequisitesConflict(ValueError):
 
 class StackPreparationChanged(ValueError):
     code = "stack_preparation_changed"
+
+
+_SHARED_INPUTS = ContextVar("shared_stack_inputs", default=None)
+
+
+@asynccontextmanager
+async def shared_stack_inputs():
+    """Reuse project authorization inputs only within one scheduler read pass."""
+    token = _SHARED_INPUTS.set({})
+    try:
+        yield
+    finally:
+        _SHARED_INPUTS.reset(token)
+
+
+async def _project_inputs(conn, project_id):
+    cache = _SHARED_INPUTS.get()
+    if cache is None:
+        return await _inputs(conn, project_id)
+    if project_id not in cache:
+        cache[project_id] = await _inputs(conn, project_id)
+    return cache[project_id]
 
 
 class PreparedStack(dict):
@@ -521,7 +545,7 @@ class StackView:
     async def verified_on(self, conn, ids=None):
         current = {
             _identity(row)["task_id"]: _identity(row)
-            for row in await _inputs(conn, self.project_id)
+            for row in await _project_inputs(conn, self.project_id)
         }
         return {
             tid: proof
@@ -538,15 +562,6 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id)
-        parents = dict(
-            (
-                await conn.execute(
-                    select(tasks.c.id, tasks.c.branch_name).where(
-                        tasks.c.id.in_({row["parent_task_id"] for row in rows})
-                    )
-                )
-            ).all()
-        )
         repository_query = select(repos).join(
             projects, projects.c.integration_repository_id == repos.c.id,
         ).where(projects.c.id == project_id)

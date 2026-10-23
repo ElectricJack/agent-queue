@@ -2189,7 +2189,7 @@ async def test_isolated_app_delete_refuses_moved_remote(tmp_path):
 async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
     tmp_path, monkeypatch
 ):
-    """noble-horizon: provenance batches share one import and one transfer."""
+    """noble-horizon: provenance batches share one transfer and borrow, never import."""
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     _git(["push", str(target), f"{base}:refs/heads/taken"], checkout)
     manager = GitManager()
@@ -2211,7 +2211,7 @@ async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
             token="installation-token-sentinel",
             updates=((tip, "new/one", absent), (base, "new/two", absent), (tip, "taken", absent)),
         )
-    assert len(fetches) == 1
+    assert fetches == []
     assert _git(["rev-parse", "refs/heads/new/one"], target) == tip
     assert _git(["rev-parse", "refs/heads/new/two"], target) == base
     assert _git(["rev-parse", "refs/heads/taken"], target) == base
@@ -2245,6 +2245,8 @@ async def test_isolated_app_push_import_never_starts_detached_maintenance(
         return await real_import(args, **kwargs)
 
     monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+    # A store that cannot be borrowed (shallow or partial) is imported instead.
+    monkeypatch.setattr(manager, "_apush_borrowable_objects", AsyncMock(return_value=None))
 
     await manager._apush_oid_with_app_auth_to_url(
         str(checkout),
@@ -2259,6 +2261,63 @@ async def test_isolated_app_push_import_never_starts_detached_maintenance(
     assert "maintenance.auto=false" in fetch
     assert fetch.index("maintenance.auto=false") < fetch.index("fetch")
     assert _git(["rev-parse", "refs/heads/main"], target) == tip
+
+
+@pytest.mark.asyncio
+async def test_isolated_app_push_borrows_the_checkout_and_sends_only_new_objects(
+    tmp_path, monkeypatch
+):
+    """bold-lantern-71: once the remote moved, an import re-sent the whole history.
+
+    send-pack leaves out only advertised remote tips it holds; a temporary
+    repository holding just the pushed tips' history lacks a remote tip off
+    that history, so the push packed everything. Borrowing the checkout's
+    store keeps the shared history known and the checkout unchanged.
+    """
+    checkout, target, _, _, _ = _git_push_case(tmp_path)
+    for index in range(20):
+        (checkout / "file.txt").write_text(f"history {index}")
+        _git(["commit", "-qam", f"history {index}"], checkout)
+    history = _git(["rev-parse", "HEAD"], checkout)
+    _git(["push", str(target), f"{history}:refs/heads/main"], checkout)
+    # The remote moves to a commit the checkout holds but the pushed tip does
+    # not descend from: an import of that tip alone knows no advertised tip.
+    _git(["commit", "-q", "--allow-empty", "-m", "elsewhere"], checkout)
+    _git(["push", "-q", str(target), "HEAD:refs/heads/main"], checkout)
+    _git(["reset", "-q", "--hard", history], checkout)
+    (checkout / "file.txt").write_text("new")
+    _git(["commit", "-qam", "new"], checkout)
+    new = _git(["rev-parse", "HEAD"], checkout)
+    before = _git(["count-objects", "-v"], checkout)
+    # Keep every received pack as sent, so its index counts what was transferred.
+    _git(["config", "receive.unpackLimit", "1"], target)
+    packs = set((target / "objects" / "pack").glob("*.idx"))
+    manager = GitManager()
+    fetches = []
+    real_import = manager._run_isolated_import_git
+
+    async def watched(args, **kwargs):
+        if "fetch" in args:
+            fetches.append(args)
+        return await real_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+    absent = "0" * 40
+    await manager._apush_refs_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="installation-token-sentinel",
+        updates=((new, "feature", absent),),
+    )
+    assert _git(["rev-parse", "refs/heads/feature"], target) == new
+    assert _git(["count-objects", "-v"], checkout) == before
+    _git(["fsck", "--connectivity-only", "--no-dangling"], target)
+    # One commit, one tree, one blob: the history the remote holds stays home.
+    [received] = set((target / "objects" / "pack").glob("*.idx")) - packs
+    # A version 2 index ends its fan-out table with the pack's object count.
+    sent = int.from_bytes(received.read_bytes()[8 + 255 * 4:8 + 256 * 4], "big")
+    assert sent == 3
+    assert fetches == []
 
 
 @pytest.mark.asyncio
@@ -3188,6 +3247,33 @@ async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp
     monkeypatch.setattr("src.git.manager._RETAINED_VERIFY_TTL_SECONDS", 0.0)
     await verify()
     assert runs.await_count == 4
+
+
+async def test_concurrent_integrity_checks_of_one_store_run_one_fsck(tmp_path, monkeypatch):
+    """bold-lantern-71: a burst of pushes verifies the shared store once."""
+    store = tmp_path / "store.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
+    manager = GitManager()
+    running = 0
+    overlap = []
+
+    async def fsck(*args, **kwargs):
+        nonlocal running
+        running += 1
+        overlap.append(running)
+        await asyncio.sleep(0.05)
+        running -= 1
+        return b""
+
+    runs = AsyncMock(side_effect=fsck)
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+    deadline = asyncio.get_running_loop().time() + 30
+    await asyncio.gather(*(
+        manager._averify_retained_objects(str(store), home=tmp_path, deadline=deadline)
+        for _ in range(5)
+    ))
+    assert runs.await_count == 1
+    assert overlap == [1]
 
 
 async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
