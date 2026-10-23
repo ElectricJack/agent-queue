@@ -333,6 +333,9 @@ spec's activity signal (transcript in-turn state, A.6) through a narrow interfac
 that lands, the engine can only queue and prime-inject — an acceptable degraded mode.
 
 Session recipients may be immutable UUIDs or historical named supervisor addresses.
+System notifications for a batch fixer use its registered AQ session UUID, including
+new CI evidence, rebind requests and green results. Its tmux session name identifies
+the process, rather than the mailbox authorized by its session token.
 A retired UUID is never redirected to a successor with the same name. The global
 supervisor has no project and can receive project-scoped messages without acquiring that
 project as its session scope. Profile recipients remain inbox/prime broadcasts; they do
