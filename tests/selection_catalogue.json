@@ -13032,10 +13032,11 @@
         "object-loop"
       ],
       "default_arm": true,
-      "digest": "sha256:2ab1cf33f995c6d0bdcd3b995a571c89db2be0e92f383f7b23d66a7aa91462bc",
+      "digest": "sha256:a416aa1770c278c5677fb421430e37d8583a135f7146989acf8fef81c3247193",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
         "src.commands.contracts.registry",
         "src.commands.principal",
         "src.commands.resource_authorization",
@@ -14372,7 +14373,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:5ad3f7e15e27026aaf1cb5654f0db1b95f97fc56e443a293eed37cf9c31cc90d",
+      "digest": "sha256:b84ab7ecea0552d31a41bb94e39c7ab1af920f353d6d7de635f887d5d6ff4c73",
       "imports": [
         "src.agent_waits",
         "src.api.auth",
@@ -14406,6 +14407,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.pools",
+        "src.orchestrator.worktree_manager",
         "src.pool_claims",
         "src.scheduler",
         "src.sessions.harness_parser"
@@ -19435,7 +19437,7 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:bf5b0c9b48e84a229832d166c2225c3a99a2f9db5b2e8a339e10b2cebdd6be77",
+      "digest": "sha256:c49a97de926ae8213537a2cdddf918ae82cd2037ba54acbbbe66eedde1798f25",
       "imports": [
         "src.cli",
         "src.cli.app",
@@ -19443,6 +19445,7 @@
         "src.config",
         "src.dashboard_server.app",
         "src.dashboard_server.settings",
+        "src.database.backup",
         "src.install",
         "src.install.command",
         "src.install.dashboard",

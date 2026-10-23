@@ -279,8 +279,9 @@ Branch tracking design:
   tag must be an ancestor of `origin/<target>` (otherwise
   `deploy_not_related`). `aq update --ref <tag>` pins one tag.
 - **Branch tracking** (`deploy.track_branch`). Fast-forward only.
-  `validate_target_migrations` checks that the target has a single Alembic
-  head, reading revisions with `git show`.
+
+Both modes use `validate_target_migrations` to check that the pinned target has
+one Alembic head, reading revisions with `git show` without executing them.
 
 `track_branch` cannot be combined with a ref, glob or recorded tag selection.
 
@@ -350,8 +351,10 @@ Otherwise it spawns a detached `python -m src.cli.app update --yes
 the daemon's child.
 
 When neither a glob nor a tracked branch is configured, `update_and_restart`
-falls back to a legacy path. That path runs `git pull`, pip and codegen, then
-restarts in-process. It takes no backup and has no rollback (§5).
+refuses with configuration guidance. The operator may still invoke standalone
+`aq update` for a guarded branch-following update. All updater backups delegate
+to `src/database/backup.py`, including Docker fallback and archive inspection
+before any service stops.
 
 **Releases** ([`../../contributing/releases.md`](../../contributing/releases.md)).
 `aq promote prepare|request|approve` builds a notes digest and runs the
@@ -803,18 +806,10 @@ These hold today, and changes to this system must keep them.
   which exists only in the vault.
 
 **Behaviour.**
-- **The legacy update path is unguarded.** Without a tag glob or tracked
-  branch, `update_and_restart` pulls, installs and restarts in-process with
-  no backup and no rollback.
 - **Messages over-promise.** The update confirmation says it "rolls back… if
   anything fails", which is false once migrations have run.
-- **Migration validation only covers branch tracking.**
-  `validate_target_migrations` (single head) runs only under `track_branch`,
-  not for tag deploys.
 - **Updates can back up twice.** An update with migrations backs up in
   `update.py`, then `aq start` backs up again because the schema is behind.
-- **There are two backup implementations.** The one in `update.py:460-505`
-  lacks the docker fallback and the header check that `backup.py` has.
 - **Backups never expire.** Nothing prunes `backups/` or the pre-deploy
   dumps, and no doctor check watches backup age or disk use.
 - **Some doctor ids are placeholders.** Three reserved ids (`sessions.stale`,

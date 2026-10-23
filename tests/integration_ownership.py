@@ -309,7 +309,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                            "approved grant. Preserve recovery holds through dev's manual-pause "
                            'Resume path until the authorized restart READY transaction. Keep the '
                            'historical frozen-batch measurements; engine and table counts remain '
-                           'unchanged.'}],
+                           'unchanged.'},
+                {'task_id': 'prime-grove-46',
+                 'decision': 'size-cap-delegation-2026-10-23',
+                 'previous_owned_total': 160879,
+                 'authorized_owned_delta': -30,
+                 'reason': 'Remove the legacy updater path in clear-delta-43 / PR #1855 after '
+                           'merging PR #1797; re-record exactly origin/dev measured_owned_total '
+                           'minus 30 under the supervisor delegated size-cap decision.'}],
  'supplemental_grants': [{'task_id': 'fresh-apex-30',
                           'approval_message_id': 'msg-4e25c0d3',
                           'relay_message_id': 'msg-bd98955a2fa443cc920ce725e42a5c3f',
