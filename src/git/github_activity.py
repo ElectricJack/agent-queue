@@ -58,6 +58,7 @@ class GitHubActivity:
     def __init__(self, clock):
         self.clock = clock
         self.calls = {}
+        self.not_modified = {}
         self.quota = None
 
     def record(self, api):
@@ -75,13 +76,25 @@ class GitHubActivity:
 
     def prune(self):
         cutoff = self.clock() - HOUR_SECONDS
-        for name, buckets in list(self.calls.items()):
-            while buckets and buckets[0][0] <= cutoff:
-                buckets.popleft()
-            if not buckets:
-                del self.calls[name]
+        for counters in (self.calls, self.not_modified):
+            for name, buckets in list(counters.items()):
+                while buckets and buckets[0][0] <= cutoff:
+                    buckets.popleft()
+                if not buckets:
+                    del counters[name]
 
-    def observe(self, headers):
+    def observe(self, headers, *, status=None):
+        if status == 304:
+            self.prune()
+            name = caller_component()
+            if name not in self.not_modified and len(self.not_modified) >= MAX_COMPONENTS - 1:
+                name = "other components"
+            buckets = self.not_modified.setdefault(name, deque(maxlen=HOUR_SECONDS + 1))
+            second, count = int(self.clock()), 1
+            if buckets and buckets[-1][0] == second:
+                _, old_count = buckets.pop()
+                count += old_count
+            buckets.append((second, count))
         if headers.get("x-ratelimit-resource", "core") != "core":
             return
         try:
@@ -115,6 +128,8 @@ class GitHubActivity:
                                    for name, buckets in sorted(self.calls.items())},
             "gh_commands_per_hour": {name: sum(row[2] for row in buckets)
                                      for name, buckets in sorted(self.calls.items())},
+            "not_modified_per_hour": {name: sum(row[1] for row in buckets)
+                                      for name, buckets in sorted(self.not_modified.items())},
             "primary_quota": self.quota if self.quota and self.clock() < self.quota["reset"]
                              else None,
         }
