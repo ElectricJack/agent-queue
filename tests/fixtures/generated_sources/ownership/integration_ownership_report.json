@@ -14676,5 +14676,25 @@
     "measured_engine_lines": 85517,
     "measured_table_count": 45,
     "reason": "Plain merge of origin/dev into accepted PR 1889. Compose the existing sharp-rapids-10 grant with dev; fair-crest-95 contributes zero owned or engine lines. Reopen instructions cite size-cap-delegation-2026-10-23."
+  },
+  "shared_check_runs_measurement": {
+    "task_id": "fair-harbor-71",
+    "decision_message_id": "msg-96fed6b8e86148f0bbf55ded244c9a0f",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+    "previous_owned_total": 161111,
+    "previous_engine_lines": 85517,
+    "authorized_owned_delta": 1,
+    "authorized_engine_delta": 1,
+    "authorized_table_delta": 0,
+    "measured_source_revision": "14828bb29104d825e9ba5a75aa44a3799dd48a48",
+    "measured_owned_total": 161112,
+    "measured_engine_lines": 85518,
+    "measured_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1890",
+    "reason": "Shared exact-commit check-run observations and one bounded recovery wait; plain dev merge retains dashboard badges, quota reserve and ETag behavior. Supervisor approved the exact merged +1 owned / +1 engine measurement under size-cap-delegation-2026-10-23.",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "grant_delivery_message_id": "msg-3a0b0c6448ef44699f7a7d7c43777642"
   }
 }

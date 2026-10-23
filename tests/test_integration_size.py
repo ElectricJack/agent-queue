@@ -388,6 +388,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "noble-flare-12",
         "sound-forge-62",
         "calm-rapids-50",
+        "fair-harbor-71",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -434,6 +435,26 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert resume["previous_owned_total"] + resume["authorized_owned_delta"] == 161_161
     assert resume["authorized_engine_delta"] == 0
     assert resume["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    check_runs = amendments["fair-harbor-71"]
+    assert check_runs["decision_message_id"] == "msg-96fed6b8e86148f0bbf55ded244c9a0f"
+    assert check_runs["decision_message_id"] in exception["decision_message_ids"]
+    assert check_runs["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert check_runs["operator_decision"] == "6679052c"
+    assert check_runs["operator_task"] == "sharp-cascade-53"
+    assert check_runs["grant_delivery_message_id"] == "msg-3a0b0c6448ef44699f7a7d7c43777642"
+    assert check_runs["previous_source_revision"] == "4a0c4e38ab979a1664586d47d16404b48def4089"
+    assert check_runs["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert check_runs["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    assert check_runs["authorized_owned_delta"] == check_runs["authorized_engine_delta"] == 1
+    assert check_runs["authorized_table_delta"] == 0
+    assert check_runs["previous_owned_total"] + check_runs["authorized_owned_delta"] == 161_112
+    assert check_runs["measured_owned_total"] == 161_112 == 161_112
+    assert (check_runs["previous_engine_lines"] + check_runs["authorized_engine_delta"]
+            == check_runs["measured_engine_lines"] == 85_518)
+    assert check_runs["measured_table_count"] == 45
+    assert check_runs["measured_source_revision"] == "14828bb29104d825e9ba5a75aa44a3799dd48a48"
+    assert check_runs["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1890"
+    assert recorded["shared_check_runs_measurement"] == check_runs
     viewport = amendments["noble-flare-12"]
     assert viewport["decision_message_id"] == "msg-68ccb1d50ee04851a7268dd58e9d4459"
     assert viewport["decision_message_id"] in exception["decision_message_ids"]

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.config import GitHubAppConfig
+from src.git.check_runs import CommitCheckRuns
 from src.git.github import GitHubAccess, GitHubClient, MAX_HEADER_BYTES
 from src.git.github_app import AppTokenCandidate
 from src.git.github_auth import GitHubAuth
@@ -29,6 +30,216 @@ from src.integration.ci import (
 
 
 REPOSITORY = GitHubRepositoryBinding(303, "acme/widgets")
+
+
+def _check_runs_access(*rows, now=None):
+    auth = GitHubAuth()
+    runner = FakeRunner(auth.credential_identity, [_response(200, {"check_runs": r}) for r in rows])
+    access = GitHubAccess(auth, runner)
+    if now is not None:
+        access.check_runs = CommitCheckRuns(clock=lambda: now[0])
+    return access, runner
+
+
+def _completed_check(**changes):
+    return {"id": 11, "name": "Tests", "status": "completed", "conclusion": "success",
+            "app": {"id": 404}, "head_sha": "a" * 40, **changes}
+
+
+async def test_check_runs_single_flight_across_clients_paths_and_cancelled_reader():
+    access, runner = _check_runs_access([_completed_check()])
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = runner.run
+
+    async def gated(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    runner.run = gated
+    clients = [GitHubClient(REPOSITORY, access=access) for _ in range(3)]
+    first = asyncio.create_task(clients[0].commit_check_runs("a" * 40))
+    await entered.wait()
+    others = [asyncio.create_task(client.paged_items(
+        "/repos/acme/widgets/commits/" + "a" * 40 + "/check-runs?filter=all&per_page=100",
+        key="check_runs",
+    )) for client in clients[1:]]
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    assert await asyncio.gather(*others) == [[_completed_check()]] * 2
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", "cancelled"])
+async def test_terminal_check_runs_reused_without_expiry_and_isolated_from_mutation(conclusion):
+    now = [1000.0]
+    rows = [_completed_check(conclusion=conclusion)]
+    access, runner = _check_runs_access(rows, now=now)
+    client = GitHubClient(REPOSITORY, access=access)
+    result = await client.commit_check_runs("a" * 40)
+    result[0]["app"]["id"] = 999
+    result.clear()
+    now[0] += 86400
+    assert await GitHubClient(REPOSITORY, access=access).commit_check_runs("a" * 40) == rows
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.parametrize("rows", [[], [_completed_check(status="in_progress", conclusion=None)],
+                                  [_completed_check(conclusion=None)]])
+async def test_pending_empty_and_incomplete_check_runs_expire_after_45_seconds(rows):
+    now = [1000.0]
+    access, runner = _check_runs_access(rows, [_completed_check()], now=now)
+    client = GitHubClient(REPOSITORY, access=access)
+    assert await client.commit_check_runs("a" * 40) == rows
+    now[0] += 44.9
+    assert await client.commit_check_runs("a" * 40) == rows
+    assert len(runner.calls) == 1
+    now[0] += 0.1
+    assert await client.commit_check_runs("a" * 40) == [_completed_check()]
+    assert len(runner.calls) == 2
+
+
+async def test_check_runs_failure_is_not_cached_and_keys_include_repository_and_sha():
+    access, runner = _check_runs_access(*([[_completed_check()]] * 4))
+    runner.results.insert(0, _response(503, {}, returncode=1))
+    client = GitHubClient(REPOSITORY, access=access)
+    with pytest.raises(GitHubAccessError):
+        await client.commit_check_runs("a" * 40)
+    assert await client.commit_check_runs("a" * 40) == [_completed_check()]
+    await client.commit_check_runs("b" * 40)
+    await GitHubClient(GitHubRepositoryBinding(404, "acme/other"), access=access).commit_check_runs(
+        "a" * 40,
+    )
+    other_access = GitHubAccess(access.auth, runner)
+    await GitHubClient(REPOSITORY, access=other_access).commit_check_runs("a" * 40)
+    assert len(runner.calls) == 5
+
+
+async def test_changed_workflow_attempt_invalidates_terminal_check_runs():
+    access, runner = _check_runs_access([_completed_check()], [_completed_check(conclusion="failure")])
+    client = GitHubClient(REPOSITORY, access=access)
+    workflow_path = "/repos/acme/widgets/actions/runs?head_sha=" + "a" * 40 + "&per_page=100"
+    first = {"id": 31, "run_attempt": 1, "status": "completed", "conclusion": "success"}
+    runner.results.insert(0, _response(200, {"workflow_runs": [first]}))
+    await client.paged_items(workflow_path, key="workflow_runs")
+    await client.commit_check_runs("a" * 40)
+    runner.results.insert(0, _response(200, {"workflow_runs": [first]}))
+    await client.paged_items(workflow_path, key="workflow_runs")
+    assert (await client.commit_check_runs("a" * 40))[0]["conclusion"] == "success"
+    runner.results.insert(0, _response(200, {"workflow_runs": [dict(first, run_attempt=2)]}))
+    await client.paged_items(workflow_path, key="workflow_runs")
+    assert (await client.commit_check_runs("a" * 40))[0]["conclusion"] == "failure"
+    assert sum("check-runs?" in c["args"][-1] for c in runner.calls) == 2
+
+
+@pytest.mark.parametrize("invalidate", ["suite", "job", "missing"])
+async def test_explicit_rerun_or_missing_sha_retires_terminal_check_runs(invalidate):
+    access, runner = _check_runs_access([_completed_check()], [_completed_check(conclusion="failure")])
+    # Suite rerequests require App credentials.
+    if invalidate == "suite":
+        auth = GitHubAuth(GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+                          app_provider=FakeTokenProvider())
+        runner.credential_identity = auth.credential_identity
+        access = GitHubAccess(auth, runner)
+    client = GitHubClient(REPOSITORY, access=access)
+    await client.commit_check_runs("a" * 40)
+    runner.results.insert(0, _response(404 if invalidate == "missing" else 201, {}))
+    if invalidate == "suite":
+        await client.rerequest_check_suite(21)
+    elif invalidate == "job":
+        await client.rerun_job(31)
+    else:
+        with pytest.raises(GitHubAccessError):
+            await client.commit_head("a" * 40)
+    assert (await client.commit_check_runs("a" * 40))[0]["conclusion"] == "failure"
+
+
+async def test_invalidation_during_fetch_cannot_restore_stale_check_runs():
+    cache = CommitCheckRuns()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def load():
+        entered.set()
+        await release.wait()
+        return [_completed_check()]
+
+    read = asyncio.create_task(cache.get(303, "a" * 40, load))
+    await entered.wait()
+    cache.forget(303, "a" * 40)
+    fresh = AsyncMock(return_value=[_completed_check(conclusion="failure")])
+    await cache.get(303, "a" * 40, fresh)
+    release.set()
+    await read
+    assert (await cache.get(303, "a" * 40, fresh))[0]["conclusion"] == "failure"
+    fresh.assert_awaited_once()
+
+
+async def test_check_run_cache_is_invalidated_after_racing_rerun_response():
+    access, runner = _check_runs_access([_completed_check()], [_completed_check(conclusion="failure")])
+    client = GitHubClient(REPOSITORY, access=access)
+    await client.commit_check_runs("a" * 40)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def write(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return {}
+
+    client.request_json = write
+    rerun = asyncio.create_task(client.rerun_job(31))
+    await entered.wait()
+    assert (await client.commit_check_runs("a" * 40))[0]["conclusion"] == "success"
+    release.set()
+    await rerun
+    assert (await client.commit_check_runs("a" * 40))[0]["conclusion"] == "failure"
+    assert len(runner.calls) == 2
+
+
+@pytest.mark.parametrize("component", ["src.integration.ci", "src.waits.watchers.ci",
+                                       "src.api.pull_requests"])
+async def test_shared_check_run_request_keeps_original_activity_attribution(tmp_path, component):
+    access = _rate_limit_access(
+        tmp_path, GitHubCredentialIdentity.existing_login(),
+        _response(200, {"check_runs": [_completed_check()]}), [1000.0],
+    )
+    client = GitHubClient(REPOSITORY, access=access)
+    with github_component(component, background=True):
+        await client.commit_check_runs("a" * 40)
+    with github_component("another caller", background=True):
+        await GitHubClient(REPOSITORY, access=access).commit_check_runs("a" * 40)
+    assert access.runner.activity()["api_calls_per_hour"] == {component: 1}
+
+
+async def test_single_flight_preserves_stack_based_attribution(tmp_path):
+    access = _rate_limit_access(
+        tmp_path, GitHubCredentialIdentity.existing_login(),
+        _response(200, {"check_runs": [_completed_check()]}), [1000.0],
+    )
+    # Production callers without an explicit github_component use their module
+    # on the stack. Starting a loader task must not lose that attribution.
+    namespace = {"__name__": "src.api.pull_requests"}
+    exec("async def read(client):\n    return await client.commit_check_runs('a' * 40)", namespace)
+    await namespace["read"](GitHubClient(REPOSITORY, access=access))
+    assert access.runner.activity()["api_calls_per_hour"] == {"src.api.pull_requests": 1}
+
+
+async def test_check_run_loader_keeps_background_quota_reserve_policy(tmp_path):
+    access = _rate_limit_access(
+        tmp_path, GitHubCredentialIdentity.existing_login(),
+        _response(200, {"check_runs": [_completed_check()]}, headers={
+            "X-RateLimit-Limit": "5000", "X-RateLimit-Remaining": "499",
+            "X-RateLimit-Reset": "2000",
+        }), [1000.0],
+    )
+    client = GitHubClient(REPOSITORY, access=access)
+    await client.commit_check_runs("a" * 40)
+    with github_component("src.waits.watchers.ci", background=True):
+        assert await client.commit_check_runs("a" * 40)  # a hit spends no quota
+        with pytest.raises(GitHubAccessError, match="quota reserve"):
+            await client.commit_check_runs("b" * 40)
+    assert (tmp_path / "calls").read_text() == "1"
 
 
 def _rate_limit_access(tmp_path, identity, response, now):

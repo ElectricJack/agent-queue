@@ -242,7 +242,7 @@ class PendingPullRequestInbox:
             if not refresh_checks:
                 return cached.checks
             return await client.paged_items(
-                f"repos/{client.repository.full_name}/commits/{sha}/check-runs?per_page=100",
+                f"repos/{client.repository.full_name}/commits/{sha}/check-runs?filter=all&per_page=100",
                 key="check_runs", max_pages=20,
             )
 

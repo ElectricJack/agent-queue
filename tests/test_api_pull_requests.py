@@ -1,6 +1,8 @@
 """The Reviews inbox reads a durable snapshot and pins human approvals."""
 
 import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -14,6 +16,9 @@ from src.database.queries.pull_request_queries import (
     list_known_pull_requests, read_pull_request_snapshot, write_pull_request_snapshot,
 )
 from src.database.tables import archived_tasks, projects, tasks
+from src.git.github import GitHubAccess, GitHubClient
+from src.git.github_auth import GitHubAuth
+from src.integration.ci import AuthenticatedGitHubObserver, CIObservationDeferred, IntegrationCITrust
 from src.git.github_activity import GitHubActivity
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 
@@ -100,6 +105,59 @@ class FakeClient:
     async def paged_items(self, path, **kwargs):
         self.calls.append(path)
         return [{"status": "completed", "conclusion": "success"}]
+
+
+async def test_inbox_and_hosted_ci_observers_share_one_check_run_request(db):
+    await seed(db)
+    auth = GitHubAuth()
+    calls = []
+
+    class Runner:
+        credential_identity = auth.credential_identity
+
+        async def run(self, args, **kwargs):
+            path = args[-1]
+            calls.append(path)
+            await asyncio.sleep(0)  # let the three independent observers overlap
+            if "/check-runs?" in path:
+                body = {"check_runs": [{"id": 11, "name": "Tests", "app": {"id": 404},
+                                       "status": "completed", "conclusion": "success"}]}
+            elif "/actions/runs?" in path:
+                body = {"workflow_runs": []}
+            elif "state=open" in path:
+                body = [{"html_url": BASE + "1", "state": "open", "head": {"sha": SHA}}]
+            elif path.endswith("/pulls/1"):
+                body = {"number": 1, "html_url": BASE + "1", "state": "open", "head": {"sha": SHA},
+                        "base": {"repo": {"id": 1, "full_name": "acme/repo"}}}
+            else:
+                body = []  # reviews
+            return SimpleNamespace(returncode=0, stderr="", stdout=(
+                b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps(body).encode()))
+
+    access = GitHubAccess(auth, Runner())
+    binding = GitHubRepositoryBinding(1, "acme/repo")
+    access.bind_repository = lambda _: _binding()
+
+    async def _binding():
+        return binding
+
+    trust = IntegrationCITrust(canonical_repository_id="repo", repository_id=1,
+                              full_name="acme/repo", producer_id="github-actions",
+                              required_checks={"version": "v1", "names": ["unit"]})
+    inbox = PendingPullRequestInbox(db, access)
+    observers = [AuthenticatedGitHubObserver(GitHubClient(binding, access=access))
+                 for _ in range(2)]
+    results = await asyncio.gather(
+        inbox.refresh(), *(observer.observe(trust, SHA) for observer in observers),
+        return_exceptions=True,
+    )
+    assert results[0] is None
+    assert all(isinstance(result, CIObservationDeferred) for result in results[1:])
+    items, _ = await read_pull_request_snapshot(db)
+    assert items[0]["ci_status"] == "success"
+    assert sum("/check-runs?" in path for path in calls) == 1
+    await inbox.refresh_row("open-task")
+    assert sum("/check-runs?" in path for path in calls) == 1
 
 
 async def test_candidates_include_archived_but_only_active_projects(db):
