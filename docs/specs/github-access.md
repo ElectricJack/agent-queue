@@ -298,6 +298,47 @@ bounded, with excess endpoints aggregated under `other endpoints` and excess
 CLI operations under `gh other commands`. A non-API `gh` invocation may
 make several HTTP requests; its counter measures invocations only.
 
+The same snapshot includes `api_calls_per_hour` and `gh_commands_per_hour`
+keyed by caller component, with `component_window_seconds: 3600`. These are
+rolling, bounded, in-memory launch counts at one-second resolution, reset on
+daemon restart. Nested calls inherit explicit component context; other calls
+use their nearest AQ caller outside the Git package, or `unattributed`.
+The event-loop host `src.main` is not a caller: child tasks without an explicit
+component or a more specific AQ frame remain `unattributed`. Endpoint counters
+and rate-limit warnings still identify their request.
+Excess component identities aggregate under `other components`. Counters include
+failed launches that reached a process and exclude calls refused before launch;
+they measure traffic, not GitHub's billable primary-quota usage.
+
+The response that starts each shared backoff episode logs one structured warning
+with a query-free endpoint template, caller component, HTTP status,
+`x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after`, and primary/secondary
+classification. Missing headers are null. An empty primary quota identifies a
+primary limit; other rate-limit refusals identify a secondary limit. Requests
+refused during that episode do not repeat this warning or log their diagnostics.
+
+`primary_quota` reports the last valid core-quota limit, remaining, reset and
+reserve, or null after reset/when unknown. The reserve is ten percent of the
+limit, rounded up. The background review poller, periodic PR cleanup and
+dashboard PR snapshot share this reserve: at or below it, they defer until reset
+without launching requests.
+Foreground worker and train operations retain access to that share; actual
+rate-limit backoff still applies to everyone. Out-of-order responses in one
+window cannot increase the observed remaining quota.
+
+Review polling uses one paginated open-PR inventory per repository and tick to
+skip detail reads for unchanged open PRs. The fingerprint includes update time,
+state, head/base refs, SHAs and repository identities. Missing/unreadable inventory
+falls back to detail reads. Reviews still refresh periodically, failed review
+reads retry, and source CI is observed independently because checks can change
+without a PR update. A closed PR stays skipped until it appears open again.
+PR cleanup reuses its repository inventory for dry-run observations only; apply
+re-reads the PR and keeps its final head check and Git delivery proof. On shared
+backoff, cleanup retains the current item and remaining page, and review polling
+retains its cursor before the interrupted root. Neither iterates the page logging
+one refusal per PR. Inventory snapshots are internal service context, never
+caller-supplied command arguments or authorization to close a PR.
+
 Ordinary task PR creation reuses an exact existing request. If the sole matching
 request was closed without merging, reopen that same request after validating
 its repository, base, head branch and published head SHA. The worker command's
@@ -413,6 +454,22 @@ discovery, workspace/base fetch, exact PR-diff fetch, recovery/WIP publication,
 parent CI snapshots, promotion and branch deletion. Extend isolated acquisition
 to transfer objects into a credential-free local checkout. Preserve repository
 locks, exact-ref checks, object validation and existing transfer budgets.
+
+Credential-free preparation failures expose only daemon-selected reason fields:
+`lock_wait_timeout`, `git_timeout` (subcommand, elapsed seconds and available
+budget), `git_exit` (subcommand, return code and diagnostic kind), or
+`import_mismatch`. The same safe detail reaches exceptions, fixer blockers and
+integration-train messages, and a structured `git_preparation_failed` log event.
+Never include raw stderr, paths, ref names or credentials in these fields.
+
+Standalone exact-object acquisition has a finite 240-second aggregate budget:
+successful local acquisitions on a busy retained store have taken 115.4 seconds
+against the former 120-second limit. An explicit caller budget always wins,
+including remaining push authority; no phase resets that deadline. A complete,
+integrity-verified local commit is pinned directly with `update-ref`, without
+fetching its graph back from a temporary repository. Retained verification still
+reuses only an unchanged clean store within its existing cache lifetime.
+
 Additional private submodules or LFS services require their own explicit scope;
 do not forward the repository token to arbitrary secondary destinations.
 

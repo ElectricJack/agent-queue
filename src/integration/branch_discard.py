@@ -217,7 +217,7 @@ class BranchDiscardService:
         )
         try:
             await self.git.adelete_repository_ref(
-                str(self.retained_store(row["repository_id"])),
+                str(await self.resolved_store(row["repository_id"])),
                 repository=binding,
                 branch=branch,
                 expected_old_oid=head,
@@ -289,7 +289,7 @@ class BranchDiscardService:
         """
         repository_id = row["repository_id"]
         now = self.clock()
-        store = self.retained_store(repository_id)
+        store = await self.resolved_store(repository_id)
         repository = await self.db.get_repo(repository_id)
         if repository is None:
             raise GitError("discard repository is unavailable")
@@ -310,6 +310,9 @@ class BranchDiscardService:
             oid=main_head,
             destination_ref="refs/aq/discard-backup/default",
         )
+        from src.projects.storage_binding import repository_path
+
+        backup_dir = await repository_path(self.db, repository_id, self.backup_dir)
         bundle = None
         if not await self.git.ais_ancestor(str(store), head, main_head):
             # ``False`` covers "already on the default branch" and "could not
@@ -320,12 +323,12 @@ class BranchDiscardService:
                 store,
                 {branch: head},
                 main_head=main_head,
-                backup_dir=self.backup_dir,
+                backup_dir=backup_dir,
                 repository_id=repository_id,
                 now=now,
             )
         _record_deletions(
-            self.backup_dir,
+            backup_dir,
             {branch: {"head": head, "reason": f"task {row['task_id']} discarded"}},
             bundled={branch} if bundle is not None else set(),
             bundle=bundle,
@@ -430,6 +433,11 @@ class BranchDiscardService:
             attempts=int(row["discard_attempts"]),
             error=error,
         )
+
+    async def resolved_store(self, repository_id: str) -> Path:
+        from src.projects.storage_binding import repository_path
+
+        return await repository_path(self.db, repository_id, self.retained_store(repository_id))
 
     def retained_store(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()

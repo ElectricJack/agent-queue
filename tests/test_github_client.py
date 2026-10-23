@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from src.git.github import GitHubAccess, GitHubClient, MAX_HEADER_BYTES
 from src.git.github_app import AppTokenCandidate
 from src.git.github_auth import GitHubAuth
 from src.git.github_cli import GhRunner
+from src.git.github_activity import github_component
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
@@ -202,6 +204,10 @@ async def test_integration_status_exposes_rolling_github_endpoint_counts(tmp_pat
                new=AsyncMock(return_value={"project_id": "p"})):
         result = await handler._cmd_integration_status({"project_id": "p", "control_only": control_only})
     assert result["github"] == {
+        "component_window_seconds": 3600,
+        "api_calls_per_hour": {"unattributed": 3},
+        "gh_commands_per_hour": {"unattributed": 0},
+        "primary_quota": None,
         "scope": "daemon", "window_seconds": 60, "retry_at": None,
         "api_calls_per_minute": {"GET repos/acme/widgets": 2, "GET user": 1},
         "gh_commands_per_minute": {},
@@ -1182,8 +1188,6 @@ async def test_ordinary_reopen_preserves_rejection_if_pr_is_still_closed(credent
 
 
 @pytest.mark.parametrize("pull", [
-    _ordinary_pull(base="release", closed=True),
-    _ordinary_pull(head_sha="c" * 40, closed=True),
     {**_ordinary_pull(closed=True), "html_url": "https://github.com/foreign/repo/pull/7"},
     {**_ordinary_pull(closed=True), "head": {
         "ref": "feature", "sha": "a" * 40,
@@ -1235,15 +1239,67 @@ async def test_ordinary_create_reuses_merged_pr_without_reopening_it(credential_
     assert len(runner.calls) == 2
 
 
-async def test_ordinary_create_keeps_duplicate_request_refusal(credential_identity):
+@pytest.mark.parametrize("pulls", [
+    [_ordinary_pull(), _ordinary_pull()],
+    [_ordinary_pull(closed=True), _ordinary_pull(merged=True)],
+])
+async def test_ordinary_create_keeps_duplicate_request_refusal(credential_identity, pulls):
     runner = FakeRunner(credential_identity, [
         _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
-        _response(200, [_ordinary_pull(), _ordinary_pull(closed=True)]),
+        _response(200, pulls),
     ])
     with pytest.raises(GitHubAccessError, match="multiple existing requests"):
         await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
             title="Fix", body="Body", base="main", head="feature"
         )
+    assert len(runner.calls) == 2
+
+
+def _shipped_pull(number, head_sha, **kwargs):
+    return {
+        **_ordinary_pull(head_sha=head_sha, **kwargs),
+        "number": number, "html_url": f"https://github.com/acme/widgets/pull/{number}",
+    }
+
+
+@pytest.mark.parametrize("history", [
+    # fair-impact-52: a branch whose earlier PRs #21 and #23 already merged.
+    [_shipped_pull(21, "c" * 40, merged=True), _shipped_pull(23, "d" * 40, merged=True)],
+    [_shipped_pull(21, "c" * 40, merged=True)],
+    [_shipped_pull(21, "c" * 40, closed=True)],
+    [_shipped_pull(21, "a" * 40, base="release", merged=True)],
+])
+async def test_ordinary_create_ignores_earlier_merged_or_closed_prs_of_the_head(
+    credential_identity, history,
+):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, history),
+        FakeResult(0, b"https://github.com/acme/widgets/pull/31\n"),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/31"
+    assert creation.created is True
+    assert sum(call["args"][:2] == ["pr", "create"] for call in runner.calls) == 1
+    assert all("PATCH" not in call["args"] for call in runner.calls)
+
+
+async def test_ordinary_create_reuses_the_open_pr_beside_merged_history(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [
+            _shipped_pull(21, "c" * 40, merged=True),
+            _shipped_pull(23, "d" * 40, merged=True),
+            _shipped_pull(31, "a" * 40),
+        ]),
+    ])
+    creation = await GitHubClient(REPOSITORY, runner=runner).create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/31"
+    assert creation.created is False
     assert len(runner.calls) == 2
 
 
@@ -1451,6 +1507,19 @@ async def test_rerequesting_a_check_suite_is_a_repository_bound_write():
 
 
 @pytest.mark.asyncio
+async def test_rerun_job_uses_the_exact_repository_job_endpoint():
+    runner = FakeRunner(GitHubCredentialIdentity.existing_login(), [_response(201, b"")])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    await client.rerun_job(119866786990)
+    assert runner.calls[0]["args"][-1] == "repos/acme/widgets/actions/jobs/119866786990/rerun"
+    assert runner.calls[0]["args"][:4] == ["api", "--include", "--method", "POST"]
+    for job_id in (0, -1, True, "1", "1/../../runs/2"):
+        with pytest.raises(ValueError, match="invalid Actions job ID"):
+            await client.rerun_job(job_id)
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_check_suite_rerequest_refuses_a_credential_that_cannot_write_checks():
     """GitHub documents writes to checks as GitHub-App-only.
 
@@ -1543,9 +1612,70 @@ async def test_rate_limited_cli_failure_logs_scrubbed_stderr(tmp_path, caplog):
     result = await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY, check=False)
 
     assert result.returncode == 1
-    assert "gh rate_limited; repository=acme/widgets" in caplog.text
-    assert "secondary rate limit" in caplog.text
+    assert "GitHub rate-limit backoff started" in caplog.text
+    assert "'limit_kind': 'secondary'" in caplog.text
     assert "opaque-secret" not in caplog.text
+
+
+async def test_rate_limit_trigger_once_per_episode_with_headers_and_component(tmp_path, caplog):
+    now = [1000.0]
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(403, {}, headers={
+                                  "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1100",
+                                  "Retry-After": "80",
+                              }, returncode=1), now)
+    runner = access.runner
+    with github_component("review_poll", background=True):
+        with pytest.raises(GitHubAccessError):
+            await runner.run(["api", "repos/acme/widgets/pulls/7?token=private"],
+                             repository=REPOSITORY)
+    for _ in range(3):
+        with github_component("pr_cleanup", background=True), pytest.raises(GitHubAccessError):
+            await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    records = [r.github_rate_limit for r in caplog.records if hasattr(r, "github_rate_limit")]
+    assert records == [{
+        "endpoint": "GET repos/{owner}/{repo}/pulls/{id}", "component": "review_poll",
+        "status": 403, "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1100",
+        "retry-after": "80", "limit_kind": "primary", "retry_at": 1100,
+    }]
+    assert "private" not in caplog.text
+    now[0] = 1100
+    (tmp_path / "calls").unlink()
+    with pytest.raises(GitHubAccessError):
+        await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    assert len([r for r in caplog.records if hasattr(r, "github_rate_limit")]) == 2
+
+
+async def test_background_reserve_shared_but_foreground_keeps_its_quota(tmp_path):
+    now = [1000.0]
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(200, {}, headers={
+                                  "X-RateLimit-Limit": "5000", "X-RateLimit-Remaining": "499",
+                                  "X-RateLimit-Reset": "1100",
+                              }), now)
+    runner = access.runner
+    with github_component("review_poll", background=True):
+        await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    for name in ("review_poll", "pr_cleanup"):
+        with github_component(name, background=True), pytest.raises(GitHubAccessError) as error:
+            await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+        assert error.value.retry_at == 1100
+    assert (tmp_path / "calls").read_text() == "1"
+    with github_component("worker_create_pr"):
+        await runner.run(["pr", "view", "7"], repository=REPOSITORY)
+    activity = runner.activity()
+    assert activity["retry_at"] is None
+    assert activity["primary_quota"]["remaining"] == 499
+    assert activity["api_calls_per_hour"] == {"review_poll": 1, "worker_create_pr": 0}
+    assert activity["gh_commands_per_hour"] == {"review_poll": 0, "worker_create_pr": 1}
+    now[0] = 1100
+    with github_component("pr_cleanup", background=True):
+        await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    assert runner.activity()["primary_quota"] is None
+    assert runner.activity()["api_calls_per_minute"] == {"GET repos/acme/widgets": 1}
+    assert runner.activity()["api_calls_per_hour"]["review_poll"] == 1
+    now[0] = 4700
+    assert runner.activity()["api_calls_per_hour"] == {}
 
 
 async def test_authenticated_user_requires_human_credentials_and_fixed_endpoint():
@@ -1562,3 +1692,24 @@ async def test_authenticated_user_requires_human_credentials_and_fixed_endpoint(
     with pytest.raises(ValueError, match="existing-login"):
         await GitHubClient(REPOSITORY, runner=app_runner).authenticated_user()
     assert not app_runner.calls
+
+
+async def test_gather_inherits_component_and_does_not_attribute_loop_host(tmp_path):
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(200, {}), [1000.0])
+    runner = access.runner
+
+    async def child():
+        await runner.run(["api", "repos/acme/widgets/pulls/7"], repository=REPOSITORY)
+
+    # Model the daemon event-loop frame beneath an otherwise unattributed task.
+    namespace = {"__name__": "src.main", "asyncio": asyncio}
+    exec("async def host(child):\n    await child()\n    await asyncio.gather(child())", namespace)
+    await namespace["host"](child)
+    assert runner.activity()["api_calls_per_hour"] == {"unattributed": 2}
+    assert runner.activity()["api_calls_per_minute"] == {"GET repos/acme/widgets/pulls/7": 2}
+    with github_component("dashboard_pr_snapshot", background=True):
+        await namespace["host"](child)
+    assert runner.activity()["api_calls_per_hour"] == {
+        "unattributed": 2, "dashboard_pr_snapshot": 2,
+    }

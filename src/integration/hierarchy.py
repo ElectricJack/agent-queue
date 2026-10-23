@@ -23,7 +23,6 @@ from src.database.tables import (
     integration_repair_operations,
     sessions,
     task_branch_origins,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_metadata,
     task_session_attempts,
@@ -36,6 +35,7 @@ from src.integration.models import BranchKey
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
 from src.integration.records import ParentEpisodeRecords
+from src.integration.row_query import select_row
 from src.models import RepoConfig, Task, TaskStatus
 from src.task_names import child_task_id, fresh_root_id
 
@@ -1260,13 +1260,11 @@ class HierarchyIntegration:
         )
         transition = None
         async with self.ownership.mutation_exclusion(fence) as conn:
-            current = (
-                await conn.execute(
-                    select(task_branch_origins)
-                    .where(task_branch_origins.c.id == origin_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            current = await select_row(
+                conn, task_branch_origins,
+                task_branch_origins.c.id == origin_id,
+                lock=True,
+            )
             if current is None or current["retired_at"] is not None:
                 raise HierarchyError("invalid", "pending origin changed")
             task = await self._task_row(conn, current["task_id"])
@@ -1643,27 +1641,23 @@ class HierarchyIntegration:
         return dict(row)
 
     async def _locked_checkpoint(self, conn, task_id: str) -> dict:
-        row = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        row = await select_row(
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == task_id,
+            lock=True,
+        )
         if row is None:
             raise HierarchyError("invalid", f"task has no integration checkpoint: {task_id}")
         return dict(row)
 
     async def _locked_origin(self, conn, task_id: str, repository_id: str) -> dict:
-        row = (
-            await conn.execute(
-                select(task_branch_origins)
-                .where(task_branch_origins.c.task_id == task_id)
-                .where(task_branch_origins.c.repository_id == repository_id)
-                .where(task_branch_origins.c.retired_at.is_(None))
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        row = await select_row(
+            conn, task_branch_origins,
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.repository_id == repository_id,
+            task_branch_origins.c.retired_at.is_(None),
+            lock=True,
+        )
         if row is None:
             raise HierarchyError("invalid", "task has no live branch origin")
         return dict(row)
@@ -1687,13 +1681,10 @@ class HierarchyIntegration:
         chain.reverse()
         parent_checkpoint: dict | None = None
         for row in chain:
-            existing = (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == row["id"]
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn, task_integration_checkpoints,
+                task_integration_checkpoints.c.task_id == row['id'],
+            )
             if existing is not None:
                 parent_checkpoint = dict(existing)
                 continue
@@ -1988,16 +1979,6 @@ class HierarchyIntegration:
             raise _needs_quiescence(
                 "task has landed work", {"kind": "delivery", "task_id": task_id}, _CONTINUE_LANDED,
             ) from exc
-        delivered = await conn.scalar(
-            select(task_delivery_receipts.c.id)
-            .where(task_delivery_receipts.c.source_task_id == task_id).limit(1)
-        )
-        if delivered:
-            raise _needs_quiescence(
-                "task has landed work",
-                {"kind": "delivery", "task_id": task_id, "receipt_id": delivered},
-                _CONTINUE_LANDED,
-            )
         if busy or live:
             raise _needs_quiescence(
                 "task has started work",

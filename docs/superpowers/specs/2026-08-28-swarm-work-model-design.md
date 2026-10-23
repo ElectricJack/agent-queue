@@ -478,6 +478,15 @@ failure, or if the reconciler finds `claim_phase = 'preparing'` with
 `now − claim_phase_at > swarm.prepare_timeout` (default 120 s, e.g. daemon crash
 mid-reset): `release_claim` (§11.2) runs with context `slot_reset_failed`,
 `task_metadata.needs_attention = slot_reset_failed`, and the response is `prepare_failed`.
+A cleanly aborted child/parent merge conflict without a managed train origin
+(including ordinary `pull_request` and manual projects) instead releases the claim
+to `BLOCKED` with `needs_attention = child_preparation_conflict`. The metadata of
+the same name retains the child, parent and merge heads, conflicting files and
+scrubbed reason. The checkout and published branches are preserved. No train
+repair or slot-reset retry ladder applies; the supervisor resolves the conflict
+before resuming the task. The response remains `prepare_failed`, with the normal
+reason, retry delay and session claim phase. Managed train origins retain their
+existing isolated repair path.
 Every permanent preparation failure (slot reset, attached integration writer, unpublished
 repair target, branch fence) is described once by `src/preparation_failure.py` and that one
 description is what every surface carries: the response `reason`, the session's

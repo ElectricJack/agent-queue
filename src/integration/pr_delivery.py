@@ -66,8 +66,11 @@ class DeliveredPullRequestClosure:
         reason: str | None = None,
         operator_id: str | None = None,
         aq_only: bool = False,
+        inventory_pull: dict | None = None,
     ) -> dict[str, Any]:
-        observed, client = await self._observe(project_id, pr_number)
+        observed, client = await self._observe(
+            project_id, pr_number, inventory_pull=inventory_pull if dry_run else None
+        )
         if aq_only and observed.get("branch") and not observed["branch"].startswith("aq/"):
             return {**observed, "outcome": "not_eligible", "reason": "PR is outside aq/"}
         if observed["outcome"] != "would_close" or dry_run:
@@ -117,7 +120,9 @@ class DeliveredPullRequestClosure:
             return _refused(observed, "blocked", f"GitHub write failed: {exc}")
         return {**observed, "outcome": "closed"}
 
-    async def _observe(self, project_id: str, pr_number: int) -> tuple[dict[str, Any], Any]:
+    async def _observe(
+        self, project_id: str, pr_number: int, *, inventory_pull=None,
+    ) -> tuple[dict[str, Any], Any]:
         """Read the PR and prove its delivery; the GitHub client serves the apply path."""
         base: dict[str, Any] = {"project_id": project_id, "pr_number": pr_number}
         project = await self.db.get_project(project_id)
@@ -137,7 +142,11 @@ class DeliveredPullRequestClosure:
             client = self.git._github_client(binding)
             pr_url = f"https://github.com/{binding.full_name}/pull/{pr_number}"
             base["pr_url"] = pr_url
-            pull = await client.pull_request(pr_url)
+            pull = inventory_pull
+            if pull is None:
+                pull = await client.pull_request(pr_url)
+            elif pull.get("number") != pr_number or pull.get("html_url") != pr_url:
+                raise ValueError("PR inventory identity does not match the designated repository")
         except _OBSERVATION_FAILURES as exc:
             return _refused(base, "blocked", f"the PR could not be read: {exc}"), None
         head, target = pull.get("head"), pull.get("base")

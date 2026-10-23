@@ -116,7 +116,7 @@ block (`BLOCKING_DEP_TYPES`):
 | `parent-child` | the parent (container) has been released — is no longer DEFINED |
 | `waits-for` | every child of the named container is COMPLETED (dynamic fan-in; vacuously true with no children) |
 | `conditional-blocks` | the prerequisite has *terminally* failed (a contingency path); a retryable failure does not count |
-| `delivery-of` | the prerequisite's delivery has landed, read from the durable landing receipt |
+| `delivery-of` | source completion in SQL, plus current default-target Git containment in `AdmissionView` |
 
 Four are informational and never block: `discovered-from`, `related`, `duplicates`,
 `supersedes`. Self-edges are refused by a check constraint; cycles over blocking edges
@@ -295,8 +295,9 @@ Two deliberate properties:
 The development-delivery side of a `blocks` edge — "is the prerequisite's code on the
 branch I will start from?" — is *not* in this SQL. It is observed asynchronously by the
 integration system's `DeliveryObserver` and applied at claim time (section 3.3.3).
-`delivery-of` edges read only the durable landing receipt, and the observer recomputes
-their dependents when it sees a landing.
+`delivery-of` edges require source completion in SQL. `AdmissionView` separately
+requires current default-target containment; a receipt cannot authorize admission
+after a target rewind.
 
 #### 3.3.3 From DEFINED to claimable
 

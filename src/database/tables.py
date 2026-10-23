@@ -63,6 +63,7 @@ projects = Table(
     Column("promotion_flow", JSONB(none_as_null=True), nullable=True),
     # Read-side rebinding of immutable pre-cutover root origins, not provenance.
     Column("default_branch_cutover", JSONB(none_as_null=True), nullable=True),
+    Column("storage_binding", JSONB(none_as_null=True), nullable=True),
     Column("preferred_provider", Text, nullable=True),
     Column("supervisor_enabled", Boolean, nullable=False, server_default=false()),
     # The router binding (mandatory-routing spec §8, revision a00000000043):
@@ -3840,6 +3841,8 @@ integration_batches = Table(
     Column("target_ref", Text, nullable=True),
     Column("intent", Text, nullable=False, server_default="open"),
     Column("repair_attempt_count", Integer, nullable=False, server_default="0"),
+    Column("fixer_state", JSONB(none_as_null=True), nullable=True),
+    Column("fixer_queue", JSONB(none_as_null=True), nullable=True),
     Column("request_id", Text, nullable=False),
     Column("trigger", Text, nullable=True),
     Column("source_manifest_digest", Text, nullable=False),
@@ -4602,6 +4605,8 @@ integration_check_evidence = Table(
     Column("check_name", Text, nullable=True),
     Column("run_url", Text, nullable=True),
     Column("due_at", Float, nullable=True),
+    # Independent of refreshable verdicts: one durable CI-owner request per exact check.
+    Column("check_reconciliation", JSONB, nullable=True),
     Index(
         "uq_integration_check_evidence_producer_run_attempt_checks",
         "producer_id",
@@ -5076,7 +5081,7 @@ integration_release_results = Table(
     Column("released_at", Float, nullable=False),
 )
 
-# Task 11 rollout controls.  Waivers/transitions/consumptions/applicability
+# Task 11 rollout controls.  Waivers/transitions/consumptions
 # are evidence, not mutable state; dual-dialect migrations install database
 # triggers that reject UPDATE and DELETE.  Only the per-project suppression
 # projection is deliberately reversible.
@@ -5187,47 +5192,6 @@ integration_history_waiver_consumptions = Table(
     CheckConstraint(
         "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
         name="ck_integration_waiver_consumptions_blocker_digest",
-    ),
-)
-
-integration_legacy_gate_applicability = Table(
-    "integration_legacy_gate_applicability",
-    metadata,
-    Column("project_id", Text, nullable=False),
-    Column("gate_id", Text, nullable=False),
-    Column("waiver_id", Text, nullable=False),
-    Column("transition_id", Text, nullable=False),
-    Column("blocker_digest", Text, nullable=False),
-    Column("applicable", Boolean, nullable=False),
-    Column("created_at", Float, nullable=False),
-    PrimaryKeyConstraint("project_id", "gate_id", name="pk_integration_legacy_gate_applicability"),
-    ForeignKeyConstraint(
-        ["project_id"],
-        ["projects.id"],
-        name="fk_integration_legacy_gate_applicability_project",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["gate_id"],
-        ["gates.id"],
-        name="fk_integration_legacy_gate_applicability_gate",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["waiver_id"],
-        ["integration_history_waivers.id"],
-        name="fk_integration_legacy_gate_applicability_waiver",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["transition_id"],
-        ["integration_rollout_transitions.id"],
-        name="fk_integration_legacy_gate_applicability_transition",
-        ondelete="RESTRICT",
-    ),
-    CheckConstraint(
-        "length(blocker_digest) = 71 AND blocker_digest LIKE 'sha256:%'",
-        name="ck_integration_legacy_gate_applicability_blocker_digest",
     ),
 )
 
@@ -5894,7 +5858,7 @@ wait_records = Table(
     ),
     CheckConstraint(
         "condition_kind IN ('task','dependency','job','ci_check','ci_run','pull_request',"
-        "'batch','message','human','timer','resource','playbook_condition')",
+        "'batch','message','human','timer','resource','playbook_condition','close_merge')",
         name="ck_wait_records_condition_kind",
     ),
     CheckConstraint(
@@ -6147,6 +6111,8 @@ wait_measurements = Table(
     Column("teardown_seconds", Float, nullable=True),
     Column("setup_seconds", Float, nullable=True),
     Column("rebuild_seconds", Float, nullable=True),
+    Column("cache_hit_rate", Float, nullable=True),
+    Column("workspace_path", Text, nullable=True),
     Column("recorded_at", Float, nullable=False),
     Index(
         "idx_wait_measurements_bucket",
@@ -7757,4 +7723,37 @@ wait_bridge_progress = Table(
                     name='ck_wait_bridge_progress_phase'),
     CheckConstraint("state IN ('pending','complete','held')",
                     name='ck_wait_bridge_progress_state'),
+)
+
+# A close proposal retains source/candidate identity, never asserts delivery.
+integration_close_attempts = Table(
+    "integration_close_attempts", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("session_id", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_task_id", Text, nullable=False),
+    Column("target_ref", Text, nullable=False),
+    Column("source_oid", Text, nullable=False),
+    Column("base_oid", Text),
+    Column("candidate_oid", Text),
+    Column("candidate_path", Text),
+    Column("candidate_ref", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("version", Integer, nullable=False, server_default="0"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("policy_digest", Text),
+    Column("evidence", JSONB, nullable=False),
+    Column("close_args", JSONB, nullable=False),
+    Column("budget_wait_id", Text),
+    Column("last_failure", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("task_id", "session_id", "claim_epoch", "source_oid", "target_ref",
+                     name="uq_integration_close_generation"),
+    CheckConstraint("state IN ('preparing','needs_author','checking','publish_uncertain',"
+                    "'finished','deferred','cancelled')", name="ck_integration_close_state"),
+    CheckConstraint("version >= 0 AND attempts >= 0", name="ck_integration_close_counters"),
 )

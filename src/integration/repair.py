@@ -768,18 +768,16 @@ class RepairService:
         """Reserve Task8's one pinned, no-stage operation in its transaction."""
         reserved_at = self.clock() if now is None else now
         batch = await select_row(
-                    conn,
-                    integration_batches,
-                    integration_batches.c.id == batch_id,
-                    lock=True,
-                )
+            conn, integration_batches,
+            integration_batches.c.id == batch_id,
+            lock=True,
+        )
         if batch is None:
             raise ValueError("integration batch does not exist")
         existing = await select_row(
-                       conn,
-                       integration_repair_operations,
-                       integration_repair_operations.c.batch_id == batch_id,
-                   )
+            conn, integration_repair_operations,
+            integration_repair_operations.c.batch_id == batch_id,
+        )
         if existing is not None:
             if (
                 existing["target_kind"] != "batch"
@@ -802,10 +800,9 @@ class RepairService:
         if boundary.route is None:
             raise ValueError("batch route is not configured")
         artifact = await select_row(
-                       conn,
-                       playbook_artifacts,
-                       playbook_artifacts.c.artifact_sha256 == boundary.route.artifact.artifact_sha256,
-                   )
+            conn, playbook_artifacts,
+            playbook_artifacts.c.artifact_sha256 == boundary.route.artifact.artifact_sha256,
+        )
         if (
             artifact is None
             or ArtifactRef.from_row(artifact).as_dict()
@@ -858,12 +855,19 @@ class RepairService:
         activated_at = self.clock() if now is None else now
         continuation_transition = None
         continuation_result = None
+        async with self.db._engine.connect() as conn:
+            delegates = (await conn.execute(select(
+                integration_repair_stages.c.repair_task_id,
+            ).where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.repair_task_id.is_not(None),
+            ))).scalars().all()
+        delivery = await self.db.observe_removal_delivery(delegates, for_mutation=True)
         async with self.db.immediate() as conn:
             operation_snapshot = await select_row(
-                                     conn,
-                                     integration_repair_operations,
-                                     integration_repair_operations.c.id == operation_id,
-                                 )
+                conn, integration_repair_operations,
+                integration_repair_operations.c.id == operation_id,
+            )
             if operation_snapshot is None:
                 return {"outcome": "stale", "operation_id": operation_id}
             try:
@@ -872,31 +876,28 @@ class RepairService:
                 return {"outcome": "invariant_error", "operation_id": operation_id}
             await self.db.lock_hierarchy_project(conn, project_id)
             operation = await select_row(
-                            conn,
-                            integration_repair_operations,
-                            integration_repair_operations.c.id == operation_id,
-                            lock=True,
-                        )
+                conn, integration_repair_operations,
+                integration_repair_operations.c.id == operation_id,
+                lock=True,
+            )
             if operation is None:
                 return {"outcome": "stale", "operation_id": operation_id}
 
             existing = await select_row(
-                           conn,
-                           integration_repair_stages,
-                           integration_repair_stages.c.operation_id == operation_id,
-                           integration_repair_stages.c.ordinal == 0,
-                       )
+                conn, integration_repair_stages,
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == 0,
+            )
             active_stage = None
             if existing is not None:
                 if int(operation["active_stage"]) == 0:
                     active_stage = existing
                 else:
                     active_stage = await select_row(
-                                       conn,
-                                       integration_repair_stages,
-                                       integration_repair_stages.c.operation_id == operation_id,
-                                       integration_repair_stages.c.ordinal == operation['active_stage'],
-                                   )
+                        conn, integration_repair_stages,
+                        integration_repair_stages.c.operation_id == operation_id,
+                        integration_repair_stages.c.ordinal == operation['active_stage'],
+                    )
             # ``aq integration reopen-collection`` can return a cancelled
             # parent collection to life with its last stage still cancelled.
             # That stage has no writer to continue, so the next conflict gets
@@ -973,6 +974,7 @@ class RepairService:
                     trigger_id=trigger_id,
                     project_id=project_id,
                     now=activated_at,
+                    delivery=delivery,
                 )
                 if continuation_result is None:
                     return {"outcome": "stale", "operation_id": operation_id}
@@ -1051,11 +1053,10 @@ class RepairService:
         """
         stale = {"outcome": "stale", "operation_id": operation["id"]}
         conflict = await select_row(
-                       conn,
-                       integration_promotion_intents,
-                       integration_promotion_intents.c.id == trigger_id,
-                       lock=True,
-                   )
+            conn, integration_promotion_intents,
+            integration_promotion_intents.c.id == trigger_id,
+            lock=True,
+        )
         parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'], lock=True)
         if (
             conflict is None
@@ -1286,6 +1287,7 @@ class RepairService:
         now: float,
         allow_blocked_parent: bool = False,
         validate_only: bool = False,
+        delivery=None,
     ):
         """Rebind one detached delegate to a later conflict without new budget."""
         if (
@@ -1312,10 +1314,9 @@ class RepairService:
         _policy, _boundary, subject = context
         parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'])
         checkpoint = await select_row(
-                         conn,
-                         task_integration_checkpoints,
-                         task_integration_checkpoints.c.task_id == operation['parent_task_id'],
-                     )
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+        )
         conflict_rows = (
             await conn.execute(
                 select(integration_promotion_intents)
@@ -1343,12 +1344,11 @@ class RepairService:
         conflict = conflict_rows[0]
         source = await select_row(conn, tasks, tasks.c.id == conflict['source_task_id'])
         owner = await select_row(
-                    conn,
-                    integration_branch_owners,
-                    integration_branch_owners.c.repository_id == conflict['repository_id'],
-                    integration_branch_owners.c.ref == conflict['target_branch'],
-                    lock=True,
-                )
+            conn, integration_branch_owners,
+            integration_branch_owners.c.repository_id == conflict['repository_id'],
+            integration_branch_owners.c.ref == conflict['target_branch'],
+            lock=True,
+        )
         delegate = await select_row(conn, tasks, tasks.c.id == stage['repair_task_id'], lock=True)
         sessions_for_delegate = (
             await conn.execute(select(sessions).where(sessions.c.task_id == stage["repair_task_id"]))
@@ -1484,6 +1484,7 @@ class RepairService:
             stage["repair_task_id"],
             TaskStatus.PAUSED,
             context="integration_repair_continuation",
+            integration_delivery=delivery,
             force=True,
             _manual_pause_control=True,
             assigned_agent_id=None,
@@ -1504,11 +1505,10 @@ class RepairService:
         post_transition = None
         async with self.db.immediate() as conn:
             operation = await select_row(
-                            conn,
-                            integration_repair_operations,
-                            integration_repair_operations.c.id == operation_id,
-                            lock=True,
-                        )
+                conn, integration_repair_operations,
+                integration_repair_operations.c.id == operation_id,
+                lock=True,
+            )
             if operation is None:
                 return self._result_value("continue", "stale", 0)
             if entry_stage is not None and operation["active_stage"] != entry_stage:
@@ -1516,10 +1516,9 @@ class RepairService:
                 # stage. Evidence for that visit cannot count in its successor.
                 return self._result_value("continue", "stale", 0)
             previous = await select_row(
-                           conn,
-                           integration_repair_stage_evidence,
-                           integration_repair_stage_evidence.c.evidence_id == evidence_id,
-                       )
+                conn, integration_repair_stage_evidence,
+                integration_repair_stage_evidence.c.evidence_id == evidence_id,
+            )
             if previous is not None:
                 if previous["operation_id"] != operation_id:
                     return self._result_value("continue", "stale", 0)
@@ -1581,10 +1580,9 @@ class RepairService:
             if stage["state"] not in {"active", "awaiting_completion"}:
                 return self._result_value("continue", "stale", int(stage["attempts"]))
             evidence = await select_row(
-                           conn,
-                           integration_check_evidence,
-                           integration_check_evidence.c.id == evidence_id,
-                       )
+                conn, integration_check_evidence,
+                integration_check_evidence.c.id == evidence_id,
+            )
             if not self._evidence_matches(operation, stage, evidence):
                 return self._result_value(
                     "continue", "stale", int(stage["attempts"])
@@ -1743,10 +1741,9 @@ class RepairService:
         ):
             return None
         evidence = await select_row(
-                       conn,
-                       integration_check_evidence,
-                       integration_check_evidence.c.id == evidence_id,
-                   )
+            conn, integration_check_evidence,
+            integration_check_evidence.c.id == evidence_id,
+        )
         if (
             evidence is None
             or evidence["operation_id"] != operation["id"]
@@ -1757,10 +1754,9 @@ class RepairService:
         ):
             return None
         checkpoint = await select_row(
-                         conn,
-                         task_integration_checkpoints,
-                         task_integration_checkpoints.c.task_id == operation['parent_task_id'],
-                     )
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+        )
         head = evidence["parent_head_sha"]
         if (
             checkpoint is None
@@ -2013,12 +2009,11 @@ class RepairService:
             )).mappings().one_or_none()
             if locked is None or locked["target_kind"] != "parent":
                 return None
-            current = (await conn.execute(
-                select(integration_repair_stages).where(
-                    integration_repair_stages.c.operation_id == operation_id,
-                    integration_repair_stages.c.ordinal == locked["active_stage"],
-                )
-            )).mappings().one_or_none()
+            current = await select_row(
+                          conn, integration_repair_stages,
+                          integration_repair_stages.c.operation_id == operation_id,
+                          integration_repair_stages.c.ordinal == locked['active_stage'],
+                      )
             if current is None:
                 return None
             green = await self._settle_green_delegate_on(
@@ -2902,28 +2897,25 @@ class RepairService:
         async with self.db.immediate() as conn:
             context = await self._dispatch_context_on(conn, operation_id, stage)
             owner = await select_row(
-                        conn,
-                        integration_branch_owners,
-                        integration_branch_owners.c.repository_id == target.repository_id,
-                        integration_branch_owners.c.ref == target.branch,
-                        lock=True,
-                    )
+                conn, integration_branch_owners,
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+                lock=True,
+            )
             task = await select_row(conn, tasks, tasks.c.id == repair_task_id, lock=True)
             attached_session = None
             attached_workspace = None
             if owner is not None and owner["handoff_state"] == "attached":
                 attached_session = await select_row(
-                                       conn,
-                                       sessions,
-                                       sessions.c.id == owner['session_id'],
-                                       lock=True,
-                                   )
+                    conn, sessions,
+                    sessions.c.id == owner['session_id'],
+                    lock=True,
+                )
                 attached_workspace = await select_row(
-                                         conn,
-                                         workspaces,
-                                         workspaces.c.id == owner['workspace_id'],
-                                         lock=True,
-                                     )
+                    conn, workspaces,
+                    workspaces.c.id == owner['workspace_id'],
+                    lock=True,
+                )
             reserved = bool(
                 owner is not None
                 and owner["handoff_state"] == "reserved"
@@ -3238,11 +3230,10 @@ class RepairService:
             if project_id is not None:
                 await self.db.lock_hierarchy_project(conn, project_id)
             operation = await select_row(
-                            conn,
-                            integration_repair_operations,
-                            integration_repair_operations.c.id == operation_id,
-                            lock=True,
-                        )
+                conn, integration_repair_operations,
+                integration_repair_operations.c.id == operation_id,
+                lock=True,
+            )
             row = await self._locked_stage_on(conn, operation_id, stage)
             if operation is None or row is None:
                 return self._timeout_value("stale", "ignore", operation_id, stage)
@@ -3831,8 +3822,7 @@ class RepairService:
             if project_id is not None:
                 await self.db.lock_hierarchy_project(conn, project_id)
             operation = await select_row(
-                conn,
-                integration_repair_operations,
+                conn, integration_repair_operations,
                 integration_repair_operations.c.id == found['operation_id'],
                 lock=True,
             )
@@ -3914,8 +3904,7 @@ class RepairService:
         from src.integration.finished_owners import _live_task_session
 
         operation = await select_row(
-            conn,
-            integration_repair_operations,
+            conn, integration_repair_operations,
             integration_repair_operations.c.id == operation_id,
             lock=True,
         )
@@ -4307,39 +4296,6 @@ class RepairService:
             await self.db._notify_ready(transition.ready)
         return True
 
-    async def return_green_delegate_branch(
-        self, batch_id: str, *, emit_continuation: bool = True, now: float | None = None
-    ) -> Fence | None:
-        """Return a closed writer's branch to the collector of its exact green candidate.
-
-        CI can turn the candidate green while its repair delegate is still
-        attached; promotion then waits for the collector fence.  The guarded
-        delegate close finishes that writer on the unchanged candidate and
-        leaves its own detached reservation.  This is the only continuation:
-        it moves that reservation to the batch collector, records the handoff
-        in the stage dossier and, when asked, enqueues a fresh green
-        continuation bound to the new fence.  It never touches an attached,
-        assigned or unfinished writer, a changed head, or other evidence.
-        """
-        observed_at = self.clock() if now is None else now
-        async with self.db.immediate() as conn:
-            batch = await self._locked_batch_on(conn, batch_id)
-            if batch is None:
-                return None
-            operation = (await conn.execute(select(integration_repair_operations).where(
-                integration_repair_operations.c.batch_id == batch_id,
-                integration_repair_operations.c.episode_id == batch_id,
-            ).with_for_update())).mappings().one_or_none()
-            if operation is None:
-                return None
-            return await self.return_green_delegate_branch_on(
-                conn,
-                batch=dict(batch),
-                operation=dict(operation),
-                emit_continuation=emit_continuation,
-                now=observed_at,
-            )
-
     async def return_green_delegate_branch_on(
         self,
         conn,
@@ -4381,10 +4337,9 @@ class RepairService:
         ):
             return None
         evidence = await select_row(
-                       conn,
-                       integration_check_evidence,
-                       integration_check_evidence.c.id == stage['success_evidence_id'],
-                   )
+            conn, integration_check_evidence,
+            integration_check_evidence.c.id == stage['success_evidence_id'],
+        )
         if (
             not self._evidence_matches(operation, stage, evidence)
             or evidence["conclusion"] != "success"
@@ -4455,10 +4410,9 @@ class RepairService:
         )
         if emit_continuation:
             lease = await select_row(
-                        conn,
-                        project_integration_leases,
-                        project_integration_leases.c.project_id == batch['project_id'],
-                    )
+                conn, project_integration_leases,
+                project_integration_leases.c.project_id == batch['project_id'],
+            )
             collector = await self._ownership._locked_row(conn, target)
             await enqueue_green_continuation_on(
                 conn,
@@ -4526,10 +4480,9 @@ class RepairService:
             # Like expire's awaiting_promotion path, this unchanged green
             # handoff may outlive the deadline; it grants no further repair.
             evidence = await select_row(
-                           conn,
-                           integration_check_evidence,
-                           integration_check_evidence.c.id == stage['success_evidence_id'],
-                       )
+                conn, integration_check_evidence,
+                integration_check_evidence.c.id == stage['success_evidence_id'],
+            )
             if (
                 head_sha != revision["head_sha"]
                 or revision["state"] != "green"
@@ -4668,11 +4621,10 @@ class RepairService:
         """Bind Task9's authoritative current revision without resetting its budget."""
         observed_at = self.clock() if now is None else now
         operation = await select_row(
-                        conn,
-                        integration_repair_operations,
-                        integration_repair_operations.c.id == operation_id,
-                        lock=True,
-                    )
+            conn, integration_repair_operations,
+            integration_repair_operations.c.id == operation_id,
+            lock=True,
+        )
         if (
             operation is None
             or operation["target_kind"] != "batch"
@@ -4705,210 +4657,6 @@ class RepairService:
             "deadline_due": observed_at >= float(stage["deadline_at"]),
         }
 
-    async def record_batch_rebuild_conflict_on(
-        self,
-        conn,
-        operation_id: str,
-        *,
-        revision_number: int,
-        candidate_sha: str,
-        new_base_sha: str,
-        diagnostics: str,
-        fence: Fence,
-        now: float,
-    ) -> dict[str, Any]:
-        """Freeze a conflicting main advance under the current root repair budget.
-
-        The candidate remains the stage subject and the integration branch remains
-        byte-for-byte where reviewed CI left it.  A delegate resolves the exact
-        ``candidate_sha``/``new_base_sha`` pair with a two-parent merge; its close
-        then adopts a new revision whose construction base is that frozen main.
-        """
-        if not is_valid_git_oid(candidate_sha) or not is_valid_git_oid(new_base_sha):
-            return {"outcome": "stale"}
-        operation = await select_row(
-                        conn,
-                        integration_repair_operations,
-                        integration_repair_operations.c.id == operation_id,
-                        lock=True,
-                    )
-        if (
-            operation is None
-            or operation["target_kind"] != "batch"
-            or operation["state"] not in {"active", "escalated"}
-        ):
-            return {"outcome": "stale"}
-        batch, revision = await self._current_batch_subject_rows_on(conn, operation)
-        stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
-        owner = await select_row(
-                    conn,
-                    integration_branch_owners,
-                    integration_branch_owners.c.repository_id == batch['repository_id'],
-                    integration_branch_owners.c.ref == batch['integration_branch'],
-                    lock=True,
-                )
-        live_mutation = (
-            await conn.execute(
-                select(integration_candidate_ref_mutations.c.id)
-                .where(
-                    integration_candidate_ref_mutations.c.repository_id
-                    == batch["repository_id"],
-                    integration_candidate_ref_mutations.c.branch
-                    == batch["integration_branch"],
-                    integration_candidate_ref_mutations.c.state == "reserved",
-                )
-                .limit(1)
-            )
-        ).first()
-        subject = self._batch_subject(revision)
-        if (
-            int(batch["current_revision"]) != revision_number
-            or int(revision["revision"]) != revision_number
-            or revision["head_sha"] != candidate_sha
-            or revision["state"] not in {"built", "testing", "green", "red"}
-            or stage is None
-            or stage["state"] not in {"active", "awaiting_completion"}
-            or stage["current_subject"] != subject
-            or fence.target.repository_id != batch["repository_id"]
-            or fence.target.branch != batch["integration_branch"]
-            or fence.owner_id != operation_id
-            or owner is None
-            or owner["owner_id"] != fence.owner_id
-            or owner["owner_role"] != "collector"
-            or int(owner["fence_token"]) != fence.token
-            or owner["handoff_state"] != "reserved"
-            or owner["session_id"] is not None
-            or owner["workspace_id"] is not None
-            or live_mutation is not None
-        ):
-            return {"outcome": "busy"}
-
-        conflict_id = hashlib.sha256(
-            f"{operation_id}:{revision_number}:{candidate_sha}:{new_base_sha}".encode()
-        ).hexdigest()
-        conflict = {
-            "kind": "candidate_rebuild",
-            "id": conflict_id,
-            "operation_id": operation_id,
-            "operation_stage": int(stage["ordinal"]),
-            "batch_id": batch["id"],
-            "revision": revision_number,
-            "candidate_sha": candidate_sha,
-            "new_base_sha": new_base_sha,
-            "integration_branch": batch["integration_branch"],
-            "diagnostics": diagnostics,
-            "resolution": {
-                "kind": "two_parent_merge",
-                "parents": [candidate_sha, new_base_sha],
-            },
-        }
-        dossier = dict(stage["dossier"] or {})
-        existing = dossier.get("candidate_rebuild_conflict")
-        if existing is not None and existing.get("id") != conflict_id:
-            return {
-                "outcome": "conflict_already_frozen",
-                "stage": int(stage["ordinal"]),
-                "deadline_due": now >= float(stage["deadline_at"]),
-            }
-        if existing is not None:
-            conflict = existing
-
-        dossier["candidate_rebuild_conflict"] = conflict
-        repair_task_id = stage["repair_task_id"]
-        transition = None
-        if repair_task_id is not None:
-            task = await select_row(conn, tasks, tasks.c.id == repair_task_id, lock=True)
-            if (
-                task is None
-                or task["project_id"] != batch["project_id"]
-                or task["repo_id"] != batch["repository_id"]
-                or task["branch_name"] != batch["integration_branch"]
-                or task["parent_task_id"] is not None
-                or task["created_by_kind"] != "integration_repair"
-                or task["created_by_id"] != operation_id
-                or task["assigned_agent_id"] is not None
-                or stage["writer_kind"] != "repair_delegate"
-            ):
-                return {"outcome": "busy"}
-            sessions_for_delegate = (
-                await conn.execute(
-                    select(sessions).where(sessions.c.task_id == repair_task_id)
-                )
-            ).mappings().all()
-            locked_workspace = (
-                await conn.execute(
-                    select(workspaces.c.id)
-                    .where(workspaces.c.locked_by_task_id == repair_task_id)
-                    .limit(1)
-                )
-            ).first()
-            if (
-                any(
-                    row["state"] != "stopped" or row["claim_phase"] is not None
-                    for row in sessions_for_delegate
-                )
-                or locked_workspace is not None
-            ):
-                return {"outcome": "busy"}
-            if task["status"] == TaskStatus.COMPLETED.value:
-                # This is the root counterpart to parent-conflict continuation:
-                # collector ownership plus stopped sessions and no task-locked
-                # workspace prove the completed delegate is detached. Reuse its
-                # identity, but never its checkout or commits.
-                transition = await self.db._apply_transition(
-                    conn,
-                    repair_task_id,
-                    TaskStatus.PAUSED,
-                    context="integration_root_rebuild_continuation",
-                    force=True,
-                    _manual_pause_control=True,
-                    assigned_agent_id=None,
-                    description=self._delegate_description(
-                        operation, dict(stage) | {"dossier": dossier}
-                    ),
-                )
-            elif task["status"] not in {TaskStatus.PAUSED.value, TaskStatus.READY.value}:
-                return {"outcome": "busy"}
-
-        await conn.execute(
-            update(integration_repair_stages)
-            .where(
-                integration_repair_stages.c.operation_id == operation_id,
-                integration_repair_stages.c.ordinal == stage["ordinal"],
-            )
-            .values(
-                state="active",
-                success_subject=None,
-                success_evidence_id=None,
-                dossier=dossier,
-            )
-        )
-        await execute_batch_mutation(conn,
-            update(integration_batches)
-            .where(
-                integration_batches.c.id == batch["id"],
-                integration_batches.c.current_revision == revision_number,
-            )
-            .values(lifecycle="repairing", updated_at=now)
-        )
-        if repair_task_id is not None:
-            await conn.execute(
-                update(tasks)
-                .where(tasks.c.id == repair_task_id)
-                .values(
-                    description=self._delegate_description(
-                        operation, dict(stage) | {"dossier": dossier}
-                    )
-                )
-            )
-        return {
-            "outcome": "replayed" if existing is not None else "recorded",
-            "stage": int(stage["ordinal"]),
-            "deadline_due": now >= float(stage["deadline_at"]),
-            "conflict_id": conflict_id,
-            "transition": transition,
-        }
-
     async def bind_current_parent_subject_on(
         self,
         conn,
@@ -4923,11 +4671,10 @@ class RepairService:
             raise ValueError("parent repair subject HEAD is not an exact Git OID")
         observed_at = self.clock() if now is None else now
         operation = await select_row(
-                        conn,
-                        integration_repair_operations,
-                        integration_repair_operations.c.id == operation_id,
-                        lock=True,
-                    )
+            conn, integration_repair_operations,
+            integration_repair_operations.c.id == operation_id,
+            lock=True,
+        )
         if (
             operation is None
             or operation["target_kind"] != "parent"
@@ -4935,11 +4682,10 @@ class RepairService:
         ):
             raise ValueError("parent repair operation is not active")
         checkpoint = await select_row(
-                         conn,
-                         task_integration_checkpoints,
-                         task_integration_checkpoints.c.task_id == operation['parent_task_id'],
-                         lock=True,
-                     )
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+            lock=True,
+        )
         if checkpoint is None or checkpoint["episode_id"] != operation["episode_id"]:
             raise ValueError("parent repair checkpoint identity conflicts")
         stage = await self._locked_stage_on(conn, operation_id, operation["active_stage"])
@@ -5069,8 +4815,7 @@ class RepairService:
             return None
         intent = dict(intents[0])
         receipt = await select_row(
-            conn,
-            task_delivery_receipts,
+            conn, task_delivery_receipts,
             task_delivery_receipts.c.id == intent['receipt_id'],
             task_delivery_receipts.c.parent_operation_id == operation['id'],
             task_delivery_receipts.c.parent_episode_id == checkpoint['episode_id'],
@@ -5125,10 +4870,9 @@ class RepairService:
         active stage; ordinary debug dispatch remains explicitly stage one.
         """
         operation = await select_row(
-                        conn,
-                        integration_repair_operations,
-                        integration_repair_operations.c.id == operation_id,
-                    )
+            conn, integration_repair_operations,
+            integration_repair_operations.c.id == operation_id,
+        )
         if (
             operation is None
             or requested_stage != 0
@@ -5137,11 +4881,10 @@ class RepairService:
         ):
             return requested_stage
         active_stage = await select_row(
-                           conn,
-                           integration_repair_stages,
-                           integration_repair_stages.c.operation_id == operation_id,
-                           integration_repair_stages.c.ordinal == operation['active_stage'],
-                       )
+            conn, integration_repair_stages,
+            integration_repair_stages.c.operation_id == operation_id,
+            integration_repair_stages.c.ordinal == operation['active_stage'],
+        )
         continuation = (
             (active_stage["dossier"] or {}).get("continuations", [])[-1]
             if active_stage is not None
@@ -5159,11 +4902,10 @@ class RepairService:
 
     async def _dispatch_context_on(self, conn, operation_id: str, stage: int):
         operation = await select_row(
-                        conn,
-                        integration_repair_operations,
-                        integration_repair_operations.c.id == operation_id,
-                        lock=True,
-                    )
+            conn, integration_repair_operations,
+            integration_repair_operations.c.id == operation_id,
+            lock=True,
+        )
         repair_stage = await self._locked_stage_on(conn, operation_id, stage)
         if (
             operation is None
@@ -5176,10 +4918,9 @@ class RepairService:
         if operation["target_kind"] == "parent":
             parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'])
             checkpoint = await select_row(
-                             conn,
-                             task_integration_checkpoints,
-                             task_integration_checkpoints.c.task_id == operation['parent_task_id'],
-                         )
+                conn, task_integration_checkpoints,
+                task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+            )
             if (
                 parent is None
                 or checkpoint is None
@@ -5194,10 +4935,9 @@ class RepairService:
             )
         elif operation["target_kind"] == "batch":
             batch = await select_row(
-                        conn,
-                        integration_batches,
-                        integration_batches.c.id == operation['batch_id'],
-                    )
+                conn, integration_batches,
+                integration_batches.c.id == operation['batch_id'],
+            )
             if (
                 batch is None
                 or batch["id"] != operation["episode_id"]
@@ -5240,12 +4980,11 @@ class RepairService:
             ):
                 return None
         owner = await select_row(
-                    conn,
-                    integration_branch_owners,
-                    integration_branch_owners.c.repository_id == target.repository_id,
-                    integration_branch_owners.c.ref == target.branch,
-                    lock=True,
-                )
+            conn, integration_branch_owners,
+            integration_branch_owners.c.repository_id == target.repository_id,
+            integration_branch_owners.c.ref == target.branch,
+            lock=True,
+        )
         if (
             owner is None
             or owner["owner_id"] != expected_task_id
@@ -5395,18 +5134,16 @@ class RepairService:
                 )
             ).mappings().one_or_none()
             current_owner = await select_row(
-                                conn,
-                                integration_branch_owners,
-                                integration_branch_owners.c.repository_id == target.repository_id,
-                                integration_branch_owners.c.ref == target.branch,
-                                lock=True,
-                            )
+                conn, integration_branch_owners,
+                integration_branch_owners.c.repository_id == target.repository_id,
+                integration_branch_owners.c.ref == target.branch,
+                lock=True,
+            )
             workspace = await select_row(
-                            conn,
-                            workspaces,
-                            workspaces.c.id == workspace_id,
-                            lock=True,
-                        )
+                conn, workspaces,
+                workspaces.c.id == workspace_id,
+                lock=True,
+            )
             session = await select_row(conn, sessions, sessions.c.id == session_id, lock=True)
             old_task = await select_row(conn, tasks, tasks.c.id == old_task_id, lock=True)
             if (
@@ -5639,28 +5376,25 @@ class RepairService:
         revision = None
         if operation["target_kind"] == "batch" and operation.get("batch_id"):
             batch = await select_row(
-                        conn,
-                        integration_batches,
-                        integration_batches.c.id == operation['batch_id'],
-                    )
+                conn, integration_batches,
+                integration_batches.c.id == operation['batch_id'],
+            )
             revision = None
             if batch is not None:
                 revision = await select_row(
-                               conn,
-                               integration_candidate_revisions,
-                               integration_candidate_revisions.c.batch_id == batch['id'],
-                               integration_candidate_revisions.c.revision == batch['current_revision'],
-                           )
+                    conn, integration_candidate_revisions,
+                    integration_candidate_revisions.c.batch_id == batch['id'],
+                    integration_candidate_revisions.c.revision == batch['current_revision'],
+                )
             member = None
             if revision is not None:
                 member = await select_row(
-                             conn,
-                             integration_candidate_member_results,
-                             integration_candidate_member_results.c.batch_id == batch['id'],
-                             integration_candidate_member_results.c.revision == revision['revision'],
-                             integration_candidate_member_results.c.member_ordinal == revision['next_member_ordinal'],
-                             integration_candidate_member_results.c.result == 'conflict',
-                         )
+                    conn, integration_candidate_member_results,
+                    integration_candidate_member_results.c.batch_id == batch['id'],
+                    integration_candidate_member_results.c.revision == revision['revision'],
+                    integration_candidate_member_results.c.member_ordinal == revision['next_member_ordinal'],
+                    integration_candidate_member_results.c.result == 'conflict',
+                )
             detail = member["conflict_evidence"] if member is not None else None
             if detail and detail.get("operation_id") == operation["id"]:
                 conflict = dict(detail)
@@ -5856,18 +5590,16 @@ class RepairService:
 
     async def _current_batch_subject_rows_on(self, conn, operation):
         batch = await select_row(
-                    conn,
-                    integration_batches,
-                    integration_batches.c.id == operation['batch_id'],
-                )
+            conn, integration_batches,
+            integration_batches.c.id == operation['batch_id'],
+        )
         if batch is None or operation["episode_id"] != batch["id"]:
             raise ValueError("batch repair operation identity changed")
         revision = await select_row(
-                       conn,
-                       integration_candidate_revisions,
-                       integration_candidate_revisions.c.batch_id == batch['id'],
-                       integration_candidate_revisions.c.revision == batch['current_revision'],
-                   )
+            conn, integration_candidate_revisions,
+            integration_candidate_revisions.c.batch_id == batch['id'],
+            integration_candidate_revisions.c.revision == batch['current_revision'],
+        )
         if revision is None:
             raise ValueError("batch current candidate revision is missing")
         return dict(batch), dict(revision)
@@ -6414,22 +6146,19 @@ class RepairService:
         if project is None or project["integration_repository_id"] != parent["repo_id"]:
             raise _RepairInvariant("parent repair project identity is corrupt")
         checkpoint = await select_row(
-                         conn,
-                         task_integration_checkpoints,
-                         task_integration_checkpoints.c.task_id == parent['id'],
-                     )
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == parent['id'],
+        )
         if checkpoint is None or checkpoint["episode_id"] != operation["episode_id"]:
             raise _RepairInvariant("parent repair checkpoint identity is corrupt")
         evidence = await select_row(
-                       conn,
-                       integration_check_evidence,
-                       integration_check_evidence.c.id == trigger_id,
-                   )
+            conn, integration_check_evidence,
+            integration_check_evidence.c.id == trigger_id,
+        )
         conflict = await select_row(
-                       conn,
-                       integration_promotion_intents,
-                       integration_promotion_intents.c.id == trigger_id,
-                   )
+            conn, integration_promotion_intents,
+            integration_promotion_intents.c.id == trigger_id,
+        )
         evidence_matches = bool(
             evidence is not None
             and evidence["operation_id"] == operation["id"]

@@ -191,6 +191,36 @@
       }
     },
     {
+      "name": "project_relocate",
+      "description": "Preview or apply an atomic project storage relocation. Requires paused admission, disabled/drained train, stopped writers and current required CI. Reverse relocation uses a fresh destination containing current work. Local operator only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "owner_inventory": {
+            "type": "object"
+          },
+          "expected_digest": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "project_id",
+          "destination",
+          "owner_inventory"
+        ]
+      }
+    },
+    {
       "name": "repair_repository_checkout",
       "description": "Preview or apply an audited replacement for a confirmed missing repository checkout path. Preserves repository identity and verifies the replacement origin. Requires local operator or global supervisor authority.",
       "input_schema": {
@@ -9276,6 +9306,35 @@
             ],
             "default": null,
             "title": "Claim Epoch"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Id"
           }
         },
         "required": [
@@ -9283,6 +9342,25 @@
         ],
         "title": "WaitCancelArgs",
         "type": "object"
+      }
+    },
+    {
+      "name": "integration_batch_fix",
+      "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "push",
+              "rebind"
+            ],
+            "default": "status"
+          }
+        }
       }
     },
     {
@@ -13516,6 +13594,22 @@
         "title": "AskButtonArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "integration_continue_close",
+      "description": "Continue the parent merge belonging to your held task and session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string"
+          }
+        }
+      }
     }
   ],
   "fallback": {
@@ -14469,6 +14563,64 @@
         "type": "object"
       }
     },
+    "integration_cutover_containment": {
+      "name": "integration_cutover_containment",
+      "description": "Local operator previews and applies exact historical lifecycle exclusions.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "choices": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Choices",
+            "type": "object"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan"
+          },
+          "expected_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Digest"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationContainmentCutoverArgs",
+        "type": "object"
+      }
+    },
     "integration_cutover_plan": {
       "name": "integration_cutover_plan",
       "description": "Authenticated hierarchical integration operational control.",
@@ -14725,6 +14877,62 @@
           "engine"
         ],
         "title": "IntegrationEngineTransferArgs",
+        "type": "object"
+      }
+    },
+    "integration_fast_forward_pr": {
+      "name": "integration_fast_forward_pr",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "pr_number": {
+            "exclusiveMinimum": 0,
+            "title": "Pr Number",
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "task_id",
+          "pr_number"
+        ],
+        "title": "IntegrationFastForwardPrArgs",
         "type": "object"
       }
     },
@@ -15254,6 +15462,22 @@
         ],
         "title": "IntegrationReconcileExpiredMutationArgs",
         "type": "object"
+      }
+    },
+    "integration_reconcile_git_truth": {
+      "name": "integration_reconcile_git_truth",
+      "description": "Daemon-only repair of Git-derived integration projections.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     "integration_record_delivered": {
@@ -16275,6 +16499,53 @@
           "stage"
         ],
         "title": "IntegrationRepairTimeoutArgs",
+        "type": "object"
+      }
+    },
+    "integration_rerequest_check": {
+      "name": "integration_rerequest_check",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "check_name": {
+            "minLength": 1,
+            "title": "Check Name",
+            "type": "string"
+          },
+          "expected_candidate_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Candidate Sha"
+          }
+        },
+        "required": [
+          "batch_id",
+          "check_name"
+        ],
+        "title": "IntegrationRerequestCheckArgs",
         "type": "object"
       }
     },
@@ -20502,6 +20773,7 @@
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "ci": "Required CI evidence and completed task audits",
+    "integration": "Author-assisted close continuations and bound batch repair",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
     "supervisor": "Supervisor session lifecycle \u2014 fresh or resumed restarts through AQ",
@@ -20536,6 +20808,8 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "integration_batch_fix": "integration",
+    "integration_continue_close": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",
@@ -20568,6 +20842,7 @@
     "release_project_constraint": "project",
     "edit_project": "project",
     "bind_project_repository": "project",
+    "project_relocate": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",

@@ -335,6 +335,9 @@ _START_SITES = {
     # Freezes an epic refresh batch (conflicting root PR, collected-epic aggregate
     # readiness); the train visits it without launching an agent.
     ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 2,
+    # Batch fixer reservation hands its launch to DaemonFixerRuntime, whose
+    # process start is the launch_session call pinned below.
+    ("src/integration/fixers.py", "self.runtime.start"): 1,
     # Changelog section boundaries use re.Match offsets, never agent launches.
     ("src/integration/promotion_notes.py", "following.start"): 1,
     ("src/integration/promotion_notes.py", "match.start"): 3,
@@ -402,6 +405,8 @@ _PROCESS_SITES = {
     # Authenticated acquisition, push and credential-free import share this Git-only spawn.
     ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
+    # Bounded ccache/sccache statistics read for warm build caches; never an agent.
+    ("src/build_cache.py", "cache_counters", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,
     ("src/jobs/matter.py", "native_status", "create_subprocess_exec"): 1,
     ("src/jobs/matter.py", "windows_path", "create_subprocess_exec"): 1,
@@ -466,6 +471,7 @@ def test_all_agent_launch_paths_use_the_chokepoint():
         ("src/orchestrator/pools.py", "PoolsMixin._launch_pool_session_inner"): 1,
         ("src/agents/terminals.py", "_start_locked"): 1,
         ("src/messages/session_lens.py", "SessionLens._ensure_started_locked"): 1,
+        ("src/integration/fixer_runtime.py", "DaemonFixerRuntime._start"): 1,
     })
     # Host shells strip AQ/harness markers and are explicitly human terminals.
     assert tmux == Counter({

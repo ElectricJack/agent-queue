@@ -207,8 +207,7 @@ class _ReleaseCheckedDB:
                 if await self.db._read_manual_pause(conn, task_id) is not None:
                     raise _Refusal("subject_held", "task manually paused during stop proof")
             row = await select_row(
-                conn,
-                integration_branch_owners,
+                conn, integration_branch_owners,
                 integration_branch_owners.c.id == self.owner['id'],
                 lock=True,
             )
@@ -244,8 +243,7 @@ class _ReleaseCheckedDB:
                 raise _Refusal(WRITER_LIVE, "writer was claimed during stop proof")
             if self.owner["workspace_id"]:
                 workspace = await select_row(
-                    conn,
-                    workspaces,
+                    conn, workspaces,
                     workspaces.c.id == self.owner['workspace_id'],
                     lock=True,
                 )
@@ -417,8 +415,7 @@ class WriterPrimitives:
                     primitive=p, outcome="configuration_blocked", reason="subject_stale_or_held"
                 )
             existing = await select_row(
-                conn,
-                integration_subject_journal,
+                conn, integration_subject_journal,
                 integration_subject_journal.c.subject_id == subject.id,
                 integration_subject_journal.c.idempotency_key == key,
             )
@@ -961,17 +958,15 @@ class OperationSafety:
             return None, None
         parent = await select_row(conn, tasks, tasks.c.id == operation['parent_task_id'], lock=True)
         checkpoint = await select_row(
-                         conn,
-                         task_integration_checkpoints,
-                         task_integration_checkpoints.c.task_id == operation['parent_task_id'],
-                         lock=True,
-                     )
+            conn, task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == operation['parent_task_id'],
+            lock=True,
+        )
         episode = await select_row(
-                      conn,
-                      integration_parent_episodes,
-                      integration_parent_episodes.c.id == operation['episode_id'],
-                      lock=True,
-                  )
+            conn, integration_parent_episodes,
+            integration_parent_episodes.c.id == operation['episode_id'],
+            lock=True,
+        )
         if (
             parent is None
             or checkpoint is None
@@ -1034,50 +1029,6 @@ class OperationSafety:
         if transition.row is None:
             return None, "stale"
         return transition, None
-
-
-    @staticmethod
-    async def _locked_operation_on(conn: Any, operation_id: str) -> dict[str, Any] | None:
-        row = await select_row(
-                  conn,
-                  integration_repair_operations,
-                  integration_repair_operations.c.id == operation_id,
-                  lock=True,
-              )
-        return dict(row) if row is not None else None
-
-
-    @staticmethod
-    async def _locked_stage_on(conn: Any, operation: dict[str, Any]) -> dict[str, Any] | None:
-        row = await select_row(
-                  conn,
-                  integration_repair_stages,
-                  integration_repair_stages.c.operation_id == operation['id'],
-                  integration_repair_stages.c.ordinal == operation['active_stage'],
-                  lock=True,
-              )
-        return dict(row) if row is not None else None
-
-
-    @staticmethod
-    async def _project_id_on(conn: Any, operation: dict[str, Any]) -> str:
-        if operation["target_kind"] == "batch":
-            statement = select(integration_batches.c.project_id).where(
-                integration_batches.c.id == operation["batch_id"]
-            )
-        else:
-            from src.database.queries.task_identity import resolve_task_identity_on
-
-            identity = await resolve_task_identity_on(conn, operation["parent_task_id"])
-            project_id = identity.project_id if identity is not None else None
-            if project_id is not None:
-                return str(project_id)
-            statement = select(tasks.c.project_id).where(tasks.c.id == operation["parent_task_id"])
-        project_id = (await conn.execute(statement)).scalar_one_or_none()
-        if project_id is None:
-            raise ValueError("operation target has no owning project")
-        return str(project_id)
-
 
     @staticmethod
     async def _ambiguous_writes_on(

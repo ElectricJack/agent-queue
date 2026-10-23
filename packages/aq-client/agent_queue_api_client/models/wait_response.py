@@ -33,6 +33,7 @@ class WaitResponse:
         continuation_id (None | str | Unset):
         warnings (list[str] | Unset):
         next_step (None | str | Unset):
+        changed (bool | None | Unset):
     """
 
     success: bool | Unset = True
@@ -46,6 +47,7 @@ class WaitResponse:
     continuation_id: None | str | Unset = UNSET
     warnings: list[str] | Unset = UNSET
     next_step: None | str | Unset = UNSET
+    changed: bool | None | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.agent_wait_record import AgentWaitRecord
@@ -124,6 +126,12 @@ class WaitResponse:
         else:
             next_step = self.next_step
 
+        changed: bool | None | Unset
+        if isinstance(self.changed, Unset):
+            changed = UNSET
+        else:
+            changed = self.changed
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -149,6 +157,8 @@ class WaitResponse:
             field_dict["warnings"] = warnings
         if next_step is not UNSET:
             field_dict["next_step"] = next_step
+        if changed is not UNSET:
+            field_dict["changed"] = changed
 
         return field_dict
 
@@ -286,6 +296,15 @@ class WaitResponse:
 
         next_step = _parse_next_step(d.pop("next_step", UNSET))
 
+        def _parse_changed(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        changed = _parse_changed(d.pop("changed", UNSET))
+
         wait_response = cls(
             success=success,
             wait=wait,
@@ -298,6 +317,7 @@ class WaitResponse:
             continuation_id=continuation_id,
             warnings=warnings,
             next_step=next_step,
+            changed=changed,
         )
 
         return wait_response

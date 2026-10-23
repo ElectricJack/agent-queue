@@ -396,20 +396,28 @@ class TestAsyncFindOpenPr:
             await mgr.afind_open_pr("/repo", "feature-x", repository=REPOSITORY)
             == "https://github.com/org/repo/pull/41"
         )
-        client.list_pull_requests.assert_awaited_once_with(state="all", head="feature-x", limit=100)
+        client.list_pull_requests.assert_awaited_once_with(
+            state="all", head="feature-x", limit=100, include_head_oid=True
+        )
 
     @pytest.mark.asyncio
-    async def test_accepts_merged_pr_and_excludes_closed_pr(self, mgr, monkeypatch):
+    async def test_accepts_merged_pr_at_the_tip_and_excludes_closed_pr(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "feature-x"], cwd=clone)
+        tip = _commit_file(clone, "work.txt", "done", "work")
         client = MagicMock()
         client.list_pull_requests = AsyncMock(
             return_value=[
-                {"url": "https://github.com/org/repo/pull/41", "state": "CLOSED"},
-                {"url": "https://github.com/org/repo/pull/42", "state": "MERGED"},
+                {"url": "https://github.com/org/repo/pull/41", "state": "CLOSED",
+                 "headRefOid": tip},
+                {"url": "https://github.com/org/repo/pull/42", "state": "MERGED",
+                 "headRefOid": tip},
             ]
         )
         monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
         assert (
-            await mgr.afind_open_pr("/repo", "feature-x", repository=REPOSITORY)
+            await mgr.afind_open_pr(clone, "feature-x", repository=REPOSITORY)
             == "https://github.com/org/repo/pull/42"
         )
 
@@ -2298,6 +2306,119 @@ class TestAfindOpenPr:
             await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
             == "https://github.com/org/repo/pull/45"
         )
+
+    @staticmethod
+    def _named_prs(mgr, monkeypatch, named: list[dict]) -> list[dict]:
+        calls: list[dict] = []
+        client = MagicMock()
+
+        async def list_pull_requests(**kwargs):
+            calls.append(kwargs)
+            return named if kwargs.get("head") else []
+
+        client.list_pull_requests = AsyncMock(side_effect=list_pull_requests)
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_earlier_merged_pr_of_a_reused_branch_does_not_deliver_newer_work(
+        self, clone, mgr, monkeypatch
+    ):
+        """PRs #21/#23 merged from ``aq/t-1``; new commits on the same name are unmerged."""
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        first = _commit_file(clone, "one.txt", "1", "first delivery")
+        second = _commit_file(clone, "two.txt", "2", "second delivery")
+        _commit_file(clone, "three.txt", "3", "newer, unmerged work")
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [
+                {"url": "https://github.com/org/repo/pull/23", "state": "MERGED",
+                 "headRefName": "aq/t-1", "headRefOid": second},
+                {"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+                 "headRefName": "aq/t-1", "headRefOid": first},
+            ],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
+
+    @pytest.mark.asyncio
+    async def test_merged_pr_whose_head_contains_the_tip_counts(self, clone, mgr, monkeypatch):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        tip = _commit_file(clone, "one.txt", "1", "work")
+        _git(["checkout", "-b", "later"], cwd=clone)
+        merged_head = _commit_file(clone, "two.txt", "2", "pushed after the local tip")
+        _git(["checkout", "aq/t-1"], cwd=clone)
+        assert tip != merged_head
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [{"url": "https://github.com/org/repo/pull/65", "state": "MERGED",
+              "headRefName": "aq/t-1", "headRefOid": merged_head}],
+        )
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/65"
+        )
+
+    @pytest.mark.asyncio
+    async def test_workspace_head_at_an_old_start_point_does_not_admit_a_merged_pr(
+        self, clone, mgr, monkeypatch
+    ):
+        """Ancestry is checked against the branch tip only, never the workspace HEAD."""
+        start = _git(["rev-parse", "HEAD"], cwd=clone)
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        old_head = _commit_file(clone, "one.txt", "1", "earlier delivery")
+        _commit_file(clone, "two.txt", "2", "newer, unmerged work")
+        _git(["checkout", "--detach", start], cwd=clone)
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [{"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+              "headRefName": "aq/t-1", "headRefOid": old_head}],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
+
+    @pytest.mark.asyncio
+    async def test_open_pr_is_preferred_over_an_earlier_merged_pr(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        old_head = _commit_file(clone, "one.txt", "1", "earlier delivery")
+        tip = _commit_file(clone, "two.txt", "2", "newer work")
+
+        calls = self._named_prs(
+            mgr,
+            monkeypatch,
+            [
+                {"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+                 "headRefName": "aq/t-1", "headRefOid": old_head},
+                {"url": "https://github.com/org/repo/pull/65", "state": "OPEN",
+                 "headRefName": "aq/t-1", "headRefOid": tip},
+            ],
+        )
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/65"
+        )
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_merged_pr_without_a_head_commit_is_not_accepted(
+        self, clone, mgr, monkeypatch
+    ):
+        _git(["checkout", "-b", "aq/t-1"], cwd=clone)
+        _commit_file(clone, "one.txt", "1", "work")
+
+        self._named_prs(
+            mgr,
+            monkeypatch,
+            [{"url": "https://github.com/org/repo/pull/21", "state": "MERGED",
+              "headRefName": "aq/t-1"}],
+        )
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
 
     @pytest.mark.asyncio
     async def test_unparseable_gh_output_is_not_an_error(self, clone, mgr, monkeypatch):

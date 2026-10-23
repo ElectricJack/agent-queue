@@ -403,3 +403,27 @@ def test_file_key_provider_rejects_group_readable_and_symlink_paths(tmp_path):
     link.symlink_to(key)
     with pytest.raises(GitHubAppError, match="unreadable"):
         provider.read_private_key(str(link))
+
+
+@pytest.mark.parametrize("configured,returned", [("read", "read"), ("write", "write"),
+                                                ("read", "write"), ("write", "read")])
+async def test_actions_permission_mint_and_validation(configured, returned):
+    private, _ = _private_key()
+    payload = json.loads(_installation_response("installation-secret").body)
+    payload["permissions"]["actions"] = returned
+    transport = ScriptedTransport([HttpResponse(200, {}, b'{"id":101}'),
+                                   HttpResponse(201, {}, json.dumps(payload).encode())])
+    provider = AppTokenProvider(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem", configured),
+        key_provider=StaticKeyProvider(private), transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+    if configured == returned:
+        candidate = await provider.mint(GitHubRepositoryBinding(303, "acme/widgets"))
+        assert candidate.repository == GitHubRepositoryBinding(303, "acme/widgets")
+    else:
+        with pytest.raises(GitHubAppError, match="permissions") as denied:
+            await provider.mint(GitHubRepositoryBinding(303, "acme/widgets"))
+        assert denied.value.category == "permission"
+    assert transport.requests[1][3]["permissions"]["actions"] == configured
+    assert transport.requests[1][3]["repository_ids"] == [303]
