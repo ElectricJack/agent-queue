@@ -1,0 +1,143 @@
+{
+  "exclusions": {
+    "src/doctor/stall_checks.py::_SUBJECTS['completed_undelivered']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['continuous_promotion_lag']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['integration_unknown_facts']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently."
+  },
+  "generic_dependencies": {
+    "src/doctor/stall_checks.py::_slot_capacity_findings": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/stall_checks.py::stall_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/doctor/stall_checks.py::_branch_findings": {
+      "baseline_span": [
+        156,
+        187
+      ],
+      "landing_span": [
+        156,
+        187
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/stall_checks.py::_check_sweep": {
+      "reason": "Aggregates delivery-engine availability with the stall patrol; read-only integration diagnostic entry point. Entire definition is charged, including its generic patrol orchestration."
+    },
+    "src/doctor/stall_checks.py::_completed_undelivered_findings": {
+      "reason": "Stall-sweep line over the integration.completed_undelivered doctor read: reports COMPLETED task branches nothing will deliver or retire under a bounded budget. Read-only; no storage, fence or publication authority."
+    },
+    "src/doctor/stall_checks.py::_container_dependency_findings": {
+      "reason": "Stall sweep adapter scopes the reviewed read-only container dependency report to active projects and reports leaf-to-container prerequisite edges for operator review."
+    },
+    "src/doctor/stall_checks.py::_continuous_promotion_findings": {
+      "reason": "Bounded stall-sweep read of exact continuous promotion branch lag and unavailable evidence. No writes or publication authority."
+    },
+    "src/doctor/stall_checks.py::_escalation_delivery_findings": {
+      "reason": "Stall sweep adapter for overdue human escalation delivery: scopes the generic notification query to active projects and maps it into integration-owned sweep findings."
+    },
+    "src/doctor/stall_checks.py::_find_orphaned_prs": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_find_reviewed_file_blocked_batches": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_find_stranded_dependents": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_find_unadmitted_parents": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_mapping_rows": {
+      "reason": "Shared SELECT materialization for the owned delivery and repair diagnostics; all helper lines charged. No writes, lifecycle state or publication authority."
+    },
+    "src/doctor/stall_checks.py::_orphaned_pr_findings": {
+      "baseline_span": [
+        528,
+        544
+      ],
+      "landing_span": [
+        444,
+        460
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/stall_checks.py::_reviewed_file_guard_findings": {
+      "baseline_span": [
+        511,
+        527
+      ],
+      "landing_span": [
+        427,
+        443
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/stall_checks.py::_session_findings": {
+      "baseline_span": [
+        188,
+        243
+      ],
+      "landing_span": [
+        188,
+        243
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/doctor/stall_checks.py::_stranded_child_findings": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_subject_unknown_findings": {
+      "baseline_span": [
+        601,
+        617
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/stall_checks.py::_train_batch_findings": {
+      "reason": "Turns stalled integration train batch observations into doctor findings with project and batch details."
+    },
+    "src/doctor/stall_checks.py::_unadmitted_parent_findings": {
+      "baseline_span": [
+        545,
+        556
+      ],
+      "landing_span": [
+        461,
+        472
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/stall_checks.py::_unknown_subject_streaks": {
+      "baseline_span": [
+        572,
+        600
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/stall_checks.py::_unmaterialized_pr_findings": {
+      "baseline_span": [
+        390,
+        421
+      ],
+      "landing_span": [
+        350,
+        381
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/stall_checks.py::_waiting_train_repairs": {
+      "reason": "Stall-sweep adapter that reads the active train-repair delegate bindings once for aged READY candidates, so a waiting repair names its operation and batch. Read-only diagnostics; no storage or delivery authority."
+    },
+    "src/doctor/stall_checks.py::import from src.database.tables import projects as project_table, task_branch_origins, task_integration_checkpoints, tasks as task_table": {
+      "baseline_span": [
+        17,
+        18
+      ],
+      "landing_span": [
+        17,
+        18
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

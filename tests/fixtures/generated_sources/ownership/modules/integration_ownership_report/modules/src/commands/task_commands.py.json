@@ -1,0 +1,256 @@
+{
+  "shared_definitions": {
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task": {
+      "reason": "Archive command adapter: requires an explicit delivery disposition (deliver|obsolete|retire) before undelivered work is archived, passes it through the existing guarded archive and its retirement request, and answers deliver without archiving. Adds no storage of its own, fence change or publication authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_create_task_graph": {
+      "baseline_span": [
+        3315,
+        3553
+      ],
+      "landing_span": [
+        3314,
+        3552
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_delete_task": {
+      "reason": "Unified operator deletion coordinates read-only previews, confirmed claim/session fencing, cancellation of live integration authority and preservation of immutable history."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_edit_task": {
+      "baseline_span": [
+        3944,
+        4155
+      ],
+      "landing_span": [
+        3943,
+        4154
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_ensure_task": {
+      "baseline_span": [
+        5787,
+        5964
+      ],
+      "landing_span": [
+        5786,
+        5963
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_explain_task": {
+      "baseline_span": [
+        5131,
+        5438
+      ],
+      "landing_span": [
+        5130,
+        5437
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_get_task": {
+      "baseline_span": [
+        3554,
+        3688
+      ],
+      "landing_span": [
+        3553,
+        3687
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_list_active_tasks_all_projects": {
+      "baseline_span": [
+        725,
+        800
+      ],
+      "landing_span": [
+        724,
+        799
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_project_ready": {
+      "baseline_span": [
+        5704,
+        5786
+      ],
+      "landing_span": [
+        5703,
+        5785
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
+      "reason": "Deprecated alias delegates to the unified deletion preview and execution contract."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback": {
+      "baseline_span": [
+        4402,
+        4573
+      ],
+      "landing_span": [
+        4401,
+        4572
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_reparent_task": {
+      "reason": "Routes ordinary task reparenting through the transactional hierarchy integration guard, preserving branch origins and invalidating both parent checkpoints in hierarchy and train modes."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_restart_task": {
+      "baseline_span": [
+        4370,
+        4401
+      ],
+      "landing_span": [
+        4369,
+        4400
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_set_task_status": {
+      "reason": "Refuse administrative completion of a branched Git root in train modes without explicit completion provenance."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_recover": {
+      "baseline_span": [
+        4273,
+        4342
+      ],
+      "landing_span": [
+        4272,
+        4341
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._create_task": {
+      "baseline_span": [
+        2100,
+        3148
+      ],
+      "landing_span": [
+        2099,
+        3147
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._create_worker_filed_task": {
+      "baseline_span": [
+        1501,
+        1814
+      ],
+      "landing_span": [
+        1500,
+        1813
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._keep_for_delivery": {
+      "reason": "The archive command's deliver disposition: keeps the task, names its undelivered holders and the root delivery answer from the existing authorize-root read, and records an ordinary comment and audit. Archives nothing and moves no ref."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._materialized_branches_under": {
+      "baseline_span": [
+        4665,
+        4702
+      ],
+      "landing_span": [
+        4664,
+        4701
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._parent_key_mode_refusal": {
+      "baseline_span": [
+        1969,
+        1997
+      ],
+      "landing_span": [
+        1968,
+        1996
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate": {
+      "reason": "Restart a stopped integration repair delegate through its operation's exact branch reservation."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._task_to_dict": {
+      "baseline_span": [
+        1179,
+        1204
+      ],
+      "landing_span": [
+        1178,
+        1203
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._undo_refused_restart": {
+      "reason": "Restore the repair delegate's prior task state when its branch reservation refuses restart."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_missing_session_task": {
+      "reason": "Orphan recovery calls retained-source capture under task control lock and revalidates exact session and resource identities before release; no remote ref publication."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_orphaned_integration_task": {
+      "reason": "Stopped pool orphan recovery delegates to fenced integration owner recovery only after exact session, epoch, agent, workspace, repository, branch and supervisor guards. Preserves retained bindings on refusal and emits ordinary task evidence after proven release; no new journal or publication path."
+    },
+    "src/commands/task_commands.py::_integration_cleanup_reason": {
+      "baseline_span": [
+        189,
+        225
+      ],
+      "landing_span": [
+        188,
+        224
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::_recovery_incident_reason": {
+      "baseline_span": [
+        226,
+        254
+      ],
+      "landing_span": [
+        225,
+        253
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::import from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY, TaskProjectMoveError, task_repository_id": {
+      "baseline_span": [
+        28,
+        32
+      ],
+      "landing_span": [
+        26,
+        30
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/task_commands.py::import from src.models import BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Existing charged task-command model import now includes agent and project state guards for integration orphan recovery; enum vocabulary adds no storage or publication authority."
+    },
+    "src/commands/task_commands.py::import from src.models import BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "baseline_span": [
+        35,
+        47
+      ],
+      "landing_span": [
+        34,
+        46
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "landing_span": [
+        36,
+        51
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    }
+  }
+}

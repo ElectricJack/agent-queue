@@ -1,0 +1,29 @@
+{
+  "remote_pr_base_measurement": {
+    "authorized_engine_delta": 8,
+    "authorized_owned_delta": 12,
+    "authorized_shared_delta": 4,
+    "authorized_table_delta": 0,
+    "charged_definitions": [
+      "src/integration/pr_repair_publication.py::PRRepairPublication",
+      "src/cli/client.py::_COMMAND_TIMEOUTS"
+    ],
+    "decision_message_id": "msg-c47a1a9a635a465b8a0cb286f93cb0b0",
+    "measured_engine_lines": 85551,
+    "measured_owned_total": 161174,
+    "measured_shared_lines": 62041,
+    "measured_source_revision": "925ee7bf7fbeffacf5db9fb2b4c41420f67d7be3",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85543,
+    "previous_owned_total": 161162,
+    "previous_shared_lines": 62037,
+    "previous_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1902",
+    "reason": "Authenticated current remote PR base history and repair/root-redrive CLI timeout budgets. Project supervisor approved the exact +12 owned (+8 engine, +4 shared) footprint for PR1902 under size-cap-delegation-2026-10-23; preserve historical frozen-batch measurements and classifications.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "calm-lantern-21"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/wait_source_queries.py::WaitSourceQueriesMixin.purge_wait_source_events": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_source_queries.py::WaitSourceQueriesMixin.wait_source_watermark": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_source_queries.py::import from src.database.tables import wait_listener_cursors, wait_source_events": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_source_queries.py::import from src.waits.sources import _SOURCE_SEQUENCE_LOCK, record_source_event": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

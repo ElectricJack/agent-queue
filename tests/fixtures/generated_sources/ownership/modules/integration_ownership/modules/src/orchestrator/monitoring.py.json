@@ -1,0 +1,104 @@
+{
+  "shared": {
+    "src/orchestrator/monitoring.py::MonitoringMixin._check_stuck_defined_tasks": {
+      "baseline_span": [
+        526,
+        608
+      ],
+      "landing_span": [
+        529,
+        611
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin._notify_stuck_chain": {
+      "baseline_span": [
+        919,
+        947
+      ],
+      "landing_span": [
+        912,
+        940
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin.delivery_observer": {
+      "baseline_span": [
+        455,
+        465
+      ],
+      "landing_span": [
+        458,
+        468
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/monitoring.py::import from src.notifications.builder import build_task_detail": {
+      "baseline_span": [
+        7,
+        8
+      ],
+      "landing_span": [
+        12,
+        12
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/monitoring.py::MonitoringMixin._auto_archive_tasks::3d9511a34200262cf2742b7b9790cda77d39e32cd32f939a693f55da56b1844e": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 768,
+      "owner": "MonitoringMixin._auto_archive_tasks",
+      "owner_fingerprint": "e3e32920db99b842cb71c04a99dd22e8bf925ae0187c5b35da2199086bbf4aec",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin._check_budget_warning::217a0074887ea41c015e99d9063f26ec1817bb0c90d2b8ef80d28bdca3d30683": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1052,
+      "owner": "MonitoringMixin._check_budget_warning",
+      "owner_fingerprint": "89533621a17dc20c9ade2048f0058dafa31eebaa8216984d2f91ba9fa4718006",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin._check_stuck_defined_tasks::6d96f871bfa4d851b72c60eb98d0c83ec1030147b0622e7f407863bf173e250b": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 642,
+      "owner": "MonitoringMixin._check_stuck_defined_tasks",
+      "owner_fingerprint": "66fd0a9beecf1d81918fd587aba93df0876a2d4f8dc89f8dc3ff5e1c200cef61",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin._close_dead_conditional_tasks::20ab4e12d9ca69a168a4d51ac96c03ada9b064a434f5f8b4a545bbeaef9bc389": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 392,
+      "owner": "MonitoringMixin._close_dead_conditional_tasks",
+      "owner_fingerprint": "d83c1652491b4f5675ff4258f383ea96294dc67ca55a6de8e105fb87a29c5568",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin._close_dead_conditional_tasks::9f51eef83d85dd7fea95b9e8b05e8ca6af6c1d5d47532f5ad0f7db29c00df50f": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 388,
+      "owner": "MonitoringMixin._close_dead_conditional_tasks",
+      "owner_fingerprint": "d83c1652491b4f5675ff4258f383ea96294dc67ca55a6de8e105fb87a29c5568",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
+    },
+    "src/orchestrator/monitoring.py::MonitoringMixin._notify_stuck_chain::abe5e3ec7355ffdcfabc84bb984ead1f90b5a61fc95c2735ccca789dd6d3be1a": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 994,
+      "owner": "MonitoringMixin._notify_stuck_chain",
+      "owner_fingerprint": "86594595fd00109e54d31067ffb409acfd7a622123f4c6d5704cd9083c99232b",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

@@ -53,6 +53,17 @@ def _project_paused():
     )
 
 
+def _human_requested():
+    # The wait conversion is the durable authorization, including conversions
+    # made before this routing fence shipped. Delivery retries are not authority.
+    return exists().where(
+        wait_escalations.c.escalation_id == escalations.c.id,
+        wait_records.c.id == wait_escalations.c.wait_id,
+        wait_records.c.project_id == escalations.c.project_id,
+        wait_records.c.decision_inputs["human_escalation_id"].astext == escalations.c.id,
+    ).label("human_requested")
+
+
 def _delivery_project_paused():
     return exists().where(
         escalations.c.id == escalation_deliveries.c.escalation_id,
@@ -347,6 +358,9 @@ class EscalationQueriesMixin:
             or incident["state"] not in OPEN_ESCALATION_STATES
         ):
             return
+        if incident["source_kind"] in {"integration_train_stall", "integration_delivery_stuck"}:
+            # These producers already write a supervisor notice in this transaction.
+            return
         if incident["source_kind"] in {"wait", "continuation"}:
             # Operational deadlines and infrastructure holds go to the supervisor.
             # Only an explicit escalate_to_human decision creates a human delivery.
@@ -397,7 +411,7 @@ class EscalationQueriesMixin:
         states: Sequence[str] | None = None,
         task_id: str | None = None,
         source_kind: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[dict[str, Any]]:
         """Incidents, optionally narrowed to one project or a set of them.
 
@@ -407,7 +421,7 @@ class EscalationQueriesMixin:
         caller is unrestricted.  ``source_kind`` lets a core producer find its
         own incidents wherever they were filed.
         """
-        if limit <= 0:
+        if limit is not None and limit <= 0:
             return []
         statement = select(
             escalations,

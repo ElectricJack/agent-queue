@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/playbooks/receipts.py::RECEIPT_OUTCOMES['cancelled']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/playbooks/receipts.py::attempt_key": "Generic playbook step attempt hash; not an integration mutation key or replay ledger."
+  }
+}

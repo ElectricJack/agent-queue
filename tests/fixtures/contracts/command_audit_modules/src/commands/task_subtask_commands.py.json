@@ -1,0 +1,214 @@
+{
+  "task_subtask_add": {
+    "argument_reads_diagnostic_only": [
+      "subtasks"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_subtask_task": "sha256:8467d9df196faebd466554e20345db10a5d6102f9efb3fb662cabd0537b9b6f5",
+      "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_subtask_commands.py:TaskSubtaskCommandsMixin._cmd_task_subtask_add",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'subtasks must be a list of 1 to {MAX_SUBTASKS_PER_CALL} items'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': item_error}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'subtasks.limit', 'error': f'adding {len(cleaned)} subtask(s) would exceed the {MAX_SUBTASKS_PER_TASK} per-task limit'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task.id, 'subtasks': rows}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7483e64ca681a8d5f1589d134f02aa4788715e7215e36dafec7abf5a607fb473",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_subtask_get": {
+    "argument_reads_diagnostic_only": [
+      "ordinal"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7",
+      "_resolve_subtask_task": "sha256:8467d9df196faebd466554e20345db10a5d6102f9efb3fb662cabd0537b9b6f5"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_subtask_commands.py:TaskSubtaskCommandsMixin._cmd_task_subtask_get",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'ordinal must be a positive integer'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "out_of_scope"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'subtasks.not_found', 'error': f\"No subtask #{ordinal} on task '{task.id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'subtask': row}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c39c98afec56e4dbadb4e3b17c5594ed98d5bd780e17be52e1bc4569cdd4da22",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_subtask_update": {
+    "argument_reads_diagnostic_only": [
+      "note",
+      "ordinal",
+      "status"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_subtask_task": "sha256:8467d9df196faebd466554e20345db10a5d6102f9efb3fb662cabd0537b9b6f5",
+      "_task_findings_write_fence": "sha256:ddaf185b219090db1d81f785713a571f944b87c778789603de6d4a5b5b9f973f"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_subtask_commands.py:TaskSubtaskCommandsMixin._cmd_task_subtask_update",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'ordinal must be a positive integer'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'subtasks.invalid_status', 'error': f'status must be one of {', '.join(SUBTASK_STATUSES)}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'note must be a string'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'status or note is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'subtasks.not_found', 'error': f\"No subtask #{ordinal} on task '{task.id}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'subtask': row, 'total': total, 'settled': settled}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d7ae006f5e47961f1dc733c378667af6d446704ed53dab51999aed54d0907fe9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_subtasks": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7",
+      "_resolve_subtask_task": "sha256:8467d9df196faebd466554e20345db10a5d6102f9efb3fb662cabd0537b9b6f5"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_subtask_commands.py:TaskSubtaskCommandsMixin._cmd_task_subtasks",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "out_of_scope"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task.id, 'subtasks': rows, 'total': total, 'settled': settled}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:42f13253bc8d8d5cb324fdeab8627129a9d9dcb5771569166e3e5fe92eaee96d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

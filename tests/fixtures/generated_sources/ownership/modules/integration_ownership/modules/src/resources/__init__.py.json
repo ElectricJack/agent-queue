@@ -1,0 +1,13 @@
+{
+  "shared": {
+    "src/resources/__init__.py::__all__['default_lock_dir']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/__init__.py::__all__['full_suite_lock_dir']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/__init__.py::import from src.resources.semaphore import SlotSemaphore, SlotTimeout, default_lock_dir, full_suite_lock_dir": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

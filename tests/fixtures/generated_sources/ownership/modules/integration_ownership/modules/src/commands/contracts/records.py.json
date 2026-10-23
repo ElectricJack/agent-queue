@@ -1,0 +1,10 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/records.py::register_record_contracts": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/contracts/records.py::_record_invoke": {
+      "reason": "Shared typed command invocation adapter used by integration operator decision contracts."
+    }
+  }
+}

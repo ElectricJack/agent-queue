@@ -1,0 +1,19 @@
+{
+  "exclusions": {
+    "src/providers/reroute.py::Decision.to_dict": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/providers/reroute.py::ProviderRerouteService": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/providers/reroute.py::ProviderRerouteService._emit::dad84b39cead11932226bc292cc142cb949d57e929ab4c404a42599b8d94497e": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1210,
+      "owner": "ProviderRerouteService._emit",
+      "owner_fingerprint": "7fc9a071565825567ba14871ccee6ef35427951595cd4f5c319d65544863e133",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

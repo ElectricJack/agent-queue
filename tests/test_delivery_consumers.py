@@ -302,16 +302,62 @@ async def test_hierarchy_prerequisites_consume_revalidated_git_view_without_rece
         assert await view.verified_on(conn, ["done"]) == {}
 
 
-async def test_default_status_uses_train_projection_without_retired_subject_audit(world):
+async def test_scoped_prerequisite_view_does_not_write_locked_dependents(world, monkeypatch):
+    """A prerequisite read must not convoy behind scheduler-owned task locks."""
+    from sqlalchemy import select
+
+    db, _origin, observer, _service = world
+    for tid, source in (("selected", "done"), ("unrelated", "missing")):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="",
+                                  status=TaskStatus.READY))
+        await db.add_dependency(tid, source)
+    # A delivery-of consumer is still graph-blocked in the historical
+    # projection; the ordinary observation hook would try to update its row.
+    await db.create_task(Task(id="delivery-waiter", project_id="p", title="waiter",
+                              description="", status=TaskStatus.READY))
+    await db.add_dependency("delivery-waiter", "done", "delivery-of")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "delivery-waiter")
+                           .values(is_blocked=1))
+    recompute = AsyncMock(wraps=db.recompute_delivery_dependents)
+    monkeypatch.setattr(db, "recompute_delivery_dependents", recompute)
+    async with db._engine.begin() as locked:
+        await locked.execute(select(tasks.c.id).where(tasks.c.id == "delivery-waiter")
+                             .with_for_update())
+        view = await asyncio.wait_for(
+            observer.prerequisite_view("p", task_ids={"selected"}), 10,
+        )
+        assert set(view.all_ids) == {"done"}
+        assert view.default.satisfied("done")
+        recompute.assert_not_awaited()
+    # Other observation consumers retain their blockedness refresh hook.
+    await observer.observe(["done"])
+    recompute.assert_awaited_once_with(["done"])
+    assert not (await db.get_task("delivery-waiter")).is_blocked
+
+
+async def test_status_and_explanations_agree_with_git(world):
     db, _origin, _observer, _service = world
     status = await IntegrationStatusService(db).status("p")
-    assert status["projection_kind"] == "train"
-    assert "delivery" not in status and "subjects" not in status
-    assert status["batches"] == []
+    delivery = status["delivery"]
+    assert delivery["available"] and delivery["evaluated"] == 4
+    assert delivery["pending"] == ["reopened"]
+    assert {item["task_id"]: item["reason"] for item in delivery["unknown"]} == {
+        "wrong": "scope_mismatch", "missing": "missing_git_provenance",
+    }
+    assert {
+        (item["ref"], item["cause"]) for item in status["blockers"]
+        if item["code"] == "delivery_unknown"
+    } == {("wrong", "scope_mismatch"), ("missing", "missing_git_provenance")}
+    assert status["projection_kind"] == "subjects"
+
     for tid in CHILDREN:
         projection = await IntegrationStatusService(db).task_blockers(tid)
-        assert projection["projection_kind"] == "train"
-        assert "parent_readiness" not in projection
+        delivery_blockers = [
+            (item["code"], item.get("cause")) for item in projection["blockers"]
+            if item["code"] in {"delivery_unknown", "development_delivery_pending"}
+        ]
+        assert delivery_blockers == ([UNDELIVERED[tid]] if tid in UNDELIVERED else [])
 
 
 @pytest.mark.parametrize("cache_state", ["cold", "warm", "expired", "stale"])
@@ -555,9 +601,9 @@ async def test_every_surface_follows_git_once_the_work_lands(world):
         await conn.execute(update(tasks).where(tasks.c.id == "wrong").values(repo_id="r"))
     origin.land("reopened")
 
-    delivery = await observer.observe(["wrong", "reopened", "missing"])
-    assert delivery.satisfied("wrong") and delivery.satisfied("reopened")
-    assert delivery.get("missing").state is DeliveryState.UNKNOWN
+    status = await IntegrationStatusService(db).status("p")
+    assert status["delivery"]["pending"] == []
+    assert [item["task_id"] for item in status["delivery"]["unknown"]] == ["missing"]
     holds = await service.branch_holds(["aq/wrong", "aq/reopened", "aq/missing"])
     assert set(holds) & {"aq/wrong", "aq/reopened"} == set()
     assert "aq/missing" in holds
@@ -599,6 +645,10 @@ async def test_a_retired_manifest_source_keeps_a_branchless_close_unknown(world)
     evidence = view.get("legacy-artifact")
     assert (evidence.state, evidence.reason) == (DeliveryState.UNKNOWN, "missing_git_provenance")
     assert view.get("organizational").state is DeliveryState.NO_ARTIFACT
+    blockers = (await IntegrationStatusService(db).task_blockers("legacy-artifact"))["blockers"]
+    assert ("delivery_unknown", "missing_git_provenance") in {
+        (item["code"], item.get("cause")) for item in blockers
+    }
 
     # A later (code-free, branchless) generation replaces the fenced marker.
     await db.save_task_completion(TaskCompletion(
@@ -2218,3 +2268,81 @@ async def test_resume_withholds_expired_stack_observation(world, tmp_path, monke
     await test_resume_uses_git_prerequisites_without_legacy_receipts(
         world, tmp_path, "expired", True, None, monkeypatch,
     )
+
+
+async def test_default_status_uses_train_projection_without_retired_subject_audit(world):
+    db, _origin, _observer, _service = world
+    status = await IntegrationStatusService(db).status("p")
+    assert status["projection_kind"] == "train"
+    assert "delivery" not in status and "subjects" not in status
+    assert status["batches"] == []
+    for tid in CHILDREN:
+        projection = await IntegrationStatusService(db).task_blockers(tid)
+        assert projection["projection_kind"] == "train"
+        assert "parent_readiness" not in projection
+
+
+
+async def test_original_pr_1872_every_surface_follows_git_once_the_work_lands(world):
+    db, origin, observer, service = world
+    # Rebinding the repository and landing the reopened work leave only the
+    # missing ref: git never turns an absent source into a delivery.
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "wrong").values(repo_id="r"))
+    origin.land("reopened")
+
+    delivery = await observer.observe(["wrong", "reopened", "missing"])
+    assert delivery.satisfied("wrong") and delivery.satisfied("reopened")
+    assert delivery.get("missing").state is DeliveryState.UNKNOWN
+    holds = await service.branch_holds(["aq/wrong", "aq/reopened", "aq/missing"])
+    assert set(holds) & {"aq/wrong", "aq/reopened"} == set()
+    assert "aq/missing" in holds
+    assert await db.archive_task("reopened") is True
+    with pytest.raises(HierarchyError):
+        await db.archive_task("missing")
+
+    # Once the missing task is closed obsolete it needs no proof, and the
+    # epic settles on the next pass: every remaining child is proven in git.
+    await db.set_task_meta("missing", "obsolete", json.dumps({"reason": "superseded"}))
+    view = await observer.observe(["done", "wrong"])
+    async with db._engine.begin() as conn:
+        result = await db.settle_containers({"epic"}, conn=conn, delivery=view)
+    assert result.settled == ["epic"]
+
+
+
+async def test_original_pr_1872_a_retired_manifest_source_keeps_a_branchless_close_unknown(world):
+    """The retirement marker keeps a branchless legacy artifact unknown, fenced to its generation.
+
+    Without it a branchless task a retired manifest delivered code for would
+    read as an organizational container: "no artifact", i.e. satisfied.
+    """
+    from src.integration.delivery_observer import delivery_sensitive_ids
+    from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY
+
+    db, _origin, observer, _service = world
+    for tid in ("legacy-artifact", "organizational"):
+        await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid,
+                                  description="", status=TaskStatus.COMPLETED))
+    await db.set_task_meta("legacy-artifact", LEGACY_ARTIFACT_KEY, {
+        "legacy_id": "old", "source_sha": "a" * 40, "completion_id": None,
+        "reason": "retired manifest named an unrecorded source",
+    })
+    async with db._engine.connect() as conn:
+        assert await delivery_sensitive_ids(
+            conn, ["legacy-artifact", "organizational"]
+        ) == {"legacy-artifact"}
+    view = await observer.observe(["legacy-artifact", "organizational"])
+    evidence = view.get("legacy-artifact")
+    assert (evidence.state, evidence.reason) == (DeliveryState.UNKNOWN, "missing_git_provenance")
+    assert view.get("organizational").state is DeliveryState.NO_ARTIFACT
+
+    # A later (code-free, branchless) generation replaces the fenced marker.
+    await db.save_task_completion(TaskCompletion(
+        id="code-free", task_id="legacy-artifact", outcome="pass", commits=[],
+        completed_at=time.time(),
+    ))
+    async with db._engine.connect() as conn:
+        assert await delivery_sensitive_ids(conn, ["legacy-artifact"]) == set()
+    view = await observer.observe(["legacy-artifact"])
+    assert view.get("legacy-artifact").state is DeliveryState.NO_ARTIFACT

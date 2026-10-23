@@ -1,0 +1,90 @@
+{
+  "spec_approve": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "spec_path"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_commands.py:SpecCommandsMixin._cmd_spec_approve",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'decision_id': decision['id'], 'packet_sha256': decision['packet_sha256'], 'snapshot_id': snapshot_id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'ask.not_decider', 'error': 'Standalone approval requires the local operator'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'ask.not_decider', 'error': 'Approval authority is server-owned'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'spec_path is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'spec path must end in .md'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'spec not found: {spec_path}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'spec is missing YAML frontmatter'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'spec frontmatter is malformed'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'spec frontmatter must be a mapping'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'review_gate', 'error': f'reviewed specs are decided in the review: aq review decide --review-id {reviewed or fm['review']} --revision <n> --decision approve'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'decision_id': decision['id'], 'error': 'Approved packet saved; mirror changed and needs reconciliation'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'spec_path is outside {allowed_root}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'frontmatter YAML error: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': getattr(exc, 'code', 'spec.invalid'), 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b8cb1b234114608b235ab47fc1221a7cf03826fe283d76c959369ce47d5f1745",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

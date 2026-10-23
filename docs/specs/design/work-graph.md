@@ -137,6 +137,15 @@ locks, even when a tick's advisory view still makes a task look runnable. An
 absent truth-bearing observer withholds the affected prerequisites without a
 receipt fallback. Non-hierarchy projects keep their source admission policy.
 
+Pool claims first try candidates without `blocks`, `delivery-of` or `waits-for`
+sources. These candidates pass the same frontier predicates and locked input
+revalidation, without waiting for unrelated Git observations. If that pass has
+no compatible claimable task, selection retries with the full candidate set.
+Admission scopes hierarchy prerequisite observations to its candidate identities;
+an empty source set requires no Git observation. Prerequisite views never
+recompute dependent blockedness: they may be read while the scheduler holds
+those task rows under the wait-graph fence on another connection.
+
 `delivery-of` edges require source completion in the persisted graph projection
 and current default-target Git proof in `AdmissionView`. Completion alone is
 insufficient for dispatch, pool demand or a claim. Delivery is never persisted

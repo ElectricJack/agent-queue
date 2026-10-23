@@ -1,0 +1,159 @@
+{
+  "shared": {
+    "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked": {
+      "baseline_span": [
+        1249,
+        2194
+      ],
+      "landing_span": [
+        1277,
+        2222
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._emit_close_notify": {
+      "baseline_span": [
+        2281,
+        2370
+      ],
+      "landing_span": [
+        2309,
+        2398
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._execute_task": {
+      "baseline_span": [
+        323,
+        620
+      ],
+      "landing_span": [
+        323,
+        620
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._fail_session_launch": {
+      "baseline_span": [
+        1108,
+        1233
+      ],
+      "landing_span": [
+        1136,
+        1261
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._launch_session_for_task_locked": {
+      "baseline_span": [
+        728,
+        1107
+      ],
+      "landing_span": [
+        728,
+        1135
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._release_session_task_resources_locked": {
+      "baseline_span": [
+        2392,
+        2459
+      ],
+      "landing_span": [
+        2420,
+        2487
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._restore_slot_before_handoff_proof": {
+      "baseline_span": [
+        2195,
+        2232
+      ],
+      "landing_span": [
+        2223,
+        2260
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin.release_session_task_resources": {
+      "baseline_span": [
+        2371,
+        2391
+      ],
+      "landing_span": [
+        2399,
+        2419
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/execution.py::import from src.notifications.builder import build_agent_summary, build_task_detail": {
+      "baseline_span": [
+        16,
+        16
+      ],
+      "landing_span": [
+        16,
+        16
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::91f3e9ef1047553b1b6a181d34a45e38af1c9c81aa3244f1605030fa2da742ba": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1927,
+      "owner": "ExecutionMixin._complete_session_task_locked",
+      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
+      "reason": "Updates the existing identity-bound pending completion draft with verified source work before the terminal transition; accepted-close recovery uses no separate integration lifecycle journal."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::ae8c919429f58dac2642af5184c5d10500c81e12bf5ef7db9da07251fc6b167d": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1918,
+      "owner": "ExecutionMixin._complete_session_task_locked",
+      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
+      "reason": "Stores completion_ci diagnostics collected while completing the worker task; actual check attestations and integration gates remain independently verified."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2462,
+      "owner": "ExecutionMixin._complete_session_task_locked",
+      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
+      "reason": "Marks integration_handoff_unproven after failed completion handoff; the attention marker preserves the blocked state rather than granting release."
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::8984da29e38cdef16a89fdb5710ce864b3017bdca5db3309dce9f87f9f13fe70": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2599,
+      "owner": "ExecutionMixin._preserve_unpushed_on_failure",
+      "owner_fingerprint": "3469e4902d7ce1776353595687d4530639a9670117a995811d0601df821323bc",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_BRANCH_META"
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::f2a065e87b9ac1c2c29f709808b528c8ed38ee71d4c075de9a7daf013baee912": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2601,
+      "owner": "ExecutionMixin._preserve_unpushed_on_failure",
+      "owner_fingerprint": "3469e4902d7ce1776353595687d4530639a9670117a995811d0601df821323bc",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_COMMIT_META"
+    },
+    "src/orchestrator/execution.py::ExecutionMixin._validated_resume_key::9cffd21ce60de4627d260fcf4dd92ec40ed6503b232666553235c882f1d565bb": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 767,
+      "owner": "ExecutionMixin._validated_resume_key",
+      "owner_fingerprint": "b18b7fbd720a08496cd8be39888fdcd0864f9624c9142865a660f24c5924a9d1",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'session_resume_key'"
+    }
+  }
+}

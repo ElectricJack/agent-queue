@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 238,
+      "owner": "ExpiredMutationRecovery.run",
+      "owner_fingerprint": "35260d82a0a6c9941f7979125a79fe89ada660f9ed9fa407095a417584363458",
+      "reason": "Transactional local-operator audit of expired legacy mutation read-back after proving the operation ended, nonce and branch/lease fences, no live writer, and a stable fresh remote target observation. Existing mutation state is settled from remote truth; the event grants no new authority, retries no mutation, and cannot replay refs."
+    }
+  }
+}

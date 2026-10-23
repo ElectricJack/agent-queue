@@ -1,0 +1,247 @@
+{
+  "approved_spec_packet": {
+    "argument_reads_diagnostic_only": [
+      "decision_id",
+      "packet_sha256",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_fidelity_read_context": "sha256:0232c7191f3ca7a664467a9c6331644659ae9db2808a1ad2af948ab78864d072"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_approved_spec_packet",
+    "resource_gates": [
+      "held_session"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'A live held spec-ingest role is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'A live held spec-ingest role is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "context"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: approved packet mismatch'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **packet}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: approved packet mismatch'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **packet}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc), 'code': exc.code}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc), 'code': exc.code}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f167e0743c996cce113aae1f3bf29c272eff47f5e46b88468e45f8489c300356",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_reviewer_api_scope.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py",
+      "tests/test_task_batch_commands.py"
+    ]
+  },
+  "batch_reconcile": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_batch_reconcile",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'recovered': recovered, 'errors': errors}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Reconciliation accepts no caller authority'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Batch reconciliation is operator/service-only'}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:5eb77f6f51e42c5a3e7101fb9e48ac60a36c3c4b39161837db1f0f5246ff4867",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_ask_operations.py",
+      "tests/test_generated_command_contracts.py"
+    ]
+  },
+  "ensure_spec_ingest": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_cmd_create_task": "sha256:2537200146a9054a66ce4c15d3ed8459fd8c975eb3dbbbd6755f8f2aa765a6ec"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_ensure_spec_ingest",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Only approved policy may dispatch ingestion'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Ingestion metadata and role are server-owned'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id, decision_id and packet_sha256 required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: project mismatch'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "packet"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': created['created'], 'created': True}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "created"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': existing.receipt['task_id'], 'created': False}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc), 'code': exc.code}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "typed",
+    "source_digest": "sha256:096c279baa115a53fb5771bdf02d7e1398cd4ca11194af493d90be0887d0fb31",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_default_playbook_v2_artifacts.py",
+      "tests/test_task_batch_commands.py",
+      "tests/test_default_pipeline_intake.py",
+      "tests/test_routing_mandatory.py"
+    ]
+  },
+  "spec_ingest_legacy_inventory": {
+    "argument_reads_diagnostic_only": [
+      "after_id",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_spec_ingest_legacy_inventory",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'assignments': [dict(r) for r in rows[:100]], 'next_after_id': rows[99]['id'] if len(rows) > 100 else None, 'policy': 'Committed receipts remain readable. New materialization is held; the operator must explicitly review/snapshot the source. No approval replay.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Legacy reconciliation is operator-only'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id required; only after_id is optional'}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e3078edbbb653ee92c53d84c4342aded24268e58a0ee54f19d0b0e2a58a7d881",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py",
+      "tests/test_task_batch_commands.py"
+    ]
+  },
+  "spec_ingest_reconcile": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/spec_ingest_commands.py:SpecIngestCommandsMixin._cmd_spec_ingest_reconcile",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'dispatched': len(ids) - len(errors), 'errors': errors}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Reconciliation accepts no caller authority'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Ingestion reconciliation is operator-only'}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2737131c4448c2b0ecc1f611a9b33a3f4a92f62368711fb3b0bdf64365630440",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py",
+      "tests/test_default_pipeline_intake.py"
+    ]
+  }
+}

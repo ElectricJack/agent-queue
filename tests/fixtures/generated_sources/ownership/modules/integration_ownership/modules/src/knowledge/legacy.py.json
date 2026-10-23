@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/knowledge/legacy.py::LEGACY_MEMORY_PLUGINS": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

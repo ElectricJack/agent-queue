@@ -1,0 +1,15 @@
+{
+  "shared": {
+    "src/cli/formatter_registry.py::_register_all": {
+      "baseline_span": [
+        193,
+        610
+      ],
+      "landing_span": [
+        193,
+        625
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

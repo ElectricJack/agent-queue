@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/providers/intent.py::CLASS_ONLY": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/providers/intent.py::resolve_intent": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

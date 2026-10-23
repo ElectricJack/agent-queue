@@ -1,0 +1,12 @@
+{
+  "generic_dependencies": {
+    "src/scheduler.py::AssignAction": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/scheduler.py::PlacementCandidate": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/scheduler.py::PoolKey": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/scheduler.py::PoolProjectSupply": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/scheduler.py::PoolSupply": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/scheduler.py::place_pool_actions": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/scheduler.py::rebalance_idle_pools": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/scheduler.py::size_pools": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
