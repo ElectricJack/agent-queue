@@ -1,5 +1,5 @@
 // Bare fetch helpers for the handful of routes that aren't part of the
-// auto-generated client (/health, /ready, /plans/{task_id},
+// auto-generated client (/health, /ready,
 // /tasks/{id}/files, /tasks/{id}/file). All command endpoints go through
 // the typed SDK in client.ts — do not reach for these for new code.
 
