@@ -185,7 +185,7 @@ aq --json digest status
 aq --json digest preview
 
 # The incidents that migrated, plus anything opened since.
-aq escalation list --states needs_human,reply_received
+aq escalation list --states '["needs_human","reply_received"]'
 ```
 
 What to look at:

@@ -8,9 +8,8 @@ import json
 import logging
 import time
 
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import insert, or_, select, update
 
-from src.database.queries.wait_queries import REGISTRATION_LOCK
 from src.database.tables import (
     admission_reservations,
     continuations,
@@ -20,6 +19,7 @@ from src.database.tables import (
     wait_records,
 )
 from src.waits.listener import LeaseLost, ListenerUnavailable
+from src.waits.graph import background_graph_work, lock_graph
 from src.waits.sources import insert_message_with_source_event
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ class WaitTimerDriver:
             fired += bool(result.get("success"))
         return fired
 
+    @background_graph_work()
     async def quarantine(self, deadline, refusal):
         """Retire one poisoned deadline, retaining its refusal and notifying once.
 
@@ -82,7 +83,7 @@ class WaitTimerDriver:
         """
         now = self.clock()
         async with self.service.orch.db._engine.begin() as conn:
-            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+            await lock_graph(conn)
             await self.service.listener.locked_lease(conn)
             row = (await conn.execute(update(wait_deadlines).where(
                 wait_deadlines.c.id == deadline["id"],
@@ -126,6 +127,7 @@ class WaitTimerDriver:
             except TimeoutError:
                 pass
 
+    @background_graph_work()
     async def fire(self, args, *, principal, scope, handler):
         """Transactional command callback; all five deadline types share this CAS.
 
@@ -143,7 +145,7 @@ class WaitTimerDriver:
         async with db._engine.begin() as conn:
             # Match source dispatch: graph before lease, so a busy graph never
             # fences out lease renewal and timer/source writers cannot deadlock.
-            await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+            await lock_graph(conn)
             try:
                 cursor = await self.service.listener.locked_lease(conn)
             except LeaseLost:

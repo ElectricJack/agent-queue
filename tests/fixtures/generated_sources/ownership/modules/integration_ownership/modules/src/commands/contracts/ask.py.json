@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/ask.py::GATEWAY_COMMANDS": "Generic gateway capability names for human request transport; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::GLOBAL_CONTROL_COMMANDS": "Names global ask reset, reconciliation and cutover controls; these govern the human-ask subsystem rather than Git integration cutover.",
+    "src/commands/contracts/ask.py::OPERATOR_COMMANDS": "Generic operator capability names for human request maintenance; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::register_ask_contracts": "Generic command registration and result/effect schemas shared by every ask source. Delegates to CommandHandler without interpreting integration state; integration source handlers and the builtin registry remain independently charged."
+  }
+}

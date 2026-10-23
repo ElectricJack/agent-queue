@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/sessions/context.py::compact_tokens": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/context.py::read_context": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

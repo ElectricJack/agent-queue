@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin.list_pending_integration_events": {
+      "baseline_span": [
+        2036,
+        2078
+      ],
+      "landing_span": [
+        1991,
+        2033
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin.retain_integration_event": {
+      "baseline_span": [
+        1744,
+        1848
+      ],
+      "landing_span": [
+        1699,
+        1803
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

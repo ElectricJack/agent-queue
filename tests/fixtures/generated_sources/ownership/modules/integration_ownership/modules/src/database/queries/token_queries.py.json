@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/token_queries.py::TokenQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

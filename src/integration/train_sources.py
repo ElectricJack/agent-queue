@@ -52,6 +52,7 @@ from src.integration.batches import (
     BatchStore,
     SupersedeMemberUnavailable,
     candidate_ref,
+    pair_conflict_sources_query,
     released_repair_attempts_on,
     withheld_source_blocker,
     withheld_sources_query,
@@ -762,12 +763,13 @@ class DatabaseBatches:
     STACK_CACHE_LIMIT = 256
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time,
-                 pr_gate: Callable | None = None, cleanup=None):
+                 pr_gate: Callable | None = None, cleanup=None, refresh_conflict=None):
         self.db, self.limit, self.clock = db, limit, clock
         self._stack_scan = {}
         self.pr_gate = pr_gate
         self.repaired_source_gate = getattr(pr_gate, "admit_repaired_source", None)
         self.cleanup = cleanup
+        self.refresh_conflict = refresh_conflict
         self._refresh_snapshots = {}
         # Scheduling hints only: every continuation reloads rows and Git proof.
         # Advance before awaiting a candidate so cancellation cannot pin a prefix.
@@ -778,6 +780,132 @@ class DatabaseBatches:
         self._frontier_observations: dict[tuple[str, str, str], tuple[dict, ...]] = {}
         #: epic task id -> ((epic head, default head), refresh detail)
         self._conflict_refreshes: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
+
+    async def refresh_pair_conflicts(self, target):
+        """Retry the durable source-refresh request, never a batch fixer."""
+        if self.refresh_conflict is None:
+            return
+        table = integration_batches
+        async with self.db._engine.connect() as conn:
+            records = (await conn.execute(select(table.c.id, table.c.ejection_record).where(
+                table.c.project_id == target.project_id,
+                table.c.repository_id == target.repository_id,
+                table.c.target_ref == target.target_ref,
+                table.c.intent == "aborted",
+                table.c.ejection_record["pair_conflict"]["refresh_status"].astext == "pending",
+            ))).all()
+        for batch_id_, record in records:
+            try:
+                result = await self.refresh_conflict(batch_id_, record)
+            except Exception:
+                logger.warning("Source refresh for conflict batch %s will retry", batch_id_,
+                               exc_info=True)
+                continue
+            if not result.get("success"):
+                continue
+            conflict = {**record["pair_conflict"], "refresh_status": "requested",
+                        "refresh_result": result}
+            async with self.db.immediate() as conn:
+                await conn.execute(update(table).where(
+                    table.c.id == batch_id_, table.c.ejection_record == record,
+                ).values(ejection_record={**record, "pair_conflict": conflict}))
+
+    async def drop_conflict(self, target, batch, members, observation, snapshot, service):
+        """Replace a root batch with its dependency-closed healthy remainder.
+
+        Rebuild from the target, never the partial candidate: an earlier member
+        may itself depend on the rejected member. Refresh/promotion and existing
+        repair writers retain their own publication and recovery semantics.
+        """
+        if (target.kind not in {"root", "development"} or batch.epic_sync or batch.epic_refresh
+                or batch.repair_attempt_count):
+            return None
+        detail = observation.detail or {}
+        # A regenerator's unsafe output is a batch/configuration fault, not
+        # evidence that this member conflicts. Keep its existing repair path.
+        if detail.get("reason") not in {"merge_conflict", "alembic_head_collision"}:
+            return None
+        task_id = detail.get("member")
+        frozen = {m.task_id: m for m in members}
+        if task_id not in frozen:
+            return None
+        row = await self.db.get_integration_batch(batch.id)
+        if row["fixer_state"] or row["fixer_queue"]:
+            return None
+
+        async def dependency_edges():
+            async with self.db._engine.connect() as conn:
+                return set((await conn.execute(select(
+                    task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+                ).join(tasks, tasks.c.id == task_dependencies.c.task_id).where(
+                    tasks.c.project_id == batch.project_id,
+                    task_dependencies.c.dep_type == "blocks",
+                ))).all())
+
+        edges = await dependency_edges()
+        repo = await service.gitops.repository(batch)
+        removed = {task_id}
+        checked = set()
+        while True:
+            # Include paths through a prerequisite outside this batch too.
+            while True:
+                closure = removed | {tid for tid, need in edges if need in removed}
+                if closure == removed:
+                    break
+                removed = closure
+            unchecked = (removed & frozen.keys()) - checked
+            if not unchecked:
+                break
+            for tid in sorted(unchecked):
+                for member in members:
+                    if member.task_id not in removed and await service.gitops.is_ancestor(
+                        repo, frozen[tid].source_sha, member.source_sha,
+                    ):
+                        removed.add(member.task_id)
+            checked |= unchecked
+        removed &= frozen.keys()
+        remaining = tuple(replace(m, order=i) for i, m in enumerate(
+            m for m in members if m.task_id not in removed))
+        replacement = None
+        trees = {}
+        if remaining:
+            digest = hashlib.sha256(repr((batch.id, task_id, remaining,
+                                         snapshot.target_oid)).encode()).hexdigest()
+            replacement = replace(batch, id="train-pair-" + digest[:32], created_at=self.clock())
+            requests = await load_delivery_requests(
+                self.db, [m.task_id for m in remaining], repository_id=batch.repository_id,
+                target_ref=batch.target_ref, reduced=True,
+            )
+            remaining, trees = await service.freeze_inputs(
+                replacement, remaining, requests=requests, snapshot=snapshot)
+
+        async def authorize():
+            return (await service._authorized(batch, members)
+                    and await dependency_edges() == edges
+                    and await service.gitops.remote(repo, batch.target_ref) == snapshot.target_oid
+                    and await service.gitops.remote(repo, candidate_ref(batch.id))
+                    == observation.candidate_sha)
+
+        reason = "pair_conflict:" + task_id
+        source_requests = await load_delivery_requests(
+            self.db, [task_id], repository_id=batch.repository_id,
+            target_ref=batch.target_ref, reduced=True,
+        )
+        conflict = {"task_id": task_id, "target_sha": snapshot.target_oid,
+                    "sources": {tid: frozen[tid].source_sha for tid in sorted(removed)},
+                    "completion_id": source_requests[task_id].completion_id,
+                    "files": detail.get("files", []), "refresh_status": "pending"}
+        await service.store.eject(
+            batch, task_id, replacement, remaining, trees=trees, authorize=authorize,
+            dry_run=False, operator_id=TRAIN_HOLDER, reason=reason,
+            dependent_ids=removed - {task_id}, pair_conflict=conflict,
+        )
+        await self.refresh_pair_conflicts(target)
+        return BatchSelection(batch=replacement, members=remaining, blockers=({
+            "code": reason, "task_id": task_id, "batch_id": batch.id,
+            "ejected_members": sorted(removed), "target_sha": snapshot.target_oid,
+            "replacement_batch_id": replacement.id if replacement else None,
+        },))
 
     async def _refresh_conflicting_epics(self, target, snapshot, blockers) -> None:
         """Start one epic refresh per conflicting (epic head, default head) pair.
@@ -883,6 +1011,7 @@ class DatabaseBatches:
         # One fetched observation per serialized visit. Eligibility is called
         # again inside publication locks and must only read these local facts.
         self._refresh_snapshots[target.key] = snapshot
+        await _finish_on_cancel(self.refresh_pair_conflicts(target))
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db, clock=self.clock)
@@ -1479,6 +1608,8 @@ class DatabaseBatches:
         evaluated_ids: set[str] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
+        from src.integration.github_review_poll import root_pr_target_scope
+
         if target.kind == "promotion":
             return None
         delivered_to_project = set(delivered_ids or ())
@@ -1513,6 +1644,10 @@ class DatabaseBatches:
                 withheld_sources_query(target).where(
                     integration_batch_members.c.task_id.in_(ids))
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
+            )).all()}
+            pair_conflicts = {(row.task_id, row.source_sha): row for row in (await conn.execute(
+                pair_conflict_sources_query(target, snapshot.target_oid).where(
+                    integration_batch_members.c.task_id.in_(ids))
             )).all()}
             repairs = set((await conn.execute(select(task_metadata.c.task_id).where(
                 task_metadata.c.task_id.in_(ids), task_metadata.c.key == "stack_repair_for",
@@ -1573,6 +1708,7 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
+        selection_count("candidates_eligible", len(ids))
         for index, task_id in enumerate(ids):
             if (index and selection_deadline is not None
                     and self._selection_clock() >= selection_deadline):
@@ -1586,6 +1722,7 @@ class DatabaseBatches:
                     })
                 break
             candidate_started = self._selection_clock()
+            selection_count("candidates_evaluated")
             if selection_deadline is not None:
                 self._selection_after[target.key] = task_id
             if evaluated_ids is not None:
@@ -1657,6 +1794,15 @@ class DatabaseBatches:
                     blockers.append(withheld_source_blocker(
                         target, task_id, source, withheld[task_id, source]))
                 continue
+            if (task_id, source) in pair_conflicts:
+                conflict = pair_conflicts[task_id, source]
+                withheld_ids.add(task_id)
+                if blockers is not None:
+                    blockers.append({"code": conflict.human_abort_reason,
+                        "task_id": task_id, "ref": task_id, "source_sha": source,
+                        "target_sha": snapshot.target_oid, "batch_id": conflict.batch_id,
+                        "detail": "Build conflict; source or target head must change before retry"})
+                continue
             with selection_stage("stack_source", items=1):
                 stack_valid = (await stacks.current(task_id, source_sha=source)
                                and await stacks.source_contains_stack(task_id, source, snapshot))
@@ -1669,7 +1815,8 @@ class DatabaseBatches:
                 continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
-                with selection_stage("pr_admission", items=1):
+                with (selection_stage("pr_admission", items=1),
+                      root_pr_target_scope(target, snapshot.target_oid)):
                     refusal = (await self.pr_gate(target, member) if self.pr_gate else {
                         "code": "unknown", "ref": task_id, "task_id": task_id,
                         "detail": "root PR admission observer is unavailable",
@@ -1697,7 +1844,9 @@ class DatabaseBatches:
                     member, refusal = refused_sources[source_id]
                     if member.source_sha != bases.get(repair_id):
                         continue
-                    if await admit_repaired(target, member) is None:
+                    with root_pr_target_scope(target, snapshot.target_oid):
+                        repaired_refusal = await admit_repaired(target, member)
+                    if repaired_refusal is None:
                         members[source_id] = member
                         paired_sources.setdefault(source_id, set()).add(repair_id)
                         if blockers is not None and refusal in blockers:
@@ -3471,8 +3620,15 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
     from src.integration.fixer_runtime import DaemonFixerRuntime
     from src.integration.dispatch_waits import DispatchWaits
 
+    async def refresh_conflict(batch_id_, record):
+        handler = getattr(orchestrator, "_command_handler", None)
+        if handler is None:
+            return {"success": False, "outcome": "unavailable"}
+        return await handler.refresh_integration_pair_conflict(batch_id_, record)
+
     batches = DatabaseBatches(orchestrator.db, clock=clock,
-                             cleanup=getattr(orchestrator, "integration_cleanup_service", None))
+                             cleanup=getattr(orchestrator, "integration_cleanup_service", None),
+                             refresh_conflict=refresh_conflict)
     lanes = DaemonLanes(orchestrator, batches=batches, clock=clock)
     waits = DispatchWaits(orchestrator, lanes=lanes, clock=clock)
     return IntegrationTrain(

@@ -1,0 +1,22 @@
+{
+  "generic_dependencies": {
+    "src/waits/dispatcher.py::WakeDispatcher.__init__": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::WakeDispatcher.commit": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::WakeDispatcher.finish": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.database.queries.continuation_queries import wait_outcome_envelope": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.waits.graph import clear_edges, lock_component_tasks, lock_graph, recompute_from": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.waits.loops import progress": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.waits.ownership import fence_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "storage_sinks": {
+    "src/waits/dispatcher.py::WakeDispatcher.finish::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 184,
+      "owner": "WakeDispatcher.finish",
+      "owner_fingerprint": "d2454986d593395624ba6150c30b2a2c02a6606612f82237cc964a2190b69432",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    }
+  }
+}

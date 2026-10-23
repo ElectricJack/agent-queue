@@ -1,0 +1,13 @@
+{
+  "shared": {
+    "src/commands/policy_commands.py::PolicyCommandsMixin._cmd_policy_apply": {
+      "reason": "Converts selected integration settings into guarded configuration commands with expected integration generation and preserves target-local activation routes."
+    },
+    "src/commands/policy_commands.py::PolicyCommandsMixin._policy_export_bundle": {
+      "reason": "Exports live integration settings while refusing development policies with installation-local identities; charges the full mixed policy export body."
+    },
+    "src/commands/policy_commands.py::PolicyCommandsMixin._policy_files": {
+      "reason": "Reads stored promotion flow and constructs portable integration settings from the live project and configured integration engine."
+    }
+  }
+}

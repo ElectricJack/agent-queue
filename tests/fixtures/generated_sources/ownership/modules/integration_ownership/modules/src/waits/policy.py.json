@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/waits/policy.py::effective_policy": "Shared verified-wait rollout and policy resolver, independent of integration; close uses it without owning other wait consumers.",
+    "src/waits/policy.py::enabled": "Shared verified-wait rollout and policy resolver, independent of integration; close uses it without owning other wait consumers."
+  }
+}

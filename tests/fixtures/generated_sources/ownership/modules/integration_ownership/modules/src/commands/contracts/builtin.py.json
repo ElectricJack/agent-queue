@@ -1,0 +1,84 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/builtin.py::_handler": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/contracts/builtin.py::CreateTaskArgs.integration_mode": {
+      "baseline_span": [
+        43,
+        43
+      ],
+      "landing_span": [
+        43,
+        43
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/contracts/builtin.py::CreateTaskValue.integration_mode": {
+      "baseline_span": [
+        77,
+        77
+      ],
+      "landing_span": [
+        77,
+        77
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/contracts/builtin.py::EditTaskArgs.integration_mode": {
+      "baseline_span": [
+        166,
+        166
+      ],
+      "landing_span": [
+        166,
+        166
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/contracts/builtin.py::EnsureTaskArgs.integration_mode": {
+      "baseline_span": [
+        100,
+        100
+      ],
+      "landing_span": [
+        100,
+        100
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/contracts/builtin.py::PRESENTATIONS['create_task']": {
+      "baseline_span": [
+        1044,
+        1072
+      ],
+      "landing_span": [
+        1044,
+        1072
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/contracts/builtin.py::PRESENTATIONS['edit_task']": {
+      "baseline_span": [
+        1115,
+        1141
+      ],
+      "landing_span": [
+        1115,
+        1141
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/contracts/builtin.py::register_builtin_contracts": {
+      "baseline_span": [
+        1605,
+        2010
+      ],
+      "landing_span": [
+        1605,
+        2007
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

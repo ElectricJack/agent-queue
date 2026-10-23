@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/prompt_builder.py::PromptBuilder": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

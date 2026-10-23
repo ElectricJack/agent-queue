@@ -1,0 +1,19 @@
+{
+  "generic_dependencies": {
+    "src/portable_setup.py::collect_classes": "Collects, sanitizes and validates intelligence-class markdown while rejecting symlink escapes; it does not inspect integration policy or refs.",
+    "src/portable_setup.py::pool_settings": "Projects parsed profile inheritance, harness and pool knobs into PoolSettings; it contains no integration owner or source-admission logic.",
+    "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
+    "src/portable_setup.py::project_settings": "Projects ordinary project fields and sanitized repository URLs into portable ProjectSettings without examining integration evidence or changing Git state."
+  },
+  "shared": {
+    "src/portable_setup.py::ProjectSettings.integration_preferences": {
+      "reason": "Typed portable integration preference draft; carries desired mode, policy and repository identity without runtime state."
+    },
+    "src/portable_setup.py::ProjectSettings.valid_policy": {
+      "reason": "Read-only validation of portable integration modes and review delegation."
+    },
+    "src/portable_setup.py::ProjectSettings.with_project_preferences": {
+      "reason": "Read-only typed projection of desired integration mode, policy and repository identity; generic project and repository export remains separate."
+    }
+  }
+}

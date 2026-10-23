@@ -452,7 +452,7 @@ class TestAdapterHealthMethods:
 
 
 async def _get_plan(task_id: str, *, content: str | None = "# Plan\n"):
-    """Call GET /plans/{task_id} against a router-only app with a stub provider."""
+    """Call GET /api/plans/{task_id} against a router-only app with a stub provider."""
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
@@ -472,7 +472,7 @@ async def _get_plan(task_id: str, *, content: str | None = "# Plan\n"):
         app.include_router(router)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get(f"/plans/{task_id}")
+            resp = await client.get(f"/api/plans/{task_id}")
     finally:
         deps._plan_content_provider = old_prov
 
@@ -484,7 +484,7 @@ class TestPlanViewerTaskIds:
 
     @pytest.mark.asyncio
     async def test_root_task_id_is_served(self):
-        """A root id (``adjective-noun``) reaches the provider and renders."""
+        """A root id (``adjective-noun``) reaches the provider as JSON."""
         resp, seen = await _get_plan("solid-grove")
 
         assert resp.status_code == 200
@@ -497,7 +497,8 @@ class TestPlanViewerTaskIds:
 
         assert resp.status_code == 200
         assert seen == ["solid-grove.13"]
-        assert "solid-grove.13" in resp.text
+        assert resp.headers["content-type"] == "application/json"
+        assert resp.json() == {"task_id": "solid-grove.13", "content": "# Plan\n"}
 
     @pytest.mark.asyncio
     async def test_deeply_nested_task_id_is_served(self):
@@ -545,3 +546,28 @@ class TestPlanViewerTaskIds:
         from src.api.health import _TASK_ID_RE
 
         assert _TASK_ID_RE.match(candidate) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content", ["", "# Plan\n<&>\n<script>alert('x')</script>"])
+    async def test_content_is_unchanged_json_data(self, content):
+        resp, seen = await _get_plan("solid-grove", content=content)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/json"
+        assert resp.json() == {"task_id": "solid-grove", "content": content}
+        assert seen == ["solid-grove"]
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_provider_returns_json_404(self, monkeypatch):
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from src.api import dependencies as deps
+        from src.api.health import router
+
+        monkeypatch.setattr(deps, "_plan_content_provider", None)
+        app = FastAPI()
+        app.include_router(router)
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            response = await client.get("/api/plans/solid-grove")
+        assert response.status_code == 404
+        assert response.json() == {"error": "plan viewer not configured"}

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/supervisor_inbox.py::register_supervisor_inbox_contracts": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

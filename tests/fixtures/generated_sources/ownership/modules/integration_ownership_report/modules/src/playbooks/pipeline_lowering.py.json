@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/playbooks/pipeline_lowering.py::import from src.playbooks.proposal import CompileProposal, propose": {
+      "baseline_span": [
+        11,
+        11
+      ],
+      "landing_span": [
+        11,
+        11
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/playbooks/pipeline_lowering.py::shadow_compile": {
+      "baseline_span": [
+        324,
+        381
+      ],
+      "landing_span": [
+        324,
+        381
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

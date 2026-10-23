@@ -1,0 +1,22 @@
+{
+  "generic_dependencies": {
+    "src/cli/app.py::_get_client": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/app.py::_handle_errors": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/app.py::_run": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/app.py::cli": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/app.py::console": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/cli/app.py::import from . import integration as _integration_cli": {
+      "baseline_span": [
+        465,
+        465
+      ],
+      "landing_span": [
+        464,
+        464
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}
