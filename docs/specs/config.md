@@ -16,7 +16,7 @@ tags: [spec, config]
 
 The config module is responsible for loading, parsing, and structuring the application's runtime configuration. It reads a single YAML file from a caller-supplied path, loads an optional `.env` file from the same directory, performs environment variable substitution on all string values, and returns a fully populated `AppConfig` dataclass instance.
 
-The module never writes configuration, never searches for the config file itself, and never falls back to alternative paths. All of that is the caller's responsibility. The module's only public entry point is the `load_config(path: str) -> AppConfig` function.
+The module never writes configuration, never searches for the config file itself, and never falls back to alternative paths. All of that is the caller's responsibility. Its main load entry point is `load_config(path: str, profile: str | None = None) -> AppConfig`; the module also exposes validation, diffing and watcher helpers.
 
 ## Source Files
 - `src/config.py` — read path: `load_config(path)` returns an `AppConfig`
@@ -54,7 +54,7 @@ The `.env` file is a line-oriented key-value file. Processing rules:
 - Lines that do not contain `=` are skipped.
 - Each qualifying line is split into a key and a value using `partition("=")`: the key is everything before the first `=`, the value is everything after. Both key and value are stripped of leading and trailing whitespace after splitting.
 - If the resulting key is an empty string, the entry is skipped.
-- A key is only written into `os.environ` if it does **not** already exist there. Existing environment variables are never overwritten by the `.env` file.
+- A key is written into `os.environ` even if it already exists. A differing value logs a warning naming the variable and `.env` file, without logging either value.
 
 ### YAML Value Substitution
 
@@ -398,16 +398,11 @@ authoritative. Failed cycles retain the periodic retry delay even during an even
 burst. Idle installations keep the existing periodic and config polling cadence.
 
 
-### 4.5 `pause_retry` Section
+### 4.5 Retired `pause_retry` section
 
-Maps to `PauseRetryConfig`. The YAML key is `pause_retry`.
-
-| YAML key | Type | Default | Description |
-|---|---|---|---|
-| `rate_limit_backoff_seconds` | `int` | `60` | Seconds to pause a task after hitting a rate limit, before the task is eligible to resume. |
-| `token_exhaustion_retry_seconds` | `int` | `300` | Seconds to wait before retrying after daily token budget is exhausted. |
-| `rate_limit_max_retries` | `int` | `3` | Maximum number of in-process retries for rate limit errors before the task is paused at the orchestrator level. |
-| `rate_limit_max_backoff_seconds` | `int` | `300` | Maximum backoff duration (in seconds) for exponential in-process retry, capping the growth of the delay. |
+`PauseRetryConfig` has been removed. `pause_retry` YAML is ignored with a warning;
+its former backoff fields have no runtime effect. Use the current
+[provider availability settings](../reference/configuration.md#provider-availability-settings).
 
 ### 4.6 `llm` — the direct LLM path
 
@@ -420,7 +415,7 @@ Maps to `PauseRetryConfig`. The YAML key is `pause_retry`.
 | `max_tokens` | `4096` | response budget when a call names none |
 | `default_class` | `""` | intelligence class for calls that name none (`vault/intelligence-classes/*.md`) |
 
-The legacy `chat_provider:` block still loads (ids `gemini→google`, `ollama→openai`) with a one-time deprecation warning. Used by playbook nodes and transitions, plugin `invoke_llm`, reference-stub enrichment, and `aq vault rebuild-index --with-summaries`. Coding agents never use it — they are tmux sessions selected by the profile's `harness`.
+The legacy `chat_provider:` block still loads (ids `gemini→google`, `ollama→openai`) with a one-time deprecation warning. Used by playbook nodes and transitions, plugin `invoke_llm`, reference-stub enrichment, and `aq system vault-rebuild-index --with-summaries`. Coding agents never use it — they are tmux sessions selected by the profile's `harness`.
 
 ### 4.7 `monitoring` Section
 
@@ -990,7 +985,8 @@ for existing installations and rollback ordering.
 Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
 `resume_cost_minutes: 10`, `min_samples: 5`, `loop_window_registrations: 3`,
 `loop_window_seconds: 3600`, `branch_admission_deadline_seconds: 1800`,
-`transition_budget_seconds: 120`, and `resume_launch_attempts: 2`.
+`transition_budget_seconds: 120`, `resume_launch_attempts: 2`, and
+`resume_stall_seconds: 300`.
 
 `kinds` maps each wait kind to `WaitKindPolicy`, with
 `escalate_after_seconds` and `expected_duration_seconds`. Partial global
@@ -1005,8 +1001,8 @@ have no escalation policy and cannot be overridden.
 
 `projects.<project-id>` maps to `WaitProjectOverrides`. It accepts the three
 rollout flags, `in_place_ceiling_seconds`, `resume_cost_minutes`,
-`hibernate_margin`, and partial `kinds` entries. Absent or null override
-fields inherit the global value. `WaitPolicyConfig.resolve_project(id)`
+`resume_stall_seconds`, `hibernate_margin`, and partial `kinds` entries. Absent or
+null override fields inherit the global value. `WaitPolicyConfig.resolve_project(id)`
 returns an independent effective policy in project → global → default order.
 This supports one project's v2 canary while global rollout flags stay off;
 `src.waits.decision.project_policy` resolves through it, so per-project
@@ -1028,10 +1024,7 @@ budget must be between 1 and 86400 seconds. Counts must be positive
 integers, resume cost must be finite and positive, and the margin must be
 finite and at least 1.0. Expected durations must be nonnegative integers.
 
-`metrics` retains the optional historical cohort used for wait cost reporting:
-`pre_rollout_turn_rate` and `pre_rollout_tokens_per_turn` are finite nonnegative
-numbers, while `cohort` and `window` are non-empty strings when supplied.
-Project resolution preserves this global metrics configuration.
+Project resolution preserves the global metrics configuration.
 
 ```yaml
 wait_policy:
@@ -1055,10 +1048,11 @@ wait_policy:
 1. Check that the file at `path` exists. Raise `FileNotFoundError` if it does not.
 2. Call `_load_env_file(path)` to load the `.env` sidecar (see section 3).
 3. Open and parse the YAML file with `yaml.safe_load`. A `None` result (empty file) is normalized to `{}`.
-4. Call `_process_values(raw)` to recursively substitute all `${VAR}` placeholders in string values. This raises `ValueError` on any unset variable reference.
-5. Instantiate a default `AppConfig()` object. All fields receive their default values at this point, including home-directory expansion for path fields.
-6. For each recognized top-level key present in `raw`, construct the corresponding dataclass and assign it to the appropriate field on `config`. Keys absent from `raw` leave the corresponding `AppConfig` field at its default value.
-7. Return the populated `AppConfig`.
+4. Select the environment from `AGENT_QUEUE_ENV`, base YAML `env`, then `production`, and merge a sibling `<stem>.<env><extension>` if present.
+5. Select the profile from the caller's `profile`, then `AGENT_QUEUE_PROFILE`, and merge `profiles/<profile>.yaml`. A selected missing profile is an error.
+6. Merge mappings recursively; lists/scalars replace and overlay `null` deletes keys. Validate raw GitHub App shapes before and after recursive `${VAR}` substitution.
+7. Construct typed sections, then call `AppConfig.validate()`. Invalid configurations raise `ConfigValidationError` with the collected errors.
+8. Return the populated `AppConfig`.
 
 ### 5.2 Section Presence vs. Absence
 
@@ -1068,7 +1062,7 @@ Two helpers do this: `_present_kwargs(section, spec)` takes a hand-written `{nam
 
 ### 5.3 Unrecognized Keys
 
-Unrecognized top-level YAML keys are silently ignored. Unrecognized keys within a section are also silently ignored, because section dicts are accessed field-by-field with `.get()` rather than unpacked wholesale.
+Unrecognized top-level YAML keys are generally ignored. Some section loaders also ignore unknown fields, but strict parsers such as `wait_policy` reject unknown keys at every depth. YAML agent defaults use `agents`; the schema/tuner’s `agents_config` spelling is currently ignored by the loader, a known code mismatch.
 
 ### 5.4 Type Coercion
 
@@ -1087,11 +1081,10 @@ Coercion is not validation: `int("abc")` raises, and `bool("false")` is `True`. 
 
 ### 5.6 Environment Variable Precedence
 
-Environment variables set in the process environment before `load_config` is called take precedence over values in the `.env` file. The `.env` loader explicitly skips any key already present in `os.environ`. Therefore, the precedence order (highest to lowest) is:
-
-1. Process environment (set externally before launch, or by the OS)
-2. `.env` file in the same directory as the config file
-3. Hardcoded defaults in the dataclasses
+Values in the adjacent `.env` overwrite process environment values. A differing
+value emits a warning without exposing the secret. Environment selection and
+`${VAR}` substitution use that resulting environment. For YAML values, profile
+overlay wins over environment overlay, then base YAML, then typed defaults.
 
 ---
 
@@ -1242,23 +1235,25 @@ dashboard, the MCP surface, and the `aq` CLI.
 ### Round-Trip Preservation
 
 The writer uses `ruamel.yaml` to round-trip the file: comments, key order,
-quoting style, and `${ENV_VAR}` placeholders survive edits. The read path
-stays on `PyYAML` — env-var substitution is applied there, not in the
+quoting style outside replaced sections, and `${ENV_VAR}` placeholders survive edits.
+The read path stays on `PyYAML` — env-var substitution is applied there, not in the
 editor.
 
 ### Failure Mode
 
-`update_config` validates by running `load_config()` against a temp file
-before touching the live config. An invalid edit never reaches disk; the
-caller gets the underlying `AppConfig` validation error. On a successful
-write the previous file is preserved at `<config>.bak` for manual recovery.
+`update_config` validates a temporary sibling file before writing. That preflight
+uses a different stem and no caller-selected profile, so it does not reproduce the
+live environment/profile overlay combination. Newly invalid candidates are rejected.
+A temporary `<config>.bak` is copied before the write, restored on a write exception,
+and removed in `finally`. It is not a persistent recovery backup. Live reload runs
+afterward; a reload failure does not roll the file back. The writer itself is not
+atomic and does not validate independently.
 
 ### Live vs Restart Required
 
 Some sections apply on the next event-loop tick (logging level, scheduler
-intervals, reflection knobs). Others (DB DSN, MCP server, plugin enable
-list) require a daemon restart. The `update_config` response surfaces the
-distinction so the dashboard can show `Applied live` vs `Restart required`
+intervals, wait policy). Others (DB DSN, MCP server, sessions) require a daemon
+restart. The `update_config` response surfaces the distinction so the dashboard can show `Applied live` vs `Restart required`
 toasts.
 
 The set of sections `ConfigWatcher` compares comes from
@@ -1283,12 +1278,14 @@ still reported rather than dropped, matching the safe default
 ### CLI
 
 ```bash
-aq system config get [--section logging]
-aq system config set logging.level DEBUG
+aq system config get logging
+aq system config set logging.level=DEBUG
 aq system config edit              # opens $EDITOR on the full file
-aq system config schema [--section logging]
+aq system config schema
 ```
 
-`set` accepts dotted keys and writes through the same validate-then-swap
-path. `edit` round-trips through the same writer, so $EDITOR sessions
-preserve comments.
+`set` accepts dotted keys and `--dry-run`. `edit` opens a redacted serialization
+of the whole config, then submits changed sections separately; comments inside
+replaced sections are lost and the edits are not one transaction. See the
+[current reference](../reference/configuration.md#reload-and-restart) for the
+complete hot/restart table and redacted-secret round-trip behavior.

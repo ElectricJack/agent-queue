@@ -498,6 +498,15 @@ budget), `git_exit` (subcommand, return code and diagnostic kind), or
 integration-train messages, and a structured `git_preparation_failed` log event.
 Never include raw stderr, paths, ref names or credentials in these fields.
 
+The authenticated push itself distinguishes spawn/wait failures (exception type),
+timeouts, nonzero Git exits (return code and a scrubbed stderr tail bounded to
+4 KiB), and a credential broker that did not serve a token. Drain stderr while
+Git runs; omit oversized lines whole so truncation cannot expose credential
+fragments. Scrub tokens, URL credentials and authorization headers before
+retaining diagnostics. Batch-fix returns the reason and records it in the
+existing fixer blocker and integration-train supervisor notice, retaining the
+checkout and all publication fences.
+
 Standalone exact-object acquisition has a finite 240-second aggregate budget:
 successful local acquisitions on a busy retained store have taken 115.4 seconds
 against the former 120-second limit. An explicit caller budget always wins,

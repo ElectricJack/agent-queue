@@ -965,7 +965,7 @@ unattended agents is safe to leave alone.
 - Distributed nodes, a durable release-history record, restore rehearsals and canonical-origin admission are reviewed but unfiled.
 - A failed slot reset and a dev train deadlock are open tasks; the documentation fixes for dead doctor ids are unfiled but first in line.
 
-**Gaps today.** The legacy update path has no backup or rollback, operator docs cite six removed doctor checks, the orphan-stamp check cannot run offline, two backup implementations with no pruning, and doctor is global and overstates its honesty.
+**Gaps today.** Operator docs cite six removed doctor checks, the orphan-stamp check cannot run offline, backups have no pruning, and doctor is global and overstates its honesty.
 
 ### 7.18 [plugins-mcp-and-tools](plugins-mcp-and-tools.md)
 

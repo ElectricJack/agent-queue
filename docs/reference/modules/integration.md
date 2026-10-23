@@ -1,33 +1,58 @@
 # Module catalog — integration
 
-The subject-runtime entries below are historical. The Git-first train is always
-active; trial mode and the legacy subject publishers are removed. Use the
-[current train runbook](../../guides/git-first-train-runbook.md) for setup and
-recovery; the old modules do not provide a fallback engine.
+The live Git-first train assembles completed branches, checks exact candidates,
+repairs them through bounded fixer sessions and publishes with fenced Git writes.
+Retained Subject-era helpers support audit and recovery; their presence does not
+start a legacy publisher.
 
-Subject reconciliation and shared delivery primitives
-that decide whether a finished task branch reaches your default branch,
-and what is recorded about it.
+The compatibility setting `integration.git_first` defaults to `active` and accepts only `active`; trial mode has been removed.
 
-Prose for everything here lives on four pages:
+Read [Integration](../../concepts/integration.md), the
+[train runbook](../../guides/git-first-train-runbook.md),
+[train controls](../../guides/hierarchical-integration-trains.md) and
+[troubleshooting](../../guides/integration-troubleshooting.md). The old development,
+mode-switch and reconciler-cutover guides are explicitly historical.
 
-* [Integration](../../concepts/integration.md) — the mechanism, the modes and
-  the guarantees.
-* [Development integration](../../guides/development-integration.md) — running
-  the configured path.
-* [Integration troubleshooting](../../guides/integration-troubleshooting.md) —
-  symptom to command.
-* [Switching integration modes](../../guides/integration-migration.md) —
-  generation-fenced configuration.
+GitHub credentials and authenticated transfer belong to the
+[projects and workspaces catalog](workspaces.md#git-boundaries).
 
-Root, parent and Development Subjects share the reconciler.
-Modes select the applicable primitives and reviewed policy.
-GitHub credential selection, the shared `gh` runner and authenticated Git
-transfer live in the [projects and workspaces catalog](workspaces.md#git-boundaries);
-integration consumes their repository binding and non-secret credential
-identity without changing its CI or attestation trust rules.
+## Live train and Git evidence
 
-## Package entry points
+| Module | Responsibility |
+|---|---|
+| [`train.py`](../../../src/integration/train.py) | Level-triggered target visits, immediate idle admission, checks, repair and settlement. |
+| [`train_sources.py`](../../../src/integration/train_sources.py) | Daemon train construction, target/source selection, fenced publication and command driver. |
+| [`batches.py`](../../../src/integration/batches.py) | Durable batches, members, exact source identities and one-live-batch-per-target locking. |
+| [`train_controls.py`](../../../src/integration/train_controls.py) | Pause, resume, abort, eject, settle and guarded target-repair controls. |
+| [`train_policy.py`](../../../src/integration/train_policy.py) | Current project activation, optional playbook binding and required-check overlays. |
+| [`gitops.py`](../../../src/integration/gitops.py) | Deterministic candidate merges, source ancestry and generated conflict handling. |
+| [`regeneration.py`](../../../src/integration/regeneration.py) | Run the generated-file pipeline once after assembly. |
+| [`lock.py`](../../../src/integration/lock.py) | Repository-qualified branch lease and expected-old publication boundary. |
+| [`checks.py`](../../../src/integration/checks.py) | Exact-SHA hosted/local/hybrid evidence and required-job verdicts. |
+| [`candidate_baseline.py`](../../../src/integration/candidate_baseline.py) | Attribute candidate failures against target baseline evidence. |
+| [`fixers.py`](../../../src/integration/fixers.py) | One durable task-free fixer per batch family, bounded rounds and one incident. |
+| [`fixer_runtime.py`](../../../src/integration/fixer_runtime.py) | Fixer session launch, retained checkout, liveness and guarded publication. |
+| [`fixer_batches.py`](../../../src/integration/fixer_batches.py) | Failure-subset split, retained companions and finite deferral. |
+| [`failure_groups.py`](../../../src/integration/failure_groups.py) | Attribute failed checks to source groups and dependent members. |
+| [`dispatch_waits.py`](../../../src/integration/dispatch_waits.py) | Durable readiness waits for train dispatch. |
+| [`epics.py`](../../../src/integration/epics.py) | Epic policy, advisory checks and explicit project-playbook CI opt-in. |
+| [`promotion_steps.py`](../../../src/integration/promotion_steps.py) | PromotionVisit: pinned source, target fast-forward, recoverable tag publication. |
+| [`promotion_routing.py`](../../../src/integration/promotion_routing.py) | Resolve promotion step targets and policy routing. |
+| [`close_merge.py`](../../../src/integration/close_merge.py) | Author-assisted integration merge at close without surrendering source identity. |
+| [`close_runtime.py`](../../../src/integration/close_runtime.py) | Close-merge runtime and continuation handoff. |
+| [`retained_workspace.py`](../../../src/integration/retained_workspace.py) | Warm integration workspaces and cache configuration. |
+| [`provenance.py`](../../../src/integration/provenance.py) | Completion provenance refs retained independently of task-row delivery flags. |
+| [`containment_git.py`](../../../src/integration/containment_git.py) | Strict Git containment proofs for exact retained source objects. |
+| [`delivery_truth.py`](../../../src/integration/delivery_truth.py) | Current target containment and immutable proof caching. |
+| [`git_truth.py`](../../../src/integration/git_truth.py) | Fetched Git evidence used by delivery projections. |
+| [`delivery_observer.py`](../../../src/integration/delivery_observer.py) | Shared delivery snapshots for claims, archive guards and status. |
+| [`admission.py`](../../../src/integration/admission.py) | Current delivery admission view shared by consumers. |
+| [`truth_reconciler.py`](../../../src/integration/truth_reconciler.py) | Heal integration projections from current Git evidence. |
+| [`delivery_watchdog.py`](../../../src/integration/delivery_watchdog.py) | Diagnose stale delivery progress and dispatch recovery. |
+| [`selection_metrics.py`](../../../src/integration/selection_metrics.py) | Record train selection and delivery timing observations. |
+| [`stall_alerts.py`](../../../src/integration/stall_alerts.py) | Deduplicated stalled-batch reports. |
+
+## Shared primitives and retained adapters
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
@@ -36,28 +61,24 @@ identity without changing its CI or attestation trust rules.
 | [`src/integration/gates.py`](../../../src/integration/gates.py) | Bounded waits, immutable human gate definitions/answers, and atomic policy-authorized ejection with task disposition and repair provenance. | [records and gates spec](../../superpowers/specs/2026-10-02-integration-records-and-gates.md) | Phase 2 primitives 17–19. Legacy gate resolution cannot fabricate approval; kind adapters commit membership/disposition in the caller's transaction. `tests/test_integration_records_and_gates.py` |
 | [`src/integration/__init__.py`](../../../src/integration/__init__.py) | Re-exports the frozen value objects (`BranchKey`, `Fence`, `PromotionInput`, `PromotionValue`, `RepairPolicy`, `RequiredCheckSet`) that commands and playbooks pass across the boundary. | [concepts/integration.md](../../concepts/integration.md) | Any mode. Import the models from here, not from submodules. |
 | [`src/integration/models.py`](../../../src/integration/models.py) | The frozen Pydantic value objects: branch keys and fences, promotion inputs, required-check sets, repair and cleanup policy, the validated `HierarchicalIntegrationPolicy`, and the owner-role sets that decide which reservations may be retried or re-queued. | [concepts/integration.md](../../concepts/integration.md) | Any mode. `extra="forbid"` everywhere: an unknown field is a bug, not a passthrough. `tests/test_integration_hierarchy.py` |
-| [`src/integration/service.py`](../../../src/integration/service.py) | One bounded pass visits root, parent and Development Subjects, drains the outbox, and runs maintenance; no autonomous delivery or repair scan. | [concepts/integration.md](../../concepts/integration.md) | Shared mechanism; delivery writes require the owning Subject. |
-| [`src/integration/subjects.py`](../../../src/integration/subjects.py) | The typed ports of the level-triggered reconciler (rev-agile-ridge revision 2, §3): the `Subject` row model with its exact head/generation identity, writer lease, writer budget, pinned policy artifact and never-blocked `SubjectSchedule`; the observer's `SubjectFacts`; the twenty primitives with typed arguments and closed outcome sets; `Decision`, `PrimitiveOutcome` and the `PrimitivePorts` registry. | [reference/database/tables.md](../database/tables.md) | Strict, phase 1 (additive, not activated: every new subject belongs to the reconciler). Mechanism only, no I/O; adds no command surface. `tests/test_integration_subjects.py`, `tests/test_migration_integration_subjects.py` |
-| [`src/integration/parent_subjects.py`](../../../src/integration/parent_subjects.py) | Additive episode-to-subject bridge and parent observation adapters; preserve receipt, verification and failed-recovery lineage in a read-only snapshot. | [Parent subject adapters](../../superpowers/specs/2026-10-02-parent-subject-adapters.md) | Owned by the reconciler; reuses existing readiness and keen-stone-14 recovery. `tests/test_integration_parent_subjects.py`, `tests/test_migration_parent_subjects.py` |
+| [`src/integration/service.py`](../../../src/integration/service.py) | Runs the live train through CommandHandler, dispatches the outbox and performs bounded maintenance; readiness events wake its five-second loop. | [concepts/integration.md](../../concepts/integration.md) | Retained adapters preserve their own authority checks; live writes belong to the train. |
+| [`src/integration/parent_subjects.py`](../../../src/integration/parent_subjects.py) | Additive episode-to-subject bridge and parent observation adapters; preserve receipt, verification and failed-recovery lineage in a read-only snapshot. | [Parent subject adapters](../../superpowers/specs/2026-10-02-parent-subject-adapters.md) | Retained Subject-era adapter; reuses readiness and historical recovery. `tests/test_integration_parent_subjects.py`, `tests/test_migration_parent_subjects.py` |
 | [`src/integration/ci_producers.py`](../../../src/integration/ci_producers.py) | Shared exact-head CI facts from authenticated hosted checks or sequential finite jobs in a detached snapshot; retains cancellation, supersession and infrastructure classifications. | [shared CI specification](../../superpowers/specs/2026-10-02-shared-ci-producers.md) | `tests/test_integration_ci_producers.py`; local jobs never run in the production clone. |
-| [`src/integration/ci_adapters.py`](../../../src/integration/ci_adapters.py) | Explicit `PrimitivePorts` registration for CI request, observation and attestation, with durable subject identity checks and replay-safe journal evidence. | [shared CI specification](../../superpowers/specs/2026-10-02-shared-ci-producers.md) | `bind_ci_adapters` is the integration-owner wiring seam; existing App attestation remains authoritative. |
+| [`src/integration/ci_adapters.py`](../../../src/integration/ci_adapters.py) | Explicit `PrimitivePorts` registration for CI request, observation and attestation, with durable subject identity checks and replay-safe journal evidence. | [shared CI specification](../../superpowers/specs/2026-10-02-shared-ci-producers.md) | `CIAdapters.bind` is the retained integration-owner wiring seam; existing App attestation remains authoritative. |
 | [`src/integration/observe.py`](../../../src/integration/observe.py) | The read-only observation ports: `DatabaseObservationReader` reads project- and repository-scoped `SELECT`s in one PostgreSQL read-only repeatable-read snapshot, `GitObservationReader` adds strict Git reads that answer `unknown` for a missing object, and `IntegrationObserver` assembles the observer's `SubjectFacts` — candidates, CI evidence, writer lease, budget, gates, human holds and unresolved writes. | [concepts/integration.md](../../concepts/integration.md) | Strict, phase 1. No row lock is taken and a fact it cannot read is reported, never guessed; a held subject is observed even with no due time. `tests/test_integration_observe.py` |
-| [`src/integration/reconciler.py`](../../../src/integration/reconciler.py) | The level-triggered visit loop: read the subject, observe, decide once from the injected policy, journal the decision as a prewrite, then act through the bound ports and commit the outcome and due schedule atomically. `JournalMode.SHADOW` (the default) may only record decisions and due bookkeeping; `SHADOW` visits legacy subjects too, `ACTIVE` visits only reconciler-owned ones. | [concepts/integration.md](../../concepts/integration.md) | Strict, phase 1. A decision is durable before any adapter call, so an interrupted visit records the ambiguity, advances the version and re-observes rather than repeating a remote effect. `tests/test_integration_reconciler.py` |
-| [`src/integration/engine.py`](../../../src/integration/engine.py) | Exact durable reconciler ownership and repository advisory locks; forward-only activation of retained historical rows and fenced publication. | [guides/reconciler-shadow-cutover-runbook.md](../../guides/reconciler-shadow-cutover-runbook.md) | Shared mechanism; delivery writes require the owning Subject. |
-| [`src/integration/root_adapters.py`](../../../src/integration/root_adapters.py) | `RootPrimitiveAdapters`: one fenced, idempotent method per primitive, each wrapped by `guarded()` so it re-observes under the operation lock, refuses while a binding human hold or unanswered gate stands, and requires the reconciler's committed decision prewrite to match the exact request. | [concepts/integration.md](../../concepts/integration.md) | Strict, phase 1. An adapter returns a closed outcome or `unknown(reason)`; it never raises across the boundary. `tests/test_integration_root_adapters.py` |
-| [`src/integration/root_runtime.py`](../../../src/integration/root_runtime.py) | Seeds durable root requests and batches, resolves the frozen policy pin, and visits active Subjects; disabling visits preserves ownership. | [guides/reconciler-shadow-cutover-runbook.md](../../guides/reconciler-shadow-cutover-runbook.md) | Shared mechanism; delivery writes require the owning Subject. |
+| [`src/integration/engine.py`](../../../src/integration/engine.py) | Exact durable reconciler ownership and repository advisory locks; forward-only activation of retained historical rows and fenced publication. | [guides/reconciler-shadow-cutover-runbook.md](../../guides/reconciler-shadow-cutover-runbook.md) | Retained adapters preserve their own authority checks; live writes belong to the train. |
 | [`src/integrations/__init__.py`](../../../src/integrations/__init__.py) | Marker package for glue that wires core services into the orchestrator lifecycle without importing framework concerns into the core modules. | [concepts/integration.md](../../concepts/integration.md) | Any mode. Docstring-only package; the wiring itself lives in [`src/orchestrator/core.py`](../../../src/orchestrator/core.py). |
 
-## Development delivery
+## Configuration and retained development support
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [`src/integration/development.py`](../../../src/integration/development.py) | Shared Development policy, Git store and journal primitives; the Development Subject runtime owns scheduling and policy decisions. | [guides/development-integration.md](../../guides/development-integration.md) | Shared mechanism; delivery writes require the owning Subject. |
+| [`src/integration/development.py`](../../../src/integration/development.py) | Retained development policy, Git store and journal primitives. The Development Subject publisher/runtime has been retired. | [guides/development-integration.md](../../guides/development-integration.md) | Retained adapters preserve their own authority checks; live writes belong to the train. |
 | [`src/integration/delivery_path.py`](../../../src/integration/delivery_path.py) | Which delivery path a task or project has: whether a repository can host a pull request (github.com only), the task's repository URL, the single effective-integration-mode resolver (a `pull_request` default resolves to `direct` on a repository on disk), and the reasons a project has no working path. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md#a-passed-task-blocked-at-delivery) | **Per-task mode.** Read by the completion pipeline, `get_task`, `task_deliver` and `aq doctor --check integration.delivery_path`. `tests/test_integration_mode.py`, `tests/test_doctor_integration_checks.py` |
 | [`src/integration/status.py`](../../../src/integration/status.py) | Read-only, snapshot-consistent projections for `aq integration status` and per-task blockers, with a separate branch for development-mode projects (journal, ownership classification, pending publications, parked rows). | [guides/development-integration.md](../../guides/development-integration.md) | Any mode. Does no provider I/O and never writes. `tests/test_integration_controls.py`, `tests/test_development_integration.py` |
 | [`src/integration/preflight.py`](../../../src/integration/preflight.py) | Read-only functional dependency check run before a strict mode may be enabled: the runtime dependencies and repository configuration the mode will actually use. Under App credentials the repository half is the `app_mode` item report. | [guides/integration-migration.md](../../guides/integration-migration.md) | Strict (gate). Read-only by construction; produces blocker codes and non-blocking warnings, not fixes. `tests/test_integration_operational_controls.py` |
 | [`src/integration/app_mode.py`](../../../src/integration/app_mode.py) | App credential mode's readiness report: one item per concern (credential, repository, producer, trust manifest, Actions variables, protection, audit workflow), each `ok`, `warn` or `fail` with a code, expected and observed values and the exact fix, plus the target ruleset. `aq integration app-verify` returns it; the preflight turns every `fail` into a blocker and every `warn` into a status warning, so the two cannot disagree. | [config/train-onboarding.md](../../config/train-onboarding.md#3-app-credential-mode) | **Strict (App mode).** Read-only: every GitHub read goes through the daemon's App at the default branch's exact SHA; writing an anchor is `aq integration app-setup --apply` with the operator's `gh`. The protection item is `protection.py`'s classification judged for the project mode. `tests/test_integration_app_mode.py` |
-| [`src/integration/protection.py`](../../../src/integration/protection.py) | The default branch's protection, read through the App and classified for its promotion push: the effective rules (including organization rulesets), the App's `current_user_can_bypass` per ruleset and classic protection become `attested_only`, `app_bypass`, `incompatible`, `unprotected` or `unverifiable`, judged per project mode. It backs the App-mode `protection` item, the attestation service's enablement probe and the guard that refuses `aq integration develop` with `main_protection_blocks_development_publisher`. | [config/train-onboarding.md](../../config/train-onboarding.md#3-app-credential-mode) | **Strict (App mode).** Read-only: it never writes a rule. Any failed or unexpected read is `unverifiable`, never `unprotected`, and an absent `current_user_can_bypass` is never guessed. `tests/test_integration_protection.py` |
+| [`src/integration/protection.py`](../../../src/integration/protection.py) | The default branch's protection, read through the App and classified for its promotion push: the effective rules (including organization rulesets), the App's `current_user_can_bypass` per ruleset and classic protection become `attested_only`, `app_bypass`, `incompatible`, `unprotected` or `unverifiable`, judged per project mode. It backs the App-mode `protection` item, the attestation service's enablement probe and retained development enablement guards; the retired publisher is not a fallback engine. | [config/train-onboarding.md](../../config/train-onboarding.md#3-app-credential-mode) | **Strict (App mode).** Read-only: it never writes a rule. Any failed or unexpected read is `unverifiable`, never `unprotected`, and an absent `current_user_can_bypass` is never guessed. `tests/test_integration_protection.py` |
 | [`src/integration/trust_manifest.py`](../../../src/integration/trust_manifest.py) | The one App-mode trust-manifest builder (`.github/agent-queue-integration.json`): the manifest a policy, binding and App imply, its canonical text (sorted keys, check names in policy order) and a field-level comparison with a committed copy that splits identity drift (a failure) from check-set or formatting drift (warnings). Shared by `aq integration trust-manifest`, `onboard-train` and the App-mode preflight. | [config/train-onboarding.md](../../config/train-onboarding.md#3-app-credential-mode) | **Strict (App mode).** Pure: the `integration_trust_manifest` command reads the default-branch copy through the App (`preflight.read_committed_trust_manifest`) and hands it the bytes. `tests/test_integration_trust_manifest.py` |
 | [`src/integration/delegate_release.py`](../../../src/integration/delegate_release.py) | Settles the verifier, repair-stage and candidate-member tickets of an operation that has ended, and answers whether a *live* operation still owns a task so a removal can be refused with a reason. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Any mode. One implementation shared by the reconciliation tick, `integration_abort`, `cancel_preserving` and `aq doctor --check integration.stranded_delegates --fix`. Settles the ticket only; a retained owner or workspace lock is named, never released. `tests/test_integration_delegate_release.py` |
 
@@ -81,14 +102,9 @@ identity without changing its CI or attestation trust rules.
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [`src/integration/collection.py`](../../../src/integration/collection.py) | Reconciles approved children into the durable parent promotion policy, submitting one child per parent and returning a repaired branch to the queue. | [concepts/integration.md](../../concepts/integration.md) | Strict. Submits work; promotion remains the only mutation authority. `tests/test_integration_hierarchy.py` |
-| [`src/integration/promotion.py`](../../../src/integration/promotion.py) | Crash-recoverable child-to-parent merge promotion: prepare once, push under an exact lease, recover receipts by ancestry, and reserve and push conflict resolutions. | [concepts/integration.md](../../concepts/integration.md) | Strict. Its typed failures (`PromotionConflict`, `PromotionSourceMoved`, `PromotionTargetMoved`, `PromotionNotApplied`) each map to one deterministic command outcome. `tests/test_integration_promotion.py` |
-| [`src/integration/main_promotion.py`](../../../src/integration/main_promotion.py) | Durable root-to-`main` intent preparation and the one fenced mutation that promotes an exactly tested SHA, plus reconciliation of an intent whose outcome is unknown. | [concepts/integration.md](../../concepts/integration.md) | Strict. Requires an attestation subject that the daemon derived, never one a caller supplied. `tests/test_integration_main_promotion.py` |
-| [`src/integration/candidates.py`](../../../src/integration/candidates.py) | Ordered, restartable construction of a sealed root candidate revision from immutable members, plus the frozen candidate-member repair lifecycle (reserve, accept, recover, push) and optional audit pull requests. | [concepts/integration.md](../../concepts/integration.md) | Strict. Caller-supplied data may never stand in for durable authority — that is what `CandidateAuthorizationError` and `CandidateStaleAuthority` exist to refuse. `tests/test_integration_candidates.py`, `tests/test_batch_ci_repair_rebuild.py` |
-| [`src/integration/scheduler.py`](../../../src/integration/scheduler.py) | Coalesces periodic and manual triggers into one durable per-project sweep request (`IntegrationScheduler`), and seals a request's complete reviewed root frontier into a batch without Git I/O (`TrainService`). | [concepts/integration.md](../../concepts/integration.md) | Strict (`train`). Sealing is pure database work; nothing touches a remote. `tests/test_integration_schedule.py`, `tests/test_integration_sealing.py` |
-| [`src/integration/green_continuation.py`](../../../src/integration/green_continuation.py) | Shared exact evidence fingerprints and promotion-refusal handoff records; no autonomous root-green retry loop. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Shared mechanism; delivery writes require the owning Subject. |
+| [`src/integration/green_continuation.py`](../../../src/integration/green_continuation.py) | Retained exact evidence fingerprints and promotion-refusal handoff records; active settlement belongs to the train. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Retained adapters preserve their own authority checks; live writes belong to the train. |
 | [`src/integration/release.py`](../../../src/integration/release.py) | Releases one terminal, shipped root train under the hierarchy fence, without coupling the release to cleanup progress. | [concepts/integration.md](../../concepts/integration.md) | Strict. A lost CAS is an ordinary outcome, not an error. `tests/test_integration_cleanup.py`, `tests/test_root_integration_playbook.py` |
-| [`src/integration/stale_schedule.py`](../../../src/integration/stale_schedule.py) | Classifies a train project's outstanding sweep request (`none`, `active`, `in_flight`, `unsealed`, `blocked`, `stale`) and releases one nothing else will end — its batch aborted, empty, gone, or promoted without the lease release consumes — with the fenced lease and an `integration.schedule_request_released` event. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Train. Read by `IntegrationScheduler.mark_due` (before the settling gate), `integration_release`, `integration_abort`, `cancel_preserving`, `aq integration clear-stale-request` and `aq doctor --check integration.stale_schedule`. Never touches Git or a batch row; unresolved write evidence keeps a request `blocked`. `tests/test_integration_stale_schedule.py` |
-| [`src/integration/source_ancestry.py`](../../../src/integration/source_ancestry.py) | Proves a train source's recorded base is an ancestor of its reviewed head, and records and routes the exact `source_ancestry_invalid` rejection when it is not: admission refuses the approval, construction withdraws the source and ends its batch, and the review poller reopens the source for a history-preserving repair. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Train. Used by `ReviewEvidenceProducer`, `CandidateService` and `GitHubReviewPoller`; the repair runs through `CommandHandler.repair_integration_source_ancestry` (reopen under `root.repair.source_ci`, otherwise one supervisor message). `tests/test_integration_source_ancestry.py` |
+| [`src/integration/source_ancestry.py`](../../../src/integration/source_ancestry.py) | Proves a train source's recorded base is an ancestor of its reviewed head, and records and routes the exact `source_ancestry_invalid` rejection when it is not: admission refuses the approval, construction withdraws the source and ends its batch, and the review poller reopens the source for a history-preserving repair. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Train. Used by train source and PR recovery guards; the repair runs through `CommandHandler.repair_integration_source_ancestry` (reopen under `root.repair.source_ci`, otherwise one supervisor message). `tests/test_integration_source_ancestry.py` |
 | [`src/integration/source_delivery.py`](../../../src/integration/source_delivery.py) | Asks, for one exact train source generation, whether its work is already on the project's *current* default target — the same canonical delivery evidence root admission trusts — so source-CI repair never files redundant work and a claim never hands a redundant repair to an agent. | [guides/hierarchical-integration-trains.md](../../guides/hierarchical-integration-trains.md) | Train. Read by `CommandHandler._record_integration_source_ci` (before filing) and by the claim path's `source_ci_repair_already_delivered` gate (before withholding a queued delegate). Fails towards repairing: unknown Git, a new generation, a reopened task, a wrong target, a rewound target or an unprovable source all leave the work claimable. Fails open when Git cannot be asked at all. Nothing it records is read back as an eligibility answer. `tests/test_epic_pr_review_evidence.py`, `tests/test_claim_commands.py` |
 | [`src/integration/cleanup.py`](../../../src/integration/cleanup.py) | Materialises immutable post-promotion cleanup work and executes one claimed item at a time: source-ref retention, failed-work retention windows and bounded retries. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Strict. Independent and restartable, so a stalled cleanup never blocks a promotion. `aq integration retry-cleanup` requeues exactly the safe items. `tests/test_integration_cleanup.py` |
 
@@ -96,18 +112,16 @@ identity without changing its CI or attestation trust rules.
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [`src/integration/review_evidence.py`](../../../src/integration/review_evidence.py) | Pins a trusted reviewer verdict to an exact source snapshot, and reopens the task on rejection. | [concepts/integration.md](../../concepts/integration.md) | Strict. The Git verdict is server-observed; a reviewer's claim about a SHA is not taken on trust. `tests/test_integration_review_evidence.py` |
 | [`src/integration/ci.py`](../../../src/integration/ci.py) | The trusted-CI contract: the required-checks manifest and producer identity, canonical attestation and receipt payloads, typed parent/candidate subjects, the append-only evidence writer, and the authenticated GitHub observer. | [concepts/integration.md](../../concepts/integration.md) | Strict. Evidence is built only from authenticated API reads; `TrustedFixtureObserver` is an explicit test-only seam. `tests/test_integration_ci.py` |
 | [`src/integration/attestation.py`](../../../src/integration/attestation.py) | Resolves an exact candidate tree's live CI into a durable receipt and, where an App is configured, publishes the attestation check; also answers the enablement blockers that gate a strict rollout. | [concepts/integration.md](../../concepts/integration.md) | Strict. Publication is leased; trust input is size-capped. `tests/test_integration_attestation.py` |
-| [`src/integration/candidate_ci.py`](../../../src/integration/candidate_ci.py) | Resumes durable candidate publication before asking for exact CI evidence, so a restart cannot lose the ordering between the two. | [concepts/integration.md](../../concepts/integration.md) | Strict. Thin handler; the work belongs to `candidates.py` and `attestation.py`. `tests/test_integration_candidates.py` |
 | [`src/integration/parent_ci.py`](../../../src/integration/parent_ci.py) | Publishes immutable per-parent CI snapshot refs so a frozen delivery branch is never mutated to get a CI run, and never overwrites a conflicting remote ref. | [concepts/integration.md](../../concepts/integration.md) | Strict. `tests/test_parent_ci_publication.py` |
 
 ## Repair and eventing
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [`src/integration/repair.py`](../../../src/integration/repair.py) | The strict modes' bounded repair machine: atomic stage clocks, evidence-accounting transitions, delegate dispatch and completion, deadline expiry, subject rebinding after a rebuild, and root-collection resumption. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Strict. Wall-clock stage deadlines live here; development-mode repair is an ordinary queue task with no ladder. `tests/test_integration_repair.py`, `tests/test_batch_ci_repair_adoption.py` |
-| [`src/integration/outbox.py`](../../../src/integration/outbox.py) | Transactional outbox for correctness-critical integration events: enqueue on the caller's transaction, freeze the destination manifest, deliver one bounded page and advance only on durable consumer acceptance. | [concepts/integration.md](../../concepts/integration.md) | Any mode. Delivers only to playbooks (`docs/concepts/playbooks.md` is planned), which is why branch-level work that no playbook consumes is drained directly instead. `tests/test_integration_outbox.py` |
+| [`src/integration/repair.py`](../../../src/integration/repair.py) | Retained staged repair compatibility: atomic stage clocks, evidence-accounting transitions, delegate dispatch and completion, deadline expiry, subject rebinding after a rebuild, and root-collection resumption. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Legacy operations only. The live allocator is BatchFixerService; ordinary repairs already in flight retain their close and deadline adapters. `tests/test_integration_repair.py`, `tests/test_batch_ci_repair_adoption.py` |
+| [`src/integration/outbox.py`](../../../src/integration/outbox.py) | Transactional outbox for correctness-critical integration events: enqueue on the caller's transaction, freeze the destination manifest, deliver one bounded page and advance only on durable consumer acceptance. | [concepts/integration.md](../../concepts/integration.md) | Any mode. Delivers to [playbooks](../../concepts/playbooks.md), which is why branch-level work that no playbook consumes is drained directly instead. `tests/test_integration_outbox.py` |
 
 ## Adjacent modules other shards own
 
@@ -117,47 +131,20 @@ These are not integration modules, but you will land in them from here.
 |---|---|---|
 | [`src/commands/integration_commands.py`](../../../src/commands/integration_commands.py) | `cli` | The command handlers behind every `aq integration …` call, including the authority checks. |
 | [`src/cli/integration.py`](../../../src/cli/integration.py) | `cli` | Flags, defaults and choices for the CLI group. |
-| [`src/doctor/integration_checks.py`](../../../src/doctor/integration_checks.py) | `operations` | `integration.operational`, `integration.stranded_fences`, `integration.stranded_delegates`, `integration.stale_schedule`, `integration.finished_branch_owners`, `integration.branch_discards`, `integration.unreviewed_prs`. |
+| [`src/doctor/integration_checks.py`](../../../src/doctor/integration_checks.py) | `operations` | `integration.delivery_engine`, `integration.train_batches_stalled`, `integration.finished_branch_owners` and other integration diagnostics. |
 | [`src/database/tables.py`](../../../src/database/tables.py) | `database` | Every `integration_*` table plus `task_branch_origins` (development delivery has no table; see `delivery_truth.py`). |
 | [`src/git/manager.py`](../../../src/git/manager.py) | `workspaces` | The async Git API every module here uses. |
 
-## Documentation in this shard
+## Scope and historical inventory
 
-| Page | Owner |
-|---|---|
-| [`docs/guides/development-integration.md`](../../guides/development-integration.md) | This ticket; assigned to the `integration` shard by the coverage manifest. |
+This catalog names current entry points and retained boundaries; it is not a count
+of every helper in `src/integration/`. The old 29-module coverage statement and
+assembly-ticket instructions described an earlier documentation snapshot. Deleted
+Subject runtimes, reconcilers and candidate publishers are no longer linked as
+current modules. Historical contracts remain in their dated specs and the
+[legacy consumer retirement report](../../reports/2026-10-12-legacy-consumer-retirement.md).
 
-## Coverage
-
-The manifest assigns 29 production modules to this shard —
-`src/integration/*.py` plus `src/integrations/__init__.py` — and every one has
-a row above. Verify with:
-
-```bash
-python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
-```
-
-> **Note for the assembly ticket.** This shard's home
-> (`docs/concepts/integration.md`) and catalog
-> (`docs/reference/modules/integration.md`) are derived automatically, and
-> `docs/guides/development-integration.md` is already named in `OWNED_PAGES`.
-> The two remaining pages —
-> `docs/guides/integration-troubleshooting.md` and
-> `docs/guides/integration-migration.md` — are new paths that
-> [`refresh_inventory.py`](../../plans/documentation-overhaul/refresh_inventory.py)
-> does not name, so they fall through to the generic `docs/**` rule and would
-> be attributed to `legacy` on the next regeneration. Add them to `OWNED_PAGES` under the `integration` shard when
-> the manifest is next rewritten. This ticket deliberately does not rewrite
-> the manifest itself: it is a shared file every sibling would then conflict
-> on, which is exactly the conflict recorded in the delivery journal for
-> `solid-grove.21`.
-
-Shared code moved from the removed train modules now lives in
-[`records.py`](../../../src/integration/records.py) (parent episode records and
-project configuration), [`observe.py`](../../../src/integration/observe.py)
-(parent readiness), [`ci.py`](../../../src/integration/ci.py) (trusted parent
-verification), [`gates.py`](../../../src/integration/gates.py) (root ejection),
-[`root_pull_requests.py`](../../../src/integration/root_pull_requests.py),
-[`src/task_graph/integration_dependencies.py`](../../../src/task_graph/integration_dependencies.py),
-[`src/jobs/pytest_output.py`](../../../src/jobs/pytest_output.py), and
-[`src/sessions/obsolete.py`](../../../src/sessions/obsolete.py).
+The documentation-overhaul JSON inventory is generated by
+[`refresh_inventory.py`](../../plans/documentation-overhaul/refresh_inventory.py).
+That shared inventory is separate from this authored navigation page; regenerate
+it through its owner rather than hand-editing its manifest during a system audit.
