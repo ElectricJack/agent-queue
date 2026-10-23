@@ -389,6 +389,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "sound-forge-62",
         "calm-rapids-50",
         "fair-harbor-71",
+        "bold-flare-41",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
