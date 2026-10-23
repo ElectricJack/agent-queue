@@ -31,7 +31,7 @@ def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
 
 @cli.group("integration")
 def integration() -> None:
-    """Inspect integration Subjects and apply current recovery proofs."""
+    """Inspect Git-first train delivery and apply recovery controls."""
 
 
 @integration.command("continue-close")
@@ -261,7 +261,7 @@ def integration_eject(ctx, batch_id, task_id, reason, apply):
 
 @integration.command("seal-now")
 @click.option("--project", "project_id", required=True, help="Project whose root target to seal.")
-@click.option("--apply/--dry-run", default=False, help="Bypass cadence once; default is preview.")
+@click.option("--apply/--dry-run", default=False, help="Freeze eligible inputs now; default is preview.")
 @click.pass_context
 @_handle_errors
 def integration_seal_now(ctx, project_id, apply):
@@ -495,7 +495,7 @@ def integration_engine_transfer(
 @click.pass_context
 @_handle_errors
 def integration_status(ctx: click.Context, project_id: str, control_only: bool) -> None:
-    """Show current Subjects, configuration and Git delivery for PROJECT_ID."""
+    """Show train batches, checks, blockers and Git delivery for PROJECT_ID."""
     args: dict[str, Any] = {"project_id": project_id}
     if control_only:
         args["control_only"] = True

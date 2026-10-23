@@ -329,8 +329,7 @@ class WriterPrimitives:
         self.recovery = owner_recovery
         self.routing_policy = routing_policy
         self.clock = clock
-        # Shadow continues to use legacy execution. The active git-first
-        # adapter selects this port, without project-level write authority.
+        # Managed train leases do not carry project-level write authority.
         self.managed_leases = managed_leases
         self.ownership = ExpiringBranchOwnership(db, clock=clock)
 

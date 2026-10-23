@@ -1920,7 +1920,8 @@ def test_activation_runbook_exists_before_canary():
     text = runbook.read_text()
     for section in ("## Preconditions", "## Activate", "## Reading blockers", "## Roll back"):
         assert section in text
-    assert "git_first: active" in text and "git_first: shadow" in text
+    assert "git_first: active" in text
+    assert "Trial mode has been removed" in text
     assert "aq restart --no-dashboard" in text
     assert runbook.name in Path("docs/guides/README.md").read_text()
     assert runbook.name in Path("docs/concepts/integration.md").read_text()

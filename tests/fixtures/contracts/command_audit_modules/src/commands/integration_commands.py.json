@@ -2405,8 +2405,9 @@
         "return": "{'outcome': 'not_found', 'project_id': project_id} if status is None else {'outcome': 'status', **status}"
       }
     ],
+    "review_notes": " Active-only Git-first status retains project resource gates and the delegated status projection; no return-protocol change.",
     "schema_quality": "typed",
-    "source_digest": "sha256:3d76dac9bdda5ce17b1e63f98829ae2329e0b09f85869a10891642858ab164b0",
+    "source_digest": "sha256:5e06fa9110057c03e949b508abd79e39dbb8727b2698e4645a95090801498338",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

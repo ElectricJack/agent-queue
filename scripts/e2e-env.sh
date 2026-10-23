@@ -728,15 +728,10 @@ api_auth:
 YAML
 
 # A caller-owned fragment may provide the integration block (the App kit does).
-# Otherwise Tier 1 exercises the active train; shadow has no publisher now.
+# Otherwise Tier 1 exercises the default integration configuration.
 if [ -n "${AQ_E2E_EXTRA_CONFIG:-}" ]; then
     echo "==> appending $AQ_E2E_EXTRA_CONFIG to the config"
     cat "$AQ_E2E_EXTRA_CONFIG" >> "$E2E_CONFIG"
-else
-    cat >> "$E2E_CONFIG" <<'YAML'
-integration:
-  git_first: active
-YAML
 fi
 
 # ---------------------------------------------------------------------------

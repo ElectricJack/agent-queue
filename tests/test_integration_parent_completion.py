@@ -3702,8 +3702,8 @@ async def test_terminal_children_require_complete_contiguous_receipt_chain(db):
     assert [row["source_task_id"] for row in ready["receipts"]] == children
 
 
-async def test_status_uses_current_receipt_among_multiple_historical_deliveries(db):
-    _hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+async def test_readiness_uses_current_receipt_among_multiple_historical_deliveries(db):
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
     child_id = children[0]
     async with db.immediate() as conn:
         await conn.execute(
@@ -3728,13 +3728,10 @@ async def test_status_uses_current_receipt_among_multiple_historical_deliveries(
         )
     await _code_receipt(db, child_id, "a" * 40, "d" * 40)
 
-    projection = await IntegrationStatusService(db).task_blockers("parent")
-
-    assert projection is not None
-    assert projection["parent_readiness"]["operation_id"] == checkpointed["operation_id"]
-    assert "missing_receipt" not in {
-        blocker["code"] for blocker in projection["blockers"]
-    }
+    projection = await hierarchy.readiness("parent")
+    assert projection["operation_id"] == checkpointed["operation_id"]
+    assert projection["outcome"] == "ready"
+    assert [receipt["source_task_id"] for receipt in projection["receipts"]] == children
 
 
 @pytest.mark.parametrize(
@@ -3746,104 +3743,44 @@ async def test_status_uses_current_receipt_among_multiple_historical_deliveries(
         {"parent_operation_id": None, "parent_episode_id": None},
     ],
 )
-async def test_status_rejects_receipt_not_applicable_to_current_parent_context(
+async def test_readiness_rejects_receipt_not_applicable_to_current_parent_context(
     db, invalid_values
 ):
-    _hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
     child_id = children[0]
     await _code_receipt(db, child_id, "a" * 40, "d" * 40, **invalid_values)
 
-    projection = await IntegrationStatusService(db).task_blockers("parent")
-
-    assert projection is not None
-    assert "missing_receipt" in {
-        blocker["code"] for blocker in projection["blockers"]
-    }
+    projection = await hierarchy.readiness("parent")
+    assert projection["outcome"] == "waiting"
+    assert {blocker["task_id"] for blocker in projection["blockers"]} == {child_id}
 
 
-async def test_status_blocks_failed_child_without_current_disposition_receipt(db):
-    _hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+async def test_readiness_blocks_failed_child_without_current_disposition_receipt(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
     async with db.immediate() as conn:
         await conn.execute(
             update(tasks).where(tasks.c.id == children[0]).values(status="FAILED")
         )
 
-    projection = await IntegrationStatusService(db).task_blockers("parent")
-
-    assert projection is not None
-    blocker = next(item for item in projection["blockers"] if item["code"] == "missing_receipt")
-    assert blocker["cause"] == "failed_child"
+    projection = await hierarchy.readiness("parent")
+    assert projection["outcome"] == "failed"
+    assert projection["blockers"] == [{"task_id": children[0], "reason": "failed_child"}]
 
 
-@pytest.mark.parametrize(
-    "ordinal,attempts,expected_limit",
-    [(0, 2, 2), (1, 1, 1)],
-)
-async def test_status_uses_typed_limit_for_current_repair_stage(
-    db, ordinal, attempts, expected_limit
-):
-    _hierarchy, checkpointed, _children = await _parent_tree(db, children=1)
-    policy = _boundary().repair.model_dump(mode="json")
-    policy["primary_attempts"] = 2
-    policy["debug_attempts"] = 1
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_repair_operations)
-            .where(integration_repair_operations.c.id == checkpointed["operation_id"])
-            .values(active_stage=ordinal)
-        )
-        await conn.execute(
-            insert(integration_repair_stages).values(
-                operation_id=checkpointed["operation_id"],
-                ordinal=ordinal,
-                policy=policy,
-                intelligence_class="medium",
-                profile_id="integrator",
-                starting_sha="a" * 40,
-                started_at=1.0,
-                deadline_at=100.0,
-                attempts=attempts,
-                state="active",
-            )
-        )
-
-    projection = await IntegrationStatusService(db, clock=lambda: 50.0).task_blockers(
-        "parent"
-    )
-
-    assert projection is not None
-    blocker = next(item for item in projection["blockers"] if item["code"] == "budget_exhausted")
-    assert blocker["cause"] == "attempts"
-    assert blocker["stage"] == ordinal
-    assert blocker["limit"] == expected_limit
-
-
-async def test_parent_current_stage_remains_deadline_bound_while_awaiting_completion(db):
+async def test_train_status_ignores_retired_subject_repair_stages(db):
     _hierarchy, checkpointed, _children = await _parent_tree(db, children=1)
     async with db.immediate() as conn:
-        await conn.execute(
-            insert(integration_repair_stages).values(
-                operation_id=checkpointed["operation_id"],
-                ordinal=0,
-                policy=_boundary().repair.model_dump(mode="json"),
-                intelligence_class="medium",
-                profile_id="integrator",
-                starting_sha="a" * 40,
-                started_at=1.0,
-                deadline_at=100.0,
-                attempts=1,
-                state="awaiting_completion",
-            )
-        )
-
-    projection = await IntegrationStatusService(db, clock=lambda: 101.0).task_blockers(
-        "parent"
-    )
-
-    assert projection is not None
-    blocker = next(item for item in projection["blockers"] if item["code"] == "budget_exhausted")
-    assert blocker["cause"] == "deadline"
-    assert blocker["deadline_at"] == 100.0
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id=checkpointed["operation_id"], ordinal=0,
+            policy=_boundary().repair.model_dump(mode="json"),
+            intelligence_class="medium", profile_id="integrator",
+            starting_sha="a" * 40, started_at=1.0, deadline_at=2.0,
+            attempts=100, state="awaiting_completion",
+        ))
+    projection = await IntegrationStatusService(db, clock=lambda: 101.0).task_blockers("parent")
+    assert projection["projection_kind"] == "train"
+    assert "repair" not in projection and "parent_readiness" not in projection
+    assert projection["blockers"] == []
 
 
 @pytest.mark.parametrize("policy", ["block", "ask"])
@@ -4324,11 +4261,8 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db, tmp_pa
     assert verifier_is_terminal is True
     completed_status = await IntegrationStatusService(db).task_blockers("parent")
     assert completed_status is not None
-    assert completed_status["parent_readiness"]["operation_id"] == checkpointed["operation_id"]
-    assert "missing_receipt" not in {
-        item["code"] for item in completed_status["blockers"]
-    }
-    assert completed_status["repair"] == []
+    assert completed_status["projection_kind"] == "train"
+    assert "parent_readiness" not in completed_status and "repair" not in completed_status
     async with db._engine.connect() as conn:
         completion = (
             await conn.execute(select(integration_parent_operation_completions))

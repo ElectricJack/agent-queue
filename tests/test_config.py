@@ -1,7 +1,7 @@
 import os
 import pytest
 import yaml
-from src.config import DatabaseConfig, WaitPolicyConfig, load_config
+from src.config import ConfigValidationError, DatabaseConfig, WaitPolicyConfig, load_config
 
 
 def test_wait_policy_cutover_defaults_and_approved_policy():
@@ -151,30 +151,41 @@ def test_ready_frontier_attention_threshold_loads(config_dir, seconds):
     )
 
 
-@pytest.mark.parametrize("value", ["shadow", "active"])
-def test_git_first_selector_loads_without_activating_ownership(config_dir, value):
+@pytest.mark.parametrize("integration", [None, {}, {"git_first": "active"}])
+def test_git_first_is_active_by_default_and_when_explicit(config_dir, integration):
     from src.config import IntegrationConfig
 
-    assert IntegrationConfig().git_first == "shadow"
+    assert IntegrationConfig().git_first == "active"
     config_file = config_dir / "config.yaml"
     config_file.write_text(yaml.dump({
-        "integration": {"git_first": value},
+        **({"integration": integration} if integration is not None else {}),
         "discord": {"bot_token": "x", "guild_id": "1"},
         "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
     }))
     config = load_config(str(config_file))
-    assert config.integration.git_first == value
+    assert config.integration.git_first == "active"
     # The selector never changes root ownership: reconciler flags keep their defaults.
     assert config.integration.reconciler_active is IntegrationConfig().reconciler_active
     assert not config.integration.reconciler_shadow
     assert config.integration.validate() == []
 
 
-@pytest.mark.parametrize("value", [None, False, "legacy", "", [], {}])
+@pytest.mark.parametrize("value", ["shadow", None, False, "legacy", "", [], {}])
 def test_git_first_selector_rejects_other_modes(value):
     from src.config import IntegrationConfig
 
     assert any(error.field == "git_first" for error in IntegrationConfig(git_first=value).validate())
+
+
+def test_git_first_shadow_has_a_clear_migration_error(config_dir):
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "integration": {"git_first": "shadow"},
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    with pytest.raises(ConfigValidationError, match=r"trial \(shadow\) mode has been removed"):
+        load_config(str(config_file))
 
 
 def test_deploy_selection_is_opt_in_and_loads_the_promotion_target(config_dir):
