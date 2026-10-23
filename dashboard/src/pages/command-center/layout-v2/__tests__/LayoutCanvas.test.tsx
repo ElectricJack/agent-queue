@@ -86,8 +86,10 @@ const tiles = vi.hoisted(() => ({
   paramsByProject: {} as Record<string, unknown>,
 }));
 const extents = vi.hoisted(() => ({ pending: false }));
+let layoutReady = false;
 vi.mock("../useLayoutTiles", () => ({
-  useLayoutTiles: (projectId: string, params: unknown, rect: unknown) => {
+  useLayoutTiles: (projectId: string, params: unknown, rect: unknown, ready: boolean) => {
+    layoutReady = ready;
     tiles.params = params;
     tiles.paramsSeen.push(params);
     tiles.paramsByProject[projectId] = params;
@@ -721,13 +723,15 @@ describe("LayoutCanvas", () => {
     expect(screen.queryByText(/finished tasks? hidden/i)).toBeNull();
   });
 
-  it("loads tiles when a project's extent stops being pending", () => {
+  it("signals layout readiness without restarting tiles when an extent resolves", () => {
     extents.pending = true;
     const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(layoutReady).toBe(false);
     tiles.refetchVisible.mockClear();
     extents.pending = false;
     view.rerender(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(tiles.refetchVisible).toHaveBeenCalled();
+    expect(layoutReady).toBe(true);
+    expect(tiles.refetchVisible).not.toHaveBeenCalled();
   });
 
   it("hands the clicked card's payload to onTaskClick so run tasks keep their routing", () => {

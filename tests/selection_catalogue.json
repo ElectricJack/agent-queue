@@ -1760,18 +1760,24 @@
         "graph-layout"
       ],
       "default_arm": false,
-      "digest": "sha256:478ecbb5619826bee540bc54701fc6d730bbe0bf4d1b2238eab0070d3d93bde2",
+      "digest": "sha256:3c2787a63e2ab22a01aed19d0b1ced425f56a7098b778ea727fc3cfce1741407",
       "imports": [
+        "src.api",
+        "src.api.dependencies",
         "src.api.graph_layout",
         "src.database.queries.layout_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.admission",
         "src.integration.delivery_observer",
+        "src.integration.development",
+        "src.integration.git_truth",
         "src.models",
         "src.task_graph.layout.driver",
         "src.task_graph.layout.view"
       ],
       "markers": [
+        "parametrize",
         "perf",
         "skipif"
       ],
