@@ -99,6 +99,10 @@ frozen sources and candidate, and schedules a finite re-observation (default
 300 seconds). Unchanged exhausted evidence does not re-admit work or notify an
 agent. A changed saved head or exact current-policy green can resume delivery.
 Capacity waits retry the same unlaunched identity without spending code rounds.
+An interrupted launch still awaiting registration after 120 seconds enters the
+same bounded retry path when no session was registered or its process is confirmed
+stopped. Each retry gets its own grace period; a possibly live registration stays
+retained for reconciliation.
 Only an explicit operator decision creates an indefinite hold.
 When every conclusive red group identifies a strict subset, the repair policy's
 `split_attributed` decision (default true) removes that subset and its transitive
@@ -769,6 +773,13 @@ separately; absent branches receive reservations for ordinary materialization.
 Existing origins, checkpoints and retired completion history are preserved.
 An unknown remote state or conflicting branch ownership refuses the edit and
 rolls back its database changes.
+
+Re-enabling the train playbook also recovers detached READY roots filed while
+it was off: branch reconciliation backfills missing origins before draining
+reservations. The same bounded pass catches system filings that have no origin;
+the delivery watchdog reserves an origin when it files a takeover while the
+train is enabled. Failures are retried without blocking later roots, and the
+pass rechecks train activation and writer ownership under the project lock.
 
 A reservation is cut by the branch materialization drain
 (`src/integration/branch_materialization.py`), ten origins per pass, so a

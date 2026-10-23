@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:6921df66655af98728f454e285189a5db7fd055f64a3d6255104fb8b436ad1d5` |
+| Contract fingerprint | `sha256:3e300354e73a8f019d9dc35fe7b6194b11c3a0e2ae8e72605fe3c858e1273d98` |
 
 ## Parameters
 
@@ -23,6 +23,8 @@
 | `task_id` | `string` | yes | — | — |
 | `parent_id` | `string` | no | — | — |
 | `root` | `boolean` | no | `false` | — |
+| `expected_old_generation` | `integer` | no | — | Hierarchical projects: the old parent's integration generation. |
+| `expected_new_generation` | `integer` | no | — | Hierarchical projects: the new parent's integration generation. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
@@ -47,7 +49,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id, parent_id, root | — | always |
+| Composite using task_id, parent_id, root, expected_old_generation, expected_new_generation | — | always |
 
 <!-- aq:generated:end -->
 

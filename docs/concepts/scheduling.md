@@ -13,7 +13,7 @@ A task becoming `READY` means its graph and policy blockers have cleared; it doe
 ## Vocabulary
 
 * A [READY task](../guides/task-state-machine.md) is eligible for scheduling, subject to capacity and routing.
-* A **push worker** is a `lifecycle: task` session that AQ assigns to one task. A **pool worker** is a long-lived `lifecycle: pool` session that asks for work with `aq task claim`.
+* A **push worker** is a `lifecycle: task` session that AQ assigns to one task. A **pool worker** is a `lifecycle: pool` session that asks for work with `aq task claim`. With the default `swarm.fresh_context_per_task: true`, it drains after one completed claim; a pool does not require reusing the same agent context.
 * **Desired capacity** is how many pool sessions the sizing calculation wants; **running capacity** is the observed idle, busy, starting, and draining sessions. Desired capacity is a target, not a claim that processes have started.
 * A **fleet** is all pool workers for one profile across the daemon. A **project** is one repository/work queue inside that fleet.
 * A **worktree slot** is an isolated checkout available to one worker. Workspace selection and slot recovery are owned by the `workspaces` documentation shard; until its concept page lands, see [project onboarding](../guides/project-onboarding.md).
@@ -33,7 +33,7 @@ Usage: aq pool status [OPTIONS]
   fleet-wide, with the per-project placement detail nested in `projects`).
 ```
 
-Suppose that profile has `min_active: 1`, `max_active: 3`, one busy session, and two READY tasks total. The pool sizer wants `busy + ready = 3` sessions (within those bounds). It authorizes starts only up to `swarm.max_starts_per_tick` and the fleet's global cap. The placement step then puts each authorized start in the project with an eligible workspace and the greatest unserved need; it does not give each project its own maximum of three.
+Suppose that profile has `min_active: 1`, `max_active: 3`, one busy session, and two claimable READY tasks total. The pool sizer wants `busy + ready = 3` sessions (within those bounds). It authorizes starts only up to `swarm.max_starts_per_tick`, shared across all profiles, and the fleet's global cap. Placement prioritizes active train repairs, warm-floor shortfalls, then smaller live shares and unserved demand among eligible project/workspace-kind candidates. The profile has a maximum of three across projects.
 
 When a pool worker starts in `website`, AQ mints its project-scoped credentials and gives it a workspace there. The worker loops on `aq task claim --next --wait 60`; a successful claim changes the task from READY to in progress under an epoch fence. If no admissible task is available, it waits or backs off rather than taking work from another project.
 
@@ -51,9 +51,13 @@ flowchart LR
 
 The deterministic [push scheduler](../../src/scheduler.py) receives a snapshot of active projects, READY tasks, idle agents, routing, budgets, project constraints, and workspace availability. It returns `AssignAction` values; the [orchestrator](../../src/orchestrator/core.py) performs the database and session work afterwards.
 
-The same module's pool functions take measured per-profile demand and session supply, profile `min_active`/`max_active` bounds, a global cap, and per-project placement candidates. `size_pools()` returns start/drain actions; `place_pool_actions()` turns those into project-specific starts or idle drains. Project candidates are rejected when they are quarantined, lack a workspace, or have reached `project.max_concurrent_agents`.
+For push assignments, projects with no completed tasks receive preference, followed by the largest proportional budget deficit. Task priority, routing compatibility, affinity, hierarchy eligibility, project constraints and unlocked workspace capacity further constrain assignments. An active sync workflow prevents ordinary assignments in that project. This push policy differs from pool placement.
 
-Timer and schedule inputs are different from worker capacity. [src/timer_service.py](../../src/timer_service.py) emits system-scoped `timer.Nm`, `timer.Nh`, and `cron.HH:MM` playbook events. [src/schedule.py](../../src/schedule.py) matches the older structured/cron schedule objects used by periodic hooks. Neither starts a worker by itself.
+The same module's pool functions take measured per-profile demand and session supply, profile `min_active`/`max_active` bounds, a global cap, and project/workspace-kind placement candidates. `size_pools()` returns start/drain actions; `place_pool_actions()` turns those into starts or idle drains. Candidates are rejected when they are quarantined, lack the required workspace kind, or have reached `project.max_concurrent_agents`. Pending launches reserve capacity before they acquire a slot. Eligible waiting continuations can be checkpointed and evicted under pressure; released capacity becomes usable only after parking completes. Resume reservations are funded before fresh warm workers. See [agent waits](../guides/agent-waits.md).
+
+Pool demand and claims use the same admissible frontier: routed READY work must also clear dependency, hierarchy, ingestion/recovery and Git-delivery checks. Claim selection reserves an epoch-fenced owner, prepares its checkout outside the selection transaction, then rechecks ownership and admission before activation. Preparation can outlive the request and return `claim_in_progress`; the same session's next claim request observes that preparation. Only `claimed` means the worker can run `aq prime` and begin work. See [claim preparation](../guides/worker-pools.md#claim-selection-and-asynchronous-preparation).
+
+Timer and schedule inputs are different from worker capacity. [src/timer_service.py](../../src/timer_service.py) emits system-scoped `timer.Nm`, `timer.Nh`, and `cron.HH:MM` playbook events for subscribed triggers. Interval timers first fire after a full interval on a new install; persisted last-fire times survive restarts without replaying every missed interval. Daily cron triggers use local time and fire once per local date at or after the target time. [src/schedule.py](../../src/schedule.py) separately matches structured schedules and five-field cron expressions in UTC, including plugin cron schedules; its weekday numbering is Monday = 0. Neither starts a worker by itself.
 
 ## State ownership
 
@@ -63,11 +67,13 @@ Timer and schedule inputs are different from worker capacity. [src/timer_service
 | Profile lifecycle and pool bounds | Global profile markdown in `~/.agent-queue/vault/agent-types/` | Push versus pull lifecycle; `min_active`, `max_active`, and optional `min_per_project`. |
 | `swarm` and `resources` policy | `~/.agent-queue/config.yaml` | Pool enablement, tick start/drain budgets, claim/preparation timeouts, fleet cap, and machine resource policy. |
 | Pool surplus, launch quarantine, and placement-starvation observations | Orchestrator process memory | Short-lived backoff and grace-period decisions; they reset safely when the daemon restarts. |
+| Claim ownership, preparation phase, refusal count and cooldown | PostgreSQL session/task state; live preparation job in daemon memory | Epoch-fenced activation and bounded retries. `.aq/claim.json` records the workspace claim during preparation; `claimed` confirms activation. Timing and failure snapshots are diagnostics, not ownership authority. |
+| Timer last-fire times | `{data_dir}/timer_state.json` | Restart-safe interval and daily-event pacing. |
 | Provider availability (state, evidence, operator override) | `provider_availability` table, mirrored in orchestrator memory; `provider_failover:` in `~/.agent-queue/config.yaml` | Whether anything may launch against a provider. Holds are derived from it on every read and never stored. |
 | Provider intent and re-routes | `tasks.provider_intent`, `tasks.rerouted_from`, `task_reroutes` | Whether a task may fail over, and the record (and undo) of every move. |
 | Test-slot locks | `${data_dir}/locks/test-slots/slot-N.lock` | A crash-safe machine-wide limit on concurrent `aq test` runs. |
 
-**Shipped defaults.** `swarm.enabled` defaults to false, so ordinary `lifecycle: task` profiles keep using push scheduling. When pools are enabled, `swarm.global_max_active` inherits `resources.max_concurrent_agents` unless explicitly set; resource gating defaults to a bounded per-session share and two global test slots. See the [configuration reference](../specs/config.md#411-swarm-section) for current defaults.
+**Defaults and installation tuning.** The configuration model defaults `swarm.enabled` to false; the setup tuner enables it for new tuned installations. Turning it off does not change any profile's lifecycle: pool profiles wait until pools are enabled again or an operator explicitly changes their lifecycle. When pools are enabled, `swarm.global_max_active` inherits `resources.max_concurrent_agents` unless explicitly set; resource gating defaults to a bounded per-session share and two global test slots. See [default tuning](../guides/default-tuning.md) and the [configuration reference](../specs/config.md#411-swarm-section).
 
 **Configured local policy.** The actual fleet cap, profile bounds, project caps, session availability, and workspace inventory are installation-specific. Inspect the configuration and `aq pool status`; do not infer them from an example.
 
@@ -86,7 +92,7 @@ Use the symptom, not the task state alone, to choose recovery:
 | Push task has no worker | `aq task explain` (an unrouted task names `awaiting_route`, `route_held`, `route_no_candidates` or `router_not_ready`), then project status/constraints, agent capacity, and workspace availability | Fix what the router reports or restore capacity; the push scheduler cannot bypass a paused project, budget, unavailable provider, or locked workspace, and it never launches an unrouted task. |
 | Task is READY and `aq task explain` reports `provider_hold` | `aq provider status` and `aq provider held-tasks` | Its provider is out of usage, logged out, failing or disabled. The hold names why the task is not moving; see [provider availability and failover](#provider-availability-and-failover) and the [provider outage runbook](../guides/provider-outage.md). |
 
-`aq task explain --task-id <task-id>` is the task-specific read path: use the reason it returns rather than guessing why the item cannot run. For pool operation and doctor-check meanings, use the [worker-pool guide](../guides/worker-pools.md).
+For operators and supervisors, `aq task explain --task-id <task-id>` is the task-specific read path: use the reason it returns rather than guessing why the item cannot run. Workers use their scoped `aq task show` and claim response; an operator command returning `out of scope` is not a scheduling failure. For pool operation and doctor-check meanings, use the [worker-pool guide](../guides/worker-pools.md).
 
 ## Provider availability and failover
 
@@ -166,10 +172,10 @@ When a provider leaves the unavailable half, **new and held work returns at once
 Resource gating protects a shared machine in three layers:
 
 1. At launch, [src/resources/limits.py](../../src/resources/limits.py) derives a per-session CPU share, xdist worker cap, thread caps, and lower process priority. This is cooperative: a process can ignore environment variables.
-2. `aq test` takes a global `flock` slot before pytest, implemented by [src/resources/semaphore.py](../../src/resources/semaphore.py). A full slot does not mean a failed test: it means wait, inspect `aq test --aq-status`, or retry exit code 75 later.
+2. `aq test` takes a machine-wide test slot through `BoxLock`, with the test-slot interface in [src/resources/semaphore.py](../../src/resources/semaphore.py). A whole-suite invocation also takes the single full-suite lock. A full slot does not mean a failed test: it means wait, inspect `aq test --aq-status`, or retry exit code 75 later.
 3. Optional cgroup v2 scopes enforce CPU and memory at the kernel level when systemd delegation works. Missing delegation falls back to the first two layers rather than blocking a worker launch.
 
-These controls bound contention; they are not a throughput benchmark or a promise about tasks completed per day. Run focused suites with `aq test`, never raise its worker count above the session cap, and reserve wall-clock performance tests for an intentionally quiet machine. The [resource-gating guide](../guides/resource-gating.md) has the operational configuration and recovery steps.
+`resources.max_concurrent_agents` divides the expected machine-wide CPU budget; it is not a separate admission ceiling for all push and named sessions. The pool ceiling comes from `swarm.global_max_active` (or its inherited value). These controls bound contention; they are not a throughput benchmark or a promise about tasks completed per day. Run focused suites with `aq test`, never raise its worker count above the session cap, and reserve wall-clock performance tests for an intentionally quiet machine. The [resource-gating guide](../guides/resource-gating.md) has the operational configuration and recovery steps.
 
 ## Related pages
 

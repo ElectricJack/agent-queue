@@ -31,6 +31,7 @@ from src.database.tables import (
     task_delivery_receipts,
 )
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
+from src.integration.row_query import select_row
 
 Verdict = Literal["none", "active", "blocked", "stale"]
 
@@ -368,11 +369,6 @@ EMPTY_SEAL_PREFIX = "integration-empty:"
 _SWEEP_REQUEST = re.compile(r"integration-sweep:(?P<project>.+):(?P<sequence>[1-9][0-9]*)")
 
 
-def empty_seal_id(request_id: str) -> str:
-    """The ``batch_id`` an empty seal of *request_id* answers with."""
-    return EMPTY_SEAL_PREFIX + request_id
-
-
 def empty_seal_request(batch_id: str) -> tuple[str, str] | None:
     """``(project_id, request_id)`` an empty seal's id names, else ``None``."""
     if not batch_id.startswith(EMPTY_SEAL_PREFIX):
@@ -478,18 +474,13 @@ class IntegrationReleaseService:
     ) -> IntegrationReleaseResult:
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
-            project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == project_id).with_for_update()
-                )
-            ).mappings().one_or_none()
-            batch = (
-                await conn.execute(
-                    select(integration_batches)
-                    .where(integration_batches.c.id == batch_id)
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            project = await select_row(conn, projects, projects.c.id == project_id, lock=True)
+            batch = await select_row(
+                        conn,
+                        integration_batches,
+                        integration_batches.c.id == batch_id,
+                        lock=True,
+                    )
             if project is None or batch is None or batch["project_id"] != project_id:
                 return IntegrationReleaseResult(
                     outcome="stale", project_id=project_id, batch_id=batch_id
@@ -761,20 +752,16 @@ class IntegrationReleaseService:
                     )
                 )
             ).scalar_one_or_none()
-            release_result = (
-                await conn.execute(
-                    select(integration_release_results).where(
-                        integration_release_results.c.batch_id == batch_id
-                    )
-                )
-            ).mappings().one_or_none()
-            schedule = (
-                await conn.execute(
-                    select(project_integration_schedules).where(
-                        project_integration_schedules.c.project_id == project_id
-                    )
-                )
-            ).mappings().one_or_none()
+            release_result = await select_row(
+                                 conn,
+                                 integration_release_results,
+                                 integration_release_results.c.batch_id == batch_id,
+                             )
+            schedule = await select_row(
+                           conn,
+                           project_integration_schedules,
+                           project_integration_schedules.c.project_id == project_id,
+                       )
         if batch is None:
             return IntegrationReleaseResult(outcome="stale", batch_id=batch_id)
         if batch["lifecycle"] in ENDED_LIFECYCLES:

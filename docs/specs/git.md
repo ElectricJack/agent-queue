@@ -12,6 +12,13 @@ tags: [spec, git, workspace]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+Current Git, credential and workspace behavior is documented in
+[Projects, Git branches, and workspaces](../concepts/projects-and-workspaces.md)
+and [system 6](systems/projects-workspaces-git.md). In particular, the old
+direct `gh` calls and implicit lease descriptions below are historical;
+production GitHub calls use the shared runner and rewrites require an exact
+observed remote OID.
+
 **Source:** `src/git/manager.py`
 
 ## 1. Overview

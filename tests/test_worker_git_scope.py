@@ -806,7 +806,11 @@ async def assigned_batch_git(delegated_git):
     w.batch_branch = candidate_ref(w.batch.id).removeprefix("refs/heads/")
     assigned = await w.handler.execute("task_set", {"task_id": "t1", "repair_batch": w.batch.id})
     assert assigned["success"], assigned
-    w.git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+    async def remote_ref(_checkout, ref, **_kwargs):
+        oid = "b" * 40 if ref == w.batch.target_ref.removeprefix("refs/heads/") else "a" * 40
+        return RemoteRefResult(RemoteRefState.PRESENT, oid=oid)
+
+    w.git.als_remote_ref.side_effect = remote_ref
     return w
 
 
@@ -824,8 +828,11 @@ async def test_assigned_batch_fixer_publishes_candidate_without_renaming_task(
         w.work_dir, "a" * 40, _TIP, w.batch_branch,
         expected_remote_oid="a" * 40, repository_url=_REPOSITORY,
         event_bus=w.handler._bus, project_id="p", identity_policy=ANY,
-        inherited_oids=("a" * 40,),
+        inherited_oids=("a" * 40, "b" * 40),
     )
+    w.git.als_remote_ref.assert_any_await(w.work_dir, w.batch.target_ref.removeprefix("refs/heads/"),
+                                        repository_url=_REPOSITORY)
+    w.git._arun.assert_any_await(["cat-file", "-e", "b" * 40 + "^{commit}"], cwd=w.work_dir)
     assert (await w.db.get_task("t1")).branch_name == "aq/calm-ember-48"
     assert (await w.db.get_task_meta("t1", "integration_batch_repair"))["batch_id"] == w.batch.id
 
@@ -884,12 +891,15 @@ async def test_batch_assignment_grants_only_candidate_push(assigned_batch_git, c
     _assert_no_network(w.git)
 
 
-@pytest.mark.parametrize("failure", ["diverged", "remote_moved", "missing", "unavailable", "writer", "aborted", "claim", "inactive"])
+@pytest.mark.parametrize("failure", [
+    "diverged", "remote_moved", "missing", "unavailable", "writer", "aborted", "claim", "inactive",
+    "target_missing", "target_unavailable", "target_object_missing",
+])
 async def test_assigned_batch_push_refuses_stale_or_unsafe_publication(assigned_batch_git, failure):
     from sqlalchemy import update
 
     from src.database.tables import integration_batches
-    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.git.manager import GitError, RemoteRefResult, RemoteRefState
     from src.integration.lock import BranchLock
     from src.integration.models import BranchKey
 
@@ -900,9 +910,22 @@ async def test_assigned_batch_push_refuses_stale_or_unsafe_publication(assigned_
     elif failure == "remote_moved":
         args["expected_remote_oid"] = "d" * 40
     elif failure in {"missing", "unavailable"}:
+        w.git.als_remote_ref.side_effect = None
         w.git.als_remote_ref.return_value = RemoteRefResult(
             RemoteRefState.ABSENT if failure == "missing" else RemoteRefState.ERROR,
         )
+    elif failure in {"target_missing", "target_unavailable"}:
+        observe = w.git.als_remote_ref.side_effect
+
+        async def target_unavailable(checkout, ref, **kwargs):
+            if ref == w.batch.target_ref.removeprefix("refs/heads/"):
+                state = RemoteRefState.ABSENT if failure == "target_missing" else RemoteRefState.ERROR
+                return RemoteRefResult(state)
+            return await observe(checkout, ref, **kwargs)
+
+        w.git.als_remote_ref.side_effect = target_unavailable
+    elif failure == "target_object_missing":
+        w.git._arun.side_effect = GitError("target commit unavailable locally")
     elif failure == "writer":
         await BranchLock(w.db).acquire(
             BranchKey(repository_id="delegated-repo", branch=w.batch_branch), "another-task",
