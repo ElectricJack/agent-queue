@@ -2039,6 +2039,79 @@ async def test_completed_turn_costs_arriving_after_ack_are_recorded(env, monkeyp
     assert observed.await_count == 2
 
 
+async def test_slow_scheduler_observation_does_not_exhaust_resume_graph_retry(env, monkeypatch):
+    from src.commands.principal import ExecutionPrincipal
+    from src.integration import admission
+    from src.models import AgentProfile, RepoConfig, RepoSourceType, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+    from src.waits import graph
+
+    await env.db.create_profile(AgentProfile(id='worker', name='Worker', lifecycle='pool'))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url='https://example.test/repo',
+        source_type=RepoSourceType.CLONE, checkout_base_path='/tmp/resume-admission'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    await env.db.create_workspace(Workspace(id='available', project_id='p',
+        workspace_path='/tmp/resume-available', source_type=RepoSourceType.CLONE,
+        kind_id='project-repo'))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker', route_source='override'))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    config.swarm.global_max_active = 1
+    orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    scheduler = SchedulerWaitService(orch, clock=lambda: NOW + 30)
+    driver = ResumeTransaction(SimpleNamespace(orch=orch, scheduler=scheduler),
+                               clock=lambda: NOW + 30)
+    entered, release = asyncio.Event(), asyncio.Event()
+    observe = admission.observe_admission
+
+    async def slow(*args, **kwargs):
+        if asyncio.current_task().get_name() == 'slow-scheduler':
+            entered.set()
+            await release.wait()
+        return await observe(*args, **kwargs)
+
+    monkeypatch.setattr(admission, 'observe_admission', slow)
+    monkeypatch.setattr(graph, 'GRAPH_LOCK_TIMEOUT', 0.05)
+    scan = asyncio.create_task(scheduler.sync({'project_id': 'p', 'cycle_id': 'slow'},
+        principal=ExecutionPrincipal.service('test')), name='slow-scheduler')
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        action = await asyncio.wait_for(driver.reserve('c', 1), 5)
+        assert action is not None and action.continuation_id == 'c'
+        assert not scan.done()  # Dispatch completed while the observation was still stalled.
+        assert (await intent(env))['resume_state'] == 'reserved'
+    finally:
+        release.set()
+        await asyncio.wait_for(scan, 5)
+
+
+async def test_cold_restart_provider_stop_proof_leaves_graph_free(cold_restart_checkout):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.waits.graph import lock_graph
+
+    case = cold_restart_checkout
+
+    async def stopped(handle):
+        # A slow external proof can hold this task's rows, but must leave the
+        # global fence available to unrelated continuation reservations.
+        async with case.env.db._engine.begin() as conn:
+            await lock_graph(conn, timeout=0.05)
+        return True
+
+    case.provider.confirm_stopped.side_effect = stopped
+    result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+    assert result['success'], result
+    case.provider.confirm_stopped.assert_awaited_once()
+
+
 async def workspace_resume(env):
     """A real parked owner and granted resume seat, before spawning a process."""
     from src.database.tables import admission_reservations

@@ -19,7 +19,7 @@ from src.database.tables import (
     admission_reservations, tasks, wait_deadlines, wait_escalations, wait_records,
 )
 from src.integration.stacked_branches import shared_stack_inputs
-from src.waits.admission import AdmissionReader, branch_holders
+from src.waits.admission import AdmissionReader, admission_pass, branch_holders
 from src.waits.conditions import Condition, NodeKey, Scope, SleepDecision, WaitError, canonical
 from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from
 from src.waits.registry import build_registry
@@ -78,12 +78,9 @@ class SchedulerWaitService:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
 
     @shared_stack_inputs()
+    @admission_pass("reader")
     async def sync(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
-        # All costly admission observations happen before taking the graph fence.
-        if isinstance(self.reader, AdmissionReader):
-            async with self.reader.prepared(args["project_id"]):
-                return await self._sync(args, principal=principal, scope=scope, handler=handler)
         return await self._sync(args, principal=principal, scope=scope, handler=handler)
 
     async def _sync(self, args, *, principal, scope=None, handler=None):

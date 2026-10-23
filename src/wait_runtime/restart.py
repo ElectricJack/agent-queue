@@ -1,7 +1,8 @@
 """Release a stopped continuation before an operator cold restart admits work.
 
-The command owns this operation. Keep the graph, task and workspace rows locked
-through the external proofs so a resume or a new reservation cannot reuse them.
+The task-control lock serializes resume and restart. External proofs and detaches
+retain task/workspace row locks, but never the global graph fence. A second short
+transaction takes that fence, rechecks every observed row, and commits retirement.
 Git effects are idempotent detaches; failed proofs retain database ownership.
 """
 
@@ -59,7 +60,6 @@ async def release_continuations(handler, task):
 async def _release(handler, task):
     db = handler.db
     async with db._engine.begin() as conn:
-        await lock_graph(conn)
         current = (await conn.execute(select(tasks).where(
             tasks.c.id == task.id,
         ).with_for_update())).mappings().one()
@@ -172,20 +172,44 @@ async def _release(handler, task):
                     checkout, intent['saved_head'], f'refs/heads/{task.branch_name}', strict=True,
                 ) is not True:
                     raise WaitError('continuation.head_drift', 'saved continuation HEAD changed')
-        now = time.time()
-        # Every live attachment belongs to a writer proven stopped above. The
-        # transaction rolls back the retirement if a checkout cannot detach.
-        await retire_owner_attachments(
-            conn, task.id, session_ids, by_id.keys(),
-            WaitError('wait.unavailable', 'continuation branch ownership changed'), now,
-            exclusive=True,
-        )
         for path, workspace in sorted(candidates.items()):
             if not await detach_task_slot(db, orch, task, workspace, task.branch_name,
                                           allow_published_detached_head=True):
                 raise WaitError('continuation.head_drift',
                                 f'cannot release continuation checkout {path}: '
                                 'clean, published branch proof is unavailable')
+    # The first transaction has released its row locks before acquiring the
+    # graph fence, preserving graph -> task -> wait -> continuation lock order.
+    async with db._engine.begin() as conn:
+        await lock_graph(conn)
+        snapshots = (
+            (tasks, tasks.c.id == task.id, [current]),
+            (wait_records, wait_records.c.owner_id == task.id,
+             waits),
+            (continuations, continuations.c.task_id == task.id, history),
+            (workspaces, or_(workspaces.c.locked_by_task_id == task.id,
+                             workspaces.c.id.in_(stage_ids)), rows),
+            (sessions, or_(sessions.c.id.in_(session_ids), sessions.c.task_id == task.id,
+                           sessions.c.work_dir.in_(paths)), writers),
+        )
+        for table, predicate, expected in snapshots:
+            if table is wait_records:
+                predicate &= wait_records.c.owner_kind.in_(('task', 'scheduler'))
+            fresh = (await conn.execute(select(table).where(predicate)
+                .order_by(table.c.id).with_for_update())).mappings().all()
+            if {r['id']: dict(r) for r in fresh} != {r['id']: dict(r) for r in expected}:
+                raise WaitError('continuation.stale_generation',
+                                'continuation cleanup observation changed; retry')
+        if await conn.scalar(select(workspaces.c.id).where(
+                workspaces.c.workspace_path.in_(paths), workspaces.c.id.not_in(by_id)).limit(1)):
+            raise WaitError('wait.unavailable', 'continuation path has another workspace owner')
+        now = time.time()
+        # Every live attachment still belongs to the writer proven stopped above.
+        await retire_owner_attachments(
+            conn, task.id, session_ids, by_id.keys(),
+            WaitError('wait.unavailable', 'continuation branch ownership changed'), now,
+            exclusive=True,
+        )
         released = await execute_workspace_release(conn, update(workspaces).where(
             workspaces.c.id.in_(by_id), unpinned_workspace(),
             or_(workspaces.c.locked_by_task_id == task.id, workspaces.c.locked_by_task_id.is_(None)),

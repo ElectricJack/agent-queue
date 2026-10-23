@@ -9615,6 +9615,16 @@
         124
       ],
       "baseline_span": null
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService._sync_owner": {
+      "reason": "Per-owner reconciliation extracted from the charged scheduler sync; retains integration admission and branch-owner authority, so remains charged without changing the cap."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction._reserve": {
+      "reason": "Locked resume admission and reservation extracted from the charged reserve wrapper; both remain charged within the approved footprint.",
+      "landing_span": [
+        83,
+        149
+      ]
     }
   },
   "exclusions": {
@@ -19543,6 +19553,7 @@
       "msg-5c55b72faec1497391205876fc5dfeb9",
       "msg-96fed6b8e86148f0bbf55ded244c9a0f",
       "msg-76ff7843e72d451b9017a0b4db30c970",
+      "msg-000c812477994a65a62633a4a051224c",
       "msg-d3de4e1b"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
@@ -19809,6 +19820,40 @@
         "measured_engine_lines": 85543,
         "measured_table_count": 45,
         "reason": "Exact project supervisor grant for the PR1759 merge repair under size-cap-delegation-2026-10-23, with explicit delegation to record the approved grant. Preserve recovery holds through dev's manual-pause Resume path until the authorized restart READY transaction. Keep the historical frozen-batch measurements; engine and table counts remain unchanged."
+      },
+      {
+        "task_id": "bold-flare-41",
+        "decision_message_id": "msg-000c812477994a65a62633a4a051224c",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "authority_task": "sharp-cascade-53",
+        "branch": "aq/epic/wait-graph-advisory-lock-held-across-idle-in-transaction",
+        "measured_source_revision": "24b2dde7d4be3f393c698eff68b2fd08bd7b9de0",
+        "previous_owned_total": 160837,
+        "previous_engine_lines": 85316,
+        "authorized_owned_delta": 131,
+        "authorized_engine_delta": 0,
+        "measured_owned_total": 160968,
+        "measured_engine_lines": 85316,
+        "measured_table_count": 45,
+        "reason": "Keep external observations outside the wait graph fence and reconcile one scheduler owner per transaction; the extracted reconciliation helper remains explicitly charged. Project supervisor approved the exact measured footprint under the delegated size-cap authority."
+      },
+      {
+        "task_id": "bold-flare-41",
+        "decision_id": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "authority_task": "sharp-cascade-53",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1816",
+        "branch": "aq/epic/wait-graph-advisory-lock-held-across-idle-in-transaction",
+        "previous_source_revision": "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d",
+        "previous_owned_total": 161213,
+        "previous_engine_lines": 85544,
+        "authorized_owned_delta": 131,
+        "authorized_engine_delta": 0,
+        "measured_source_revision": "0300be58d47adf905900b108db979240ff4aea16",
+        "measured_owned_total": 161344,
+        "measured_engine_lines": 85544,
+        "measured_table_count": 45,
+        "reason": "Preapproved exact PR #1816 conflict-repair measurement on merged dev tree. Preserve all historical grants and the charged extracted scheduler/resume helpers; no implementation changes beyond conflict resolution."
       },
       {
         "task_id": "prime-grove-46",

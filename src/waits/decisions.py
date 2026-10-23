@@ -20,6 +20,7 @@ from src.database.tables import (
     integration_branch_owners, messages, sessions, task_context, tasks, wait_deadlines,
     wait_edges, wait_escalations, wait_records,
 )
+from src.waits.admission import admission_pass
 from src.waits.conditions import Condition, Scope, WaitError
 from src.waits.explain import owner_key
 from src.waits.graph import lock_component_tasks, lock_graph
@@ -140,20 +141,29 @@ class WaitDecisions:
         ))
         return {"success": True}
 
+    @admission_pass("service.scheduler.reader")
     async def decide(self, args, *, principal, scope, handler):
         if args['decision'] == 'requeue':
             return await self.service.lifecycle.resume.requeue(
                 args, principal=principal, scope=scope, handler=handler,
             )
         now = self.clock()
+        routing = None
         async with self.service.orch.db._engine.begin() as conn:
-            await lock_graph(conn)
             candidate = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"],
             ))).mappings().first()
             if (not candidate or (scope.get("project_id")
                                   and scope["project_id"] != candidate["project_id"])):
                 raise WaitError("wait.out_of_scope", "wait is outside the supervisor scope")
+            await self.authorize(conn, principal, candidate["project_id"])
+            if args["decision"] == "reroute":
+                # Class fallback can read the vault. Validate it before fencing;
+                # profile preferences are checked again on the owned connection.
+                routing, error = await handler.wait_reroute_target(candidate["project_id"], args["to"])
+                if error:
+                    raise WaitError("wait.condition_required", error)
+            await lock_graph(conn)
             await self.authorize(conn, principal, candidate["project_id"])
             cond = Condition.from_record(candidate["condition"])
             endpoints = (await conn.execute(select(wait_edges.c.waiter_key,
@@ -216,7 +226,7 @@ class WaitDecisions:
                 await self.human(conn, wait, escalation, owner_scope, continuation, detail, now)
             else:
                 if decision == "reroute":
-                    await self.reroute(conn, wait, task, continuation, args, handler, now)
+                    await self.reroute(conn, wait, task, continuation, args, handler, now, routing=routing)
                 elif decision == "cancel":
                     await self.hold(conn, wait, task, continuation, now)
                 result = await dispatcher.finish(
@@ -242,6 +252,7 @@ class WaitDecisions:
                     "outcome": "cancelled" if decision in {"wake", "cancel", "reroute"}
                     else "pending", "generation": escalation["generation"]}
 
+    @admission_pass("service.scheduler.reader")
     async def cancel(self, args, *, principal, scope, handler):
         """``wait_cancel``: commit ``cancelled`` and queue it, never hold the task.
 
@@ -427,15 +438,17 @@ class WaitDecisions:
             tasks.c.id == task["id"],
         ).values(status="PAUSED", updated_at=now))
 
-    async def reroute(self, conn, wait, task, continuation, args, handler, now):
+    async def reroute(self, conn, wait, task, continuation, args, handler, now, *, routing):
         if not task or not continuation or not continuation["summary"]:
             raise WaitError("wait.unavailable", "reroute requires a stopped continuation and summary")
         if task["route_source"] == "role":
             raise WaitError("wait.out_of_scope", "a role task cannot be rerouted")
-        target = args["to"]
-        routing, error = await handler.wait_reroute_target(wait["project_id"], target)
-        if error:
-            raise WaitError("wait.condition_required", error)
+        if "prefer_target" in routing:
+            routing, error = await handler.wait_reroute_target(
+                wait["project_id"], args["to"], conn=conn,
+            )
+            if error:
+                raise WaitError("wait.condition_required", error)
         await self.hold(conn, wait, task, continuation, now)
         await conn.execute(insert(task_context).values(
             id=str(uuid.uuid4()), task_id=task["id"], type="handoff",

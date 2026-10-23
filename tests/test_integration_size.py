@@ -407,6 +407,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     amendments = {item["task_id"]: item for item in exception["amendments"]}
     assert set(amendments) == {
         "agile-beacon-80",
+        "bold-flare-41",
         "calm-rapids-50",
         "fair-dune-41",
         "fair-flare-10",

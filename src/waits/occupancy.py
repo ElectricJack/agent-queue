@@ -1,7 +1,5 @@
 """Live in-place waits are occupied seats with an eviction candidate marker."""
 
-from contextlib import nullcontext
-
 from sqlalchemy import select
 from src.database.tables import sessions, tasks, wait_records
 
@@ -28,8 +26,10 @@ async def continuation_occupancy(db, config, *, conn=None):
     """
     from src.database.tables import admission_reservations, continuations
 
-    async with db._engine.connect() if conn is None else nullcontext(conn) as conn:
-        rows = (await conn.execute(select(
+    if conn is None:
+        async with db._engine.connect() as owned:
+            return await continuation_occupancy(db, config, conn=owned)
+    rows = (await conn.execute(select(
             tasks.c.project_id, admission_reservations.c.scope,
             continuations.c.new_session_id, sessions.c.state,
         ).select_from(continuations.join(
@@ -40,7 +40,7 @@ async def continuation_occupancy(db, config, *, conn=None):
         )).where(
             continuations.c.resume_state.in_(("reserved", "launching", "delivered", "acknowledged")),
             admission_reservations.c.state.in_(("pending", "overdue", "granted", "consumed")),
-        ))).mappings().all()
+    ))).mappings().all()
     resuming, pending = set(), {}
     for row in rows:
         if row["new_session_id"] and row["state"] in {"starting", "running", "draining"}:

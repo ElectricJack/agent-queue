@@ -20026,18 +20026,21 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3cdef87877891a366dd387d18ce4c59a65ce8c8e8fb782b37643dbc917580df5",
+      "digest": "sha256:abdd8c48ba8420502e6b1593bda94dd70a3f7ab775f957962f5a1d86cfb00cc3",
       "imports": [
         "src.database",
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.models",
+        "src.waits",
         "src.waits.conditions",
         "src.waits.explain",
         "src.waits.graph",
         "src.waits.registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Wait graph propagation, retraction, cycles and persisted explanations."
     },
     "tests/test_wait_hibernation.py": {
@@ -20045,7 +20048,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:a68fea078ce3de9a4232c227ba75470518bd0490929ab0eb2215b24058f59474",
+      "digest": "sha256:f1e95405664bd5029c35f13fc117144192309165c37c7f0773568b035e0a79c9",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -20057,6 +20060,7 @@
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.admission",
         "src.models",
         "src.orchestrator.worktree_manager",
@@ -20073,9 +20077,11 @@
         "src.wait_runtime.measurements",
         "src.wait_runtime.resume",
         "src.wait_runtime.scheduler",
+        "src.waits",
         "src.waits.conditions",
         "src.waits.decision",
         "src.waits.fencing",
+        "src.waits.graph",
         "src.waits.holding",
         "src.waits.occupancy",
         "src.waits.registry",
