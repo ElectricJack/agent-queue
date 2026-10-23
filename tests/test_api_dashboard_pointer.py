@@ -65,6 +65,7 @@ import src.main
 from src.config import AppConfig, DatabaseConfig
 from src.embedded_mcp import run_mcp_server
 from src.orchestrator import Orchestrator
+from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 from starlette.routing import Mount
 from starlette.responses import HTMLResponse
@@ -85,10 +86,24 @@ async def check():
     allowed_html_routes = {"/plans/{task_id}"}
     html_routes = set()
 
+    def effective_routes(app):
+        for route in getattr(app, "routes", ()):
+            contexts = getattr(route, "effective_route_contexts", None)
+            if callable(contexts):
+                # New FastAPI versions retain lazy include wrappers. Contexts
+                # carry combined prefixes and inherited response classes;
+                # mounts instead live on the resolved Starlette route.
+                for context in contexts():
+                    yield context.starlette_route or context
+                for context in route.effective_low_priority_routes():
+                    yield context.starlette_route or context
+            else:
+                yield route
+
     def check_routes(app, prefix=""):
         assert not isinstance(app, StaticFiles), type(app)
         assert not type(app).__module__.startswith(forbidden), type(app)
-        for route in getattr(app, "routes", ()):
+        for route in effective_routes(app):
             path = prefix + route.path
             if isinstance(route, Mount):
                 check_routes(route.app, path)
@@ -102,6 +117,22 @@ async def check():
             if returns_html:
                 assert path in allowed_html_routes, path
                 html_routes.add(path)
+
+    # Prove that lazy includes are inspected, not silently skipped. Even an
+    # otherwise allowed path is forbidden under an include prefix, including
+    # when the HTML response class is inherited from the containing router.
+    nested = APIRouter(default_response_class=HTMLResponse)
+    nested.add_api_route("/plans/{task_id}", lambda: "unexpected HTML")
+    parent = APIRouter()
+    parent.include_router(nested, prefix="/nested")
+    invalid_app = FastAPI(docs_url=None, redoc_url=None)
+    invalid_app.include_router(parent, prefix="/unexpected")
+    try:
+        check_routes(invalid_app)
+    except AssertionError as exc:
+        assert str(exc) == "/unexpected/nested/plans/{task_id}", exc
+    else:
+        raise AssertionError("guard missed HTML in a nested include")
 
     async def plan_content(task_id):
         return "# Legacy plan"

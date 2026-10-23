@@ -62,6 +62,10 @@ redirects without following them. The database object remains uninitialized.
 It also verifies that the sole HTML response declaration is the plan route,
 exercises its real HTML response with a stub content provider, and checks
 that the route exception does not extend to neighboring or malformed paths.
+Route inspection supports both eagerly copied routes and FastAPI's lazy included
+routers. It checks resolved prefixes and inherited response classes, with a
+negative check that rejects HTML beneath nested includes instead of skipping
+their wrappers.
 
 Existing dashboard-server and CLI tests exercise a real standalone process,
 identity/PID checks, static serving, API relay, stop/restart and operation while
@@ -83,3 +87,24 @@ the documented disposable PostgreSQL test cluster on port 5534.
 
 No claim, pool, hierarchy, formula or provider-failover implementation changed;
 the swarm end-to-end suite was not required. No full-suite run was performed.
+
+### CI repair: lazy FastAPI includes
+
+PR #1854's `Tests (default-6/8)` job failed because the guard read `.path`
+directly from an `_IncludedRouter`. The failure reproduced with FastAPI 0.141.1;
+the system interpreter's FastAPI 0.135.3 eagerly copies routes and passed the
+original guard. The repair traverses effective route contexts, including their
+resolved Starlette mounts, without relaxing the HTML allow-list.
+
+Focused checks after the repair, using the same disposable test cluster and aq
+resource controls:
+
+* FastAPI 0.141.1: **14 passed** in 71.64 seconds with
+  `python -m src.cli.app test tests/test_api_dashboard_pointer.py tests/test_embedded_mcp.py --tb=short -q`
+  (repository virtualenv).
+* FastAPI 0.135.3: **14 passed** in 94.19 seconds with
+  `aq test tests/test_api_dashboard_pointer.py tests/test_embedded_mcp.py --tb=short -q`
+  (system interpreter).
+* `ruff check tests/test_api_dashboard_pointer.py` and `git diff --check` passed.
+
+CI owns the broad rerun; the repair changes only the guard and this report.
