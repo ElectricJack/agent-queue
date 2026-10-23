@@ -12421,7 +12421,8 @@
               "wake",
               "cancel",
               "reroute",
-              "escalate_to_human"
+              "escalate_to_human",
+              "requeue"
             ],
             "title": "Decision",
             "type": "string"
@@ -12471,6 +12472,19 @@
             ],
             "default": null,
             "title": "Expected Generation"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Id"
           }
         },
         "required": [

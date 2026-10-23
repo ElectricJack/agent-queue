@@ -85720,7 +85720,8 @@
               "wake",
               "cancel",
               "reroute",
-              "escalate_to_human"
+              "escalate_to_human",
+              "requeue"
             ],
             "title": "Decision"
           },
@@ -85766,6 +85767,18 @@
               }
             ],
             "title": "Expected Generation"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
           }
         },
         "additionalProperties": false,

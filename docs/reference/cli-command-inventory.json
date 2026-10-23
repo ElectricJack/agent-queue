@@ -22416,6 +22416,7 @@
           "--extend-seconds",
           "--to",
           "--expected-generation",
+          "--continuation-id",
           "--project",
           "--json",
           "--brief",
