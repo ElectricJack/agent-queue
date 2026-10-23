@@ -1229,6 +1229,7 @@
         "tests/test_playbook_v2_fixtures.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
         "tests/test_project_defaults_playbook.py",
+        "tests/test_quilt_health_watch.py",
         "tests/test_shipped_playbook_sources.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_v1_removal.py"
@@ -15772,6 +15773,30 @@
       ],
       "markers": [],
       "summary": "ProviderUsageQueryMixin — implementation spec T1."
+    },
+    "tests/test_quilt_health_watch.py": {
+      "areas": [
+        "shipped-playbooks"
+      ],
+      "default_arm": true,
+      "digest": "sha256:315bf3bfe0f6377ffac5afc08af5c85165087348c714095fce129f6e2d84e732",
+      "imports": [
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.principal",
+        "src.playbooks.authority",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors",
+        "src.playbooks.executors.agent_task",
+        "src.playbooks.executors.base",
+        "src.playbooks.expressions",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Disabled Quilt candidate against the unmodified installed graph and old goldens."
     },
     "tests/test_rate_guard.py": {
       "areas": [
