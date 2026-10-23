@@ -9,7 +9,8 @@
   ],
   "default-assignment-routing": [
     "tests/fixtures/playbooks/v2/default-assignment-routing",
-    "src/prompts/reviewed_playbooks/default-assignment-routing"
+    "src/prompts/reviewed_playbooks/default-assignment-routing",
+    "docs/playbooks/shared-fleet/default-assignment-routing"
   ],
   "default-pipeline": [
     "tests/fixtures/playbooks/v2/default-pipeline",

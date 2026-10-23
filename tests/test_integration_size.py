@@ -378,7 +378,11 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert grant["authorized_delta"] == 5
     assert grant["prior_owned_total_cap"] + grant["authorized_delta"] == 160_825
     assert grant["measured_owned_total"] == 160_825
-    amendment, = exception["amendments"]
+    amendments = {item["task_id"]: item for item in exception["amendments"]}
+    assert set(amendments) == {
+        "solid-impact-56", "agile-beacon-80", "nimble-torrent-12", "prime-impact-40",
+    }
+    amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
     assert amendment["authorized_owned_delta"] == 17
     assert grant["measured_owned_total"] + amendment["authorized_owned_delta"] == 160_842
@@ -387,9 +391,34 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert merged["approval_message_id"] == "msg-a10c7ab8ff2946f8b1f27528a407524c"
     assert merged["decision_id"] == "size-cap-delegation-2026-10-23"
     assert merged["authorized_owned_delta"] == grant["authorized_delta"] == 5
-    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == measured
+    assert merged["dev_owned_total"] + merged["authorized_owned_delta"] == 160_884
     assert (merged["dev_engine_lines"] + merged["authorized_engine_delta"]
-            == exception["measured_engine_lines"])
+            == 85_321)
+    composition = exception["batch_composition"]
+    assert composition["source_revision"] == exception["measured_source_revision"]
+    assert set(composition["member_sources"]) == {
+        "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
+    }
+    assert composition["base_revision"] == merged["dev_source_revision"]
+    assert composition["base_owned_total"] == merged["dev_owned_total"]
+    assert composition["base_engine_lines"] == merged["dev_engine_lines"]
+    assert composition["approved_deltas"] == {
+        "fresh-apex-30": {"owned": 5, "engine": 5},
+        "agile-beacon-80": {"owned": 65, "engine": 65},
+        "nimble-torrent-12": {"owned": 1, "engine": 0},
+        "prime-impact-40": {"owned": 103, "engine": 82},
+    }
+    for task_id in ("agile-beacon-80", "nimble-torrent-12", "prime-impact-40"):
+        grant_delta = composition["approved_deltas"][task_id]
+        assert grant_delta["owned"] == amendments[task_id]["authorized_owned_delta"]
+        assert grant_delta["engine"] == amendments[task_id]["authorized_engine_delta"]
+        assert amendments[task_id]["decision_message_id"] in exception["decision_message_ids"]
+    assert composition["base_owned_total"] + sum(
+        delta["owned"] for delta in composition["approved_deltas"].values()
+    ) == measured
+    assert composition["base_engine_lines"] + sum(
+        delta["engine"] for delta in composition["approved_deltas"].values()
+    ) == exception["measured_engine_lines"]
     assert ownership.transition_owned_cap(manifest) == measured
     too_large = {**report, "total": measured + 1}
     assert ownership.budget_errors(too_large, manifest) == [

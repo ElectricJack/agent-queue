@@ -46,6 +46,10 @@ docs/playbooks/integration-only/default-pipeline/artifact.json merge=aq-generate
 docs/playbooks/integration-only/default-pipeline/artifact.sha256 merge=aq-generated linguist-generated
 docs/playbooks/integration-only/default-pipeline/source.md merge=aq-generated linguist-generated
 docs/playbooks/integration-only/default-pipeline/manifest.md merge=aq-generated linguist-generated
+docs/playbooks/shared-fleet/default-assignment-routing/artifact.json merge=aq-generated linguist-generated
+docs/playbooks/shared-fleet/default-assignment-routing/artifact.sha256 merge=aq-generated linguist-generated
+docs/playbooks/shared-fleet/default-assignment-routing/source.md merge=aq-generated linguist-generated
+docs/playbooks/shared-fleet/default-assignment-routing/manifest.md merge=aq-generated linguist-generated
 
 # Hand-maintained, but branches almost only append module globs and areas to
 # it: keep both sides' lines instead of conflicting.

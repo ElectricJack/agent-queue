@@ -8,7 +8,7 @@
       "playbook-compiler": "sha256:e8cc3d763db83f5313524f0418ae4e5caed46c44e406c06d58c050fe3ffdd75f"
     }
   },
-  "compiled_at": "2026-10-20T15:28:38.059803Z",
+  "compiled_at": "2026-10-23T07:54:53.647444Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "default-assignment-routing",
   "purpose": "routine",
@@ -67,11 +67,11 @@
       "id": "route-task",
       "name": "route-task",
       "source": {
-        "end_line": 33,
+        "end_line": 36,
         "excerpt": "## Rule: route-task",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 33
+        "start_line": 36
       },
       "trigger": {
         "event_type": "task.route_needed"
@@ -82,7 +82,7 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:e6592357cb4b9468d4cd3548ccfcd5ee6a3323148a0ac985841b6df12fa74191",
+  "source_hash": "sha256:2e97391ca31eeee0e1fe48ade2b1823f081401066043b146c4dd575d14de4378",
   "steps": {
     "route-task--apply_a": {
       "command": "task_route_apply",
@@ -98,11 +98,11 @@
       },
       "rule": "route-task",
       "source": {
-        "end_line": 77,
+        "end_line": 79,
         "excerpt": "5. Call `task_route_apply` with `task_id` and `plan`, the plan the previous",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 77
+        "start_line": 79
       },
       "title": "apply_a",
       "transitions": {
@@ -127,11 +127,11 @@
       },
       "rule": "route-task",
       "source": {
-        "end_line": 77,
+        "end_line": 79,
         "excerpt": "5. Call `task_route_apply` with `task_id` and `plan`, the plan the previous",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 77
+        "start_line": 79
       },
       "title": "apply_b",
       "transitions": {
@@ -156,11 +156,11 @@
       },
       "rule": "route-task",
       "source": {
-        "end_line": 77,
+        "end_line": 79,
         "excerpt": "5. Call `task_route_apply` with `task_id` and `plan`, the plan the previous",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 77
+        "start_line": 79
       },
       "title": "apply_c",
       "transitions": {
@@ -273,11 +273,11 @@
       "rule": "route-task",
       "save_result_as": "classification",
       "source": {
-        "end_line": 59,
+        "end_line": 61,
         "excerpt": "2. Ask the `playbook-compiler` profile to classify the task. Give it the",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 59
+        "start_line": 61
       },
       "title": "classify",
       "tool_use": {
@@ -295,11 +295,11 @@
       "outcome": "completed",
       "rule": "route-task",
       "source": {
-        "end_line": 352,
+        "end_line": 372,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "default-assignment-routing.md",
-        "start_line": 352
+        "start_line": 372
       },
       "title": "Completed",
       "type": "terminal"
@@ -308,11 +308,11 @@
       "outcome": "failed",
       "rule": "route-task",
       "source": {
-        "end_line": 352,
+        "end_line": 372,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "default-assignment-routing.md",
-        "start_line": 352
+        "start_line": 372
       },
       "title": "Failed",
       "type": "terminal"
@@ -336,11 +336,11 @@
       "rule": "route-task",
       "save_result_as": "plan_b",
       "source": {
-        "end_line": 66,
+        "end_line": 68,
         "excerpt": "3. Call `task_route_plan` with `task_id`, `policy` and `classification`. Bind",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 66
+        "start_line": 68
       },
       "title": "plan_classified",
       "transitions": {
@@ -369,11 +369,11 @@
       "rule": "route-task",
       "save_result_as": "plan_a",
       "source": {
-        "end_line": 50,
+        "end_line": 52,
         "excerpt": "1. Call `task_route_plan` with `task_id` from the event and `policy`, the text",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 50
+        "start_line": 52
       },
       "title": "plan_first",
       "transitions": {
@@ -408,11 +408,11 @@
       "rule": "route-task",
       "save_result_as": "plan_c",
       "source": {
-        "end_line": 71,
+        "end_line": 73,
         "excerpt": "4. Call `task_route_plan` with `task_id`, `policy` and a `classification` of",
         "heading": "Rule: route-task",
         "path": "default-assignment-routing.md",
-        "start_line": 71
+        "start_line": 73
       },
       "title": "plan_unclassified",
       "transitions": {
@@ -426,6 +426,12 @@
       },
       "type": "command"
     }
+  },
+  "trusted_execution": {
+    "required_capabilities": [
+      "task_route_apply",
+      "task_route_plan"
+    ]
   },
   "version": 1
 }

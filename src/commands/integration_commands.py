@@ -2220,7 +2220,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationCloseDeliveredPrArgs
         from src.integration.pr_delivery import DeliveredPullRequestClosure
-        from src.integration.pr_cleanup import SWEEP_PRINCIPAL
+        from src.integration.pr_cleanup import SWEEP_PRINCIPAL, SWEEP_PULL
 
         try:
             request = IntegrationCloseDeliveredPrArgs.model_validate(args)
@@ -2235,6 +2235,7 @@ class IntegrationCommandsMixin:
             principal, refusal = await integration_operator(self.db, request.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
+        inventory = SWEEP_PULL.get() if sweep and request.dry_run else None
         result = await DeliveredPullRequestClosure(
             self.db, self._integration_repository_git()
         ).run(
@@ -2245,6 +2246,8 @@ class IntegrationCommandsMixin:
             reason=request.reason,
             operator_id=principal,
             aq_only=sweep,
+            inventory_pull=(inventory[2] if inventory is not None
+                            and inventory[:2] == (request.project_id, request.pr_number) else None),
         )
         return {
             "success": result["outcome"] in {"would_close", "closed", "nothing_to_close"},
