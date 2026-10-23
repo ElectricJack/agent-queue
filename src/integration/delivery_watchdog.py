@@ -13,7 +13,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import wait_measurements, wait_records
 
@@ -339,7 +340,7 @@ async def _mark_rows_on(conn, rows, *, reason: str, verification: str, now: floa
 
 
 async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
-                            repository_id: str, target_ref: str) -> str:
+                            repository_id: str, target_ref: str, hierarchy=None) -> str:
     """One agent task per generation lands the stuck work; the id makes it idempotent."""
     from src.integration.models import INTEGRATION_REPAIR_PRIORITY
     from src.models import Task, TaskStatus, TaskType
@@ -364,14 +365,14 @@ async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
         priority=INTEGRATION_REPAIR_PRIORITY, dedup_key=key,
         created_by_kind="system", created_by_id="delivery-watchdog",
     ), conn=conn)
+    if hierarchy is not None:
+        await hierarchy.reserve_ready_root_origin_on(conn, task_id)
     return task_id
 
 
 async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
                              inputs: Mapping[str, Any], now: float) -> str:
     import json
-
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     from src.database.tables import messages
 
@@ -403,7 +404,7 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
 
 async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any, *,
                        threshold: DeliveryThreshold, repository_id: str, target_ref: str,
-                       now: float) -> dict[str, Any]:
+                       now: float, hierarchy=None) -> dict[str, Any]:
     """Classify one owed generation and write its projection; at most one handover."""
     from src.metrics.delivery_latency import generation_of
 
@@ -411,19 +412,23 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
     generation = (generation_of(request) if request is not None else None) or (
         "head:" + entry["head"])
     key = f"{repository_id}:{task_id}:{generation}:{target_ref}"
-    completed_at = (request.completed_at if request is not None and request.completed_at
-                    else None)
+    source_key = "delivery-watchdog:" + key
+    completed_at = request.completed_at if request is not None else None
     state, reason = _WATCHED[entry["rule"]]
     if (entry["rule"] == "unreconciled" and request is not None
             and not request.has_recorded_source):
         reason = "missing_source_provenance"
     async with db.immediate() as conn:
-        row = previous if previous is not None and previous["source_key"] == (
-            "delivery-watchdog:" + key) else None
-        if previous is not None and row is None:
+        # The pending snapshot omits settled generations. Re-observation must
+        # reuse their identity and history rather than insert the same ID again.
+        row = (await conn.execute(select(wait_records).filter_by(
+            project_id=project_id, owner_kind="scheduler", owner_id=task_id,
+            origin="integration", source_key=source_key,
+        ).with_for_update())).mappings().one_or_none()
+        if previous is not None and previous["source_key"] != source_key:
             await _settle_on(db, conn, previous, now=now, outcome="superseded by a newer "
                              "completion generation")
-        inputs = dict(row["decision_inputs"]) if row is not None else {}
+        inputs = dict(row["decision_inputs"] or {}) if row is not None else {}
         first = inputs.get("first_completed_at") or completed_at or now
         age = max(0.0, now - first)
         if state == "progressing" and age >= threshold.stuck_after_seconds:
@@ -443,7 +448,7 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
                 async with conn.begin_nested():
                     redrive = {"task_id": await _file_takeover_on(
                         db, conn, key=key, entry=entry, repository_id=repository_id,
-                        target_ref=target_ref), "at": now}
+                        target_ref=target_ref, hierarchy=hierarchy), "at": now}
             except Exception as exc:  # noqa: BLE001 - a refusal is the incident's evidence
                 refused = f"{type(exc).__name__}: {exc}"[:500]
         inputs.update(
@@ -462,30 +467,27 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
         inputs["incident_id"] = incident_id
         values = {"decision_reason": reason, "decision_inputs": inputs,
                   "verification_state": "verified", "evidence_ref": entry["head"],
-                  "verified_at": now}
-        if row is None:
-            await conn.execute(insert(wait_records).values(
-                id="delivery-watchdog-" + _digest(key, 24), project_id=project_id,
-                owner_kind="scheduler", owner_id=task_id, origin="integration",
-                condition_kind="task", condition={"kind": "task", "task_id": task_id,
-                                                  "generation": generation,
-                                                  "target_ref": target_ref},
-                source_key="delivery-watchdog:" + key, source_generation=0,
-                source_watermark_seq=0, created_at=now, request_hash=_digest(key, 32),
-                **values,
-            ))
-        else:
-            from sqlalchemy import update
-
-            await conn.execute(update(wait_records).where(wait_records.c.id == row["id"])
-                               .values(version=wait_records.c.version + 1, **values))
+                  "verified_at": now, "outcome": "pending",
+                  "resolved_at": None, "cleared_at": None}
+        await conn.execute(pg_insert(wait_records).values(
+            id=row["id"] if row is not None else "delivery-watchdog-" + _digest(key, 24),
+            project_id=project_id, owner_kind="scheduler", owner_id=task_id, origin="integration",
+            condition_kind="task", condition={"kind": "task", "task_id": task_id,
+                                              "generation": generation,
+                                              "target_ref": target_ref},
+            source_key=source_key, source_generation=0, source_watermark_seq=0,
+            created_at=now, request_hash=_digest(key, 32), **values,
+        ).on_conflict_do_update(
+            index_elements=[wait_records.c.id],
+            set_={"version": wait_records.c.version + 1, **values},
+        ))
     return {"task_id": task_id, "generation": generation, "state": state, "reason": reason,
             "age_seconds": age, "stuck_scans": stuck_scans, "redrive": redrive,
             "incident_id": incident_id}
 
 
 async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
-                                page_size: int = PAGE_SIZE) -> dict[str, Any]:
+                                page_size: int = PAGE_SIZE, hierarchy=None) -> dict[str, Any]:
     """One bounded, oldest-first pass over projects after the persisted cursor.
 
     Projects are scanned whole, so an owed generation missing from a scanned
@@ -550,7 +552,7 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
             report["deliveries"].append(await _watch_entry(
                 db, entry, requests.get(entry["task_id"]), pending.pop(entry["task_id"], None),
                 threshold=threshold, repository_id=target["repository_id"],
-                target_ref=target_ref, now=now,
+                target_ref=target_ref, now=now, hierarchy=hierarchy,
             ))
         async with db.immediate() as conn:
             for row in pending.values():

@@ -314,6 +314,38 @@ async def test_threshold_comes_from_measured_ci_and_slow_takes_no_action(watch, 
     assert await watch.rows(escalations) == []
 
 
+@pytest.mark.parametrize("rule", ["awaiting_delivery", "stranded_root"])
+async def test_reobserved_generation_reuses_settled_projection(watch, clock, rule):
+    await watch.complete("p", "t1", age=1900, rule=rule)
+    await watch.scan()
+    await watch.scan()
+    original = await watch.blocker("t1")
+    entry = watch.inventory.entries["p"].pop("t1")
+    await watch.scan()
+    settled = await watch.blocker("t1")
+    assert settled["outcome"] == "satisfied"
+    assert settled["resolved_at"] is not None and settled["cleared_at"] is not None
+
+    await watch.restart()
+    watch.inventory.entries["p"]["t1"] = entry
+    delivery = (await watch.scan())["deliveries"][0]
+    row = await watch.blocker("t1")
+    assert row["id"] == original["id"]
+    assert row["source_key"] == original["source_key"]
+    assert row["created_at"] == original["created_at"]
+    assert row["decision_inputs"]["first_completed_at"] == (
+        original["decision_inputs"]["first_completed_at"])
+    assert row["decision_inputs"]["redrive"] == original["decision_inputs"]["redrive"]
+    assert delivery["age_seconds"] > original["decision_inputs"]["age_seconds"]
+    assert row["outcome"] == "pending"
+    assert row["resolved_at"] is None and row["cleared_at"] is None
+    assert row["version"] > settled["version"]
+
+    await watch.scan()
+    assert (await watch.blocker("t1"))["outcome"] == "pending"
+    assert len(_takeovers(await watch.rows(tasks))) == (1 if rule == "stranded_root" else 0)
+
+
 async def test_stuck_generation_gets_one_takeover_and_one_incident_across_restart(watch, clock):
     await watch.complete("p", "t1", age=1900)
     first = (await watch.scan())["deliveries"][0]

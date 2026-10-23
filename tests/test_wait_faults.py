@@ -355,7 +355,8 @@ async def suspension_driver(env, monkeypatch, *, failure=None, on_stop=None):
         assert (await intent(env))["stopped_at"] is not None
         assert (await env.db.get_session("s")).state == "stopped"
 
-    provider = SimpleNamespace(stop=stop, confirm_instance_stopped=AsyncMock(return_value=True),
+    provider = SimpleNamespace(stop=stop, confirm_stopped=AsyncMock(return_value=True),
+                               confirm_instance_stopped=AsyncMock(return_value=failure != "stop"),
                                process_alive=AsyncMock(return_value=False))
     monkeypatch.setattr("src.orchestrator.stranded_work.save_wip_to_task_branch", save)
     monkeypatch.setattr("src.orchestrator.workspace_attachments."
