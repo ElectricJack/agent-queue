@@ -1512,7 +1512,7 @@
   "ci_baseline_status": {
     "mode": "typed",
     "producer": "src/commands/ci_commands.py:CiCommandsMixin._cmd_ci_baseline_status",
-    "source_digest": "sha256:bca8a8faf81f0b503ac48dd5a47ea2c25d7d9969eaeff960fb6c6414f5ff1c65",
+    "source_digest": "sha256:e294e37df4421cb13e871a655221e72bdd3842cf51b95d8a21a95b0adffe8f44",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -1542,7 +1542,7 @@
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "{'success': False, 'error': 'max_attempts must be at least 1'}",
+        "return": "{'success': False, 'error': 'max_attempts must be non-negative'}",
         "protocol": "explicit_boolean: False"
       },
       {
@@ -1557,8 +1557,10 @@
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_ci_baseline_status.py"
+    ],
+    "review_notes": "Zero max_attempts, including the omitted default, disables escalation; positive values retain the finite attempt cap. Negative values return explicit false with the non-negative validation error. Both successful observation branches retain the delegated result protocol."
   },
   "ci_completed_status": {
     "mode": "typed",
@@ -12760,12 +12762,12 @@
       "_create_task": "sha256:caca98873262b9e7d5f51f9ebfa510b564073e3059a6eb8ca605eec3cc0839fd",
       "_create_worker_filed_task": "sha256:58b9772134578c8bf9b19aca0971d99edc35f2a80d84a29ad175e1d06071d520",
       "_parent_key_mode_refusal": "sha256:a34b5501df67e04e39fc4105a4c5294c5bc52048c734f1e2610630aa6610745b",
-      "_record_integration_source_ci": "sha256:de67d9d8413c183fb456f6d2466134a370ba3306a79d55e4bc42a2c728ac119b",
+      "_record_integration_source_ci": "sha256:5c6667783b8adc9a8fd262ac65e4437a1824cb00575e4c73f3f5ec6091d65099",
       "_record_source_delivery": "sha256:a3d4afee87a1de363e29002fe47d7a3259ab3f560447ca3f1bd107154d57a879",
       "_resolve_standing_parent": "sha256:92133e10ae0459f385ad0d63551b187c1d9d6d4527f081586a2883e438b0b72b",
       "_review_for_gating": "sha256:8ff69f62996fd66f774c5c489d87dde10e42aa055fdeab3fa92e7e67251d56d7"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. "
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Unlimited source-CI recovery delegates to _reopen_source_ci for each changed head; the renamed delegate preserves exact-head duplicate refusal, the bound-writer guard and explicit success/failure envelopes. Reviewed all _record_integration_source_ci exits and the delegated reopening path against the source-CI recovery tests."
   },
   "onboard_project": {
     "mode": "json_object",

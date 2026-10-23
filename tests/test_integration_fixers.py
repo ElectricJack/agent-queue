@@ -563,7 +563,8 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
                        data_dir=str(tmp_path / "data"), workspace_dir=str(tmp_path / "work"))
     config.sessions.enabled, config.sessions.provider = True, "fake"
     registry = HarnessRegistry()
-    overrides = getattr(request, "param", {})
+    overrides = dict(getattr(request, "param", {}))
+    repair_policy = overrides.pop("repair_policy", None)
     harness_id = overrides.get("id", "codex")
     permission_flag = ("--dangerously-bypass-approvals-and-sandbox" if harness_id == "codex"
                        else "--dangerously-skip-permissions")
@@ -604,7 +605,9 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
     monkeypatch.setattr(transport, "_afetch_exact_oid_with_app_auth_to_url", file_source_fetch)
     service = BatchFixerService(db, runtime)
     result = await service.allocate("real", target_ref=candidate_ref("real"), head_sha=source,
-                                    authorize=AsyncMock(return_value=True))
+                                    authorize=AsyncMock(return_value=True),
+                                    policy=(RepairPolicy.model_validate(repair_policy)
+                                            if repair_policy is not None else None))
     assert result["outcome"] == "filed", result
     row = await db.get_session(result["session_id"])
     return service, runtime, orch, row, base, source, lane
