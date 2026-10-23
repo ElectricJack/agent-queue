@@ -3018,7 +3018,7 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:cc8d836a9ae91e7ebe596411c1910040d20f7463a14f75cb89b32b21d1dc2b62",
+      "digest": "sha256:76182efe0e849ae08ba3664aa2f37fd0961743dd13ea1fc90c4654c9fd91addf",
       "imports": [
         "src.asks.delivery",
         "src.asks.intake",
@@ -3030,6 +3030,7 @@
         "src.delivery.scheduler",
         "src.digest.dispatch",
         "src.escalations.transport",
+        "src.models",
         "src.remote_links"
       ],
       "markers": [
