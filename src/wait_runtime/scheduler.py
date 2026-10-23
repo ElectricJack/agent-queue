@@ -10,7 +10,7 @@ import logging
 import time
 import uuid
 
-from sqlalchemy import exists, insert, or_, select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -91,29 +91,55 @@ class SchedulerWaitService:
         project_id = args["project_id"]
         # The contract carries a candidate list, never authoritative verdicts.
         # A fresh project scan also retracts stale rows after a missed cycle.
+        async with self.db._engine.connect() as conn:
+            candidate_ids = set((await conn.execute(select(tasks.c.id).where(
+                tasks.c.project_id == project_id,
+                tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
+                if args.get("initial_audit") else tasks.c.status == "READY",
+            ))).scalars())
+            # Include orphaned/terminal owners for cleanup, even when there is
+            # no longer a task row to join. Claim-bound resource waits belong
+            # to the dispatcher even when their origin is scheduler. Each item
+            # re-reads its durable state after taking the graph fence.
+            candidate_ids.update((await conn.execute(select(wait_records.c.owner_id).where(
+                wait_records.c.project_id == project_id, wait_records.c.origin == "scheduler",
+                wait_records.c.owner_kind == "scheduler",
+                wait_records.c.outcome == "pending",
+            ))).scalars())
+            candidate_ids.update((await conn.execute(select(admission_reservations.c.task_id).where(
+                admission_reservations.c.project_id == project_id,
+                admission_reservations.c.task_id.is_not(None),
+                admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+            ))).scalars())
+        changed = set()
+        for task_id in sorted(candidate_ids):
+            changed.update(await self.sync_task(project_id, task_id, args, now=now))
+        return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}
+
+    async def sync_task(self, project_id, task_id, args, *, now):
+        """Commit one owner's receipts, deadlines and graph projection together.
+
+        A slow admission check only fences this item, never the rest of the
+        project. An interrupted pass resumes from these durable rows; cleanup
+        must use the current owner's rows rather than a project-wide snapshot.
+        """
         watermark = await self.db.wait_source_watermark()
         changed = set()
         async with self.db._engine.begin() as conn:
             await lock_graph(conn)
-            candidates = (await conn.execute(select(tasks).where(
-                tasks.c.project_id == project_id,
-                or_(tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
-                    if args.get("initial_audit") else tasks.c.status == "READY", exists(select(wait_records.c.id).where(
-                    wait_records.c.origin == "scheduler", wait_records.c.owner_id == tasks.c.id,
-                    wait_records.c.outcome == "pending",
-                )), exists(select(admission_reservations.c.id).where(
-                    admission_reservations.c.task_id == tasks.c.id,
-                    admission_reservations.c.state.in_(("pending", "overdue", "granted")),
-                ))),
-            ).order_by(tasks.c.id).with_for_update())).mappings().all()
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.project_id == project_id, tasks.c.id == task_id,
+            ).with_for_update())).mappings().first()
             previous = [dict(r) for r in (await conn.execute(select(wait_records).where(
                 wait_records.c.project_id == project_id, wait_records.c.origin == "scheduler",
+                wait_records.c.owner_kind == "scheduler",
+                wait_records.c.owner_id == task_id,
             ).order_by(wait_records.c.id).with_for_update())).mappings()]
             by_key = {(r["owner_id"], r["source_key"]): dict(r) for r in previous}
             reservations = {r["task_id"]: dict(r) for r in (await conn.execute(
                 select(admission_reservations).where(
                     admission_reservations.c.project_id == project_id,
-                    admission_reservations.c.task_id.is_not(None),
+                    admission_reservations.c.task_id == task_id,
                     admission_reservations.c.state.in_(("pending", "overdue", "granted")),
                 ).order_by(admission_reservations.c.id).with_for_update()
             )).mappings()}
@@ -127,9 +153,7 @@ class SchedulerWaitService:
                     await conn.execute(update(admission_reservations).where(
                         admission_reservations.c.id == reservation["id"],
                     ).values(state="cancelled"))
-            for task in candidates:
-                if not enabled(self.orchestrator.config, project_id):
-                    continue
+            if task and enabled(self.orchestrator.config, project_id):
                 audit = bool(args.get('initial_audit') or any(
                     r['owner_id'] == task['id'] and
                     (r['decision_inputs'] or {}).get('legacy_audit') for r in previous))
@@ -143,11 +167,9 @@ class SchedulerWaitService:
                         admission_reservations.c.id == reservation["id"],
                     ).values(state="cancelled"))
                     reservation = None
-                if observation is None:
-                    continue
                 service_scope = Scope(project_id, "scheduler", task["id"],
                                       claim_epoch=task["claim_epoch"], principal="service")
-                for condition in observation.conditions():
+                for condition in observation.conditions() if observation else ():
                     key = (task["id"], self.registry.adapter("resource").source_key(condition).identity)
                     desired.add(key)
                     row = by_key.get(key)
@@ -230,11 +252,11 @@ class SchedulerWaitService:
             if args.get("initial_audit"):
                 from src.wait_runtime.legacy_audit import audit_scheduler_age
 
-                await audit_scheduler_age(conn, project_id, now=now,
+                await audit_scheduler_age(conn, project_id, task_id=task_id, now=now,
                     deadline_seconds=self.orchestrator.config.wait_policy.branch_admission_deadline_seconds)
             if changed:
                 await recompute_from(conn, changed, now=now)
-        return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}
+        return changed
 
     async def deadline(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from src.commands.principal import ExecutionPrincipal
 from src.config import AppConfig
@@ -21,9 +21,10 @@ from src.integration.admission import observe_admission
 from src.integration.stacked_branches import StackView
 from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
+from src.waits.graph import GRAPH_LOCK, recompute_from
 from src.waits.registry import build_registry
 from src.waits.reservations import consume_reservation
-from src.wait_runtime.scheduler import SchedulerWaitService
+from src.wait_runtime.scheduler import SchedulerWaitService, close_row
 from tests.db_fixtures import lease_dsn
 
 NOW = 1_800_000_000.0
@@ -620,6 +621,101 @@ async def test_prepared_admission_does_not_admit_changed_project(env):
     assert "delivery_not_verified" in observation.constraints["batch_hold"]["reasons"]
 
 
+
+
+@pytest.mark.parametrize("entrypoint", ["sync", "startup_bridge"])
+async def test_slow_authorization_yields_graph_lock_between_owners(env, monkeypatch, entrypoint):
+    from src.wait_runtime.service import WaitService
+
+    await env.db.create_task(Task(
+        id="z-last", project_id="p", title="Last", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    service = WaitService(env.o, clock=lambda: NOW)
+    scheduler = service.scheduler
+    started, release = asyncio.Event(), asyncio.Event()
+    queued, mutated = asyncio.Event(), asyncio.Event()
+    observe = scheduler.reader.observe_task
+
+    async def slow_authorization(conn, task_id, **kwargs):
+        if task_id == "holder" and not started.is_set():
+            started.set()
+            await release.wait()
+        if task_id == "z-last":
+            # The concurrent mutation must commit before this next slow item
+            # can finish. A project-wide transaction keeps it locked out.
+            await asyncio.wait_for(mutated.wait(), timeout=10)
+        return await observe(conn, task_id, **kwargs)
+
+    monkeypatch.setattr(scheduler.reader, "observe_task", slow_authorization)
+
+    async def mutate_wait():
+        await started.wait()
+        async with env.db._engine.begin() as conn:
+            queued.set()
+            # Queue on the real PostgreSQL fence while authorization is slow.
+            # PostgreSQL hands the fence to this writer at the item boundary.
+            await conn.execute(select(func.pg_advisory_xact_lock(GRAPH_LOCK)))
+            row = (await conn.execute(select(wait_records).where(
+                wait_records.c.owner_id == "holder", wait_records.c.origin == "scheduler",
+            ).with_for_update())).mappings().first()
+            assert row is not None
+            changed = await close_row(conn, row, now=NOW + 1)
+            await recompute_from(conn, changed, now=NOW + 1)
+        mutated.set()
+
+    async def command(name, args):
+        assert name == "wait_legacy_bridge"
+        return await service.legacy_bridge.run(args, principal=SERVICE)
+
+    service.command = command
+    work = asyncio.create_task(
+        scheduler.sync({"project_id": "p", "cycle_id": "concurrent"}, principal=SERVICE)
+        if entrypoint == "sync" else service.startup_bridge()
+    )
+    mutation = asyncio.create_task(mutate_wait())
+    try:
+        await asyncio.wait_for(queued.wait(), timeout=10)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(work, mutation), timeout=20)
+    finally:
+        release.set()
+        work.cancel()
+        mutation.cancel()
+        await asyncio.gather(work, mutation, return_exceptions=True)
+    assert mutated.is_set()
+    assert any(r["owner_id"] == "holder" and r["outcome"] == "cancelled"
+               for r in await rows(env, wait_records))
+
+
+async def test_interrupted_sync_replays_committed_owner_receipts(env, monkeypatch):
+    await env.db.create_task(Task(
+        id="z-last", project_id="p", title="Last", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    observe = env.service.reader.observe_task
+
+    async def interrupted(conn, task_id, **kwargs):
+        if task_id == "z-last":
+            raise RuntimeError("interrupted after first owner committed")
+        return await observe(conn, task_id, **kwargs)
+
+    monkeypatch.setattr(env.service.reader, "observe_task", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await env.service.sync({"project_id": "p", "cycle_id": "first", "now": NOW,
+                                "initial_audit": True}, principal=SERVICE)
+    before = await rows(env, wait_records)
+    assert before and all(r["owner_id"] == "holder" for r in before)
+    assert all("legacy_audit" in r["decision_inputs"] for r in before)
+    deadlines = await rows(env, wait_deadlines)
+    env.service = SchedulerWaitService(env.o, clock=lambda: NOW + 50)
+    await env.service.sync({"project_id": "p", "cycle_id": "replay", "now": NOW + 50,
+                            "initial_audit": True}, principal=SERVICE)
+    after = [r for r in await rows(env, wait_records) if r["owner_id"] == "holder"]
+    assert {r["id"] for r in after} == {r["id"] for r in before}
+    assert {r["id"]: r["decision_inputs"]["registration_receipt"] for r in after} == {
+        r["id"]: r["decision_inputs"]["registration_receipt"] for r in before}
+    assert await rows(env, wait_deadlines) == deadlines
 async def test_tick_runs_startup_bridge_beside_the_scheduler(env, monkeypatch):
     import asyncio
     from src.wait_runtime.service import WaitService
