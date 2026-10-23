@@ -751,6 +751,13 @@ class Orchestrator(
         return self._command_handler
 
     @cached_property
+    def cycle_waits(self):
+        """Agent-wait and wait-service maintenance, off the cycle's critical path."""
+        from src.wait_runtime.cycle import CycleWaitMaintenance
+
+        return CycleWaitMaintenance(self)
+
+    @cached_property
     def morning_due(self):
         """The morning-report playbook's once-per-local-day trigger.
 
@@ -3310,6 +3317,8 @@ class Orchestrator(
             await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
         await self.cancel_claim_preparations()
         await stop_ready_owner_recovery(self)
+        if "cycle_waits" in self.__dict__:
+            await self.cycle_waits.stop()
         await self.message_delivery_service.stop()
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
@@ -4526,20 +4535,8 @@ class Orchestrator(
                     logger.error("CollaborationReconciler tick refused: %s", result)
             except Exception:
                 logger.error("CollaborationReconciler tick failed", exc_info=True)
-            try:
-                from src.agent_waits import AgentWaitReconciler
-
-                result = await AgentWaitReconciler(self._command_handler).tick()
-                if not result.get("success"):
-                    logger.error("AgentWaitReconciler tick refused: %s", result)
-            except Exception:
-                logger.error("AgentWaitReconciler tick failed", exc_info=True)
-            try:
-                wait_service = getattr(self, "wait_service", None)
-                if wait_service is not None:
-                    await wait_service.tick()
-            except Exception:
-                logger.error("WaitService recovery tick failed", exc_info=True)
+            # Bounded and single-flight: a slow bridge never delays reaping.
+            await self.cycle_waits.tick()
             try:
                 result = await self.agent_cron.tick()
                 if not result.get("success"):

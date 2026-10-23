@@ -46,11 +46,16 @@ def legacy_times(row):
 
 
 class LegacyWaitBridge:
+    # A held project (an unadoptable legacy item, a failed audit) is retried
+    # after this delay by the startup bridge rather than on every cycle tick.
+    RETRY_SECONDS = 300.0
+
     def __init__(self, service, *, clock=time.time):
         self.service = service
         self.orch = service.orch
         self.db = self.orch.db
         self.clock = clock
+        self.retry_at = {}
 
     async def run(self, args, *, principal, scope=None, handler=None):
         from src.wait_runtime.legacy_pass import run_pass

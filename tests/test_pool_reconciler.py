@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
@@ -33,6 +34,42 @@ from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
+
+
+async def test_slow_wait_bridge_does_not_prevent_starting_a_pool(orch, db, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.agent_waits import AgentWaitReconciler
+    from src.commands import CommandHandler
+    from src.commands.contracts import builtin
+
+    monkeypatch.setattr(builtin, "_handler_provider", builtin._handler_provider)
+    monkeypatch.setattr(AgentWaitReconciler, "tick", AsyncMock(return_value={"success": True}))
+    orch.set_command_handler(CommandHandler(orch, orch.config))
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def bridge():
+        started.set()
+        await release.wait()
+
+    orch.wait_service = SimpleNamespace(
+        tick=bridge, enabled=True, lifecycle=SimpleNamespace(resume_pending=AsyncMock()),
+    )
+    orch.cycle_waits.budget = 0.05
+    await ready(db, "candidate")
+    try:
+        await asyncio.wait_for(orch.cycle_waits.tick(), timeout=5)
+        assert started.is_set() and not release.is_set()
+        await asyncio.wait_for(orch._reconcile_pools(), timeout=5)
+        await asyncio.wait_for(orch.wait_for_pool_launches(), timeout=5)
+        [session] = await db.list_sessions(lifecycle="pool", project_id=PROJECT_ID)
+        assert session.state == "running"
+        assert not release.is_set()
+        assert len(orch.session_providers.create("fake", orch.config).starts) == 1
+    finally:
+        release.set()
+        await orch.cycle_waits.stop()
 
 
 @pytest.mark.parametrize("artifact", [False, True])

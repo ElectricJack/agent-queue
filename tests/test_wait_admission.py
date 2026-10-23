@@ -1,5 +1,6 @@
 """Real PostgreSQL admission bindings, deadlines, claim predicates and restart replay."""
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -493,3 +494,32 @@ async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
     service.command = AsyncMock(side_effect=command)
     await service.startup_bridge()
     service.command.assert_not_awaited()
+
+
+async def test_startup_bridge_backs_off_a_held_project_instead_of_rerunning_every_tick(env):
+    from src.wait_runtime.service import WaitService
+
+    clock = NOW
+    service = WaitService(env.o, clock=lambda: clock)
+    service.command = AsyncMock(return_value={
+        'success': True, 'result': {'projects': {'p': {'state': 'held'}}},
+    })
+    await service.startup_bridge()
+    await service.startup_bridge()
+    assert service.command.await_count == 1
+    clock = NOW + service.legacy_bridge.RETRY_SECONDS + 1
+    await service.startup_bridge()
+    assert service.command.await_count == 2
+
+
+async def test_wait_tick_never_queues_behind_a_running_bridge(env, monkeypatch):
+    from src.wait_runtime.service import WaitService
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    monkeypatch.setattr(service, 'processing_enabled', AsyncMock(return_value=True))
+    monkeypatch.setattr(service, 'startup_bridge', AsyncMock())
+    monkeypatch.setattr(service.lifecycle, 'tick', AsyncMock())
+    monkeypatch.setattr(service.listener, 'tick', AsyncMock(return_value=True))
+    async with service._bridge_lock:
+        assert await asyncio.wait_for(service.tick(), timeout=1) is True
+    service.startup_bridge.assert_not_awaited()

@@ -187,7 +187,9 @@ class WaitService:
 
     async def tick(self):
         if await self.processing_enabled():
-            if self.enabled:
+            # A bridge already in progress (run(), or an earlier tick) is
+            # resumable from durable receipts; never queue behind it.
+            if self.enabled and not self._bridge_lock.locked():
                 await self.startup_bridge()
             await self.lifecycle.tick()
             return await self.listener.tick()
@@ -236,11 +238,17 @@ class WaitService:
                         wait_bridge_progress.c.state == 'complete',
                     ),
                 )))).scalars())
+            bridge = self.legacy_bridge
             for pid in pids:
+                if bridge.retry_at.get(pid, 0) > bridge.clock():
+                    continue
                 if project_policy(self.orch.config.wait_policy, pid).v2_enabled:
                     result = await self.command('wait_legacy_bridge', {
                         'project_id': pid, 'mode': 'agent-waits', 'apply': True,
                     })
+                    report = (result.get('result') or {}).get('projects', {}).get(pid, {})
+                    if not result.get('success') or report.get('state') == 'held':
+                        bridge.retry_at[pid] = bridge.clock() + bridge.RETRY_SECONDS
                     if not result.get('success'):
                         return
 

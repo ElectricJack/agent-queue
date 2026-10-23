@@ -5186,3 +5186,38 @@ async def test_refusal_reconciliation_revalidates_instance(db, provider, pool_re
     await db.update_session(row.id, **changed)
     await pool_reconciler._step_claim_refusals([row], NOW)
     assert not pool_reconciler.test_orch.terminations
+
+
+async def test_slow_wait_bridge_never_delays_reaping_a_killed_session(
+    db, provider, config, registry, tmp_path, monkeypatch
+):
+    """A wedged legacy bridge runs beside the cycle, never ahead of reaping."""
+    orch = _installed_wait_orchestrator(db, config, registry, tmp_path, monkeypatch)
+    release = asyncio.Event()
+    started = []
+
+    class _WedgedBridge:
+        async def tick(self):
+            started.append(True)
+            await release.wait()
+
+    orch.wait_service = _WedgedBridge()
+    orch.cycle_waits.budget = 0.05
+    await _task(db, status=TaskStatus.COMPLETED)
+    row = await _session(db, provider)
+    provider.script_death(row.name)
+    monkeypatch.setattr("src.orchestrator.core.time.time", lambda: NOW)
+    try:
+        await asyncio.wait_for(orch._reconcile_sessions(), timeout=5)
+        assert (await db.get_session("s1")).state == "stopped"
+        assert started == [True] and not release.is_set()
+        # Later cycles keep reconciling and never queue a second bridge pass.
+        await asyncio.wait_for(orch._reconcile_sessions(), timeout=5)
+        assert started == [True]
+        release.set()
+        await asyncio.wait_for(orch.cycle_waits.task, timeout=5)
+        await orch._reconcile_sessions()
+        assert started == [True, True]
+    finally:
+        release.set()
+        await orch.cycle_waits.stop()

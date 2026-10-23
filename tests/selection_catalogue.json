@@ -4460,7 +4460,7 @@
         "collaboration"
       ],
       "default_arm": true,
-      "digest": "sha256:8d3a6d85aeea8680b49a8d45b5f0faebf6bc7c5896aa49991bc5a8096bc77105",
+      "digest": "sha256:3d757b1f5b8b2669985507b21c2bf1fa28130f22815dce971dfcb86a7bee29ea",
       "imports": [
         "src.agent_waits",
         "src.api.codegen",
@@ -4473,7 +4473,8 @@
         "src.mcp_registration",
         "src.orchestrator",
         "src.profiles.capabilities",
-        "src.tools.definitions"
+        "src.tools.definitions",
+        "src.wait_runtime.cycle"
       ],
       "markers": [
         "parametrize",
@@ -14233,10 +14234,14 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:b6261ebb581c040bbbfd3bc0d799f8010a79e241750d4f0e363988bdcdf9129e",
+      "digest": "sha256:5ad3f7e15e27026aaf1cb5654f0db1b95f97fc56e443a293eed37cf9c31cc90d",
       "imports": [
+        "src.agent_waits",
         "src.api.auth",
+        "src.commands",
         "src.commands.claim_commands",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.handler",
         "src.config",
         "src.database.queries",
