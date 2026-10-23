@@ -12,6 +12,11 @@ tags: [design, feature-pauses, memory, playbooks, overhaul, feature-flags]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Implementation note (2026-10-22).** Feature pause/resume is shipped; the
+> Draft label below records this design's original approval stage. Current
+> task states and manual-pause semantics are described in
+> [Tasks](../../concepts/tasks.md#statuses-and-phases).
+
 **Status:** Draft — approved direction (2026-08-19)
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 everything is visible and editable, #5 reduce
 human effort not judgment, #10 favor fewer moving parts)

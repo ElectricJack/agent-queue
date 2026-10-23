@@ -28,7 +28,7 @@ asyncio event loop
 │   ├── Scheduler                — proportional deficit-based assignment
 │   ├── State Machine            — formal task state transitions + DAG validation
 │   ├── Smart Cascade            — promotion pipeline (approvals → resume → promote → monitor)
-│   ├── Plan Parser              — manual `process_plan` command → subtask chain creation (no auto-discovery)
+│   ├── Task Graph               — deterministic graph/formula parsing, validation and atomic creation
 │   └── Playbook Engine          — compiled DAG workflows
 │       ├── PlaybookCompiler     — markdown → JSON graph (LLM-powered, one-shot)
 │       ├── PlaybookRunner       — graph walker with conversation history
@@ -56,24 +56,19 @@ asyncio event loop
 
 ### Task State Machine
 
-```
-DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED
-                                  │
-                        ┌─────────┼──────────┐
-                        ▼         ▼          ▼
-                     PAUSED   WAITING    FAILED
-                     (auto-   _INPUT     (retry →
-                     resume)  (Discord)   BLOCKED)
+Twelve stored states: `DEFINED`, `READY`, `ASSIGNED`, `IN_PROGRESS`, `WAITING`,
+`HIBERNATED`, `RESUME_PENDING`, `WAITING_INPUT`, `PAUSED`, `COMPLETED`, `FAILED`,
+`BLOCKED`. Push scheduling uses ASSIGNED; a pool claim goes READY → IN_PROGRESS.
+Durable waits use IN_PROGRESS → WAITING → HIBERNATED → RESUME_PENDING →
+IN_PROGRESS. WAITING_INPUT remains a separate input path. Manual pauses need not
+have a resume timer. Failed attempts retry within policy, then require intervention.
 
-AWAITING_APPROVAL  (post-work, pre-merge — requires manual approve)
-AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never auto-discovered;
-                         doctor check `tasks.awaiting_plan_approval` flags stranded rows)
-```
-
-- DEFINED → READY: all dependencies COMPLETED
-- PAUSED tasks always have `resume_after` — never stall permanently
-- Failed tasks retry up to configurable limit, then BLOCKED
-- Plan-generated tasks: agent produces `.claude/plan.md`; a human (or the requester) runs the `process_plan` command to read and store it for approval — the orchestrator no longer auto-discovers plan files during task completion (see `docs/specs/orchestrator.md` §12)
+`is_blocked` projects dependencies and gates; the shared admission view adds current
+integration evidence before a worker can claim. Approval is represented by gates,
+not the removed AWAITING_APPROVAL / AWAITING_PLAN_APPROVAL states. Plan ingestion
+uses explicit graph documents or reviewed change sets; `process_plan` is removed.
+See [Tasks](docs/concepts/tasks.md) and the [task-graph system map](docs/specs/systems/task-graph.md)
+for hierarchy, transitions, admission and completion guards.
 
 ### Memory Tiers
 
