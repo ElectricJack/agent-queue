@@ -309,3 +309,13 @@ attempt/reason, including across timer retries and daemon restarts. Playbook
 failure receipts and failed terminal run records retain the command's reason.
 `stall.sweep` reports `object_bootstrap_stalled` when that root has failed starts,
 no registered loop, and its bootstrap gate remains open for more than 15 minutes.
+
+## Retained authoring-port recording
+
+The independently recorded 105-node authoring port from PR #1851 remains in
+`tests/fixtures/playbooks/object-loop-port/ported.artifact.json`, with its exact
+source and manifest. Its graph/authority and command-boundary scenarios remain
+pinned to those bytes. The current 95-node collection-filter recording retains
+the same typed commands, finite foreach bounds and legacy authority. Its own
+refactor traces cover the changed traversal. Both recordings remain inactive
+until the separate exact-hash review and activation decisions described above.

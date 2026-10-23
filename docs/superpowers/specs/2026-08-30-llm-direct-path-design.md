@@ -1,6 +1,6 @@
 ---
 tags: [design, llm, supervisor, playbooks, plugins, config, cleanup]
-status: approved design (2026-08-30) — awaiting implementation plan
+status: implemented historical design record
 date: 2026-08-30
 related:
   - ../../specs/design/supervisor-agent.md
@@ -17,6 +17,10 @@ related:
 > designed, not as the code stands today. Start at [the documentation
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
+
+Current behaviour: [providers system spec](../../specs/systems/providers.md) and
+[usage accounting](../../reference/usage-accounting.md). This record preserves the
+original design; its proposed implementation details are not setup instructions.
 
 ## 1. Purpose
 
