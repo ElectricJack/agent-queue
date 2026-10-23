@@ -7,8 +7,11 @@
 > material](../../history/README.md).
 
 **Date:** 2026-09-06
-**Status:** shipped (default playbook, enabled)
-**Source:** `src/prompts/default_playbooks/blocked-task-escalation.md`
+**Status:** retired; the original shipped behavior below is historical. It is not
+in the initial installation or required-policy sets. Current failure notification
+uses `supervisor-failure-triage`; stateful stuck-task watches are optional. See
+[current policy](../../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility).
+**Former source (removed):** `src/prompts/default_playbooks/blocked-task-escalation.md`
 **Reviewed bundle:** `tests/fixtures/playbooks/v2/blocked-task-escalation/`
 
 ## Problem

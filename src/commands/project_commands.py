@@ -277,8 +277,28 @@ class ProjectCommandsMixin:
         # kind of admission change a blocked claimer is waiting for.
         await self.orchestrator.bus.emit("project.resumed", {"project_id": pid})
         if project.status == ProjectStatus.PAUSED:
+            await self._rearm_project_supervisor(pid)
             await self._notify_project_workers(pid, paused=False)
         return {"success": True, "resumed": pid, "name": project.name}
+
+    async def _rearm_project_supervisor(self, project_id: str) -> None:
+        """Want the project's named supervisor to run again after a resume.
+
+        Mirrors the wake command's re-arm: flip the supervisor's
+        ``desired_state`` to ``running`` (and clear the restart budget so this
+        counts as a fresh intent, not a retry of a failed one) so the next
+        reconciler tick respawns it. Only runs when the supervisor is
+        operator-enabled, so we never re-enable a supervisor that was off
+        before the pause.
+        """
+        if not (await self.db.get_project(project_id)).supervisor_enabled:
+            return
+        row = await self.db.get_session_by_name("n-supervisor--" + project_id)
+        if row is None or row.lifecycle != "named" or row.profile_id != "supervisor":
+            return
+        await self.db.update_session(
+            row.id, desired_state="running", restarts=0, last_activity=None,
+        )
 
     async def _notify_project_workers(self, project_id: str, *, paused: bool) -> None:
         """Durable safe-point notices, including workers with a pending wait."""

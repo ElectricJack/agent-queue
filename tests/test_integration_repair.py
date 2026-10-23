@@ -9053,3 +9053,55 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("ordinal", [0, 1])
+async def test_unlimited_stage_has_no_deadline_or_attempt_exhaustion(db, ordinal):
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    for boundary in ("parent", "root"):
+        policy[boundary]["repair"].update(
+            primary_seconds=0, debug_seconds=0, primary_attempts=ordinal, debug_attempts=0,
+        )
+    await _seed_parent_operation(db, policy=policy)
+    service = RepairService(db, clock=lambda: 100.0)
+    started = await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    assert started["deadline_at"] is None
+    if ordinal:
+        escalated = await service.record_result("operation", "failed-check", now=101.0)
+        assert escalated["action"] == "dispatch_debug"
+    for attempt in range(1, 6):
+        evidence_id = f"unlimited-failure-{attempt}"
+        await _add_parent_evidence(db, evidence_id, run_id=evidence_id, conclusion="failure")
+        result = await service.record_result("operation", evidence_id, now=100_000.0 + attempt)
+        assert result == {"outcome": "continue", "action": "repair", "attempts": attempt}
+    stage = await _repair_stage(db, "operation", ordinal)
+    assert stage["deadline_at"] is None and stage["state"] == "active"
+    assert (await service.expire("operation", ordinal, now=1_000_000))["outcome"] == "not_due"
+    assert await service.due_stages(now=1_000_000) == []
+    if not ordinal:
+        replay = await service.start("operation", STARTING_SHA, "failed-check", now=1_000_000)
+        assert replay["deadline_at"] is None
+
+
+@pytest.mark.parametrize("ordinal,reason", [(0, "writer_claimed"), (1, "writer_claimed"),
+                                           (1, "writer_unclaimed")])
+async def test_deferring_a_stage_with_unlimited_duration_removes_its_deadline(db, ordinal, reason):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    stage = await _repair_stage(db, "operation", 0)
+    stage["policy"] = {**stage["policy"], "primary_seconds": 0, "debug_seconds": 0}
+    stage["ordinal"] = ordinal
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            ordinal=ordinal, policy=stage["policy"]))
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        result = await service._defer_expiry_on(conn, dict(operation), stage, {
+            "task_id": "delegate", "task_status": "READY", "claim_epoch": 1,
+        }, reason=reason, now=200.0)
+    assert result["deadline_at"] is None
+    assert (await _repair_stage(db, "operation", ordinal))["deadline_at"] is None

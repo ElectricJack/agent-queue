@@ -10,8 +10,9 @@ This covers:
 - policy profiles, which export and import a project's policy as a file;
 - the factory policy page that every agent role follows.
 
-This is system 10 of the 18 in the system inventory. It describes `main` as of
-2026-10-20. Where a guide already explains something well, this page gives the
+This is system 10 of the 18 in the system inventory. It describes `origin/dev`
+at `52d2efe4c` (audited 2026-10-22). Where a guide already explains something
+well, this page gives the
 short version and links to it. Line numbers are a starting point for a reader;
 they drift.
 
@@ -30,11 +31,12 @@ The policy it follows is markdown: the profile, the supervisor-facing rules
 in the worker templates, the shipped playbooks, and
 [factory-policy.md](../../concepts/factory-policy.md). The code in this system
 is small and spread over other packages:
-- [src/commands/supervisor_authority.py](../../../src/commands/supervisor_authority.py) (75 lines);
-- [src/operator_decisions.py](../../../src/operator_decisions.py) (214 lines);
-- [src/policy_profiles/](../../../src/policy_profiles/) (about 1,270 lines);
-- [src/escalations/supervisor.py](../../../src/escalations/supervisor.py) (172 lines);
-- [src/profiles/capability_sync.py](../../../src/profiles/capability_sync.py) (241 lines);
+- [src/commands/supervisor_authority.py](../../../src/commands/supervisor_authority.py);
+- [src/operator_decisions.py](../../../src/operator_decisions.py);
+- [src/policy_profiles/](../../../src/policy_profiles/);
+- [src/escalations/supervisor.py](../../../src/escalations/supervisor.py);
+- [src/profiles/capability_sync.py](../../../src/profiles/capability_sync.py);
+- [src/sessions/supervisor_health.py](../../../src/sessions/supervisor_health.py);
 - parts of the session lens, the reconciler and the message queries.
 
 ## Contents
@@ -82,7 +84,7 @@ playbooks*. This system is where the policy side lives. It has four jobs:
 | Term | Meaning |
 |---|---|
 | Project supervisor | The named session `supervisor-<project_id>` (runtime name `n-supervisor--<project_id>`) for one project. |
-| Global supervisor | The named session `supervisor-global` (runtime `n-supervisor--global`) with no project. Created on every daemon start. It owns cross-project work, reports and operator execution. |
+| Global supervisor | The address `supervisor-global` (runtime `n-supervisor--global`) with no project. Its agent row is ensured on every daemon start; its session starts on demand. It owns cross-project work, reports and operator execution. |
 | Elevated token | An API session token minted for a supervisor at cold start. Global elevation is admin scope and loopback-only. |
 | Cold start | Launching a sleeping supervisor so it can receive mail (`ensure_started`). |
 | Recovery incident | A `supervisor_recovery_incident` record on a task. It holds the task off the frontier until a supervisor retries, holds or releases it. |
@@ -121,8 +123,7 @@ tmux session. That session runs a harness CLI, just as a worker session does.
 ### The supervisor profile
 
 The shipped profile is
-[src/profiles/defaults/supervisor/profile.md](../../../src/profiles/defaults/supervisor/profile.md)
-(about 670 lines):
+[src/profiles/defaults/supervisor/profile.md](../../../src/profiles/defaults/supervisor/profile.md):
 - harness `claude`, default class `deep-high`;
 - lifecycle `named`, `wake_mode: resume`, `idle_timeout: 2700` seconds;
 - no workspace.
@@ -141,7 +142,7 @@ It defines four duties:
 
 Rules worth knowing before reading the profile:
 - it never routes work to itself;
-- it never runs a task-scoped `aq prime`;
+- it uses `aq prime` for its session scope, never as a queued task worker;
 - only the human decides a review unless the human delegates it;
 - "the supervisor performs vault and control-plane changes, workers implement
   repository changes" (from the 2026-09-11 factory policy simplification).
@@ -154,7 +155,8 @@ blocker and asks the supervisor rather than guessing.
 one patrol:
 
 ```
-aq cron register --every 900 --offset 120 --idempotency-key supervisor-patrol-v1
+aq cron register --every 900 --offset 120 --idempotency-key supervisor-patrol-v1 \
+  --prompt 'Run ~/.agent-queue/operator-checks/stall-sweep.py and handle its findings.'
 ```
 
 The patrol runs `~/.agent-queue/operator-checks/stall-sweep.py`, installed from
@@ -198,7 +200,7 @@ Every supervisor is on demand. There is no always-on supervisor loop.
 
   The doctor check `sessions.disabled_project_supervisors` reports what is left
   over.
-- **Cold start.** `ensure_started` in `session_lens.py` (around L291–628) does
+- **Cold start.** `ensure_started` in `session_lens.py` does
   the following:
   1. takes a per-name lock;
   2. refuses a disabled project;
@@ -222,12 +224,16 @@ Every supervisor is on demand. There is no always-on supervisor loop.
   notifications deliberately do not wake it.
 - **Sleep.** The reconciler drains an idle supervisor to sleeping with reason
   `idle_timeout`. It skips this while the supervisor still has supervision work
-  (`has_supervision_work`, `src/sessions/reconciler.py` around L2921–3022).
+  (`has_supervision_work`, `src/sessions/reconciler.py`). Turn-health recovery
+  runs before idle handling; terminal output alone does not prove health.
 - **Restart.** `aq supervisor restart`
   ([src/commands/session_commands.py](../../../src/commands/session_commands.py)
-  `_cmd_supervisor_restart`; `restart_supervisor` in `session_lens.py`) is local
-  or global-admin only. It defaults to `supervisor-global`, and resume defaults
-  to off. An optional `expected_session_id` fences it. It ends the old session
+  `_cmd_supervisor_restart`; `restart_supervisor` in `session_lens.py`) admits
+  the local operator, the live global supervisor, or the target project's live
+  supervisor. Other projects, ordinary workers and stale launch identities are
+  refused. It defaults to `supervisor-global`, and resume defaults to off.
+  CLI `--session-id` (command argument `session_id`) fences the expected current
+  session; the lens calls this `expected_session_id`. It ends the old session
   with `operator_restart`, revokes the token and relaunches. On a daemon
   restart, `adopt_on_start` in the reconciler re-adopts live `n-` sessions by
   instance token, so a supervisor survives `aq restart`.
@@ -235,6 +241,38 @@ Every supervisor is on demand. There is no always-on supervisor loop.
 Session mechanics (tmux, harnesses, resume keys, the reconciler itself) belong
 to `sessions-and-harnesses`. This page covers only what is special about
 supervisors.
+
+### Turn health and recovery
+
+[supervisor-turn-health.md](../supervisor-turn-health.md) describes the health
+mechanism shipped on 2026-10-21. It is separate from undelivered-message alerts:
+
+- The reconciler reads a bounded tail of the exact Codex or Claude conversation,
+  scoped to the current launch. It records completed turns, provider errors,
+  unanswered requests and retry clocks in `sessions.supervisor_health`. Missing
+  or partial transcript evidence is unknown; a busy pane is not a completed turn.
+- An unanswered turn times out after `supervisor.turn_timeout_seconds` (900).
+  Provider capacity, rate-limit and authentication errors also trigger recovery.
+  The default `max_turn_retries` is two nudges, with exponential backoff starting
+  at 60 seconds and capped at 1800, followed by a fresh restart. Only a successful
+  turn clears the failure budget. Restarting the daemon or conversation does not.
+- Replacement uses the serialized, instance-fenced stop/revoke/relaunch path.
+  An uncertain stop prevents replacement. Recovery may choose an available
+  installed harness in the same intelligence class under provider failover
+  policy; explicit model pins remain binding. It never rewrites the profile.
+- Unanswered worker requests escalate once after `question_timeout_seconds`
+  (900), including consumed requests and requests to prior instance UUIDs.
+  Project requests go to the global supervisor; global requests go to the
+  dashboard. The notice preserves the original thread and request pointer.
+  It does not answer the worker or satisfy its verified message wait.
+- A known idle completed turn rotates fresh after `max_session_age_seconds`
+  (86400) or `context_ceiling_tokens` (160000 input tokens). Active or unknown
+  turns do not authorize rotation. Recovery writes a durable handoff with the
+  prior conversation and pending request IDs.
+
+Session list/show and the dashboard expose health samples. The read-only stall
+sweep reports `SUPERVISOR-UNHEALTHY` or `SUPERVISOR-UNKNOWN`; it does not repair
+sessions.
 
 ### Messages to a supervisor
 
@@ -260,8 +298,14 @@ Supervisor addressing is resolved at three points.
 - **Send time.** A supervisor address that names no project is an error. A
   project supervisor may message `supervisor-global`.
 
-The system sender cannot be replied to. A reply goes to
-`session:supervisor-<project>`. The general message model, inbox and nudges
+Native `aq agent message` guidance from a live project supervisor is signed
+`session:supervisor-<project>` and supports `aq message reply`. Operator,
+automation and global-supervisor guidance uses `system:supervisor`, which cannot
+be replied to; answer through an explicit supervisor mailbox instead. Ordinary
+`aq message send` derives the authenticated sender session UUID. When answering
+a worker request with `aq agent message`, include `--reply-to <request-id>` so
+the reply joins the thread its durable message wait verifies. Delivery or an
+unthreaded notice does not satisfy that wait. The general message model, inbox and nudges
 belong to `messaging-and-human-asks`; see
 [messaging.md](../../concepts/messaging.md).
 
@@ -305,7 +349,7 @@ that failed, or a stuck repair. The code is in
    [claim_queries.py](../../../src/database/queries/claim_queries.py)). The
    frontier also never offers a task whose profile is `supervisor`.
 3. The supervisor answers with `aq task recover --decision`
-   (`task_commands.py`, around L4595–4682):
+   (`task_commands.py`):
    - **retry** checks that the incident is still the current one;
    - **hold** keeps the task parked;
    - **release** needs `--operator-release --expected-hold-at` and the
@@ -353,10 +397,12 @@ Only the global supervisor writes reports.
 - `aq report brief` and `aq report submit`
   ([src/commands/report_commands.py](../../../src/commands/report_commands.py))
   accept only the live `n-supervisor--global` with a matching token. A project
-  supervisor is refused. `submit` rejects:
-  - URLs;
-  - "shipped" or "landed" claims without a `delivery:` reference;
-  - text over 1,200 characters.
+  supervisor is refused. Hourly `submit` rejects URLs, shipment claims without
+  a `delivery:` reference and rendered output over 1,200 characters (including
+  the daemon's footer and marker). Morning requests instead accept version 1
+  JSON (`summary` and per-project evidence/manual checks), bounded at 32 KiB;
+  the daemon owns coverage, provenance and delivery links. Both require the
+  current brief hash/version and scoped evidence before the author deadline.
 - A report request is message `msg-<request_id>` from `reports` to
   `supervisor-global`, priority 100 (`report_queries.py`). If the supervisor
   does not answer, the morning report posts a fallback
@@ -364,7 +410,10 @@ Only the global supervisor writes reports.
   `due_at`.
 - The `morning-report` playbook triggers on `report.morning_due`, which
   [src/reports/morning_due.py](../../../src/reports/morning_due.py) emits. It
-  calls `morning_report_tick` and makes no model call. It ships disabled.
+  calls `morning_report_tick`, waits on durable 60-second timers while that day's
+  report remains pending, and retries a failed call once. It makes no model
+  call and ships disabled. `reports.morning.enabled` and an explicit activation
+  enable scheduling; full-fleet visibility is also required for authoring.
 - Hourly reports are opt-in and need configuration plus a manual import of the
   reviewed playbook. See [supervisor-hourly-reports.md](../../guides/supervisor-hourly-reports.md).
 - `aq digest facts` and `aq digest post` let the supervisor write the Discord
@@ -401,7 +450,7 @@ work. The design is
   while a hold applies. Read-only commands are exempt. The outcome is
   `operator_decision_hold`, or `unauthorized` for a cross-project attempt. The
   check runs centrally in `CommandHandler`
-  ([src/commands/handler.py](../../../src/commands/handler.py), around L1118).
+  ([src/commands/handler.py](../../../src/commands/handler.py)).
 - The commands are `aq decision record` and `aq decision list`
   ([src/commands/decision_commands.py](../../../src/commands/decision_commands.py);
   contract in `src/commands/contracts/decisions.py`). Both use the
@@ -449,7 +498,13 @@ A policy profile is a project's policy as a file. The design is
     `review.json` receipt under `policy/pending-playbooks/<id>/`.
 
   The CLI selects items with `--only`, `--skip`, `--scope ITEM=project|global|skip`
-  and `--no-overwrite`. A system-scope item needs an explicit scope choice.
+  and `--no-overwrite`, and fills placeholders with `--set NAME=VALUE`.
+  A system-origin item needs an explicit scope choice. `--yes` accepts project
+  defaults, skips system-origin items without `--scope`, and never authorizes
+  overwrites. `diff` supports `--json`; export, apply and project creation with
+  an applied policy reject JSON mode before starting their interactive flow.
+  Omitting `--from-policy` asks on an interactive terminal; in scripts/JSON it
+  means no policy. Cancelling import leaves the newly created project in place.
 - **Authority.** `_policy_authority` admits the local operator or an operator
   grant, not a supervisor token. An operator grant may import at project scope
   only and cannot edit agents.
@@ -486,12 +541,16 @@ reviewed bundles in
 | `supervisor-failure-triage` | `task.failed` | Activated on first install (`DEFAULT_SYSTEM_PLAYBOOK_IDS` in [src/playbooks/required.py](../../../src/playbooks/required.py)) and in the built-in policy profile |
 | `morning-report` | `report.morning_due` | Installed disabled on first install |
 | `supervisor-hourly-report`, `supervisor-digest`, `blocked-task-escalation` | Timers and events | Reviewed bundles only; an operator imports and activates them |
-| `stuck-task-watch` | Timer | Activated on first install |
+| `stuck-task-watch` | Timer | Available as a reviewed bundle for explicit installation; absent from the first-install inventory |
 
 The playbooks `default-assignment-routing`, `provider-usage-probe` and
-`provider-failover` are *required*: the reconciler restores them, and
-`aq doctor --check playbooks.required --fix` repairs them. The others above are
-installed once, so an operator can turn them off.
+`provider-failover` are *required* for readiness. Ordinary startup observes
+durable activations without restoring deleted policy or changing operator
+choices. An external first-install receipt permits one initial installation
+and activation attempt; deletion of the vault does not renew it. Explicit
+`aq doctor --check playbooks.required --fix` repairs required activations.
+The defaults are installed once and can be disabled; optional bundles require
+deliberate import and activation. See [policy-profiles.md](../design/policy-profiles.md).
 
 ## Data model
 
@@ -501,7 +560,7 @@ All tables are in [src/database/tables.py](../../../src/database/tables.py).
 |---|---|
 | `operator_decisions` | `id`, `project_id`, `object_kind` (task, batch or operation), `object_id`, `effect` (note, hold or release), `operator`, `decision`, `source` (chat, discord or cli), `source_ref`, `recorded_by`, `created_at`, `idempotency_key`, `releases`. Named check constraints; unique `(project_id, idempotency_key)`; unique `releases`, so a hold is released at most once. |
 | `projects` | `supervisor_enabled` (default false) |
-| `sessions` | Named supervisor rows: `profile_id = 'supervisor'`, lifecycle `named`, `state`, `desired_state`, `end_reason` (`idle_timeout`, `operator_restart`, `project_supervisor_disabled`), `instance_token`, the resume key |
+| `sessions` | Named supervisor rows: `profile_id = 'supervisor'`, lifecycle `named`, `state`, `desired_state`, `end_reason` (`idle_timeout`, `operator_restart`, `project_supervisor_disabled`, `provider_error`, `turn_timeout`, `session_rotation`), `instance_token`, resume key and persisted `supervisor_health` |
 | `api_session_tokens` | The elevated token per supervisor launch |
 | `task_metadata` | `supervisor_recovery_incident` (the recovery hold, 900 s hold window) |
 | `messages` | Recovery notices, report requests, questions and replies addressed to `supervisor-*` |
@@ -519,6 +578,11 @@ Configuration lives in `~/.agent-queue/config.yaml`; see
 | `discord.conversation.*` | Opt-in Discord conversations with the addressed supervisor |
 | `discord.digest.supervisor_authored` | The supervisor writes the digest window (default false) |
 | `reports.hourly.*` | Opt-in hourly reports |
+| `reports.morning.*` | Opt-in morning schedule and authoring visibility |
+| `supervisor.turn_timeout_seconds` | Unanswered turn threshold; default 900 |
+| `supervisor.question_timeout_seconds` | Once-only unanswered worker-request escalation; default 900 |
+| `supervisor.retry_backoff_seconds`, `supervisor.max_turn_retries` | Initial retry backoff 60 seconds, two nudges before fresh restart; backoff capped at 1800 seconds |
+| `supervisor.max_session_age_seconds`, `supervisor.context_ceiling_tokens` | Rotate known idle turns at 86400 seconds or 160000 input tokens |
 | `supervisor.global.idle_timeout_seconds` | Default 2700. Only logged; see [known gaps](#known-gaps). |
 | `supervisor_agent.enabled`, `supervisor_agent.idle_timeout` | Validated only; see [known gaps](#known-gaps). |
 
@@ -551,9 +615,10 @@ frontmatter, not from config.
 
 These hold in the code today. A change that breaks one needs a spec.
 
-1. **No model call in the daemon.** Supervisor judgment happens only inside a
+1. **Supervisor judgment runs outside the daemon.** It happens inside a
    supervisor's tmux session. The playbooks that feed it are deterministic
-   (one command per rule).
+   (commands and durable timers). Other systems use the daemon's direct LLM
+   path; this is not a ban on all daemon LLM calls.
 2. **The supervisor is a profile, not a class.** Behaviour changes go in the
    profile, the worker template, a playbook or factory policy. A new Python
    "supervisor loop" would undo the 2026-08-30 removal.
@@ -577,33 +642,19 @@ These hold in the code today. A change that breaks one needs a spec.
 
 ## Known gaps
 
-### Where the docs and the code disagree
+### Historical material
 
-The code is right in each case.
-
-- **`src/prompts/supervisor_system.md` is described as live, but no code loads
-  it.** It is the old "You are the Supervisor…" prompt. No production code loads
-  it: `set_identity("supervisor-system")` appears only in
-  `tests/test_prompt_builder.py`, and
-  `tests/test_shipped_playbook_sources.py` lists it as a non-playbook prompt.
-  Yet [docs/reference/modules/vault.md](../../reference/modules/vault.md) says
-  it is "Loaded by PromptBuilder", and
-  [escalation_apply_reply.md](../../reference/playbook-commands/escalation_apply_reply.md)
-  cites a line in it. The live instructions are the supervisor profile.
-- **Historical supervisor specs describe the deleted class.**
-  [docs/specs/supervisor.md](../supervisor.md) and
-  [design/supervisor-agent.md](../design/supervisor-agent.md) (approved
-  2026-08-19) describe an in-process supervisor with an always-on loop. The
-  first is marked historical; read both as history.
-- **The fast-smooth-integration spec's frontmatter does not match its review.**
-  `2026-10-12-fast-smooth-integration.md` says `status: in_review`,
-  `revision: 3`. The review record `rev-fair-lantern` has only revisions 1 and
-  2, and revision 2 was approved on 2026-10-14. Revision 3 was written but never
-  submitted. See [planned work](#planned-work).
+The old in-process class in [supervisor.md](../supervisor.md), the August
+[design](../design/supervisor-agent.md) and
+[implementation](../implementation/supervisor-agent.md) are historical records.
+Use this system page and [supervisor-turn-health.md](../supervisor-turn-health.md)
+for current behavior. `src/prompts/supervisor_system.md` is also a retained
+legacy prompt: only PromptBuilder tests select its identity today. The live
+supervisor instructions come from the shipped/installed profile.
 
 ### Stale code and comments
 
-- **Three configuration knobs do nothing.**
+- **Legacy settings do not control supervisor lifecycle.**
   - The profile key `mode` (`on_demand`) is parsed but never read.
   - `supervisor.global.idle_timeout_seconds` is only logged at cold start.
   - `supervisor_agent.enabled` and `supervisor_agent.idle_timeout` are only
@@ -621,15 +672,15 @@ The code is right in each case.
 
 - **The stall patrol depends on the supervisor.** The 15-minute patrol exists
   only if the supervisor registered it with `aq cron register` after a cold
-  start. Nothing in the daemon checks that it is registered. Revision 4 of fast
-  smooth integration ("the supervisor watches it every patrol") leans on it
-  further.
+  start. Nothing in the daemon checks that it is registered. Operational policy
+  that relies on this patrol therefore needs verified registration.
 - **Policy profiles have no applied state.** No record says which profile a
   project was created from or last applied, and nothing keeps a project in sync
-  with a profile. `diff` compares against current files only.
+  with a profile. `diff` compares against current files and settings.
 - **Supervisor delivery has failed before.** The RCA above fixed three defects.
-  The watchdog now reports a missed delivery after 15 minutes, but it cannot
-  wake a supervisor whose composer refuses input.
+  The delivery watchdog reports a missed delivery after 15 minutes; it does not
+  repair a composer that refuses input. The separate turn-health mechanism
+  described above can recover a timed-out or failed supervisor turn.
 - **Report authorship is global only.** Project supervisors cannot submit
   reports, so per-project narrative goes through the global supervisor.
 
@@ -639,7 +690,14 @@ This is a snapshot of open tasks, re-queried on 2026-10-20. Vault documents are
 under `projects/agent-queue/specs/` in the operator vault and are cited by file
 name, with the review id and state at the time of writing.
 
-### Open epics and tasks
+The following roadmap and review states are **historical evidence from that
+date**, not current task status or instructions to perform operator cutovers.
+In particular, turn-health recovery and same-project supervisor restart shipped
+after this snapshot, and verified waits are enabled in the audited checkout.
+Current behavior above is verified against repository code; live task and
+review state requires a fresh authorized read.
+
+### Historical epics and tasks (2026-10-20)
 
 **`stark-willow-95`, fast and smooth integration** (IN_PROGRESS). It implements
 `2026-10-12-fast-smooth-integration.md` (review `rev-fair-lantern`, revision 2
@@ -700,7 +758,7 @@ completed `.12` added the supervisor escalation and loop detection that
 conflicts with `2026-10-14-playbook-scripts-no-sandbox-decision.md`, a
 decision note with no review.
 
-### In-flight and recent specs
+### Historical review snapshot (2026-10-20)
 
 | Document | Review and state | What it means for this system |
 |---|---|---|
@@ -744,6 +802,7 @@ The month's work set the current shape. Later changes should keep it:
 |---|---|---|
 | Supervisor profile and capability sync | [src/profiles/defaults/supervisor/profile.md](../../../src/profiles/defaults/supervisor/profile.md), [src/profiles/capability_sync.py](../../../src/profiles/capability_sync.py), [src/vault.py](../../../src/vault.py) | `aq test tests/test_supervisor_capability_sync.py` |
 | Lifecycle, names, wake | [src/messages/session_lens.py](../../../src/messages/session_lens.py), [src/sessions/reconciler.py](../../../src/sessions/reconciler.py), [src/agents/configuration.py](../../../src/agents/configuration.py) | `aq test tests/test_project_supervisors.py tests/test_supervisor_global_lifecycle.py` |
+| Turn health, recovery and rotation | [src/sessions/supervisor_health.py](../../../src/sessions/supervisor_health.py), [src/database/queries/message_queries.py](../../../src/database/queries/message_queries.py), [src/messages/session_lens.py](../../../src/messages/session_lens.py) | `aq test tests/test_supervisor_turn_health.py tests/test_supervisor_stall_sweep_script.py` |
 | Authority and tokens | [src/commands/supervisor_authority.py](../../../src/commands/supervisor_authority.py), [src/api/scope.py](../../../src/api/scope.py) | `aq test tests/test_supervisor_global_scope.py tests/test_supervisor_global_token_loopback.py` |
 | Recovery | [src/database/queries/task_recovery_queries.py](../../../src/database/queries/task_recovery_queries.py) | `aq test tests/test_supervisor_recovery.py tests/test_supervisor_recovery_api.py tests/test_supervisor_failure_triage.py` |
 | Stall patrol | [scripts/operator-checks/stall-sweep.py](../../../scripts/operator-checks/stall-sweep.py) | `aq test tests/test_supervisor_stall_sweep_script.py` |

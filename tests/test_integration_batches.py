@@ -203,6 +203,61 @@ async def test_assigned_fixer_push_wakes_exhausted_batch_and_tests_new_exact_hea
     repairs.allocate.assert_awaited_once()
 
 
+@pytest.mark.parametrize("foreign_repair", [False, True])
+async def test_batch_repair_inherits_published_target_history_only(batch_env, monkeypatch,
+                                                                 foreign_repair):
+    from src.git.identity import GitIdentity, PublishPolicy
+    from src.git.manager import GitError, GitManager
+    from src.integration.batch_repair_publication import BatchRepairAssignments
+    from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+
+    db, _, repo, base, _, _, batch, members, _, _, snapshot, service = batch_env
+    remote = repo.store.parent / "remote.git"
+    await db.create_project(Project(id="p", name="p"))
+    await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE,
+                                   url=str(remote)))
+    await db.update_project("p", hierarchical_integration_mode="train", integration_repository_id="r")
+    await db.create_task(Task(id="fixer", project_id="p", repo_id="r", title="fix batch",
+                             description="fix", status=TaskStatus.IN_PROGRESS))
+    original = await service.visit(batch, members, await snapshot())
+    assignments = BatchRepairAssignments(db)
+    assignment = await assignments.assign(await db.get_task("fixer"), batch.id)
+    for key, value in {"GIT_AUTHOR_NAME": "Tester", "GIT_AUTHOR_EMAIL": "tester@example.test",
+                       "GIT_COMMITTER_NAME": "Tester", "GIT_COMMITTER_EMAIL": "tester@example.test"}.items():
+        monkeypatch.setenv(key, value)
+    upstream = commit(repo.store, {"upstream.txt": "upstream"}, base=base)
+    git(repo.store, "checkout", "--detach", base)
+    with monkeypatch.context() as foreign:
+        foreign.setenv("GIT_COMMITTER_NAME", "GitHub")
+        foreign.setenv("GIT_COMMITTER_EMAIL", "noreply@github.com")
+        git(repo.store, "merge", "--no-ff", "-m", "GitHub merge", upstream)
+    target = git(repo.store, "rev-parse", "HEAD")
+    git(repo.store, "push", "origin", f"{target}:{batch.target_ref}")
+    commit(repo.store, {"fix.txt": "fixed"}, base=original.candidate_sha)
+    git(repo.store, "merge", "--no-ff", "-m", "inherit published target", target)
+    if foreign_repair:
+        with monkeypatch.context() as foreign:
+            foreign.setenv("GIT_COMMITTER_NAME", "Someone")
+            foreign.setenv("GIT_COMMITTER_EMAIL", "someone@example.test")
+            git(repo.store, "commit", "--allow-empty", "-m", "foreign repair")
+    tip = git(repo.store, "rev-parse", "HEAD")
+    git(repo.store, "branch", assignment["branch"], tip)
+    identity = GitIdentity("Tester", "tester@example.test")
+    policy = PublishPolicy(identity, "project", frozenset({identity.digest}))
+
+    if foreign_repair:
+        with pytest.raises(GitError, match="Git identity") as refused:
+            await assignments.publish("fixer", assignment, git=GitManager(),
+                                      checkout=str(repo.store), policy=policy)
+        assert tip[:12] in str(refused.value) and target[:12] not in str(refused.value)
+        expected = original.candidate_sha
+    else:
+        assert await assignments.publish("fixer", assignment, git=GitManager(),
+                                         checkout=str(repo.store), policy=policy) == tip
+        expected = tip
+    assert git(remote, "rev-parse", candidate_ref(batch.id)) == expected
+
+
 async def test_squash_delivery_survives_lost_candidate_and_aborted_intent(batch_env):
     _, ops, repo, base, _, store, batch, members, _, _, snapshot, service = batch_env
     result = await ops.merge_sources(repo, base, members, created_at=batch.created_at, squash=True)
