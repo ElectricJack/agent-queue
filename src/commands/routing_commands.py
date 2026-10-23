@@ -38,6 +38,7 @@ from src.routing.planner import (
     Snapshot,
     TaskFacts,
     is_candidate,
+    launchable,
     plan_route,
     prefer_target,
     preference_record,
@@ -85,6 +86,15 @@ _CONTROL_PROFILES = frozenset(
         "spec-ingest", "fidelity-reviewer",
     }
 )
+
+
+def _route_target_available(task, snapshot: Snapshot) -> bool:
+    profile = snapshot.profile(task.profile_id)
+    return profile is not None and launchable(Candidate(
+        profile_id=profile.id, harness=profile.harness,
+        provider=profile.provider, lifecycle=profile.lifecycle,
+        intelligence_class=task.intelligence_class or "",
+    ), snapshot)
 
 
 def profile_provider(profile, harness_registry=None, project_id: str | None = None) -> str:
@@ -265,6 +275,8 @@ class RoutingCommandsMixin:
         facts: list[ProfileFacts] = []
         from src.commands.operator_authority import is_operator_profile
         keys: set[str] = set()
+        now = time.time()
+        quarantine = getattr(orchestrator, "_pool_quarantine", {})
         for profile in await self.db.list_profiles(conn=conn):
             harness = str(getattr(profile, "harness", "") or "")
             if not harness:
@@ -301,6 +313,9 @@ class RoutingCommandsMixin:
                 ),
                 slots=int(slots or 0),
                 enabled=bool(getattr(profile, "enabled", True)),
+                min_active=int(getattr(profile, "min_active", 0) or 0),
+                max_active=getattr(profile, "max_active", None),
+                quarantined=quarantine.get((project_id, profile.id), 0) > now,
                 operator=is_operator_profile(profile),
                 template=bool(getattr(profile, "template", False)),
                 read_only=bool(getattr(profile, "read_only", False)),
@@ -346,6 +361,52 @@ class RoutingCommandsMixin:
                 quota_source="provider_usage_snapshots" if rows_by_provider else "unknown",
             )
         return tuple(facts), providers
+
+    async def reconcile_unavailable_routes(self, tasks) -> list:
+        """Return unavailable queued router routes to policy, never retarget held work.
+
+        The cascade supplies otherwise eligible router-owned tasks. Read facts once
+        per project, then refresh suspected stale routes under apply's lock before
+        clearing them. This also repairs routes written before disablement and
+        survives missed configuration events or daemon restarts.
+        """
+        by_project = {}
+        for task in tasks:
+            by_project.setdefault(task.project_id, []).append(task)
+        reset = []
+        for project_id, queued in by_project.items():
+            profiles, providers = await self._routing_static_facts(
+                project_id, {t.intelligence_class for t in queued if t.intelligence_class},
+            )
+            snapshot = Snapshot(profiles=profiles, providers=providers)
+            for task in queued:
+                if _route_target_available(task, snapshot):
+                    continue
+                async with self.db.routing_apply_lock() as conn:
+                    fresh = await self.db.get_task_on(conn, task.id)
+                    if fresh is None or fresh.route_source != ROUTER:
+                        continue
+                    profiles, providers = await self._routing_static_facts(
+                        project_id, [fresh.intelligence_class] if fresh.intelligence_class else [],
+                        conn=conn,
+                    )
+                    if _route_target_available(
+                        fresh, Snapshot(profiles=profiles, providers=providers),
+                    ):
+                        continue
+                    if not await self.db.reset_task_route(
+                        fresh.id, route_source=ROUTER, queued_only=True, conn=conn,
+                    ):
+                        continue
+                self.orchestrator._clear_route_needed_throttle(fresh.id)
+                await self._post_route_comment(fresh, {
+                    "author_kind": "supervisor", "author_id": "routing-reconciler",
+                }, f"Router route to {fresh.profile_id} cleared: its profile or provider "
+                   "is unavailable; requesting a fresh route with the original constraints.")
+                await self._announce_route_change(fresh.id)
+                if task := await self.db.get_task(fresh.id):
+                    reset.append(task)
+        return reset
 
     async def _routing_snapshot(self, task, project, class_ids, *, conn=None) -> Snapshot:
         """Reuse planner facts, adding bounded observations of the existing admission limits.
