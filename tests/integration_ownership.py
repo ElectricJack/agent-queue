@@ -44,10 +44,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-5c55b72faec1497391205876fc5dfeb9',
                           'msg-96fed6b8e86148f0bbf55ded244c9a0f'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': '73e99672d2447c44ef6a71d43a0187f2d16630af',
+ 'measured_source_revision': '4bafa45f1ac0a466eab372c7b6b0b866f67bb832',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 161162,
- 'delta': 5663,
+ 'measured_owned_total': 161213,
+ 'delta': 5714,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -61,14 +61,14 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 2204,
+ 'batch_measured_delta': 2255,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
  'storage_categories': ['integration_close_attempts'],
  'category_restore_task': 'stark-willow-95.17',
  'verification_task': 'stark-willow-95.18',
- 'measured_engine_lines': 85543,
+ 'measured_engine_lines': 85544,
  'measured_table_count': 45,
  'delivery_method': 'operator direct integration; user request 2026-10-22',
  'amendments': [{'task_id': 'solid-impact-56',
@@ -393,7 +393,37 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                                                        'grant with dev; fair-crest-95 contributes '
                                                        'zero owned or engine lines. Reopen '
                                                        'instructions cite '
-                                                       'size-cap-delegation-2026-10-23.'}}
+                                                       'size-cap-delegation-2026-10-23.'},
+ 'resume_batch_composition': {'batch_id': 'train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8',
+                              'starting_revision': 'c177d24e86d25fde7804131c94bfd637b0eb540a',
+                              'source_revision': '4bafa45f1ac0a466eab372c7b6b0b866f67bb832',
+                              'base_owned_total': 161162,
+                              'base_engine_lines': 85543,
+                              'base_table_count': 45,
+                              'member_sources': {'calm-rapids-50': '45626ba27ff1c7711f5aa17893f7ce997928da5f',
+                                                 'fair-crest-95': '63163a7d4fd4aa5611c18ae139580902abf32770',
+                                                 'fair-harbor-71': '4bb9221436187f5c9c747531109749b503600e65',
+                                                 'noble-apex-40': '7f87074a2a463074595e0b71018fda7f33fecb47',
+                                                 'sharp-vault-27': 'c5e891f5ae3b2987977d0e2bb0268631154a8421'},
+                              'approved_deltas': {'calm-rapids-50': {'owned': 50,
+                                                                     'engine': 0,
+                                                                     'tables': 0},
+                                                  'fair-crest-95': {'owned': 0,
+                                                                    'engine': 0,
+                                                                    'tables': 0},
+                                                  'fair-harbor-71': {'owned': 1,
+                                                                     'engine': 1,
+                                                                     'tables': 0},
+                                                  'noble-apex-40': {'owned': 0,
+                                                                    'engine': 0,
+                                                                    'tables': 0},
+                                                  'sharp-vault-27': {'owned': 0,
+                                                                     'engine': 0,
+                                                                     'tables': 0}},
+                              'reason': 'Compose the unchanged resume and shared-check grants on '
+                                        'the retained starting head; the other members add no '
+                                        'owned lines. Preserve every historical grant and batch '
+                                        'measurement.'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10

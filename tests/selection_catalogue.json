@@ -1760,8 +1760,10 @@
         "graph-layout"
       ],
       "default_arm": false,
-      "digest": "sha256:d5c1f7835c0cddbb8ca49061be94cd592103bfa080ba119ff95e4dc7f01f830a",
+      "digest": "sha256:643164a7d02319b4809c5afd1149bcd97146616e0299df2020101a5a3b099ae7",
       "imports": [
+        "src.api",
+        "src.api.dependencies",
         "src.api.graph_layout",
         "src.database.queries.layout_queries",
         "src.database.tables",
@@ -1777,6 +1779,7 @@
         "src.task_graph.layout.view"
       ],
       "markers": [
+        "parametrize",
         "perf",
         "skipif"
       ],

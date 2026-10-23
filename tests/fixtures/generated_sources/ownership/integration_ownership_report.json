@@ -1043,7 +1043,7 @@
     "phase": "transition",
     "fixed_replacement_allowance": 15000,
     "engine_cap": 97627,
-    "owned_total_cap": 161162,
+    "owned_total_cap": 161213,
     "table_cap": 45,
     "expires_at": "s4_modules",
     "automatic_baseline_increase": false,
@@ -1065,13 +1065,15 @@
         "msg-3f6311071a6647429059f3a990750597",
         "msg-99539879",
         "msg-68ccb1d50ee04851a7268dd58e9d4459",
-        "msg-9f16388d39524c8b9a33d6796b88d1fb"
+        "msg-9f16388d39524c8b9a33d6796b88d1fb",
+        "msg-5c55b72faec1497391205876fc5dfeb9",
+        "msg-96fed6b8e86148f0bbf55ded244c9a0f"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+      "measured_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
       "original_owned_total_cap": 155499,
-      "measured_owned_total": 161162,
-      "delta": 5663,
+      "measured_owned_total": 161213,
+      "delta": 5714,
       "predecessors": [
         {
           "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -1091,7 +1093,7 @@
           "measured_owned_total": 158958
         }
       ],
-      "batch_measured_delta": 2204,
+      "batch_measured_delta": 2255,
       "restore_task": "azure-ridge-72",
       "expires_at": "s4_modules",
       "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -1100,7 +1102,7 @@
       ],
       "category_restore_task": "stark-willow-95.17",
       "verification_task": "stark-willow-95.18",
-      "measured_engine_lines": 85543,
+      "measured_engine_lines": 85544,
       "measured_table_count": 45,
       "delivery_method": "operator direct integration; user request 2026-10-22",
       "amendments": [
@@ -1272,6 +1274,43 @@
           "original_task_base_owned_total": 161053,
           "original_task_base_engine_lines": 85468,
           "reason": "Explicit supervisor approval of the exact retained Git filing resolver footprint; compose the unchanged +26 owned/+4 engine grant on dev, preserving historical grants."
+        },
+        {
+          "task_id": "calm-rapids-50",
+          "decision_message_id": "msg-5c55b72faec1497391205876fc5dfeb9",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "operator_decision": "6679052c",
+          "pull_request": 1814,
+          "source_base": "1e3ac0b14608fd4a4b5a2c90a25cacb57f4bf511",
+          "previous_owned_total": 161111,
+          "previous_engine_lines": 85517,
+          "authorized_owned_delta": 50,
+          "authorized_engine_delta": 0,
+          "reason": "Bounded transient retry of resume workspace preparation and the fenced supervisor requeue of held continuations; supervisor approved exact footprint after trimming from +109.",
+          "request_message_id": "msg-f3ef547cbf48428abcab2266d7fe8df6",
+          "grant_delivery_message_id": "msg-6cbd33a9db9846f29816f2fc0df8f8fd",
+          "merged_dev_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+          "implementation_revision": "70d79c47c561ee85ecd74080767bbc5cdf0e210c"
+        },
+        {
+          "task_id": "fair-harbor-71",
+          "decision_message_id": "msg-96fed6b8e86148f0bbf55ded244c9a0f",
+          "referenced_decision": "size-cap-delegation-2026-10-23",
+          "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+          "previous_owned_total": 161111,
+          "previous_engine_lines": 85517,
+          "authorized_owned_delta": 1,
+          "authorized_engine_delta": 1,
+          "authorized_table_delta": 0,
+          "measured_source_revision": "14828bb29104d825e9ba5a75aa44a3799dd48a48",
+          "measured_owned_total": 161112,
+          "measured_engine_lines": 85518,
+          "measured_table_count": 45,
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1890",
+          "reason": "Shared exact-commit check-run observations and one bounded recovery wait; plain dev merge retains dashboard badges, quota reserve and ETag behavior. Supervisor approved the exact merged +1 owned / +1 engine measurement under size-cap-delegation-2026-10-23.",
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "grant_delivery_message_id": "msg-3a0b0c6448ef44699f7a7d7c43777642"
         }
       ],
       "supplemental_grants": [
@@ -1403,6 +1442,68 @@
           }
         },
         "reason": "Compose both unchanged approved member grants on the retained starting head, which already includes fair-dune-41. Preserve every historical grant and measurement."
+      },
+      "dashboard_pr_snapshot_merge_measurement": {
+        "task_id": "fair-crest-95",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "grant_id": "sharp-rapids-10-cap-epoch2-2026-10-23",
+        "merged_dev_revision": "61869b7cdcf507b8e8acb596893bb63ac0794997",
+        "dev_owned_total": 161102,
+        "dev_engine_lines": 85517,
+        "dev_table_count": 45,
+        "source_revision": "3de48be2157c1b68414a77514c9250cb2b27d11d",
+        "prerequisite_task_id": "sharp-rapids-10",
+        "prerequisite_owned_delta": 9,
+        "prerequisite_engine_delta": 0,
+        "authorized_owned_delta": 0,
+        "authorized_engine_delta": 0,
+        "measured_owned_total": 161111,
+        "measured_engine_lines": 85517,
+        "measured_table_count": 45,
+        "reason": "Plain merge of origin/dev into accepted PR 1889. Compose the existing sharp-rapids-10 grant with dev; fair-crest-95 contributes zero owned or engine lines. Reopen instructions cite size-cap-delegation-2026-10-23."
+      },
+      "resume_batch_composition": {
+        "batch_id": "train-9394fdec634bb068ee8e58c1008dd4b2-resume-1e142f1858d8",
+        "starting_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+        "source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+        "base_owned_total": 161162,
+        "base_engine_lines": 85543,
+        "base_table_count": 45,
+        "member_sources": {
+          "calm-rapids-50": "45626ba27ff1c7711f5aa17893f7ce997928da5f",
+          "fair-crest-95": "63163a7d4fd4aa5611c18ae139580902abf32770",
+          "fair-harbor-71": "4bb9221436187f5c9c747531109749b503600e65",
+          "noble-apex-40": "7f87074a2a463074595e0b71018fda7f33fecb47",
+          "sharp-vault-27": "c5e891f5ae3b2987977d0e2bb0268631154a8421"
+        },
+        "approved_deltas": {
+          "calm-rapids-50": {
+            "owned": 50,
+            "engine": 0,
+            "tables": 0
+          },
+          "fair-crest-95": {
+            "owned": 0,
+            "engine": 0,
+            "tables": 0
+          },
+          "fair-harbor-71": {
+            "owned": 1,
+            "engine": 1,
+            "tables": 0
+          },
+          "noble-apex-40": {
+            "owned": 0,
+            "engine": 0,
+            "tables": 0
+          },
+          "sharp-vault-27": {
+            "owned": 0,
+            "engine": 0,
+            "tables": 0
+          }
+        },
+        "reason": "Compose the unchanged resume and shared-check grants on the retained starting head; the other members add no owned lines. Preserve every historical grant and batch measurement."
       }
     }
   },
@@ -14696,5 +14797,22 @@
     "operator_decision": "6679052c",
     "operator_task": "sharp-cascade-53",
     "grant_delivery_message_id": "msg-3a0b0c6448ef44699f7a7d7c43777642"
+  },
+  "resume_recovery_measurement": {
+    "task_id": "calm-rapids-50",
+    "decision_message_id": "msg-5c55b72faec1497391205876fc5dfeb9",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "operator_decision": "6679052c",
+    "pull_request": 1814,
+    "source_base": "1e3ac0b14608fd4a4b5a2c90a25cacb57f4bf511",
+    "previous_owned_total": 161111,
+    "previous_engine_lines": 85517,
+    "authorized_owned_delta": 50,
+    "authorized_engine_delta": 0,
+    "reason": "Bounded transient retry of resume workspace preparation and the fenced supervisor requeue of held continuations; supervisor approved exact footprint after trimming from +109.",
+    "request_message_id": "msg-f3ef547cbf48428abcab2266d7fe8df6",
+    "grant_delivery_message_id": "msg-6cbd33a9db9846f29816f2fc0df8f8fd",
+    "merged_dev_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+    "implementation_revision": "70d79c47c561ee85ecd74080767bbc5cdf0e210c"
   }
 }

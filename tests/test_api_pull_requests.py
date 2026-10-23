@@ -508,7 +508,7 @@ async def test_badge_cache_invalidates_only_changed_pr(db, cached_inbox, field):
     else:
         client.pulls[0].pop("updated_at")
     await inbox.refresh()
-    expected = (f"repos/acme/repo/commits/{MOVED}/check-runs?per_page=100"
+    expected = (f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"
                 if field == "head" else "repos/acme/repo/pulls/1/reviews?per_page=100")
     assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100", expected]
     items, _ = await read_pull_request_snapshot(db)
@@ -608,12 +608,12 @@ async def test_new_head_resets_pending_check_backoff(cached_inbox, monkeypatch):
     client.calls.clear()
     await inbox.refresh()
     assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100",
-                            f"repos/acme/repo/commits/{MOVED}/check-runs?per_page=100"]
+                            f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"]
     now = 601
     client.calls.clear()
     await inbox.refresh()
     assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100",
-                            f"repos/acme/repo/commits/{MOVED}/check-runs?per_page=100"]
+                            f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"]
 
 
 async def test_closed_pr_is_evicted_and_reopening_fetches_badges(db, cached_inbox):
@@ -643,7 +643,7 @@ async def test_failed_badge_read_is_retried_without_replacing_snapshot(db, cache
     client.calls.clear()
     await inbox.refresh()
     assert client.calls == ["repos/acme/repo/pulls?state=open&per_page=100",
-                            f"repos/acme/repo/commits/{MOVED}/check-runs?per_page=100"]
+                            f"repos/acme/repo/commits/{MOVED}/check-runs?filter=all&per_page=100"]
 
 
 async def test_row_refresh_forces_badges_and_background_respects_reserve(db, cached_inbox):
