@@ -391,6 +391,67 @@ async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_
     assert (await db.get_session(row.id)).desired_state == "stopped"
 
 
+@pytest.mark.parametrize("failure", ["spawn_or_wait", "timeout", "git_exit", "broker_not_served"])
+async def test_authenticated_push_reason_reaches_command_blocker_and_notice(
+    db, live_fixer, tmp_path, monkeypatch, failure,
+):
+    from pathlib import Path
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import principal_context
+    from tests.test_integration_gitops import commit, git
+
+    service, runtime, orch, row, _, source, _ = live_fixer
+    fixed = commit(Path(row.work_dir), {"fix.txt": "fixed\n"})
+    token = "private-installation-token"
+    fake_git = tmp_path / "push-git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'Authorization: Bearer private-installation-token' "
+        "'https://alice:password@github.com/test/repo.git' "
+        "'private-installation-token' 'fatal: upstream unavailable' >&2\n"
+        f"exit {7 if failure == 'git_exit' else 0}\n"
+    )
+    fake_git.chmod(0o700)
+    runtime.git._APP_GIT_EXECUTABLE = str(fake_git)
+    spawn = runtime.git._spawn_isolated_git
+
+    async def start(*args, **kwargs):
+        if "push" in args:
+            if failure == "spawn_or_wait":
+                raise FileNotFoundError(token)
+            if failure == "timeout":
+                raise TimeoutError(token)
+        return await spawn(*args, **kwargs)
+
+    async def push(path, *, tip_oid, branch, expected_old_oid, **kwargs):
+        return await runtime.git._apush_oid_with_app_auth_to_url(
+            path, destination_url="https://github.com/test/repo.git", token=token,
+            tip_oid=tip_oid, branch=branch, expected_old_oid=expected_old_oid,
+        )
+
+    monkeypatch.setattr(runtime.git, "_spawn_isolated_git", start)
+    monkeypatch.setattr(runtime.git, "apush_repository_oid", push)
+    orch.integration_train = SimpleNamespace(repair=service)
+    handler = SimpleNamespace(orchestrator=orch)
+    with principal_context(principal_for(row)):
+        result = await IntegrationCommandsMixin._cmd_integration_batch_fix(handler, {"action": "push"})
+    assert result["outcome"] == "refused"
+    bound = (await db.get_integration_batch("real"))["fixer_state"]
+    notice, = await notices(db, supervisor=True)
+    for output in (result["error"], bound["blocker"], notice["body"]):
+        assert f"reason={failure}" in output
+        assert token not in output and "password" not in output and "alice:" not in output
+        if failure == "git_exit":
+            assert "returncode=7" in output and "fatal: upstream unavailable" in output
+        elif failure in {"spawn_or_wait", "timeout"}:
+            assert f"exception={'TimeoutError' if failure == 'timeout' else 'FileNotFoundError'}" in output
+        else:
+            assert "credential broker did not serve token" in output
+    assert bound["work_dir"] == row.work_dir
+    assert git(runtime.git.remote_path, "rev-parse", candidate_ref("real")) == source
+    assert git(row.work_dir, "rev-parse", "HEAD") == fixed
+
+
 @pytest.mark.parametrize("change", ["wrong_branch", "rewrite", "dirty", "source_withdrawn",
                                     "mode_off", "paused", "stale_session"])
 async def test_real_publication_refuses_changed_authority_or_history(db, live_fixer, change):
