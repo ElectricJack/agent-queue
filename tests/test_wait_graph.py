@@ -559,6 +559,7 @@ async def test_background_fence_budget_does_not_shorten_foreground_writes(monkey
     from unittest.mock import AsyncMock
     from src.waits import graph
 
+    monkeypatch.setattr(graph, "track_graph_lock", lambda conn: None)
     stamps = iter((0.0, 0.3, 0.0, 0.3))
     monkeypatch.setattr(graph, "time", SimpleNamespace(monotonic=lambda: next(stamps)))
     monkeypatch.setattr(graph.asyncio, "sleep", AsyncMock())

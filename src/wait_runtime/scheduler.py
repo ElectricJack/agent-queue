@@ -10,7 +10,7 @@ import logging
 import time
 import uuid
 
-from sqlalchemy import exists, insert, literal, or_, select, update
+from sqlalchemy import insert, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -258,6 +258,7 @@ class SchedulerWaitService:
                 await recompute_from(conn, changed, now=now)
         return changed
 
+    @admission_pass("reader")
     async def deadline(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]

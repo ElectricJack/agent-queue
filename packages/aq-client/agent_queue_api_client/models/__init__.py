@@ -1118,6 +1118,10 @@ from .onboarding_error_info_details import OnboardingErrorInfoDetails
 from .onboarding_error_info_field_errors_item import OnboardingErrorInfoFieldErrorsItem
 from .operation_perf import OperationPerf
 from .operation_perf_outcomes import OperationPerfOutcomes
+from .operational_retention_request import OperationalRetentionRequest
+from .operational_retention_response import OperationalRetentionResponse
+from .operational_retention_response_422 import OperationalRetentionResponse422
+from .operational_retention_response_counts_type_0 import OperationalRetentionResponseCountsType0
 from .operator_decision_dto import OperatorDecisionDTO
 from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .operator_decision_record import OperatorDecisionRecord
@@ -1521,6 +1525,9 @@ from .read_prompt_request import ReadPromptRequest
 from .read_prompt_response import ReadPromptResponse
 from .read_prompt_response_422 import ReadPromptResponse422
 from .ready_task import ReadyTask
+from .rebind_workspace_request import RebindWorkspaceRequest
+from .rebind_workspace_response import RebindWorkspaceResponse
+from .rebind_workspace_response_422 import RebindWorkspaceResponse422
 from .receipt_dto import ReceiptDTO
 from .receipt_dto_step_kind import ReceiptDTOStepKind
 from .record_capabilities_request import RecordCapabilitiesRequest
@@ -3342,6 +3349,10 @@ __all__ = (
     "OnboardProjectResponse",
     "OnboardProjectResponse422",
     "OnboardProjectResponseSourceType",
+    "OperationalRetentionRequest",
+    "OperationalRetentionResponse",
+    "OperationalRetentionResponse422",
+    "OperationalRetentionResponseCountsType0",
     "OperationPerf",
     "OperationPerfOutcomes",
     "OperatorDecisionDTO",
@@ -3743,6 +3754,9 @@ __all__ = (
     "ReadPromptResponse",
     "ReadPromptResponse422",
     "ReadyTask",
+    "RebindWorkspaceRequest",
+    "RebindWorkspaceResponse",
+    "RebindWorkspaceResponse422",
     "ReceiptDTO",
     "ReceiptDTOStepKind",
     "RecordCapabilitiesRequest",
