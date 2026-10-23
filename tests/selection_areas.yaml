@@ -74,6 +74,7 @@ areas:
     description: "Task hierarchy: dotted child ids, set-parent and children reads, container settlement and close, subtree delete/archive, phases, standing parents and hierarchy doctor checks and statement budgets."
     match:
       - tests/test_hierarchy_*.py
+      - tests/test_task_split.py
       - tests/test_phases.py
       - tests/perf/test_hierarchy_statements.py
       - tests/test_worker_filing.py
@@ -114,6 +115,7 @@ areas:
       - tests/test_agent_task_routing.py
       - tests/test_cross_project_routing.py
       - tests/test_default_assignment_routing_playbook.py
+      - tests/test_assignment_routing_building_blocks.py
       - tests/test_pool_agent_routing.py
       - tests/test_task_route_source.py
       - tests/test_routing_planner.py
@@ -375,12 +377,16 @@ areas:
   - id: shipped-playbooks
     description: "Shipped and reviewed playbooks: reviewed V2 artifact fixtures and their digests, prose-only playbook sources, the default pipeline intake, agent-type playbooks, the V1 removal ratchet and cron-to-playbook migration."
     match:
+      - tests/test_fast_smooth_train.py
       - tests/test_default_playbook_v2_artifacts.py
+      - tests/test_project_defaults_playbook.py
       - tests/test_playbook_v2_fixtures.py
       - tests/test_shipped_playbook_sources.py
       - tests/test_default_agent_type_playbooks.py
       - tests/test_default_pipeline_intake.py
+      - tests/test_default_pipeline_equivalence.py
       - tests/test_default_assignment_routing_playbook.py
+      - tests/test_assignment_routing_building_blocks.py
       - tests/test_plugin_cron_to_playbook_migration.py
       - tests/test_blocked_task_escalation.py
       - tests/test_ci_main_sentinel.py
@@ -488,6 +494,7 @@ areas:
       - tests/test_integration_properties.py
       - tests/test_promotion_backmerge.py
       - tests/test_promotion_policy.py
+      - tests/test_promotion_request_playbook.py
       - tests/test_promote_commands.py
       - tests/test_promotion_notes_input.py
       - tests/test_integration_train_promotion.py
@@ -508,6 +515,7 @@ areas:
       - tests/test_integration_root_authorization.py
       - tests/test_integration_legacy_*.py
       - tests/test_integration_pr_delivery.py
+      - tests/test_integration_pr_repair_publication.py
       - tests/test_parent_ci_publication.py
       - tests/test_repair_checkout_refs.py
       - tests/test_integration_child_delivery.py

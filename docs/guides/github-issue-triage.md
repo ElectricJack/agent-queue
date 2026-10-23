@@ -3,8 +3,9 @@
 The reviewed `github-issue-triage` playbook applies only to the `agent-queue`
 project bound to `ElectricJack/agent-queue`. It is shipped in
 `src/prompts/reviewed_playbooks/github-issue-triage/` **inactive**. The project
-supervisor imports and activates it after deployment; it must not be activated
-while this change is being developed.
+supervisor deliberately installs its reviewed bundle into the vault, imports
+it and activates the reviewed hash after checking repository access. Initial vault
+installation does not install this optional policy.
 
 At about 02:00 in the daemon's local timezone, a `cron.02:00` event starts a
 scan. The command reads open GitHub issues oldest first, excludes pull

@@ -3,10 +3,15 @@
 Pool bounds remain fleet-wide. A worker stays bound to its project, and held
 claims and launches in flight are never interrupted to rebalance the fleet.
 
-For each available start, eligible projects with unserved active train repair
+Placement measures `(project, workspace_kind)` candidates, sharing project caps
+across kinds and workspace capacity across profiles of the same kind. Non-default
+execution kinds need unserved demand; project-repo warm floors do not create
+speculative workers for another kind.
+
+For each available start, eligible candidates with unserved active train repair
 delegates precede ordinary demand and warm floors. Other starts honor warm
-floors, then choose the project with the fewest live workers of that profile
-among projects with unserved demand. Backlog size and project id break ties.
+floors, then choose the candidate with the fewest live workers of that profile
+and kind. Unserved deficit and the project/kind key break ties.
 Recompute the ordering after every placement. A large backlog must not consume
 every seat while another eligible project has no workers.
 
@@ -16,7 +21,9 @@ operations, and titles containing "repair" confer no priority. Count repair
 demand with the same admission and routing predicates as ordinary pool demand.
 When profiles compete for box-wide headroom, profiles with unserved repair
 demand receive starts before ordinary profiles. Claims choose eligible repair
-delegates before ordinary work, retaining the ordinary priority/affinity order.
+delegates before ordinary work, retaining the ordinary priority/affinity order;
+eligible wait reservations take precedence over repair selection. The
+`swarm.max_starts_per_tick` budget is shared across all profiles and projects.
 
 At a saturated pool, idle workers above their warm floor may be retired after
 the scale-down grace to fund an eligible project's smaller share, even if the

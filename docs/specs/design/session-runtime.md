@@ -567,6 +567,28 @@ records supply legacy UUIDs: existing ledger rows seed per-call maxima without m
 or deleting the original rows. Historical inflation requires a separate evidenced
 correction; it is never repaired implicitly during ingest.
 
+For retention, calls attributed to sessions stopped for more than 30 days may be
+sealed after their counters have also been untouched for more than 30 days. Sealing
+freezes those historical calls: later observations, including higher counters and
+replays under another AQ session, add no usage. Live/recent calls retain exact maxima.
+The permanent anti-replay fence stores bounded batches of exact usage keys in JSONB
+sets with a GIN containment index. This keeps the identity information needed for
+historical hashes (which cannot be reversed into transcript watermarks), without
+keeping a database row and four counters per call. It is not a probabilistic filter.
+Fences have no session/ledger foreign keys and must never expire with those tables.
+
+The unscheduled `archive_transcript_usage_calls` callable archives eligible snapshots
+to `~/.agent-queue/backups/transcript-usage-calls-archive-<UTC-date>.jsonl.gz`.
+Compression, serialization, filesystem locking and fsync run in a worker thread,
+without an open database transaction. Each bounded deletion transaction rechecks
+session eligibility and exact snapshot equality under row locks, then commits the
+fence and deletion atomically. Concurrent ingestion locks the progress row and checks
+the fence before charging; a replay cannot fall between deletion and fence creation.
+Archive failure leaves database rows intact; a crash after archival can leave duplicate
+archive records, never unarchived deletions. Missing original ledger/session evidence
+is conservatively retained. Scheduling this callable belongs to the general retention
+job once available; this change does not register a scheduled job.
+
 Historical reconciliation is read-only and uses a frozen transcript/ledger window.
 Only unambiguous UUID matches with exact counter agreement and complete call coverage
 qualify for a proposed compensating adjustment. Reports retain original row IDs and

@@ -12,7 +12,7 @@ tags: [design, playbooks, automation, workflows]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
-**Status:** Active — **Paused** ([feature-pauses](feature-pauses.md); `playbooks.enabled=false`)
+**Status:** Superseded V1 design. The current [Playbooks V2 guide](../../concepts/playbooks.md) and [system map](../systems/playbooks.md) describe execution and configuration; the original design below is retained as history.
 **Supersedes:** `rule-system.md`, `hooks.md` (migration complete, deprecated spec files removed)
 **Source files:** TBD
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#1 files as source of truth, #3 structure guides intelligence, #7 events not coupling)
