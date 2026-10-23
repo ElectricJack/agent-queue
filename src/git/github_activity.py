@@ -35,7 +35,10 @@ def caller_component():
     try:
         while frame is not None:
             name = frame.f_globals.get("__name__", "")
-            if name.startswith("src.") and not name.startswith("src.git."):
+            # The daemon entrypoint hosts the event loop; it does not own calls
+            # made by otherwise unattributed asyncio child tasks.
+            if (name.startswith("src.") and not name.startswith("src.git.")
+                    and name != "src.main"):
                 return name
             frame = frame.f_back
     finally:
