@@ -117,7 +117,7 @@ AWAITING_PLAN_APPROVAL  (reachable only via manual `process_plan` command, never
 | `src/prompt_builder.py` | 5-layer prompt assembly: L0 role → override → L1 facts → L2 context → identity → tools |
 | `src/tools/` | Tiered tool loading — ~11 core tools always loaded, ~80 more on-demand in 11 categories |
 | `src/prompt_manager.py` | Manages prompt templates and variants from `src/prompts/` |
-| `src/llm_logger.py` | Logs all LLM API calls (`llm.jsonl`) — direct-path calls, agent sessions, prompt analytics |
+| `src/llm_logger.py` | Logs direct API attempts (`llm.jsonl`) and prompt analytics; session usage comes from transcripts |
 
 ### Playbook System
 
