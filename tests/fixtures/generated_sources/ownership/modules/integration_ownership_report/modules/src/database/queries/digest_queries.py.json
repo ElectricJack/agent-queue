@@ -1,0 +1,8 @@
+{
+  "exclusions": {
+    "src/database/queries/digest_queries.py::_IDLE_STATUSES['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/database/queries/digest_queries.py::_IDLE_STATUSES['DEFINED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/database/queries/digest_queries.py::_IDLE_STATUSES['PAUSED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/database/queries/digest_queries.py::_IDLE_STATUSES['READY']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

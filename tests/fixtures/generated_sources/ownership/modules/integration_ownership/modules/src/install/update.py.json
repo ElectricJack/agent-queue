@@ -1,0 +1,18 @@
+{
+  "generic_dependencies": {
+    "src/install/update.py::find_pg_dump": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/install/update.py::backup_database": {
+      "baseline_span": [
+        295,
+        345
+      ],
+      "landing_span": [
+        295,
+        345
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

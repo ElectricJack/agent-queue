@@ -302,6 +302,40 @@ async def test_hierarchy_prerequisites_consume_revalidated_git_view_without_rece
         assert await view.verified_on(conn, ["done"]) == {}
 
 
+async def test_scoped_prerequisite_view_does_not_write_locked_dependents(world, monkeypatch):
+    """A prerequisite read must not convoy behind scheduler-owned task locks."""
+    from sqlalchemy import select
+
+    db, _origin, observer, _service = world
+    for tid, source in (("selected", "done"), ("unrelated", "missing")):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="",
+                                  status=TaskStatus.READY))
+        await db.add_dependency(tid, source)
+    # A delivery-of consumer is still graph-blocked in the historical
+    # projection; the ordinary observation hook would try to update its row.
+    await db.create_task(Task(id="delivery-waiter", project_id="p", title="waiter",
+                              description="", status=TaskStatus.READY))
+    await db.add_dependency("delivery-waiter", "done", "delivery-of")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "delivery-waiter")
+                           .values(is_blocked=1))
+    recompute = AsyncMock(wraps=db.recompute_delivery_dependents)
+    monkeypatch.setattr(db, "recompute_delivery_dependents", recompute)
+    async with db._engine.begin() as locked:
+        await locked.execute(select(tasks.c.id).where(tasks.c.id == "delivery-waiter")
+                             .with_for_update())
+        view = await asyncio.wait_for(
+            observer.prerequisite_view("p", task_ids={"selected"}), 10,
+        )
+        assert set(view.all_ids) == {"done"}
+        assert view.default.satisfied("done")
+        recompute.assert_not_awaited()
+    # Other observation consumers retain their blockedness refresh hook.
+    await observer.observe(["done"])
+    recompute.assert_awaited_once_with(["done"])
+    assert not (await db.get_task("delivery-waiter")).is_blocked
+
+
 async def test_status_and_explanations_agree_with_git(world):
     db, _origin, _observer, _service = world
     status = await IntegrationStatusService(db).status("p")
@@ -387,12 +421,11 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
         assert [reason["ref"] for reason in delivery] == ["reopened"]
         assert "pending" in delivery[0]["detail"]
     else:
-        assert {reason["ref"] for reason in delivery} == {"done", "reopened"}
-        assert all("snapshot_unavailable" in reason["detail"] for reason in delivery)
-        assert all(reason["code"] == "delivery_evidence_unavailable" for reason in delivery)
-        assert all("has not loaded yet" in reason["detail"] for reason in delivery)
+        assert delivery == []
     status = await handler._cmd_pool_status({})
-    assert next(row for row in status["pools"] if row["profile_id"] == "worker")["ready"] == 0
+    assert next(row for row in status["pools"] if row["profile_id"] == "worker")["ready"] == (
+        0 if cache_state == "warm" else 1
+    )
     for call in forbidden.values():
         call.assert_not_awaited()
 
@@ -452,7 +485,7 @@ async def test_explain_names_missing_engine_for_undelivered_prerequisite(
     delivery = [reason for reason in result["reasons"]
                 if reason["code"] == "delivery_engine_unavailable"]
     assert len(delivery) == 1
-    assert delivery[0]["ref"] == "missing"
+    assert delivery[0]["ref"] == "p"
     assert "no delivery engine for this project" in delivery[0]["detail"]
     assert "development_dependency_delivery" not in result["reason_codes"]
     assert "delivery_evidence_unavailable" not in result["reason_codes"]
@@ -501,8 +534,8 @@ async def test_display_cache_miss_never_withholds_fresh_admission(world, monkeyp
     fetch = AsyncMock(wraps=observer.git.afetch_origin)
     monkeypatch.setattr(observer.git, "afetch_origin", fetch)
     display = await observe_admission(db, ["waiting"], service, cached_only=True)
-    assert display.allowed == set()
-    assert display.reasons["waiting"][0]["code"] == "delivery_evidence_unavailable"
+    assert display.allowed == {"waiting"}
+    assert display.reasons == {}
     fetch.assert_not_awaited()
 
     admission = await observe_admission(db, ["waiting"], service)
@@ -784,17 +817,16 @@ async def test_registered_prerequisite_observer_releases_pool_demand_without_rec
     transport = GitManager()
     db.set_delivery_observer(DeliveryObserver(db, git=transport, data_dir=tmp_path / "general"))
     assert prerequisite_observer(db) is None
-    assert "worker" not in await db.count_ready_by_profile("p")
+    assert (await db.count_ready_by_profile("p"))["worker"] == 1
 
     truthful = DeliveryObserver(db, git=transport, data_dir=tmp_path / "prereq",
                                 truth=GitTruth(transport))
     db.set_prerequisite_observer(truthful)
     assert prerequisite_observer(db) is truthful
-    # A diagnostic miss describes uncertainty without fetching or changing
-    # the actual claim frontier. The next decision independently loads Git.
+    # A diagnostic miss permits preparation without fetching or granting proof.
     truthful._store = AsyncMock(wraps=truthful._store)
     cold = await db.claim_frontier_exclusions("dependent", cached_only=True)
-    assert [reason["code"] for reason in cold] == ["delivery_evidence_unavailable"]
+    assert cold == []
     truthful._store.assert_not_awaited()
     assert (await db.count_ready_by_profile("p")).get("worker") == 1
     truthful._store.assert_awaited()
@@ -936,14 +968,13 @@ async def test_multi_target_fetch_warms_every_target_without_renewing_age(world,
 
     observer._store = AsyncMock(side_effect=AssertionError("display attempted fetch"))
     warm = await observer.observe(ids, max_age=30, cached_only=True)
-    assert {tid: (proof.state, proof.reason) for tid, proof in warm.evidence.items()
-            if tid != "missing"} == {
+    # Unprovable answers are decided by Git, so the warm read repeats them:
+    # a display must withhold exactly what a claim withholds.
+    assert {tid: (proof.state, proof.reason) for tid, proof in warm.evidence.items()} == {
         tid: (proof.state, proof.reason) for tid, proof in view.evidence.items()
-        if tid != "missing"
     }
     assert view.get("missing").reason == "missing_git_provenance"
-    assert warm.get("missing").state is view.get("missing").state
-    assert warm.get("missing").reason == "proof_unavailable"
+    assert not warm.get("missing").unloaded
     assert not warm.satisfied("missing")
     assert {observer._recent[target][0] for target in targets.values()} == stamps
     observer._store.assert_not_awaited()
@@ -1065,9 +1096,7 @@ async def test_frontier_cache_uncertainty_preserves_known_delivery_exclusions(wo
     assert "frontier_sibling_prerequisite_not_delivered" in codes
     assert "frontier_prerequisite_not_on_default_branch" not in codes
     assert "prerequisite_not_on_default_branch" not in codes
-    assert "delivery_evidence_unavailable" in codes
-    assert any(reason["ref"] == "done" and reason["code"] == "delivery_evidence_unavailable"
-               for reason in reasons)
+    assert "delivery_evidence_unavailable" not in codes
     observer._store.assert_not_awaited()
 
 
@@ -1476,7 +1505,7 @@ async def test_missing_git_observer_warns_offline_frontier_reader(active_git_wor
     db.set_prerequisite_observer(None)
     await db.claim_frontier_exclusions("done")
     assert "No Git prerequisite observer" in caplog.text
-    assert "unavailable without receipt fallback" in caplog.text
+    assert "proceed to Git preparation without receipt fallback" in caplog.text
 
 
 # --- Shared store observations -------------------------------------------------
@@ -2019,19 +2048,40 @@ async def test_delivery_edge_uses_immutable_view_and_rechecks_rewind(world, tmp_
     assert "independent" not in current.reasons
 
 
-async def test_unavailable_delivery_observer_withholds_only_edge_consumers(world):
+@pytest.mark.parametrize("observation", ["absent", "cold", "fetch_error"])
+async def test_unknown_delivery_observation_allows_edge_consumers(
+    world, tmp_path, monkeypatch, observation,
+):
     from src.integration.admission import observe_admission
+    from src.integration.git_truth import GitTruth
+    from src.models import AgentProfile
 
-    db, _origin, _observer, service = world
+    db, _origin, observer, service = world
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
     db.set_prerequisite_observer(None)
+    if observation != "absent":
+        db.set_prerequisite_observer(DeliveryObserver(
+            db, git=observer.git, data_dir=tmp_path / "unknown-admission",
+            truth=GitTruth(observer.git),
+        ))
+    if observation == "fetch_error":
+        monkeypatch.setattr(observer.git, "afetch_origin", AsyncMock(side_effect=GitError("offline")))
     for tid in ("waiting", "independent"):
         await db.create_task(Task(
             id=tid, project_id="p", title=tid, description="", status=TaskStatus.READY,
+            profile_id="worker", route_source="router",
         ))
     await db.add_dependency("waiting", "done", "delivery-of")
-    view = await observe_admission(db, ["waiting", "independent"], service)
-    assert view.allowed == {"independent"}
-    assert view.reasons["waiting"][0]["code"] == "delivery_evidence_unavailable"
+    view = await observe_admission(
+        db, ["waiting", "independent"], service, cached_only=observation == "cold",
+    )
+    assert view.allowed == {"waiting", "independent"}
+    assert view.reasons == {}
+    assert await view.is_fresh("waiting")
+    assert await view.matches(task_id="waiting")
+    assert await view.counts("p") == {"worker": 2}
+    await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
+    assert not await view.matches(task_id="waiting")
 
 
 @pytest.mark.parametrize('source_edge', ['blocks', 'delivery-of'])
@@ -2078,19 +2128,19 @@ async def test_admission_completes_while_retained_fsck_holds_repository(
         view = await asyncio.wait_for(observe_admission(
             db, ['waiting', 'independent'], service,
         ), 5)
-        assert view.allowed == {'independent'}
-        assert view.reasons['waiting']
+        # Unknown delivery remains admissible while the bounded Git read yields.
+        assert view.allowed == {'waiting', 'independent'}
+        assert not view.reasons.get('waiting')
         assert not recovery.done()
         # A subsequent reader also returns without a second fetch or cancellation.
         assert (await asyncio.wait_for(observe_admission(
             db, ['waiting', 'independent'], service,
-        ), 5)).allowed == {'independent'}
+        ), 5)).allowed == {'waiting', 'independent'}
         assert not recovery.done()
     finally:
         release.set()
         await asyncio.wait_for(recovery, 10)
-    # Recovery completion does not extend admission's expired request budget.
-    # A new admission must acquire fresh proof and can release the dependent.
+    # A fresh read confirms the proof after recovery without changing admission.
     monkeypatch.setattr('src.git.manager.REQUEST_GIT_READ_SECONDS', 5)
     assert (await observe_admission(db, ['waiting', 'independent'], service)).allowed == {
         'waiting', 'independent',

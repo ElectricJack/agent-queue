@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/metrics/token_efficiency.py::build_report": "Cross-task token efficiency measurement; integration is a report category.",
+    "src/metrics/token_efficiency.py::compare": "Generic report comparison, not integration policy."
+  }
+}

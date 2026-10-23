@@ -1653,6 +1653,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["profile_id", "old_name", "name", "backup_path"],
         "optional": ["seq"],
     },
+    "pool.deleted": {
+        "required": ["profile_id", "depth", "sessions", "warnings"],
+        "optional": ["seq"],
+    },
 }
 
 # ---------------------------------------------------------------------------

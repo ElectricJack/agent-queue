@@ -22,6 +22,7 @@ seat-by-seat version.
 |---|---|---|
 | A task that asks you to write a spec, plan, proposal or report; any research or design task | author | § Author |
 | *Revise \<title> (review \<id>)* | reviser | § Reviser |
+| *Follow up on \<title> (review \<id>)* | feedback implementer | § Feedback follow-up |
 | *Adversarial review: \<title>* | dispatched reviewer | § Dispatched reviewer |
 | The local operator, or the supervisor with the review delegated | decider | § Running the cross-family loop |
 
@@ -101,9 +102,10 @@ activates it when you passed `--activate-on-approval`.
 ## Reviser
 
 The daemon files one *Revise \<title> (review \<id>)* task per
-`request_changes` decision. Its description holds the decider's note and every
-unresolved anchored comment with its id. While the review is
-`changes_requested`, only the session holding this task may resubmit (anyone
+`request_changes`, `fold_in` or legacy `reject` decision. Its description holds the decider's note and every
+frozen formal comment with its original id, text, anchor and disposition,
+including comments the author previously marked resolved. While the review is
+`changes_requested` or `rejected`, only the session holding this task may resubmit (anyone
 else gets `not_your_task`).
 
 1. Read the whole thread: `aq review show --review-id <id> --comments`.
@@ -120,7 +122,17 @@ else gets `not_your_task`).
    aq review submit --review-id <id> --file <draft> --changes "cmt-1a2b fixed: section 4 now names the dedup key. cmt-3c4d rebutted: the handler refuses that case (review_commands.py:_cmd_review_decide)." --resolves cmt-1a2b --resolves cmt-3c4d
    ```
 
-4. Close the task with the new revision number and content hash.
+4. Complete every frozen feedback obligation with evidence:
+
+   ```bash
+   aq review feedback-complete --task-id <held-task> --obligation-id <id> --evidence "<answer and evidence>"
+   ```
+
+   The decision's ask detail lists obligation ids; the task's passing-close
+   refusal `feedback.incomplete` also lists pending ids. `--resolves` does not
+   complete an obligation. For a *Follow up on …* task, complete its obligations
+   too; changing approved requirements needs a separately reviewed amendment.
+5. Close the task with the new revision number and content hash.
 
 The daemon resolves an omitted `--review-id` from your held revision task's
 assignment. It refuses a different review id with `not_your_task`; never
@@ -139,6 +151,17 @@ rebuttal accepted. The decider checks each one, and the next round's reviewer
 sees it. `stale_revision` means the review moved: re-read, never bump the
 number blindly. `vault_diverged` means someone edited the vault file: report
 it; only the operator imports or reverts that edit.
+
+## Feedback follow-up
+
+An approval can create a *Follow up on \<title> (review \<id>)* task for
+accepted `follow_up` obligations. Read the frozen acceptance items in its
+instructions and record each obligation's evidence with
+`aq review feedback-complete --task-id <held-task> --obligation-id <id>
+--evidence "<answer and evidence>"` before a passing close. Approved bytes remain
+immutable. A change to approved requirements needs a new amendment review;
+do not try to resubmit the approved review or treat follow-up completion as a
+new approval.
 
 ## Dispatched reviewer
 
@@ -204,20 +227,16 @@ aq system list-intelligence-classes
 aq agent list-profiles
 ```
 
-On the shipped ladder Fable is `deep-high`'s `anthropic` slice
-(`deep-high-claude`) and Astra is the OpenAI-only `astra-high`
-(`astra-high-codex`). An install whose `deep-high` OpenAI slice is
-`gpt-6-astra` has Astra on `deep-high-codex`. Nobody picks those rungs: the
-project's router does, from a task's kind and class hint, so the loop steers
-families through kinds and the reviewer's provider exclusion.
+Read profiles and intelligence classes from the install. Class/harness rungs
+are derived; their ids and model assignments are not a stable family-selection
+API. The project's router chooses candidates from task type and class hints.
 
 **Family diversity is observed, not configured.** Dispatch names no profile:
-each reviewer excludes the provider the author revision ran on and the router
+each reviewer excludes the author provider when attribution is known and the router
 picks among the other families; a revision task is unrouted with the
 `--responder-class` hint, and the router routes it like any other task.
-Failover inside a class can cross families: an Anthropic outage can move
-`deep-high-claude` work to `deep-high-codex`. So for every writing and
-reviewing task, check what actually ran:
+Failover inside a class can cross families. Unknown author attribution cannot
+prove diversity. For every writing and reviewing task, check what actually ran:
 
 ```bash
 aq task show <task-id>                         # route, provider_intent, rerouted_from
@@ -230,10 +249,8 @@ record it so, and never claim coverage you did not observe.
 
 **Procedure.**
 
-1. Before round 1, file the author task with the kind whose lane is the
-   author's family. On the shipped routing policy, `design` (code design)
-   runs at `deep-high` on Claude first and falls back to Codex, and `art`
-   (art-heavy design) runs on Codex and holds for it:
+1. Before round 1, file the author task with its appropriate type and class
+   hints, then inspect the project's route and observed attempts:
 
    ```bash
    aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --type design
@@ -251,7 +268,7 @@ record it so, and never claim coverage you did not observe.
    not the round counter.
 
    ```bash
-   aq task comment <author-task> --body "Adversarial review plan: author on deep-high-claude (routed), reviewers exclude its provider, cap 3 rounds, deadline <date>."
+   aq task comment <author-task> --body "Adversarial review plan: author on <observed provider/model>, reviewers exclude its provider, cap 3 rounds, deadline <date>."
    ```
 
 3. Read the current revision from `aq review show --review-id <id>`, then
@@ -281,9 +298,20 @@ record it so, and never claim coverage you did not observe.
    responder class (a hint; the router routes the revision task):
 
    ```bash
-   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
+   aq ask show --ask-id <ask-id> --json
+   aq ask prepare --ask-id <ask-id> --expected '<expected JSON from show>' --option-key request_changes --overall-note 'Round 1 of 3: address or explicitly rebut every [blocking] finding' --responder-class <installed-class>
    ```
 
+   Inspect the preview and confirm the same intent within its ten-minute
+   lifetime, using the returned preview id and a stable idempotency key:
+
+   ```bash
+   aq ask decide --ask-id <ask-id> --expected '<same expected JSON>' --option-key request_changes --overall-note 'Round 1 of 3: address or explicitly rebut every [blocking] finding' --responder-class <installed-class> --preview-id <preview-id> --idempotency-key <unique-key>
+   ```
+
+   A compatibility `aq review decide` may return `ask.preview_required`;
+   inspect its packet rather than repeatedly issuing the old decision command.
+   Only `application_state: applied` confirms the decision's effects completed.
    After the revision task resubmits, check its attribution and record every
    disposition and the new content hash in the round comment.
 6. Stop when no unresolved `[blocking]` finding remains **and** the decider

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/asks/delivery.py::config_fingerprint": "Generic notification-destination configuration hashing; no integration state or ref authority.",
+    "src/asks/delivery.py::destination": "Generic notification channel identity for all human asks; no integration branch or delivery lifecycle."
+  }
+}

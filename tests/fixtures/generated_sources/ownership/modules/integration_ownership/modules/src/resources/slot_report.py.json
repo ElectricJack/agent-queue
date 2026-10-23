@@ -1,0 +1,10 @@
+{
+  "shared": {
+    "src/resources/slot_report.py::REPORT_ENV": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/slot_report.py::append_event": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

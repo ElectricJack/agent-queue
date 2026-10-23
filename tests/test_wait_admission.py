@@ -139,6 +139,48 @@ async def test_branch_deadline_survives_restart_and_escalates_once(env):
     assert env.o.bus.emit.call_args.args[1]["project_id"] == "p"
 
 
+async def test_admission_alarm_tracks_recent_capacity_progress_and_survives_restart(env):
+    await sync(env)
+    first = (await rows(env, wait_deadlines))[0]
+    await fire(env, first, NOW + 1800)
+    second = next(d for d in await rows(env, wait_deadlines) if d["deadline_type"] == "escalation")
+    reservation = (await rows(env, admission_reservations))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(admission_reservations).values(
+            id="capacity-progress", project_id="p", task_id="finished-owner",
+            scope=reservation["scope"], effective_priority=0, provenance="branch_blocker",
+            deadline_at=NOW + 3600, state="consumed", created_at=NOW + 1800,
+            granted_at=NOW + 3300, consumed_at=NOW + 3350,
+        ))
+    result = await fire(env, second, NOW + 3600)
+    assert result["reason"] == "admission_queue_progressing" and not result["fired"]
+    assert not await rows(env, wait_escalations)
+    deferred = next(d for d in await rows(env, wait_deadlines) if d["id"] == second["id"])
+    assert deferred["due_at"] == NOW + 5150 and deferred["fired_at"] is None
+    env.service = SchedulerWaitService(env.o, clock=lambda: NOW)
+    assert (await fire(env, deferred, NOW + 5150))["fired"]
+    assert len(await rows(env, wait_escalations)) == 1
+
+
+async def test_one_capacity_incident_covers_multiple_branch_holders(env):
+    await env.db.create_task(Task(id="holder2", project_id="p", title="Holder2", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override", branch_name="aq/holder2"))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="branch2", repository_id="repo", ref="aq/holder2", owner_id="holder2",
+            owner_role="task", fence_token=1, handoff_state="reserved", created_at=NOW, updated_at=NOW,
+        ))
+    await sync(env)
+    for deadline in await rows(env, wait_deadlines):
+        await fire(env, deadline, NOW + 1800)
+    deadlines = [d for d in await rows(env, wait_deadlines) if d["deadline_type"] == "escalation"]
+    assert len(deadlines) == 2
+    results = [await fire(env, deadline, NOW + 3600) for deadline in deadlines]
+    assert sorted(result["fired"] for result in results) == [False, True]
+    assert any(result.get("reason") == "admission_incident_coalesced" for result in results)
+    assert len(await rows(env, wait_escalations)) == 1
+
+
 async def test_resource_reader_reobserves_and_rejects_rebinding(env):
     reader = AdmissionReader(env.o, clock=lambda: NOW)
     registry = build_registry(resource_reader=reader)

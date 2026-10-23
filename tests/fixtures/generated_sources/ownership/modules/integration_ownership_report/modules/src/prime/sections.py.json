@@ -1,0 +1,40 @@
+{
+  "exclusions": {
+    "src/prime/sections.py::_build_task_context_preview": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
+  },
+  "shared_definitions": {
+    "src/prime/sections.py::build_integration_delivery_summary": {
+      "baseline_span": [
+        219,
+        255
+      ],
+      "landing_span": [
+        219,
+        255
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/prime/sections.py::build_task_context_section": {
+      "baseline_span": [
+        340,
+        436
+      ],
+      "landing_span": [
+        340,
+        436
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/prime/sections.py::build_task_section": {
+      "baseline_span": [
+        122,
+        176
+      ],
+      "landing_span": [
+        122,
+        176
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

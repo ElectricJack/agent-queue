@@ -1902,6 +1902,35 @@ async def test_retire_checkout_keeps_a_folder_a_row_names_or_that_holds_work(
         assert (rig.old / 'stray.txt').read_text() == 'unsaved\n'
 
 
+async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env, monkeypatch):
+    from src.integration import delivery_observer
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.waits.graph import lock_graph
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    monkeypatch.setattr(delivery_observer, 'hierarchy_frontier_modes', AsyncMock())
+    orch = SimpleNamespace(db=env.db, _task_control_lock=lambda _: asyncio.Lock())
+    driver = ResumeTransaction(SimpleNamespace(orch=orch))
+    driver.failed = AsyncMock()
+    driver.fresh_workspace = AsyncMock()
+    before = await intent(env)
+    assert before['resume_state'] == 'queued'
+
+    async with env.db._engine.begin() as holder:
+        await lock_graph(holder)
+        with pytest.raises(WaitError, match='within 0.25s') as refused:
+            await asyncio.wait_for(driver.dispatch(
+                {'continuation_id': 'c', 'generation': 1},
+                principal=None, scope=None, handler=None,
+            ), timeout=5)
+        assert refused.value.code == 'wait.graph_busy'
+    assert await intent(env) == before
+    driver.failed.assert_not_awaited()
+    driver.fresh_workspace.assert_not_awaited()
+
+
 async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env):
     from src.database.tables import admission_reservations
     from src.models import AgentProfile, RepoConfig, RepoSourceType, Workspace

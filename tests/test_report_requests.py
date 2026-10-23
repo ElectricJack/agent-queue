@@ -34,6 +34,7 @@ from src.digest.aggregate import DigestResult
 from src.digest.dispatch import marker_for
 from src.digest.eligibility import Eligibility
 from src.digest.facts import ActiveTask, DigestWindow, WorkFact
+from src.digest.render import MAX_CHARS
 from src.escalations.transport import SinkTransport
 from src.models import Project, Task, TaskCompletion
 from src.profiles.capabilities import DENY_ALL
@@ -147,11 +148,63 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     marker = marker_for(window["id"])
     assert posted.endswith(marker) and posted.count(marker) == 1
     assert "aq-dig:" not in posted
-    assert len(posted) <= 1200
+    assert len(posted) <= MAX_CHARS
     assert (await db.get_report_request(request["id"]))["state"] == "submitted"
     assert (await db.get_report_request(request["id"]))["source_links"] == [
         "https://queue.example.test/focus/tasks/t1"
     ]
+
+
+@pytest.mark.parametrize("extra", [-1, 0, 1])
+@pytest.mark.parametrize("footer_kind", ["dashboard_url", "dashboard_notice"])
+async def test_submission_budget_includes_footer_and_marker(db, monkeypatch, extra, footer_kind):
+    await completed_task(db, "t1", BASE + 600)
+    clock = Clock(BASE + HOUR + 30)
+    monkeypatch.setattr("src.commands.report_commands.time.time", clock)
+    digest, transport, _ = service(db, clock)
+    await digest.tick()
+    window, request = await request_for(db, digest)
+    brief = dict(request["brief"])
+    footer = (
+        brief["dashboard_url"] if footer_kind == "dashboard_url" else "Dashboard unavailable."
+    )
+    brief["dashboard_url"] = footer if footer_kind == "dashboard_url" else ""
+    brief["dashboard_notice"] = footer if footer_kind == "dashboard_notice" else ""
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(supervisor_report_requests)
+            .where(supervisor_report_requests.c.id == request["id"])
+            .values(brief=brief)
+        )
+    queued = await db.request_report(request["id"], now=clock.now)
+    tail = f"\n{footer}\n{marker_for(window['id'])}"
+    text = "x" * (MAX_CHARS - len(tail) + extra)
+    with principal_context(TRUSTED_LOCAL):
+        result = await Commands(db)._cmd_report_submit(
+            {
+                "request_id": request["id"],
+                "brief_hash": request["brief_hash"],
+                "expected_version": queued["version"],
+                "text": text,
+            }
+        )
+    if extra > 0:
+        assert result["error_code"] == "report.invalid"
+        assert result["error"] == f"report exceeds {MAX_CHARS:,} characters after rendering"
+        assert (await db.get_report_request(request["id"]))["state"] == "requested"
+        assert transport.messages == {}
+    else:
+        assert result["success"] is True
+        submitted = await db.get_report_request(request["id"])
+        assert submitted["submitted_text"] == f"{text}\n{footer}"
+        assert len(submitted["submitted_text"] + f"\n{marker_for(window['id'])}") == (
+            MAX_CHARS + extra
+        )
+        assert (await digest.tick()).sent == 1
+        posted = next(iter(transport.messages.values())).content
+        # Delivery appends the invisible marker directly, without a separator.
+        assert posted == f"{text}\n{footer}{marker_for(window['id'])}"
+        assert len(posted) <= MAX_CHARS
 
 
 async def test_a_missing_link_posts_the_unavailable_notice_not_a_blank_line(db, monkeypatch):

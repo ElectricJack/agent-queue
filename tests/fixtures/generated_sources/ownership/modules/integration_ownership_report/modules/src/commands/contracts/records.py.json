@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/commands/contracts/records.py::_record_invoke": {
+      "reason": "Shared typed command invocation adapter used by integration operator decision contracts."
+    }
+  }
+}

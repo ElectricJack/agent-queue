@@ -18,6 +18,13 @@ tags: [design, work-graph, dependencies, gates, labels, state-machine, explain, 
 
 ---
 
+> **Current task-graph contract (2026-10-22).** This design includes unimplemented
+> status-collapse proposals and superseded removal rules. Current AQ has twelve
+> task states, shared integration admission, managed-parent settlement gates and
+> unified deletion. Start with [Tasks](../../concepts/tasks.md) and the
+> [system map](../systems/task-graph.md); the historical sections below are not
+> an operational command reference.
+
 ## 1. Problem
 
 The task graph is the substrate everything else in the overhaul (sessions, worktrees, the supervisor agent) stands on, and today it is too thin:
@@ -106,35 +113,49 @@ It is *graph* blockedness only. Transient capacity reasons — no idle agent, wo
 
 Development delivery is a separate dynamic admission condition. In development
 mode, completed `blocks` prerequisites and completed children consumed by
-`waits-for` must be contained in the configured repository target, or have no
-artifact. `src/integration/admission.py` gathers these identities in a batch and
+`waits-for` are checked for containment in the configured repository target,
+or absence of an artifact. `src/integration/admission.py` gathers these identities
+in a batch and
 uses `delivery_truth` to fetch and inspect git outside row-lock transactions.
 Readiness, scheduler supply, pool demand, claim selection and explain share that
-request-scoped answer. Unknown git evidence withholds work; absent or misleading
+request-scoped answer. Unknown Git evidence permits preparation; absent or misleading
 SQL delivery rows never establish containment. Branchless organizational tasks
 have no own artifact; a missing worker ref is unknown.
 
-In hierarchy/train mode, a completed `blocks` sibling
-must be proven on the shared parent's current branch before its dependent can
-run. One request-scoped, identity-revalidated Git prerequisite view per project
+In hierarchy/train mode, a completed `blocks` sibling is checked against the
+shared parent's current branch. One request-scoped, identity-revalidated Git
+prerequisite view per project
 is shared by scheduler/reconciler supply and pool demand within a tick, outside
 database locks. Advisory scheduling reads, including direct readiness and
 frontier diagnostics, may reuse a successful snapshot of the same target for
 up to `DeliveryObserver.READ_MAX_AGE` (30 seconds). Each request still evaluates
 current identities and checks remote target freshness. Beyond the bound the
 observer refetches; a failed refresh never falls back to the expired snapshot.
-A rewind, retarget, reopened generation or unknown proof withholds work; no
-receipt can override it. Claim selection
+A proven ancestry negative withholds work; a rewind, retarget or reopened
+generation invalidates the current view and retries admission. Unknown or unloaded
+Git evidence permits worker preparation without asserting delivery; no receipt
+can override Git evidence. Claim selection
 retains its own uncached observation (`max_age=0`) and revalidation under task
 locks, even when a tick's advisory view still makes a task look runnable. An
-absent truth-bearing observer withholds the affected prerequisites without a
-receipt fallback. Non-hierarchy projects keep their source admission policy.
+absent truth-bearing observer permits preparation without a receipt fallback.
+The agent merges prerequisite state from Git; ancestry at publication remains
+the delivery authority. Non-hierarchy projects keep their source admission policy.
+
+Pool claims first try candidates without `blocks`, `delivery-of` or `waits-for`
+sources. These candidates pass the same frontier predicates and locked input
+revalidation, without waiting for unrelated Git observations. If that pass has
+no compatible claimable task, selection retries with the full candidate set.
+Admission scopes hierarchy prerequisite observations to its candidate identities;
+an empty source set requires no Git observation. Prerequisite views never
+recompute dependent blockedness: they may be read while the scheduler holds
+those task rows under the wait-graph fence on another connection.
 
 `delivery-of` edges require source completion in the persisted graph projection
-and current default-target Git proof in `AdmissionView`. Completion alone is
-insufficient for dispatch, pool demand or a claim. Delivery is never persisted
-as blockedness: a rewind withholds the dependent on its next admission view
-without waiting for a SQL receipt change.
+and a separate default-target Git observation in `AdmissionView`. Unknown
+observations permit dispatch, pool demand and claims; proven missing ancestry
+can withhold them. This admission choice does not establish delivery. Delivery
+is never persisted as blockedness: a proven rewind withholds the dependent on its
+next admission view without waiting for a SQL receipt change.
 
 A cross-epic dependent whose epic already contains every prerequisite's exact
 default-branch source needs no new refresh. Ordinary sibling collection does
@@ -146,21 +167,25 @@ the checked refresh publishes it.
 
 Interactive `task explain` and `pool status` only read snapshots inside that
 age bound. They do not clone, fetch, wait for a fetch lock, or check remote refs.
-Missing or expired evidence is unknown and conservatively withholds demand;
+Missing or expired evidence is unknown and permits worker demand;
 current database identities are still revalidated against the pinned observation.
 If a background freshness check has already rejected that exact snapshot,
-diagnostics withhold its proof until a new observation or successful check.
-Stacked prerequisites additionally require the existing, unexpired remote-ref
-cache. An explanation shares one request-scoped pool measurement between the
+diagnostics discard its proof until a new observation or successful check.
+Unknown evidence does not become an admission exclusion.
+Automatic stack overlays additionally require the existing, unexpired remote-ref
+cache. Unavailable stack evidence supplies no overlay and permits normal worker
+preparation; changed refs still invalidate an observed stack. An explanation
+shares one request-scoped pool measurement between the
 pool wait reason and capacity spill planning. Actual scheduling, routing and
 claim admission retain their existing fresh observations and guards.
 
 For pull-request prerequisites, interactive explanations do not observe the
-current PR identity or its Git containment. They report
-`delivery_evidence_unavailable`, explicitly naming containment and claimability
-as unknown in this cached-only read, rather than asserting that the source is
-missing from the default branch. This also applies to merged PRs and running
-tasks. Fresh admission still requires the current PR and containment proof.
+current PR identity or its Git containment. They leave containment unknown and
+permit preparation without adding a
+`delivery_evidence_unavailable` exclusion. This also applies to merged PRs and
+running tasks. Fresh observations can still withhold a prerequisite whose source
+is provably absent from the prospective base. Publication and destructive
+cleanup continue to require their own current Git proof.
 
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
@@ -446,16 +471,18 @@ they do not infer eligibility from a cached scheduler snapshot. Receipt freshnes
 in shadow mode is scoped to the prerequisite's own `integration_rework_at`, never
 another task's marker or ordinary `updated_at` bookkeeping.
 
-Cross-epic prerequisites in hierarchy/train mode require two independent proofs.
-Their exact completed sources must be on the default branch
-(`frontier_prerequisite_not_on_default_branch` when unproven). A dependent with an
-epic branch also requires those sources to be contained in that branch and any
-open `train-epic-refresh-*` batch targeting it to finish
+Cross-epic prerequisites in hierarchy/train mode inspect two independent proofs.
+Their exact completed sources are checked against the default branch
+(`frontier_prerequisite_not_on_default_branch` for a known negative). A dependent
+with an epic branch also checks whether those sources are contained in that branch
+and requires any open `train-epic-refresh-*` batch targeting it to finish
 (`frontier_epic_refresh_pending`, with blocking batch ids in the detail).
 Ordinary sibling collection batches never withhold an already-contained dependent,
-including when failed or human-blocked. Missing epic containment withholds even
-without an open batch. Scheduler, pool demand, explain and claim share these
-predicates; claim retains fresh Git and identity revalidation. The explicit
+including when failed or human-blocked. Proven missing epic containment withholds
+even without an open batch. Unknown observations permit preparation but never
+establish containment or bypass an open refresh batch. Scheduler, pool demand,
+explain and claim share these predicates; claim retains fresh Git and identity
+revalidation. The explicit
 `cross_epic_prerequisites: completed` policy keeps legacy graph-only admission.
 
 ### 9.2 Ready frontier
@@ -558,6 +585,8 @@ filing rather than substituting another branch. This base selection does not
 replace live remote observations used by adoption, reparenting or completion.
 
 ### Operator removal (2026-10-06)
+
+> **Superseded:** use the [unified delete contract](../../superpowers/specs/2026-10-11-unified-task-delete.md). `remove` is a deprecated alias; deletion can explicitly delete branches, and task-only deletion reparents surviving children. The former always-subtree/no-branch-removal policy below is historical.
 
 `remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is
 available to a local human or live project/global supervisor. A worker cannot

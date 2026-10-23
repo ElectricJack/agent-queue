@@ -116,6 +116,7 @@ class DoctorContext:
     project_id: str | None = None
     reference_time: float | None = None
     read_only: bool = False
+    leave_gated: bool = False  # legacy ingestion: inventory without materializing
     # A separate context is made for each concurrent probe.
     observation_reasons: list[dict[str, Any]] = field(default_factory=list)
 

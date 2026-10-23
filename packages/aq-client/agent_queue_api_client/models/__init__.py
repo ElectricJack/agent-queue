@@ -1116,10 +1116,8 @@ from .onboard_project_response_source_type import OnboardProjectResponseSourceTy
 from .onboarding_error_info import OnboardingErrorInfo
 from .onboarding_error_info_details import OnboardingErrorInfoDetails
 from .onboarding_error_info_field_errors_item import OnboardingErrorInfoFieldErrorsItem
-from .operational_retention_request import OperationalRetentionRequest
-from .operational_retention_response import OperationalRetentionResponse
-from .operational_retention_response_422 import OperationalRetentionResponse422
-from .operational_retention_response_counts_type_0 import OperationalRetentionResponseCountsType0
+from .operation_perf import OperationPerf
+from .operation_perf_outcomes import OperationPerfOutcomes
 from .operator_decision_dto import OperatorDecisionDTO
 from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .operator_decision_record import OperatorDecisionRecord
@@ -1157,6 +1155,7 @@ from .pending_pull_request_ci_status import PendingPullRequestCiStatus
 from .pending_pull_request_review_decision import PendingPullRequestReviewDecision
 from .pending_pull_requests_response import PendingPullRequestsResponse
 from .perf_metrics import PerfMetrics
+from .perf_metrics_operations import PerfMetricsOperations
 from .perf_sampler_cost import PerfSamplerCost
 from .phase_create_request import PhaseCreateRequest
 from .phase_create_response import PhaseCreateResponse
@@ -1170,6 +1169,7 @@ from .phase_list_response_422 import PhaseListResponse422
 from .phase_ref import PhaseRef
 from .phase_summary import PhaseSummary
 from .placeholder import Placeholder
+from .plan_content_response import PlanContentResponse
 from .playbook_activate_request import PlaybookActivateRequest
 from .playbook_activate_response_422 import PlaybookActivateResponse422
 from .playbook_activation_health_request import PlaybookActivationHealthRequest
@@ -1310,6 +1310,9 @@ from .policy_export_response_422 import PolicyExportResponse422
 from .policy_export_warning import PolicyExportWarning
 from .policy_file_preview import PolicyFilePreview
 from .policy_review_receipt import PolicyReviewReceipt
+from .pool_delete_request import PoolDeleteRequest
+from .pool_delete_response import PoolDeleteResponse
+from .pool_delete_response_422 import PoolDeleteResponse422
 from .pool_gauges import PoolGauges
 from .pool_instance_status import PoolInstanceStatus
 from .pool_policy import PoolPolicy
@@ -1518,9 +1521,6 @@ from .read_prompt_request import ReadPromptRequest
 from .read_prompt_response import ReadPromptResponse
 from .read_prompt_response_422 import ReadPromptResponse422
 from .ready_task import ReadyTask
-from .rebind_workspace_request import RebindWorkspaceRequest
-from .rebind_workspace_response import RebindWorkspaceResponse
-from .rebind_workspace_response_422 import RebindWorkspaceResponse422
 from .receipt_dto import ReceiptDTO
 from .receipt_dto_step_kind import ReceiptDTOStepKind
 from .record_capabilities_request import RecordCapabilitiesRequest
@@ -1835,6 +1835,13 @@ from .source_scan import SourceScan
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .spec_ingest_legacy_adopt_request import SpecIngestLegacyAdoptRequest
+from .spec_ingest_legacy_adopt_response import SpecIngestLegacyAdoptResponse
+from .spec_ingest_legacy_adopt_response_422 import SpecIngestLegacyAdoptResponse422
+from .spec_ingest_legacy_adopt_response_diff_type_0 import SpecIngestLegacyAdoptResponseDiffType0
+from .spec_ingest_legacy_adopt_response_lineage_type_0 import SpecIngestLegacyAdoptResponseLineageType0
+from .spec_ingest_legacy_adopt_response_members_type_0 import SpecIngestLegacyAdoptResponseMembersType0
+from .spec_ingest_legacy_adopt_response_release_receipt_type_0 import SpecIngestLegacyAdoptResponseReleaseReceiptType0
 from .spec_ingest_legacy_inventory_request import SpecIngestLegacyInventoryRequest
 from .spec_ingest_legacy_inventory_response import SpecIngestLegacyInventoryResponse
 from .spec_ingest_legacy_inventory_response_422 import SpecIngestLegacyInventoryResponse422
@@ -3335,10 +3342,8 @@ __all__ = (
     "OnboardProjectResponse",
     "OnboardProjectResponse422",
     "OnboardProjectResponseSourceType",
-    "OperationalRetentionRequest",
-    "OperationalRetentionResponse",
-    "OperationalRetentionResponse422",
-    "OperationalRetentionResponseCountsType0",
+    "OperationPerf",
+    "OperationPerfOutcomes",
     "OperatorDecisionDTO",
     "OperatorDecisionDTOOptionsItem",
     "OperatorDecisionRecord",
@@ -3376,6 +3381,7 @@ __all__ = (
     "PendingPullRequestReviewDecision",
     "PendingPullRequestsResponse",
     "PerfMetrics",
+    "PerfMetricsOperations",
     "PerfSamplerCost",
     "PhaseCreateRequest",
     "PhaseCreateResponse",
@@ -3389,6 +3395,7 @@ __all__ = (
     "PhaseRef",
     "PhaseSummary",
     "Placeholder",
+    "PlanContentResponse",
     "PlaybookActivateRequest",
     "PlaybookActivateResponse422",
     "PlaybookActivationHealthRequest",
@@ -3529,6 +3536,9 @@ __all__ = (
     "PolicyExportWarning",
     "PolicyFilePreview",
     "PolicyReviewReceipt",
+    "PoolDeleteRequest",
+    "PoolDeleteResponse",
+    "PoolDeleteResponse422",
     "PoolGauges",
     "PoolInstanceStatus",
     "PoolPolicy",
@@ -3733,9 +3743,6 @@ __all__ = (
     "ReadPromptResponse",
     "ReadPromptResponse422",
     "ReadyTask",
-    "RebindWorkspaceRequest",
-    "RebindWorkspaceResponse",
-    "RebindWorkspaceResponse422",
     "ReceiptDTO",
     "ReceiptDTOStepKind",
     "RecordCapabilitiesRequest",
@@ -4050,6 +4057,13 @@ __all__ = (
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "SpecIngestLegacyAdoptRequest",
+    "SpecIngestLegacyAdoptResponse",
+    "SpecIngestLegacyAdoptResponse422",
+    "SpecIngestLegacyAdoptResponseDiffType0",
+    "SpecIngestLegacyAdoptResponseLineageType0",
+    "SpecIngestLegacyAdoptResponseMembersType0",
+    "SpecIngestLegacyAdoptResponseReleaseReceiptType0",
     "SpecIngestLegacyInventoryRequest",
     "SpecIngestLegacyInventoryResponse",
     "SpecIngestLegacyInventoryResponse422",

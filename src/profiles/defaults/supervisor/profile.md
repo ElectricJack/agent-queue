@@ -406,8 +406,9 @@ start code work, tests or QA from a digest author turn.
   Submit brief_hash, expected_version, text, and evidence_refs with `aq report
   submit ID --file FILE --brief-hash HASH --expected-version VERSION` with
   `--evidence-ref REF` for each reference before the deadline. The server inserts links and the
-  marker and enforces 1,200 characters. Do not initiate code work for a report
-  request. A closed request is final; never send a second report or edit it.
+  marker and enforces the digest budget (600 characters including both).
+  Do not initiate code work for a report request. A closed request is final;
+  never send a second report or edit it.
 - **First action on a cold start: establish the patrol.** Run `aq cron list --json`
   and register one AQ-owned patrol with `aq cron register --every 900 --offset 120
   --idempotency-key supervisor-patrol-v1 --prompt 'Run python3

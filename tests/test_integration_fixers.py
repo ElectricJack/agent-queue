@@ -1,21 +1,25 @@
 """Task-free in-place repair survives replay, budget exhaustion and green."""
 
+import asyncio
+import re
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
-import asyncio
 import pytest
 from sqlalchemy import func, select, update
 
+from src.api.auth import RequestScope
+from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.commands.principal import ExecutionPrincipal
-from src.config import AppConfig
+from src.config import AppConfig, MessagesConfig
 from src.database.tables import integration_batches, messages, tasks
 from src.git.manager import _git_preparation_error
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
 from src.integration.fixers import BatchFixerService, split_members
 from src.integration.models import RepairPolicy
+from src.messages.delivery import MessageDeliveryEngine
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType
 
 HEAD = "a" * 40
@@ -197,6 +201,70 @@ async def test_fixer_notifications_are_readable_by_registered_session(db, fixer,
     assert result["message"]["body"] == notice["body"]
     assert result["state"] == "acknowledged"
     assert result["delivered_at"] is not None and result["acknowledged_at"] is not None
+
+
+@pytest.mark.parametrize("consume", ["status", "inbox"])
+async def test_fixer_renotification_can_be_read_by_named_session(db, fixer, monkeypatch, consume):
+    service, runtime, now = fixer
+    await allocate(service)
+    owner = await state(db)
+    await register(db, owner, "running")
+    await db.create_profile(AgentProfile(
+        id="fixer", name="Fixer", aq_commands=["message_status", "message_inbox"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    await allocate(service, NEXT, brief="Tests default-6/8 failed; repair this push")
+    [notice] = await notices(db)
+    assert notice["id"].startswith("msg-fixer-")
+    # Older fixer notifications used the persisted named-session mailbox.
+    async with db.immediate() as conn:
+        await conn.execute(update(messages).where(messages.c.id == notice["id"]).values(
+            to_id=owner["session_name"]))
+
+    sessions = SimpleNamespace(activity=AsyncMock(return_value="idle"),
+                               nudge=AsyncMock(return_value=True))
+    config = MagicMock()
+    config.messages = MessagesConfig(enabled=True)
+    engine = MessageDeliveryEngine(db=db, sessions=sessions, config=config.messages, bus=None)
+    monkeypatch.setattr("src.messages.delivery.time", SimpleNamespace(time=lambda: now[0]))
+    for elapsed in (0, 61, 121):
+        now[0] += elapsed
+        await engine.run_delivery_pass()
+    assert sessions.nudge.await_count == 3
+    text = sessions.nudge.await_args.kwargs["text"]
+    assert sessions.nudge.await_args.kwargs["target_id"] == owner["session_name"]
+    pointer = re.fullmatch(
+        r"Handle `aq message status (\S+) --json` \(running it marks the message read\)\.",
+        text,
+    )
+    assert pointer and pointer.group(1) == notice["id"]
+    assert (await db.get_message(notice["id"])).read_at is None
+
+    orch = MagicMock(db=db)
+    orch.bus.emit = AsyncMock()
+    handler = CommandHandler(orch, config)
+    scope = {"kind": "session", "session_id": owner["session_id"], "task_id": None,
+             "project_id": "p", "elevated": False,
+             "session_instance_token": owner["instance_token"]}
+    args = {"message_id": pointer.group(1)} if consume == "status" else {
+        "to_kind": "session", "to_id": owner["session_name"], "inject": True,
+    }
+    command = "message_status" if consume == "status" else "message_inbox"
+    assert check_command_scope(command, args, RequestScope(**scope)) is None
+    result = await handler.execute(command, {**args, "_scope": scope})
+    assert "error" not in result, result
+    body = result["message"]["body"] if consume == "status" else result["messages"][0]["body"]
+    assert "Tests default-6/8 failed; repair this push" in body
+    stored = await db.get_message(notice["id"])
+    assert stored.delivered_at is not None
+    if consume == "status":
+        assert result["state"] == "acknowledged" and stored.read_at is not None
+    else:
+        assert stored.archived_at is not None
+    now[0] += 301
+    await engine.run_delivery_pass()
+    assert sessions.nudge.await_count == 3
+    runtime.start.assert_awaited_once()
 
 
 @pytest.mark.parametrize("legacy", [False, True])
@@ -785,6 +853,7 @@ async def test_launch_pins_heads_target_start_in_daemon_namespace(db, live_fixer
 
 async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_fixer):
     from pathlib import Path
+
     from tests.test_integration_gitops import commit, git
 
     service, runtime, orch, row, _, source, _ = live_fixer
@@ -803,11 +872,73 @@ async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_
     assert (await db.get_session(row.id)).desired_state == "stopped"
 
 
+@pytest.mark.parametrize("failure", ["spawn_or_wait", "timeout", "git_exit", "broker_not_served"])
+async def test_authenticated_push_reason_reaches_command_blocker_and_notice(
+    db, live_fixer, tmp_path, monkeypatch, failure,
+):
+    from pathlib import Path
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import principal_context
+    from tests.test_integration_gitops import commit, git
+
+    service, runtime, orch, row, _, source, _ = live_fixer
+    fixed = commit(Path(row.work_dir), {"fix.txt": "fixed\n"})
+    token = "private-installation-token"
+    fake_git = tmp_path / "push-git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'Authorization: Bearer private-installation-token' "
+        "'https://alice:password@github.com/test/repo.git' "
+        "'private-installation-token' 'fatal: upstream unavailable' >&2\n"
+        f"exit {7 if failure == 'git_exit' else 0}\n"
+    )
+    fake_git.chmod(0o700)
+    runtime.git._APP_GIT_EXECUTABLE = str(fake_git)
+    spawn = runtime.git._spawn_isolated_git
+
+    async def start(*args, **kwargs):
+        if "push" in args:
+            if failure == "spawn_or_wait":
+                raise FileNotFoundError(token)
+            if failure == "timeout":
+                raise TimeoutError(token)
+        return await spawn(*args, **kwargs)
+
+    async def push(path, *, tip_oid, branch, expected_old_oid, **kwargs):
+        return await runtime.git._apush_oid_with_app_auth_to_url(
+            path, destination_url="https://github.com/test/repo.git", token=token,
+            tip_oid=tip_oid, branch=branch, expected_old_oid=expected_old_oid,
+        )
+
+    monkeypatch.setattr(runtime.git, "_spawn_isolated_git", start)
+    monkeypatch.setattr(runtime.git, "apush_repository_oid", push)
+    orch.integration_train = SimpleNamespace(repair=service)
+    handler = SimpleNamespace(orchestrator=orch)
+    with principal_context(principal_for(row)):
+        result = await IntegrationCommandsMixin._cmd_integration_batch_fix(handler, {"action": "push"})
+    assert result["outcome"] == "refused"
+    bound = (await db.get_integration_batch("real"))["fixer_state"]
+    notice, = await notices(db, supervisor=True)
+    for output in (result["error"], bound["blocker"], notice["body"]):
+        assert f"reason={failure}" in output
+        assert token not in output and "password" not in output and "alice:" not in output
+        if failure == "git_exit":
+            assert "returncode=7" in output and "fatal: upstream unavailable" in output
+        elif failure in {"spawn_or_wait", "timeout"}:
+            assert f"exception={'TimeoutError' if failure == 'timeout' else 'FileNotFoundError'}" in output
+        else:
+            assert "credential broker did not serve token" in output
+    assert bound["work_dir"] == row.work_dir
+    assert git(runtime.git.remote_path, "rev-parse", candidate_ref("real")) == source
+    assert git(row.work_dir, "rev-parse", "HEAD") == fixed
+
+
 @pytest.mark.parametrize("change", ["wrong_branch", "rewrite", "dirty", "source_withdrawn",
                                     "mode_off", "paused", "stale_session"])
 async def test_real_publication_refuses_changed_authority_or_history(db, live_fixer, change):
     from dataclasses import replace
     from pathlib import Path
+
     from src.database.tables import projects
     from src.git.manager import GitError
     from src.integration.lock import PublishWithdrawn
@@ -871,15 +1002,19 @@ async def test_failure_input_uses_frozen_file_ownership_and_ignores_observation_
 
 
 # These fixtures use real retained repositories and the ordinary publication gate.
-from tests.test_integration_batches import batch_env as batch_env  # noqa: E402
-from tests.test_integration_gitops import (  # noqa: E402
-    git_history_template as git_history_template, setup as setup,
+from tests.test_integration_batches import batch_env as batch_env
+from tests.test_integration_gitops import (
+    git_history_template as git_history_template,
+)
+from tests.test_integration_gitops import (
+    setup as setup,
 )
 
 
 @pytest.fixture
 async def split_env(batch_env):
     from dataclasses import replace
+
     from src.integration.fixer_batches import FixerBatches
     from src.integration.lock import BranchLock
     from tests.test_integration_gitops import commit, git
@@ -988,6 +1123,7 @@ async def test_deferred_unchanged_due_observation_does_not_readmit_or_lose_fixes
 
 async def test_reduced_red_reuses_one_session_and_requires_clean_fenced_rebind(db, live_fixer):
     from pathlib import Path
+
     from src.integration.lock import PublishWithdrawn
     from tests.test_integration_gitops import git
 
@@ -1058,6 +1194,7 @@ async def test_capacity_retry_reuses_unlaunched_identity_without_spending_rounds
 
 async def test_deferred_writer_can_save_but_green_family_revokes_it(db, live_fixer):
     from pathlib import Path
+
     from src.integration.fixer_batches import defer_on
     from tests.test_integration_gitops import commit
 

@@ -118,11 +118,15 @@ class WaitDecisions:
             return {"success": True}
         evidence = {"wait_id": escalation["wait_id"], "source_seq": event.get("seq"),
                     "decision": event.get("decision"), "note": event.get("note")}
+        automatic = not event.get("decision")
+        if automatic:
+            evidence["automatic_rule"] = "wait_source_cleared"
         await execute_escalation_mutation(conn, update(escalations).where(
             escalations.c.id == incident["id"], escalations.c.revision == incident["revision"],
         ).values(state="cancelled", revision=incident["revision"] + 1,
                  terminal_outcome="source_satisfied" if outcome == "satisfied" else outcome,
-                 terminal_evidence=evidence, terminal_at=now, updated_at=now))
+                 terminal_evidence=evidence, outcome="sweep" if automatic else "human",
+                 terminal_at=now, updated_at=now))
         await conn.execute(insert(events).values(
             event_type="escalation.updated.v1", project_id=incident["project_id"],
             task_id=incident["task_id"], timestamp=now,
@@ -515,6 +519,12 @@ class WaitDecisions:
         await self.service.orch.db.enqueue_escalation_delivery(
             incident["id"], conn=conn, dedup_key=f"{incident['id']}:root:0", kind="root",
             payload={"replacement": False}, available_at=now, priority=0, now=now,
+        )
+        # An older reconciler may have queued this root before authorization.
+        # Only a receipt proving internal suppression can be retried here; keep
+        # ambiguous or externally bound attempts intact for reconciliation.
+        await self.service.orch.db.retry_suppressed_escalation_root(
+            incident["id"], now=now, conn=conn,
         )
         if not continuation:
             # This durable suspension request is consumed by the checkpoint /

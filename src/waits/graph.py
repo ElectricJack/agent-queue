@@ -12,18 +12,21 @@ import logging
 import time
 import uuid
 from collections import defaultdict
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
 from sqlalchemy import event, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import task_dependencies, tasks, wait_edges, wait_priority_projection
 from src.models import BLOCKING_DEP_TYPES
+from src.metrics.perf import timed_operation
 from src.waits.conditions import WaitError
 
 GRAPH_LOCK = 0x41515747524150
 MAX_COMPONENT_NODES = 10_000
-# Every waiter pins a pooled connection. An unbounded wait let one slow holder
-# queue the whole pool behind it (2026-10-22 wedges), so waiting is refused.
+# Foreground writes retain their existing budget. Background reconcilers retry
+# next tick, so they must not pin the pool while a holder needs another connection.
 GRAPH_LOCK_TIMEOUT = 20.0
 GRAPH_LOCK_WARN_SECONDS = 5.0
 logger = logging.getLogger(__name__)
@@ -68,24 +71,39 @@ def track_graph_lock(conn):
         if not event.contains(conn.sync_connection, name, _release_graph_lock):
             event.listen(conn.sync_connection, name, _release_graph_lock)
 
+BACKGROUND_GRAPH_LOCK_TIMEOUT = 0.25
+_background_graph_work = ContextVar("background_graph_work", default=False)
 
+
+@asynccontextmanager
+async def background_graph_work():
+    """Give replayable reconciliation a short fence wait, scoped to this task."""
+    token = _background_graph_work.set(True)
+    try:
+        yield
+    finally:
+        _background_graph_work.reset(token)
+
+
+@timed_operation("db.wait_graph_lock")
 async def lock_graph(conn, *, timeout=None):
     """Take the transaction-scoped graph fence, or refuse with ``wait.graph_busy``.
 
     Polls the non-blocking form so a refused waiter leaves its transaction
     usable and hands its connection back promptly instead of convoying.
     """
-    timeout = GRAPH_LOCK_TIMEOUT if timeout is None else timeout
-    # Reacquire even if tracked: a rolled-back savepoint may have released an
-    # acquisition made inside it while leaving the outer transaction alive.
+    if timeout is None:
+        timeout = (BACKGROUND_GRAPH_LOCK_TIMEOUT if _background_graph_work.get()
+                   else GRAPH_LOCK_TIMEOUT)
     deadline = time.monotonic() + timeout
     delay = 0.005
     while not await conn.scalar(select(func.pg_try_advisory_xact_lock(GRAPH_LOCK))):
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise WaitError(
-                "wait.graph_busy", f"wait graph lock not acquired within {timeout:.0f}s; retry"
+                "wait.graph_busy", f"wait graph lock not acquired within {timeout:g}s; retry"
             )
-        await asyncio.sleep(delay)
+        await asyncio.sleep(min(delay, remaining))
         delay = min(delay * 2, 0.25)
     track_graph_lock(conn)
 

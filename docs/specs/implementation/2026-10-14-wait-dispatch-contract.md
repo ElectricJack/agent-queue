@@ -1,5 +1,22 @@
 # Wait outcome integration contract
 
+## Supervisor delivery and CI observation correction — 2026-10-23
+
+Operational wait and continuation incidents remain internal during initial
+delivery, reconciliation and retries. Only a committed `escalate_to_human` wait
+decision authorizes human delivery; `needs_human` alone does not. Unread project
+supervisor notices use the existing global-supervisor fallback. A previously
+suppressed, unbound root may be retried after that explicit decision, while an
+ambiguous transport attempt retains its reconciliation state.
+
+CI source observation runs independently of integration-train visits and
+continuation maintenance, including while new V2 admissions are disabled.
+Provider quota responses preserve pending waits and defer observation until the
+repository backoff expires. Each remote observation has a five-second budget,
+including reads under the graph fence, so stalled CI calls release supervisor
+controls. This narrows the remote-read budget without changing the source
+listener's lease or transaction fences.
+
 ## Terminal owners and refused deadlines — 2026-10-22
 
 Terminal task source events retire the owner's waits through the shared

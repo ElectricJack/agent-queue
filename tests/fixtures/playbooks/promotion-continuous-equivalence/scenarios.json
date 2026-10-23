@@ -1,0 +1,633 @@
+{
+  "baseline_commit": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473",
+  "baseline_artifact_sha256": "sha256:5d1b280c3c398315a49e6dfe5bdb2ef260c44abb9ba3e83694c42940547d4b00",
+  "scenarios": [
+    {
+      "name": "source-first-request",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "source-backmerge-precedes-newer",
+      "rule": "advance-source",
+      "policy": {
+        "backmerge_pending": true,
+        "newer_source": true,
+        "active_request_id": "old"
+      },
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "source-same-head",
+      "rule": "advance-source",
+      "policy": {
+        "active_request_id": "old"
+      },
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "source-supersedes",
+      "rule": "advance-source",
+      "policy": {
+        "newer_source": true,
+        "active_request_id": "old"
+      },
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_cancel",
+        "promote_request"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "source-cancel-refused",
+      "rule": "advance-source",
+      "policy": {
+        "newer_source": true,
+        "active_request_id": "old"
+      },
+      "outcomes": {
+        "promote_cancel": "promotion_publish_started"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_cancel",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "explicit-reviewed",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "notes_reviewed": true
+      }
+    },
+    {
+      "name": "explicit-current-intent",
+      "rule": "explicit-request",
+      "policy": {
+        "active_request_id": "old"
+      },
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "explicit-backmerge-debt",
+      "rule": "explicit-request",
+      "policy": {
+        "backmerge_pending": true
+      },
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "hotfix-reviewed",
+      "rule": "hotfix-completed",
+      "policy": {},
+      "outcomes": {},
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "from_task": "hotfix-1",
+        "notes_reviewed": true
+      }
+    },
+    {
+      "name": "hotfix-unreviewed",
+      "rule": "hotfix-completed",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "notes_not_reviewed"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "from_task": "hotfix-1"
+      }
+    },
+    {
+      "name": "read-refused",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_policy_input": "unavailable"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "request-replayed",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "already_requested"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "request-runtime-error",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "runtime_error"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request"
+      ],
+      "lifecycle": "failed",
+      "event": {}
+    },
+    {
+      "name": "notification-refused",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "notes_not_reviewed",
+        "message_send": "rejected"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "failed",
+      "event": {}
+    },
+    {
+      "name": "notification-runtime-error",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "notes_not_reviewed",
+        "message_send": "runtime_error"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "failed",
+      "event": {}
+    },
+    {
+      "name": "backmerge-authored",
+      "rule": "backmerge-delivered",
+      "policy": {},
+      "outcomes": {},
+      "expected": [
+        "integration_backmerge_source"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "backmerge-conflict",
+      "rule": "backmerge-delivered",
+      "policy": {},
+      "outcomes": {
+        "integration_backmerge_source": "promotion_ref_conflict"
+      },
+      "expected": [
+        "integration_backmerge_source",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "publish-delivered",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "delivered"
+      },
+      "expected": [
+        "integration_promotion_publish"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-testing",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "testing"
+      },
+      "expected": [
+        "integration_promotion_publish"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-held",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "held"
+      },
+      "expected": [
+        "integration_promotion_publish",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-moved",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "moved"
+      },
+      "expected": [
+        "integration_promotion_publish"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-unknown",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "unknown"
+      },
+      "expected": [
+        "integration_promotion_publish",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-published",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "published"
+      },
+      "expected": [
+        "integration_promotion_publish"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-unavailable",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "unavailable"
+      },
+      "expected": [
+        "integration_promotion_publish",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-not_found",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "not_found"
+      },
+      "expected": [
+        "integration_promotion_publish",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-promotion_intent_invalid",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "promotion_intent_invalid"
+      },
+      "expected": [
+        "integration_promotion_publish",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "publish-runtime_error",
+      "rule": "visit-intent",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_publish": "runtime_error"
+      },
+      "expected": [
+        "integration_promotion_publish"
+      ],
+      "lifecycle": "failed",
+      "event": {
+        "batch_id": "batch-1"
+      }
+    },
+    {
+      "name": "advance-source-integration_promotion_policy_input-migrations_not_additive",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_policy_input": "migrations_not_additive"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "advance-source-integration_promotion_policy_input-migration_range_invalid",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_policy_input": "migration_range_invalid"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "advance-source-integration_promotion_policy_input-breaking_migration_override_forbidden",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {
+        "integration_promotion_policy_input": "breaking_migration_override_forbidden"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "advance-source-promote_request-migrations_not_additive",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "migrations_not_additive"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "advance-source-promote_request-migration_range_invalid",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "migration_range_invalid"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "advance-source-promote_request-breaking_migration_override_forbidden",
+      "rule": "advance-source",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "breaking_migration_override_forbidden"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "hotfix-completed-promote_request-migrations_not_additive",
+      "rule": "hotfix-completed",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "migrations_not_additive"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "from_task": "hotfix-1"
+      }
+    },
+    {
+      "name": "hotfix-completed-promote_request-migration_range_invalid",
+      "rule": "hotfix-completed",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "migration_range_invalid"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "from_task": "hotfix-1"
+      }
+    },
+    {
+      "name": "hotfix-completed-promote_request-breaking_migration_override_forbidden",
+      "rule": "hotfix-completed",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "breaking_migration_override_forbidden"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {
+        "from_task": "hotfix-1"
+      }
+    },
+    {
+      "name": "explicit-request-promote_request-migrations_not_additive",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "migrations_not_additive"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "explicit-request-promote_request-migration_range_invalid",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "migration_range_invalid"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "explicit-request-promote_request-breaking_migration_override_forbidden",
+      "rule": "explicit-request",
+      "policy": {},
+      "outcomes": {
+        "promote_request": "breaking_migration_override_forbidden"
+      },
+      "expected": [
+        "integration_promotion_policy_input",
+        "promote_request",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "backmerge-delivered-integration_backmerge_source-migrations_not_additive",
+      "rule": "backmerge-delivered",
+      "policy": {},
+      "outcomes": {
+        "integration_backmerge_source": "migrations_not_additive"
+      },
+      "expected": [
+        "integration_backmerge_source",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "backmerge-delivered-integration_backmerge_source-migration_range_invalid",
+      "rule": "backmerge-delivered",
+      "policy": {},
+      "outcomes": {
+        "integration_backmerge_source": "migration_range_invalid"
+      },
+      "expected": [
+        "integration_backmerge_source",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    },
+    {
+      "name": "backmerge-delivered-integration_backmerge_source-breaking_migration_override_forbidden",
+      "rule": "backmerge-delivered",
+      "policy": {},
+      "outcomes": {
+        "integration_backmerge_source": "breaking_migration_override_forbidden"
+      },
+      "expected": [
+        "integration_backmerge_source",
+        "message_send"
+      ],
+      "lifecycle": "completed",
+      "event": {}
+    }
+  ]
+}

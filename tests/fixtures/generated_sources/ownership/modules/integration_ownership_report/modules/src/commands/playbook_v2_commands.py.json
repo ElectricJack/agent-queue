@@ -1,0 +1,59 @@
+{
+  "shared_definitions": {
+    "src/commands/playbook_v2_commands.py::PlaybookV2CommandsMixin._cmd_playbook_delete": {
+      "baseline_span": [
+        1695,
+        1773
+      ],
+      "landing_span": [
+        1692,
+        1770
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/playbook_v2_commands.py::PlaybookV2CommandsMixin._cmd_playbook_v2_propose": {
+      "baseline_span": [
+        534,
+        601
+      ],
+      "landing_span": [
+        534,
+        601
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/playbook_v2_commands.py::PlaybookV2CommandsMixin._cmd_playbook_v2_shadow_compile": {
+      "baseline_span": [
+        869,
+        924
+      ],
+      "landing_span": [
+        866,
+        921
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/playbook_v2_commands.py::import from src.playbooks.pipeline_lowering import shadow_compile": {
+      "baseline_span": [
+        53,
+        53
+      ],
+      "landing_span": [
+        53,
+        53
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/playbook_v2_commands.py::import from src.playbooks.proposal import DuplicateSemanticKey, load_legacy_baseline_json, load_semantic_body_json, propose": {
+      "baseline_span": [
+        54,
+        59
+      ],
+      "landing_span": [
+        54,
+        59
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

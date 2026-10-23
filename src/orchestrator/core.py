@@ -94,6 +94,7 @@ from src.messaging.types import (
 from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
 )
+from src.metrics.perf import timed_operation
 from src.models import (
     DAEMON_AUTHORED_TASK_TYPES,
     AgentProfile,
@@ -1657,6 +1658,14 @@ class Orchestrator(
             return {"success": False, "outcome": "not_ready"}
         with principal_context(ExecutionPrincipal.service("integration-admission")):
             return await self._command_handler.repair_root_pr_checks(observation)
+
+    async def _refresh_root_pr(self, observation, gitops, snapshot):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-admission")):
+            return await self._command_handler.refresh_root_pr(observation, gitops, snapshot)
 
     async def _repair_integration_source_ancestry(self, observation):
         from src.commands.principal import ExecutionPrincipal, principal_context
@@ -3466,6 +3475,7 @@ class Orchestrator(
         except Exception:
             logger.exception("Tracked deployment check failed")
 
+    @timed_operation("orchestrator.cycle")
     async def run_one_cycle(self) -> None:
         """Run one iteration of the orchestrator's main loop.
 

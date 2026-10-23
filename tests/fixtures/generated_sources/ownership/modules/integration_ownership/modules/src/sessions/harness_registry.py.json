@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/sessions/harness_registry.py::HarnessRegistry": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/harness_registry.py::load_from_vault": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/harness_registry.py::register_harness_handlers": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "storage_sinks": {
+    "src/integration/truth_reconciler.py::GitTruthReconciler._origin::3e1c213c95196f0b763409bebe531c1742e930b424cbfa80ea6980f493b3fd45": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 357,
+      "owner": "GitTruthReconciler._origin",
+      "owner_fingerprint": "a74676fc6b9abcc952c4c75c473f8425d82bbb5a528c45d2467330bd0bf7039b",
+      "reason": "Audits repair of an origin's materialized branch identity after retained-object preservation and exact remote-head verification; the original filing base remains unchanged."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._orphan::9dcc303d75bc5b64cf208634a4e96271af50926149b91fc159644d778adcc19b": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 269,
+      "owner": "GitTruthReconciler._orphan",
+      "owner_fingerprint": "b40353876b585379d9ec753fb93e427c1c6945cd3e5a5fe71b110cdb40de1765",
+      "reason": "Audits orphaned checkpoint retirement after preserving checkpoint/base objects and rechecking task absence, row identity and writer liveness; it invents no delivery evidence."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._orphan_origin::431de7bb4037d686883e0794d699b97a9633443d58041ce76c21b97c43463ecb": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 403,
+      "owner": "GitTruthReconciler._orphan_origin",
+      "owner_fingerprint": "0fbfc713cd103180ce85ef65f0ae784a61af9be8617d89ee5b80818b64e9241c",
+      "reason": "Audits orphaned origin retirement after preserving base/head objects and rechecking task, checkpoint and writer absence; the event neither proves delivery nor replays a ref."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._repair::a4cf1925e74dcbb03f64cb1f5b2924ca7db671048443cfe9c38e013d1257bcaa": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 194,
+      "owner": "GitTruthReconciler._repair",
+      "owner_fingerprint": "cfb10bd1641e9abbdbe2fbea6b7f006f3fa8597289cde26ecf881995f12e36c4",
+      "reason": "Audits Git-proven delivery projection repair after freshness, completed-task and busy-owner checks; retained Git witnesses supply proof, while the event records the repair."
+    },
+    "src/integration/truth_reconciler.py::GitTruthReconciler._sentinel::80e04954cb572f9f5c211f0d2cf231e2d3a76edd5706d1f1865ed1a9c846a317": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 546,
+      "owner": "GitTruthReconciler._sentinel",
+      "owner_fingerprint": "83c5d758cb83177b7fbf043e74a47dbe112c13199ba2a2fd13d6bb16c4eb41dd",
+      "reason": "Audits repair of an idle registered slot sentinel to its actual attached Git branch after claim, session, pin and owner checks; no checkout, reset or user-work deletion occurs."
+    }
+  }
+}

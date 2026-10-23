@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/artifact_store.py::ArtifactStore": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/artifact_store.py::index_playbook_sources": "Indexes bounded playbook source roots by source digest with containment checks; it treats all playbooks uniformly and executes no integration policy."
+  }
+}

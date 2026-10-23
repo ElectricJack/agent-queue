@@ -1,0 +1,35 @@
+{
+  "shared_definitions": {
+    "src/commands/project_commands.py::ProjectCommandsMixin._cmd_delete_project": {
+      "baseline_span": [
+        563,
+        601
+      ],
+      "landing_span": [
+        563,
+        601
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._cmd_edit_project": {
+      "baseline_span": [
+        283,
+        403
+      ],
+      "landing_span": [
+        283,
+        403
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._cmd_repair_repository_checkout": {
+      "reason": "Verifies replacement Git origin and operator authority before the repository checkout compare-and-swap; conservatively charges this integration repository repair seam."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
+      "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._create_flow_targets": {
+      "reason": "Promotion-flow activation layer 4: create-only pushes of missing chain targets from the project workspace."
+    }
+  }
+}
