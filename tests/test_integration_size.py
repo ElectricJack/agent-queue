@@ -341,6 +341,30 @@ def test_operator_decision_storage_keeps_stack_authorization_charged(report, man
     assert report["spans"][path] == list(range(1, (ROOT / path).read_bytes().count(b"\n") + 1))
 
 
+def test_database_recovery_keeps_shared_integration_primitives_charged(report, manifest):
+    # These operations-only entry points reuse owned config loaders. Their
+    # callers do not acquire integration ownership just by reading config.
+    for path, name in (
+        ("src/cli/daemon.py", "_database_matches_compose"),
+        ("src/cli/doctor.py", "_offline_doctor"),
+    ):
+        assert f"{path}::{name}" in manifest["exclusions"]
+        source = ownership.python_source(path, (ROOT / path).read_bytes())
+        unit = next(unit for unit in source.units if unit.name == name)
+        assert not set(range(unit.start, unit.end + 1)) & set(report["spans"].get(path, []))
+    # Keep the existing shared ownership, including config and schema recovery.
+    for path, name in (
+        ("src/config.py", "load_config"),
+        ("src/cli/db.py", "_load_config"),
+        ("src/cli/daemon.py", "_backup_database"),
+        ("src/cli/daemon.py", "_database_is_at_head"),
+    ):
+        assert f"{path}::{name}" in manifest["shared"]
+        source = ownership.python_source(path, (ROOT / path).read_bytes())
+        unit = next(unit for unit in source.units if unit.name == name)
+        assert set(range(unit.start, unit.end + 1)) <= set(report["spans"][path])
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"

@@ -9615,6 +9615,8 @@
     "src/api/models/escalation.py::EscalationRecord.delivery_statuses": "Discord escalation transport receipts, unrelated to code delivery.",
     "src/api/terminal_stream.py::_ACTIVE_TASKS[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/api/terminal_stream.py::_ACTIVE_TASKS[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/cli/daemon.py::_database_matches_compose": "PostgreSQL startup endpoint matching only: reads effective configuration and compose publication, with no Git delivery, integration lifecycle or integration storage. Shared configuration loading remains independently charged.",
+    "src/cli/doctor.py::_offline_doctor": "Local operator-only Alembic orphan recovery through the generic doctor runner; no Git delivery or integration lifecycle authority. Shared configuration and database primitives remain independently charged.",
     "src/cli/doctor.py::_SEVERITY_STYLE['ok']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/cli/doctor.py::_SEVERITY_STYLE['warn']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/cli/formatters.py::_DEP_LABELS['related']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
