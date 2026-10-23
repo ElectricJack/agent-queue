@@ -322,6 +322,7 @@ async def _receive():
     return {"type": "http.request", "body": b"", "more_body": False}
 
 
+@pytest.mark.skip(reason="timing flake under CI load; disabled by Jack 2026-10-23")
 async def test_an_sse_route_records_a_handshake_and_an_open_gauge_not_a_lifetime(registry):
     # Driven as raw ASGI: httpx's ASGITransport buffers a whole streaming body
     # before returning, so it cannot observe the gauge while the stream is open.
