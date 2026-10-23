@@ -34,10 +34,10 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                           'msg-1984d09ec70e479c9d0cc14c57e828c3',
                           'msg-00b0e08117cc479c9a4a0b36fc5a30d0'],
  'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
- 'measured_source_revision': 'c19fa67c3040faef95d80170aa6b40fdfe7d2dc5',
+ 'measured_source_revision': '974e10dcf94ad95f98c14fbc3d7171072e644da2',
  'original_owned_total_cap': 155499,
- 'measured_owned_total': 160902,
- 'delta': 5403,
+ 'measured_owned_total': 160944,
+ 'delta': 5445,
  'predecessors': [{'batch_id': 'train-77f0d8e451f6aed08d608e443031047a',
                    'decision_message_id': 'msg-edb5f857de344716a38857406fa69958',
                    'decision_record': 'record:2720bdbe-7521-427e-8e72-1f40a3ff9818',
@@ -51,7 +51,7 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                    'measured_source_revision': 'cbfd455b0e9f053854a2c1becfa1efaeef231582',
                    'authorized_delta': 2166,
                    'measured_owned_total': 158958}],
- 'batch_measured_delta': 1944,
+ 'batch_measured_delta': 1986,
  'restore_task': 'azure-ridge-72',
  'expires_at': 's4_modules',
  'category_approval_message_id': 'msg-90f9f1b1e0cd4e8e8d28071cffc927a6',
@@ -88,7 +88,22 @@ TRANSITION_BATCH_EXCEPTION = {'batch_id': 'train-745592300af5cef0338dec80ebabb46
                  'grant_delivery_message_id': 'msg-1984d09ec70e479c9d0cc14c57e828c3',
                  'project_grant_message_id': 'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
                  'operator_decision': '6679052c',
-                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1820'}]}
+                 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1820'}],
+ 'merge_remeasurement': {'task_id': 'agile-beacon-80',
+                         'authority': 'msg-00b0e08117cc479c9a4a0b36fc5a30d0',
+                         'operator_decision': '6679052c',
+                         'merged_dev_revision': 'e7989d1aa62381a607aab67d8ce245a955ed904e',
+                         'merged_dev_owned_total': 160879,
+                         'previous_source_revision': 'c19fa67c3040faef95d80170aa6b40fdfe7d2dc5',
+                         'previous_measured_owned_total': 160902,
+                         'measured_source_revision': '974e10dcf94ad95f98c14fbc3d7171072e644da2',
+                         'measured_owned_total': 160944,
+                         'measured_engine_lines': 85381,
+                         'measured_table_count': 45,
+                         'reason': 'Project grant requires the later landing branch to re-record '
+                                   'the combined total when dev advances; retained-store changes '
+                                   'add 42 owned lines and this task retains its approved 65-line '
+                                   'delta.'}}
 FINAL_ENGINE_CAP = 11_999
 FINAL_TOTAL_CAP = 19_999
 FINAL_TABLE_CAP = 10
