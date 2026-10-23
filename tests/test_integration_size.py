@@ -363,9 +363,11 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert exception == ownership.TRANSITION_BATCH_EXCEPTION
     assert exception["original_owned_total_cap"] == 155_499
     measured = exception["measured_owned_total"]
-    assert measured == report["total"]
-    assert exception["measured_engine_lines"] == report["groups"]["engine"]
-    assert exception["measured_table_count"] == len(report["tables"])
+    # The approved measurement is immutable historical evidence. Refactors may
+    # reduce the live inventory; the same fixed caps still reject any growth.
+    assert report["total"] <= measured
+    assert report["groups"]["engine"] <= exception["measured_engine_lines"]
+    assert len(report["tables"]) <= exception["measured_table_count"]
     assert exception["storage_categories"] == ["integration_close_attempts"]
     assert exception["delta"] == measured - 155_499
     assert [p.get("delta", p.get("authorized_delta")) for p in exception["predecessors"]] == [
@@ -602,8 +604,9 @@ def test_activation_health_grant_carries_only_two_owned_lines(report, manifest):
     recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
     assert recorded["playbook_activation_health_measurement"] == grant
     assert ownership.budget_errors(report, manifest) == []
-    assert ownership.budget_errors({**report, "total": report["total"] + 1}, manifest) == [
-        f"owned total: {report['total'] + 1:,} exceeds {report['total']:,} in transition",
+    cap = ownership.transition_owned_cap(manifest)
+    assert ownership.budget_errors({**report, "total": cap + 1}, manifest) == [
+        f"owned total: {cap + 1:,} exceeds {cap:,} in transition",
     ]
 
 
@@ -612,7 +615,8 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     batch = exception["frozen_batch_composition"]
     assert batch["batch_id"] == "train-5429c3c71859f327ff8b46dbf1edc557"
     assert batch["starting_revision"] == "48adaddad079a7adc2930e470590621c1575e674"
-    assert batch["source_revision"] == "73e99672d2447c44ef6a71d43a0187f2d16630af"
+    measurement = exception["post_release_structure_measurement"]
+    assert batch["source_revision"] == measurement["previous_source_revision"]
     assert batch["member_sources"] == {
         "noble-flare-12": "f09829d145915bc7426d24f28623283f7319a7a2",
         "sound-forge-62": "15239e75971ae5ac39e6a7d0a5e467331ab58428",
@@ -633,13 +637,38 @@ def test_frozen_batch_composes_only_the_approved_member_deltas(report, manifest)
     assert batch["base_table_count"] == activation["measured_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == 161_162
+    ) == measurement["previous_owned_total"] == 161_162
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == 85_543
+    ) == measurement["previous_engine_lines"] == 85_543
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
+
+
+def test_post_release_structure_measurement_is_exact(report, manifest):
+    exception = manifest["transition_exception"]
+    measurement = exception["post_release_structure_measurement"]
+    assert measurement["task_id"] == "swift-nexus-38"
+    assert measurement["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert measurement["operator_decision"] == "6679052c"
+    assert measurement["operator_task"] == "sharp-cascade-53"
+    assert measurement["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1775"
+    assert measurement["required_pr_head"] == "14183dc9d82cdc4cb32610827e228b49b6e488d2"
+    assert measurement["dev_source_revision"] == "c177d24e86d25fde7804131c94bfd637b0eb540a"
+    assert measurement["measured_source_revision"] == "063b7620f635b34aeb376d1d9d4280dd22273b7d"
+    assert sum(measurement["measured_groups"].values()) == measurement["measured_owned_total"]
+    assert (measurement["previous_owned_total"] + measurement["authorized_owned_delta"]
+            == measurement["measured_owned_total"] == 161_124)
+    assert measurement["authorized_owned_delta"] == -38
+    assert (measurement["previous_engine_lines"] + measurement["authorized_engine_delta"]
+            == measurement["measured_engine_lines"] == measurement["measured_groups"]["engine"]
+            == 84_989)
+    assert measurement["authorized_engine_delta"] == -554
+    assert (measurement["previous_table_count"] + measurement["authorized_table_delta"]
+            == measurement["measured_table_count"] == len(report["tables"]) == 45)
+    recorded = json.loads((ROOT / "tests/integration_ownership_report.json").read_text())
+    assert recorded["post_release_structure_measurement"] == measurement
 
 
 @pytest.mark.parametrize("field,value", [
@@ -734,10 +763,10 @@ def test_resume_batch_preserves_grants_and_composes_exact_inventory(report, mani
     assert batch["base_table_count"] == 45
     assert batch["base_owned_total"] + sum(
         delta["owned"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_owned_total"] == report["total"] == 161_213
+    ) == exception["measured_owned_total"] == 161_213
     assert batch["base_engine_lines"] + sum(
         delta["engine"] for delta in batch["approved_deltas"].values()
-    ) == exception["measured_engine_lines"] == report["groups"]["engine"] == 85_544
+    ) == exception["measured_engine_lines"] == 85_544
     assert batch["base_table_count"] + sum(
         delta["tables"] for delta in batch["approved_deltas"].values()
     ) == exception["measured_table_count"] == len(report["tables"]) == 45
