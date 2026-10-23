@@ -205,7 +205,7 @@ async def migration_db():
 
 async def test_migration_idempotence_and_populated_downgrade_refusal(migration_db):
     db = migration_db
-    migration = import_module("migrations.versions.a00000000121_transcript_usage_fences")
+    migration = import_module("migrations.versions.a00000000122_transcript_usage_fences")
     async with db._engine.begin() as conn:
         def upgrade(sync):
             transcript_usage_fences.drop(sync)
