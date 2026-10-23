@@ -19536,13 +19536,14 @@
       "msg-e2dd5a423516458eb564e745a12ab30e",
       "msg-3f6311071a6647429059f3a990750597",
       "msg-99539879",
-      "msg-68ccb1d50ee04851a7268dd58e9d4459"
+      "msg-68ccb1d50ee04851a7268dd58e9d4459",
+      "msg-9f16388d39524c8b9a33d6796b88d1fb"
     ],
     "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-    "measured_source_revision": "f09829d145915bc7426d24f28623283f7319a7a2",
+    "measured_source_revision": "15239e75971ae5ac39e6a7d0a5e467331ab58428",
     "original_owned_total_cap": 155499,
-    "measured_owned_total": 161136,
-    "delta": 5637,
+    "measured_owned_total": 161162,
+    "delta": 5663,
     "predecessors": [
       {
         "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
@@ -19562,7 +19563,7 @@
         "measured_owned_total": 158958
       }
     ],
-    "batch_measured_delta": 2178,
+    "batch_measured_delta": 2204,
     "restore_task": "azure-ridge-72",
     "expires_at": "s4_modules",
     "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
@@ -19571,7 +19572,7 @@
     ],
     "category_restore_task": "stark-willow-95.17",
     "verification_task": "stark-willow-95.18",
-    "measured_engine_lines": 85539,
+    "measured_engine_lines": 85543,
     "measured_table_count": 45,
     "delivery_method": "operator direct integration; user request 2026-10-22",
     "amendments": [
@@ -19717,6 +19718,32 @@
         "measured_engine_lines": 85539,
         "measured_table_count": 45,
         "reason": "Bound cached tile readiness to visible candidates and stack proof sources; exact project supervisor approval under size-cap-delegation-2026-10-23. Preserve scheduler shared inputs and fail-closed authorization. No new storage or automatic cap increase."
+      },
+      {
+        "task_id": "sound-forge-62",
+        "decision_message_id": "msg-9f16388d39524c8b9a33d6796b88d1fb",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "operator_decision": "6679052c",
+        "operator_task": "sharp-cascade-53",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1891",
+        "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+        "previous_owned_total": 161111,
+        "previous_engine_lines": 85517,
+        "previous_table_count": 45,
+        "authorized_owned_delta": 26,
+        "authorized_engine_delta": 4,
+        "authorized_shared_delta": 22,
+        "authorized_table_delta": 0,
+        "measured_source_revision": "1f0633050802438db6ef954c43d6d0eb2ce0edf3",
+        "measured_owned_total": 161137,
+        "measured_engine_lines": 85521,
+        "measured_table_count": 45,
+        "original_task_source_revision": "8e4e71b34b5c03b191b392a9d8f28176d177dd82",
+        "original_task_owned_total": 161079,
+        "original_task_engine_lines": 85472,
+        "original_task_base_owned_total": 161053,
+        "original_task_base_engine_lines": 85468,
+        "reason": "Explicit supervisor approval of the exact retained Git filing resolver footprint; compose the unchanged +26 owned/+4 engine grant on dev, preserving historical grants."
       }
     ],
     "supplemental_grants": [

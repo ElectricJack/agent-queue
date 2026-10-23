@@ -386,6 +386,7 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
         "sharp-rapids-10",
         "fair-dune-41",
         "noble-flare-12",
+        "sound-forge-62",
     }
     amendment = amendments["solid-impact-56"]
     assert amendment["task_id"] == "solid-impact-56"
@@ -441,6 +442,32 @@ def test_batch_exception_is_exact_and_has_no_remaining_headroom(report, manifest
     assert viewport["measured_source_revision"] == "b194122701a0130039230dea4c8caa93c70f60e1"
     assert viewport["measured_source_revision"] == exception["measured_source_revision"]
     assert recorded["graph_viewport_readiness_measurement"] == viewport
+    filing = amendments["sound-forge-62"]
+    assert filing["decision_message_id"] == "msg-9f16388d39524c8b9a33d6796b88d1fb"
+    assert filing["decision_message_id"] in exception["decision_message_ids"]
+    assert filing["referenced_decision"] == "size-cap-delegation-2026-10-23"
+    assert filing["operator_decision"] == "6679052c"
+    assert filing["operator_task"] == "sharp-cascade-53"
+    assert filing["pull_request"] == "https://github.com/ElectricJack/agent-queue/pull/1891"
+    assert filing["previous_owned_total"] == snapshot["measured_owned_total"]
+    assert filing["previous_engine_lines"] == snapshot["measured_engine_lines"]
+    assert filing["authorized_owned_delta"] == 26
+    assert filing["authorized_engine_delta"] == 4
+    assert filing["authorized_shared_delta"] == 22
+    assert filing["authorized_table_delta"] == 0
+    assert filing["previous_owned_total"] + 26 == filing["measured_owned_total"] == measured
+    assert filing["previous_engine_lines"] + 4 == exception["measured_engine_lines"]
+    assert filing["measured_source_revision"] == exception["measured_source_revision"]
+    assert filing["measured_table_count"] == filing["previous_table_count"] == 45
+    assert recorded["task_create_retained_base_measurement"] == filing
+    post = exception["post_batch_composition"]
+    assert post["base_revision"] == filing["previous_source_revision"]
+    assert post["source_revision"] == filing["measured_source_revision"]
+    assert post["approved_deltas"] == {
+        "sound-forge-62": {"owned": 26, "engine": 4, "shared": 22, "tables": 0},
+    }
+    assert post["base_owned_total"] + 26 == measured
+    assert post["base_engine_lines"] + 4 == exception["measured_engine_lines"]
     assert set(composition["member_sources"]) == {
         "agile-beacon-80", "grand-quest-20", "nimble-torrent-12", "prime-impact-40",
         "quick-pinnacle-97",
