@@ -303,6 +303,9 @@ keyed by caller component, with `component_window_seconds: 3600`. These are
 rolling, bounded, in-memory launch counts at one-second resolution, reset on
 daemon restart. Nested calls inherit explicit component context; other calls
 use their nearest AQ caller outside the Git package, or `unattributed`.
+The event-loop host `src.main` is not a caller: child tasks without an explicit
+component or a more specific AQ frame remain `unattributed`. Endpoint counters
+and rate-limit warnings still identify their request.
 Excess component identities aggregate under `other components`. Counters include
 failed launches that reached a process and exclude calls refused before launch;
 they measure traffic, not GitHub's billable primary-quota usage.
@@ -316,8 +319,9 @@ refused during that episode do not repeat this warning or log their diagnostics.
 
 `primary_quota` reports the last valid core-quota limit, remaining, reset and
 reserve, or null after reset/when unknown. The reserve is ten percent of the
-limit, rounded up. The background review poller and periodic PR cleanup share
-this reserve: at or below it, both defer until reset without launching requests.
+limit, rounded up. The background review poller, periodic PR cleanup and
+dashboard PR snapshot share this reserve: at or below it, they defer until reset
+without launching requests.
 Foreground worker and train operations retain access to that share; actual
 rate-limit backoff still applies to everyone. Out-of-order responses in one
 window cannot increase the observed remaining quota.
