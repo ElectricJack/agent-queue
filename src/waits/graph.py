@@ -14,6 +14,7 @@ import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import event, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -32,20 +33,23 @@ GRAPH_LOCK_TIMEOUT = 20.0
 GRAPH_LOCK_WARN_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
+# Connection.info accesses the DBAPI connection and may try to reconnect after
+# asyncpg invalidates it on cancellation. Rollback events fire BEFORE SQLAlchemy
+# clears that transaction, so watchdog cleanup must use only local Python state.
+_graph_holders = WeakKeyDictionary()
+
 
 def graph_locked(conn):
-    transaction = conn.info.get("wait_graph_transaction")
+    transaction = _graph_holders.get(conn.sync_connection, {}).get("transaction")
     return transaction is not None and transaction is conn.sync_connection.get_transaction()
 
 
 def _release_graph_lock(sync_conn):
-    timer = sync_conn.info.pop("wait_graph_timer", None)
-    if timer:
-        timer.cancel()
-    state = sync_conn.info.pop("wait_graph_holder", None)
+    state = _graph_holders.pop(sync_conn, None)
+    if state:
+        state["timer"].cancel()
     if state and not state["warned"] and time.monotonic() - state["started"] >= GRAPH_LOCK_WARN_SECONDS:
         _warn_graph_holder(state)
-    sync_conn.info.pop("wait_graph_transaction", None)
 
 
 def _warn_graph_holder(state):
@@ -66,11 +70,11 @@ def track_graph_lock(conn):
         frame = frame.f_back
     caller = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
     del frame
-    conn.info["wait_graph_transaction"] = conn.sync_connection.get_transaction()
-    state = {"started": time.monotonic(), "caller": caller, "warned": False}
-    conn.info["wait_graph_holder"] = state
+    state = {"started": time.monotonic(), "caller": caller, "warned": False,
+             "transaction": conn.sync_connection.get_transaction()}
     timer = asyncio.get_running_loop().call_later(GRAPH_LOCK_WARN_SECONDS, _warn_graph_holder, state)
-    conn.info["wait_graph_timer"] = timer
+    state["timer"] = timer
+    _graph_holders[conn.sync_connection] = state
     for name in ("commit", "rollback"):
         if not event.contains(conn.sync_connection, name, _release_graph_lock):
             event.listen(conn.sync_connection, name, _release_graph_lock)
