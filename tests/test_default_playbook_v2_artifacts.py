@@ -783,26 +783,32 @@ def test_review_dedup_key_matches_shared_key() -> None:
     assert rendered == review_task_dedup_key("TASK-1")
 
 
-def test_artifact_validates_against_the_live_registries() -> None:
-    """The recorded artifact still resolves every command, event and field.
+@pytest.mark.parametrize("playbook_id", shipped_reviewed_playbook_ids())
+def test_artifact_validates_against_the_live_registries(playbook_id: str) -> None:
+    """Every daemon-shipped artifact resolves commands, events and profile grants.
 
     The shipped profile lookup is passed rather than `None` so the profile
     half of `stale_contract` is exercised too: with `None` the validator has
     no registry to compare `compiled_against.profiles` against and stays
     silent, which is precisely how an empty map went unnoticed.
     """
-    for playbook_id in APPROVED_IDS:
-        diagnostics = validate_definition(
-            _artifact(playbook_id),
-            inventory=None,
-            contracts=RegistryContractLookup(),
-            profiles=shipped_profile_lookup(),
-            events=RegisteredEventLookup(),
-        )
-        blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
-        assert not blocking, [
-            (d.code, d.rule_id, d.step_id, d.message) for d in blocking
-        ]
+    definition = load_definition_json(
+        (DAEMON_REVIEWED_BUNDLES / playbook_id / "artifact.json").read_text(encoding="utf-8")
+    )
+    diagnostics = validate_definition(
+        definition,
+        inventory=None,
+        contracts=RegistryContractLookup(),
+        profiles=shipped_profile_lookup(),
+        events=RegisteredEventLookup(),
+    )
+    blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
+    assert not blocking, (
+        f"{playbook_id}: shipped artifact cannot be imported: "
+        f"{[(d.code, d.rule_id, d.step_id, d.message) for d in blocking]}. "
+        "When changing profile grants or command contracts, rebuild affected bundles "
+        f"in the same commit: python scripts/rebuild-reviewed-playbook-artifacts.py {playbook_id}"
+    )
 
 
 def test_custom_manifest_policy_is_not_a_core_activation_gate(tmp_path: Path) -> None:
