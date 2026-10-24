@@ -8,7 +8,7 @@ def _project_schedule_changes():
 
 def _before_project_schedules_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_supervisor_say_catalogue()
     return _revert_catalogue(catalogue, _project_schedule_changes())
 
 
