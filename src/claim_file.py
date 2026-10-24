@@ -52,9 +52,9 @@ def read_claim_file(work_dir: str) -> dict | None:
     """Return a valid claim-file object, or ``None`` when it cannot be read."""
     path = os.path.join(work_dir, CLAIM_FILE)
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             claim = json.load(f)
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return claim if isinstance(claim, dict) else None
 

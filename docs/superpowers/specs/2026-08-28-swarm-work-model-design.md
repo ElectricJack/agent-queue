@@ -478,6 +478,12 @@ failure, or if the reconciler finds `claim_phase = 'preparing'` with
 `now − claim_phase_at > swarm.prepare_timeout` (default 120 s, e.g. daemon crash
 mid-reset): `release_claim` (§11.2) runs with context `slot_reset_failed`,
 `task_metadata.needs_attention = slot_reset_failed`, and the response is `prepare_failed`.
+Immediately before activation, preparation reads back the marker and requires the
+exact payload it wrote, after any asynchronous admission/integration rechecks. A
+missing, unreadable or changed marker fails preparation at `claim_file_check` and
+uses the existing failed-preparation release/backoff path; an ordinary claim returns
+to READY without consuming a claim. Attached writers retain their existing guarded
+cleanup requirements. Cleanup never removes a foreign session/epoch marker.
 A cleanly aborted child/parent merge conflict without a managed train origin
 (including ordinary `pull_request` and manual projects) instead releases the claim
 to `BLOCKED` with `needs_attention = child_preparation_conflict`. The metadata of

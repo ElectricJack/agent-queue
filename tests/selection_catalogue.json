@@ -6517,8 +6517,9 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:bec03d8c8a6ca05cbf4082948828310cf5f862fb20201b69b5c96bfba542d92b",
+      "digest": "sha256:6fd5f37c8ea225752404cfc32a58f49f7257bab19ea4839ba34c828e002b1137",
       "imports": [
+        "src.claim_file",
         "src.config",
         "src.doctor.models",
         "src.models",

@@ -368,6 +368,14 @@ admission and checkout rechecks before activation. Preparation writes the
 workspace's `.aq/claim.json` after reset, removing it if preparation is released.
 The marker can therefore exist before activation: wait for `claimed` before
 running `aq prime` and beginning task work.
+Preparation reads the exact marker back immediately before activation. A missing,
+unreadable or changed marker returns `prepare_failed` through the normal cleanup
+and backoff path, leaving ordinary work READY with no claim consumed. Existing
+managed-writer retention guards still apply. Doctor's `stall.sweep` reports a
+later missing or mismatched active marker as `pool_claim_file_invalid`, including
+the session/task/epoch even when activity is fresh. Inspect that holder, stop it
+with `aq session kill SESSION_ID`, then use `aq task restart TASK_ID` after it has
+stopped; recovery holds and managed ownership still require their normal proofs.
 
 Preparation runs as a daemon job. A request that cannot observe its completion
 within its response window returns `claim_in_progress` with the task, epoch,

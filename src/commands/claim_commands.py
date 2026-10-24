@@ -1956,15 +1956,13 @@ class ClaimCommandsMixin:
                 # reset: any failure after ``record_holder`` committed — a slot
                 # reset error or an OSError on this write — must release the
                 # claim and leave no claim file behind.
-                write_claim_file(
-                    row.work_dir,
-                    {
-                        "task_id": task.id,
-                        "claim_epoch": epoch,
-                        "session_id": session.id,
-                        "claimed_at": time.time(),
-                    },
-                )
+                claim_payload = {
+                    "task_id": task.id,
+                    "claim_epoch": epoch,
+                    "session_id": session.id,
+                    "claimed_at": time.time(),
+                }
+                write_claim_file(row.work_dir, claim_payload)
                 # Reset's returned branch is authoritative. Persist with activation
                 # so development claims have the branch required for completion.
                 if hierarchy_enabled:
@@ -1984,6 +1982,12 @@ class ClaimCommandsMixin:
                 ):
                     stage = "admission_recheck"
                     return None
+                # Admission and integration checks above may yield after the
+                # write. Do not activate a worker without the exact fence it
+                # needs to prime, heartbeat and close this attempt.
+                stage = "claim_file_check"
+                if read_claim_file(row.work_dir) != claim_payload:
+                    raise RuntimeError("claim file missing or changed before activation")
                 stage = "activate_claim"
                 activation_args = dict(
                     epoch=epoch, now=time.time(), branch_name=prepared_branch,

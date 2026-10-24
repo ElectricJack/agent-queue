@@ -841,6 +841,93 @@ async def test_never_claimed_worker_requires_own_projects_ready_work(context):
     assert await module._session_findings(context, {"one", "two"}, [task("other", project="two")], NOW) == []
 
 
+@pytest.mark.parametrize("marker", ["absent", "invalid", "foreign", "valid"])
+async def test_active_pool_claim_marker_is_checked_even_with_fresh_activity(
+    context, tmp_path, marker,
+):
+    from unittest.mock import AsyncMock
+
+    from src.claim_file import write_claim_file
+
+    row = session("stranded", task_id="held")
+    row.id, row.instance_token = "session-held", "instance"
+    row.claim_phase, row.last_claim_epoch, row.work_dir = "active", 7, str(tmp_path)
+    row.last_activity = NOW
+    if marker != "absent":
+        write_claim_file(str(tmp_path), {
+            "task_id": "held", "session_id": row.id,
+            "claim_epoch": 8 if marker == "foreign" else 7,
+        })
+        if marker == "invalid":
+            (tmp_path / ".aq" / "claim.json").write_bytes(b"\xff")
+    context.db.sessions = [row]
+    context.db.get_session = AsyncMock(return_value=row)
+    findings = await module._session_findings(
+        context, {"one"}, [task("held", status=TaskStatus.IN_PROGRESS)], NOW,
+    )
+    if marker == "valid":
+        assert findings == []
+        context.db.get_session.assert_not_awaited()
+    else:
+        [finding] = findings
+        assert finding["kind"] == "pool_claim_file_invalid"
+        assert finding["session_id"] == row.id and finding["claim_epoch"] == 7
+        assert "aq session kill session-held" in finding["detail"]
+        assert "aq task restart held" in finding["detail"]
+        result = module._sweep_result(context, findings, 1)
+        result.observation_data = findings
+        [observation] = module._stall_observations(result)
+        assert observation["subject"] == {"type": "session", "id": row.id}
+
+
+@pytest.mark.parametrize("change", ["instance", "epoch", "phase", "marker"])
+async def test_claim_marker_sweep_ignores_a_moving_holder(context, tmp_path, change):
+    from copy import copy
+    from unittest.mock import AsyncMock
+
+    from src.claim_file import write_claim_file
+
+    row = session("moving", task_id="held")
+    row.id, row.instance_token = "session-held", "instance"
+    row.claim_phase, row.last_claim_epoch, row.work_dir = "active", 7, str(tmp_path)
+    row.last_activity = NOW
+    current = copy(row)
+    if change == "instance":
+        current.instance_token = "replacement"
+    elif change == "epoch":
+        current.last_claim_epoch += 1
+    elif change == "phase":
+        current.claim_phase = None
+
+    async def refresh(_sid):
+        if change == "marker":
+            write_claim_file(str(tmp_path), {
+                "task_id": "held", "session_id": row.id, "claim_epoch": 7,
+            })
+        return current
+
+    context.db.sessions = [row]
+    context.db.get_session = AsyncMock(side_effect=refresh)
+    assert await module._session_findings(
+        context, {"one"}, [task("held", status=TaskStatus.IN_PROGRESS)], NOW,
+    ) == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("claim_phase", "preparing"), ("lifecycle", "task"),
+    ("state", "sleeping"), ("project_id", "other"),
+])
+async def test_claim_marker_sweep_only_probes_active_running_pool_claims(context, field, value):
+    row = session("excluded", task_id="held")
+    row.claim_phase = "active"
+    row.last_activity = NOW
+    setattr(row, field, value)
+    context.db.sessions = [row]
+    assert await module._session_findings(
+        context, {"one"}, [task("held", status=TaskStatus.IN_PROGRESS)], NOW,
+    ) == []
+
+
 async def test_disabled_worktree_slots_inside_the_cap_reach_stall_sweep(tmp_path):
     """enabled slots < cap: the pool says only "no workspace capacity"."""
     from src.models import RepoSourceType, Workspace

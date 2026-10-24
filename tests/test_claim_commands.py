@@ -3967,6 +3967,53 @@ class TestClaim:
         s = await db.get_session(sid)
         assert (s.claims, s.last_claim_result, s.claim_phase) == (0, "prepare_failed", None)
 
+    @pytest.mark.parametrize("marker", [
+        "absent", "invalid_json", "invalid_utf8", "wrong_epoch", "wrong_session",
+    ])
+    async def test_unusable_claim_file_cannot_activate(
+        self, handler, db, tmp_path, monkeypatch, marker,
+    ):
+        """A completed write alone does not prove the worker has its fence."""
+        import src.commands.claim_commands as claim_commands
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        write = claim_commands.write_claim_file
+
+        def broken_write(work_dir, payload):
+            write(work_dir, payload)
+            path = wd / ".aq" / "claim.json"
+            if marker == "absent":
+                path.unlink()
+            elif marker == "invalid_json":
+                path.write_text("{broken", encoding="utf-8")
+            elif marker == "invalid_utf8":
+                path.write_bytes(b"\xff")
+            else:
+                replacement = dict(payload)
+                replacement["claim_epoch" if marker == "wrong_epoch" else "session_id"] = (
+                    payload["claim_epoch"] + 1 if marker == "wrong_epoch" else "successor"
+                )
+                write(work_dir, replacement)
+
+        monkeypatch.setattr(claim_commands, "write_claim_file", broken_write)
+        activate = AsyncMock(wraps=db.activate_claim)
+        monkeypatch.setattr(db, "activate_claim", activate)
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+
+        assert result["result"] == "prepare_failed"
+        assert result["reason"].startswith("claim_file_check: RuntimeError:")
+        activate.assert_not_awaited()
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        current = await db.get_session(sid)
+        assert (current.task_id, current.claim_phase, current.claims) == (None, None, 0)
+        assert "task.claimed" not in handler.orchestrator.bus.seen_event_types
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") == 1
+        if marker.startswith("wrong_"):
+            # Cleanup must not erase another session/epoch's marker.
+            assert (wd / ".aq" / "claim.json").exists()
+
     async def test_pool_close_restores_its_slot_before_releasing_claim(
         self, handler, db, tmp_path
     ):

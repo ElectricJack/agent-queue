@@ -19,6 +19,7 @@ from pathlib import Path
 
 from sqlalchemy import and_, or_, select
 
+from src.claim_file import read_claim_file
 from src.database.tables import (
     projects as project_table,
     task_branch_origins,
@@ -348,10 +349,15 @@ async def _branch_findings(ctx: DoctorContext, active: set[str], explains: _Expl
 async def _session_findings(ctx: DoctorContext, active: set[str], tasks: list, now: float) -> list[dict]:
     sessions = await ctx.db.list_sessions()
     ready = Counter(t.profile_id for t in tasks if t.status is TaskStatus.READY)
+    live_tasks = {t.id: t for t in tasks if t.status is TaskStatus.IN_PROGRESS}
     findings: list[dict] = []
     for session in sessions:
         failures = getattr(session, "claim_failure_count", 0)
         phase = getattr(session, "claim_phase", None)
+        if (session.project_id in active and session.lifecycle == "pool"
+                and session.state == "running" and phase == "active"
+                and session.task_id in live_tasks):
+            findings.extend(await _claim_file_findings(ctx, session))
         matching_ready = sum(
             t.status is TaskStatus.READY and t.project_id == session.project_id
             and t.profile_id == session.profile_id for t in tasks
@@ -423,6 +429,38 @@ async def _session_findings(ctx: DoctorContext, active: set[str], tasks: list, n
         for name, count in sorted(recent.items()) if count >= 5
     )
     return findings
+
+
+async def _claim_file_findings(ctx: DoctorContext, session) -> list[dict]:
+    """Report a broken active fence without releasing a possibly live writer."""
+    def binding(row):
+        return (row.instance_token, row.task_id, row.last_claim_epoch,
+                row.work_dir, row.state, row.claim_phase)
+
+    def matches(row):
+        marker = read_claim_file(row.work_dir)
+        return marker is not None and (
+            marker.get("task_id"), marker.get("session_id"), marker.get("claim_epoch")
+        ) == (row.task_id, row.id, row.last_claim_epoch)
+
+    if not session.work_dir:
+        ctx.incomplete("claim_workspace_unavailable", project_id=session.project_id)
+        return []
+    if matches(session):
+        return []
+    # Close, pause and a successor claim can retire/replace a marker after
+    # inventory. Recheck both observations before reporting this instance.
+    current = await ctx.db.get_session(session.id)
+    if current is None or binding(current) != binding(session) or matches(current):
+        return []
+    return [_finding(
+        "pool_claim_file_invalid", session.project_id,
+        f"{session.name} holds {session.task_id} active without a matching .aq/claim.json; "
+        f"inspect the current holder, then recover with aq session kill {session.id} "
+        f"and aq task restart {session.task_id} after the worker has stopped",
+        session_name=session.name, session_id=session.id, task_id=session.task_id,
+        claim_epoch=session.last_claim_epoch, claim_phase="active",
+    )]
 
 
 def _log_findings(ctx: DoctorContext, active: set[str], tasks: list) -> list[dict]:
@@ -739,6 +777,7 @@ _SUBJECTS = {
     "slot_capacity_short": None, "workspace_capacity_held": None, "train_batch_stalled": ("batch", "batch_id"),
     "non_design_expensive_route": ("task", "task_id"),
     "pool_without_claim": ("session", "session_name"),
+    "pool_claim_file_invalid": ("session", "session_id"),
     "idle_worker": ("task", "task_id"), "idle_pool": ("session", "session_name"),
     "crash_loop": ("session", "session_name"), "publisher_skip": ("task", "task_id"),
     "publisher_error": None, "delivery_stale": ("repository", "checkout"),
@@ -906,7 +945,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                    lambda c: _container_dependency_findings(c, active)),
             _probe(ctx, active, ("restore_branch",),
                    lambda c: _branch_findings(c, active, _Explains(c))),
-            _probe(ctx, active, ("pool_without_claim", "idle_worker", "idle_pool", "crash_loop"),
+            _probe(ctx, active, ("pool_without_claim", "pool_claim_file_invalid",
+                                 "idle_worker", "idle_pool", "crash_loop"),
                    lambda c: _session_findings(c, active, tasks, now)),
             _probe(ctx, active, ("delivery_stale",),
                    lambda c: _delivery_findings(c, active, tasks, now)),
@@ -957,7 +997,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     inventory_kinds = {"unclaimed_work", "undelivered_blocker", "worker_relaunch_loop",
                        "train_repair_capacity_wait", "train_repair_off_frontier", "WAITING-ON-DELIVERY",
                        "epic_refresh_needed",
-                       "pool_without_claim", "idle_worker", "idle_pool", "delivery_stale",
+                       "pool_without_claim", "pool_claim_file_invalid", "idle_worker",
+                       "idle_pool", "delivery_stale",
                        "disabled_provider", "publisher_skip", "non_design_expensive_route"}
     coverage.extend(partition(CHECK_ID, "non_design_expensive_route", pid, complete=True)
                     for pid in active)

@@ -36,6 +36,17 @@ orphan. Conflicting identities report uncertainty instead of recovery advice.
 A live session with fresh activity remains live regardless of agent heartbeat
 age or harness. A sleeping holder is identified as an intentional hold.
 
+Doctor's `stall.sweep` also reports `pool_claim_file_invalid` for running pool
+sessions holding an IN_PROGRESS task in `claim_phase=active` whose workspace has
+no readable `.aq/claim.json` matching the session, task and claim epoch. This check
+does not depend on idle time or READY demand. It rechecks the session instance and
+claim binding and reads the marker again before reporting, so a concurrent close,
+pause or replacement does not implicate the old holder. Findings include the
+session id, task and epoch. Inspect the current holder, use `aq session kill
+SESSION_ID`, wait for the worker to stop, then `aq task restart TASK_ID` through
+the normal recovery guards. The diagnostic never fabricates a marker, releases a
+live writer, bypasses a recovery hold or changes task state.
+
 For inactive holders, bounded project wait history locates possible waits;
 `wait show` performs the canonical `blocking_wait_for` check of the current
 instance, claim, deadline and producer. Only its positive retention guidance,
