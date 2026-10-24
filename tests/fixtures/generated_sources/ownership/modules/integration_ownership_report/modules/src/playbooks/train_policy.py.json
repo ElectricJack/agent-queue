@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/playbooks/train_policy.py::TrainPolicy.required_checks": {
+      "fingerprint": "133418b315ab49e783146bed4013f418ce9cb8fd760b335f96b18d65753d6b92",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/playbooks/train_policy.py::import from src.integration.models import RequiredCheckSet": {
+      "fingerprint": "6e02686c6d0f21153a1c3d736427fc5326393b74c22a1913bba87656fa0bab33",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

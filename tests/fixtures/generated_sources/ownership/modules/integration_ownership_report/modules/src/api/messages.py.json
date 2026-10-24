@@ -1,0 +1,48 @@
+{
+  "shared_definitions": {
+    "src/api/messages.py::get_session_messages": {
+      "baseline_span": [
+        195,
+        247
+      ],
+      "landing_span": [
+        195,
+        247
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/api/messages.py::import from src.api.scope import check_command_scope": {
+      "baseline_span": [
+        24,
+        24
+      ],
+      "landing_span": [
+        24,
+        24
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/api/messages.py::post_message": {
+      "baseline_span": [
+        78,
+        103
+      ],
+      "landing_span": [
+        78,
+        103
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/api/messages.py::post_session_message": {
+      "baseline_span": [
+        150,
+        194
+      ],
+      "landing_span": [
+        150,
+        194
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

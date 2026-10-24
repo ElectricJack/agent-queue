@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/install/deploy.py::read_record": {
+      "fingerprint": "14e34003314ce4666b58a21859912f205e984e2c3d2dac1de632c5f08a0e55aa",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

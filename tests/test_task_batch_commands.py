@@ -1805,6 +1805,288 @@ async def test_ingest_dispatch_failure_rolls_back_batch_graph_and_hold(handler, 
     assert (await _ingest_propose(handler, path, scope, decision))["status"] == "held"
 
 
+# ---------------------------------------------------------------------------
+# Supervisor in-scope repairs of a released batch (spec P4 L4.4)
+# ---------------------------------------------------------------------------
+
+
+_REPAIR_COMMANDS = ["task_batch_propose", "task_batch_commit", "task_batch_update"]
+
+
+async def _repair_supervisor(handler, *, sid="sup-p1", project_id="p1", **overrides):
+    """A live named supervisor session and its elevated request scope."""
+    if await handler._db.get_profile("supervisor") is None:
+        await handler._db.create_profile(AgentProfile(
+            id="supervisor", name="Supervisor", harness_tools=[], plugin_tools=[],
+            aq_commands=_REPAIR_COMMANDS,
+        ))
+    await handler._db.create_session(SessionRecord(**{
+        "id": sid, "project_id": project_id, "profile_id": "supervisor", "harness": "codex",
+        "provider": "fake", "name": f"n-supervisor--{sid}", "lifecycle": "named",
+        "work_dir": "/tmp/sup", "epoch": "boot", "instance_token": f"{sid}-token",
+        "started_at": time.time(), "state": "running", **overrides,
+    }))
+    return {"kind": "session", "session_id": sid, "session_instance_token": f"{sid}-token",
+            "project_id": project_id, "elevated": True}
+
+
+async def _released_batch(handler, *, state="released"):
+    """Batch ``core`` > ``api``, ``ui`` (+ root ``docs``) and a non-member ``outside``."""
+    from src.database.queries import ingest_batch_queries as q
+    from src.database.queries.proposal_queries import insert_proposal
+    db = handler._db
+    for tid in ("core", "api", "ui", "docs", "outside"):
+        await _existing(handler, tid)
+    async with db.immediate() as conn:
+        for child in ("api", "ui"):
+            await db.set_parent(child, "core", conn=conn)
+    batch_id = await insert_proposal(db, project_id="p1", source="spec", payload={},
+                                     status="committed")
+    async with db.immediate() as conn:
+        created = await q.create_batch(
+            conn, batch_id=batch_id, project_id="p1", source_review_id="rev-1",
+            source_revision=1, source_content_sha256="sha-1", decision_id="dec-1",
+            lineage=q._no_lineage("no_spec_ingest"), idempotency_key="ingest:rev-1:1",
+            **({"state": "released", "release_actor": "human:test",
+                "release_receipt": {"checks": "pass"}} if state == "released" else {}),
+        )
+        assert created["success"]
+        for tid, role in (("core", "container"), ("api", "leaf"), ("ui", "leaf"),
+                          ("docs", "leaf")):
+            joined = await q.add_member(
+                conn, batch_id, task_id=tid, member_key=tid, role=role,
+                section_anchor=f"#{tid}", primary_outcome=f"outcome {tid}", created_revision=1,
+            )
+            assert joined["success"]
+    return batch_id
+
+
+async def _repair(handler, batch_id, scope, **operations):
+    return await handler.execute("task_batch_propose", {
+        "project_id": "p1", "source": f"batch-repair:{batch_id}", **operations,
+        "_scope": scope,
+    })
+
+
+async def _members(handler, batch_id):
+    from src.database.queries import ingest_batch_queries as q
+    async with handler._db.immediate() as conn:
+        return {row["task_id"]: row for row in await q.members(conn, batch_id)}
+
+
+async def test_supervisor_reparent_of_released_member_commits_without_gate(handler):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    handler.orchestrator.bus.emit.reset_mock()
+    proposed = await _repair(handler, batch_id, scope, edits=[
+        {"task_id": "ui", "parent_id": "docs", "reason": "UI belongs with the docs track"},
+    ])
+    assert proposed["success"], proposed
+    impact = proposed["diff"]["impact"]
+    assert impact["bypass"] == {"eligible": True, "refusal": None}
+    assert impact["moved"] == [{"task_id": "ui", "old_parent": "core", "new_parent": "docs",
+                                "delivery_target": "docs"}]
+    assert impact["remaining_source_coverage"] == {
+        "covered": ["#api", "#core", "#docs", "#ui"], "uncovered": []}
+    assert impact["active_owner"] == {"tasks": [], "integration_batch": None}
+    assert "proposal.ready" not in [event for event, _ in _emitted(handler)]
+
+    committed = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert committed["success"], committed
+    assert (await handler._db.get_task("ui")).parent_task_id == "docs"
+    assert not await handler._db.list_gates(project_id="p1", gate_type="human")
+
+
+async def test_supervisor_retirement_with_replacement_rewires_and_retires_member(handler):
+    batch_id = await _released_batch(handler)
+    await handler._db.add_dependency("docs", "ui")
+    scope = await _repair_supervisor(handler)
+    proposed = await _repair(handler, batch_id, scope, edits=[
+        {"task_id": "ui", "action": "archive", "reason": "API now serves the UI contract",
+         "replacement_task_id": "api"},
+    ])
+    assert proposed["success"], proposed
+    impact = proposed["diff"]["impact"]
+    assert impact["retired"] == [{"task_id": "ui", "reason": "API now serves the UI contract",
+                                  "replacement_task_id": "api", "satisfied_by": None}]
+    assert impact["prerequisites"] == {}
+    assert impact["remaining_source_coverage"]["uncovered"] == ["#ui"]
+
+    committed = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert committed["success"], committed
+    assert await handler._db.get_task("ui") is None
+    assert await handler._db.get_dependencies("docs") == {"api"}
+    members = await _members(handler, batch_id)
+    assert members["ui"]["state"] == "retired"
+    assert members["ui"]["retired_reason"] == "API now serves the UI contract"
+
+
+async def test_supervisor_split_remainder_joins_released_batch(handler):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    proposed = await _repair(handler, batch_id, scope,
+        tasks=[{"tempId": "ui-rest", "title": "UI remainder", "description": "Rest of #ui",
+                "parent_id": "core", "acceptance": ["Remaining UI states render"]}],
+        edges=[{"from": "ui-rest", "to": "ui"}],
+    )
+    assert proposed["success"], proposed
+    impact = proposed["diff"]["impact"]
+    assert impact["bypass"]["eligible"] is True
+    assert impact["created"] == [{"temp_id": "ui-rest", "parent_id": "core",
+                                  "placement": "child", "delivery_targets": [],
+                                  "delivery_target": "core"}]
+    assert impact["prerequisites"] == {"ui-rest": [{"task_id": "ui", "dep_type": "blocks"}]}
+    committed = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert committed["success"], committed
+    (new_id,) = committed["task_ids"]
+    joined = (await _members(handler, batch_id))[new_id]
+    assert (joined["state"], joined["role"], joined["section_anchor"]) == (
+        "active", "leaf", "#core")
+
+
+@pytest.mark.parametrize("operations, refusal", [
+    ({"edits": [{"task_id": "outside", "parent_id": "core", "reason": "adopt"}]},
+     "not an active member"),
+    ({"edits": [{"task_id": "ui", "parent_id": "outside", "reason": "move"}]},
+     "new parent outside is outside"),
+    ({"edits": [{"task_id": "ui", "title": "Renamed", "reason": "rename"}]},
+     "not a move (L4.1) or retirement (L4.3)"),
+    ({"edits": [{"task_id": "ui", "action": "pause", "reason": "stop"}]},
+     "not a move (L4.1) or retirement (L4.3)"),
+    ({"edits": [{"task_id": "ui", "parent_id": "docs"}]}, "needs a reason"),
+    ({"edits": [{"task_id": "ui", "action": "archive", "reason": "gone",
+                 "replacement_task_id": "outside"}]}, "replacement outside is outside"),
+    ({"tasks": [{"tempId": "root", "title": "Root", "description": ""}]},
+     "needs a member parent or target"),
+    ({"edges": [{"from": "docs", "to": "api"}]}, "must belong to a split remainder"),
+    ({"edges": [{"from": "outside", "to": "api"}]}, "added edge endpoint outside"),
+    ({"comments": [{"task_id": "outside", "body": "note"}]}, "comment target outside"),
+])
+async def test_out_of_scope_repair_keeps_the_human_gate(handler, operations, refusal):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    handler.orchestrator.bus.emit.reset_mock()
+    proposed = await _repair(handler, batch_id, scope, **operations)
+    assert proposed["success"], proposed
+    bypass = proposed["diff"]["impact"]["bypass"]
+    assert bypass["eligible"] is False and refusal in bypass["refusal"]
+    assert "proposal.ready" in [event for event, _ in _emitted(handler)]
+    refused = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert refused["success"] is False and refused["not_approved"], refused
+    assert "has no human approval gate" in refused["error"]
+
+
+async def _local(handler, batch_id, **operations):
+    return await handler.execute("task_batch_propose", {
+        "project_id": "p1", "source": f"batch-repair:{batch_id}", **operations})
+
+
+@pytest.mark.parametrize("caller", ["local", "global", "worker", "other_project", "stopped"])
+async def test_only_this_projects_live_supervisor_bypasses_the_gate(handler, caller):
+    batch_id = await _released_batch(handler)
+    move = {"edits": [{"task_id": "ui", "parent_id": "docs", "reason": "regroup"}]}
+    if caller == "local":
+        proposed = await _local(handler, batch_id, **move)
+        commit_scope = None
+    else:
+        await handler.execute("create_project", {"id": "p2", "name": "p2"})
+        scope = await _repair_supervisor(
+            handler, project_id={"global": None, "other_project": "p2"}.get(caller, "p1"),
+            **({"desired_state": "stopped"} if caller == "stopped" else {}),
+        )
+        if caller == "global":
+            scope["project_id"] = None
+        if caller == "worker":
+            scope["elevated"] = False
+        handler.orchestrator.bus.emit.reset_mock()
+        before = await handler.db.get_task("ui")
+        proposed = await _repair(handler, batch_id, scope, **move)
+        if caller == "other_project":
+            assert proposed["success"] is False, proposed
+            assert proposed["error_code"] == "resource_scope_denied", proposed
+            assert proposed["result"] == "out_of_scope", proposed
+            assert "proposal_id" not in proposed
+            assert (await handler.db.get_task("ui")).parent_task_id == before.parent_task_id
+            assert "proposal.ready" not in [event for event, _ in _emitted(handler)]
+            return
+        commit_scope = scope
+    assert proposed["success"], proposed
+    assert proposed["diff"]["impact"]["bypass"] == {
+        "eligible": False,
+        "refusal": "only this project's live supervisor may repair a released batch"}
+    refused = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"],
+        **({"_scope": commit_scope} if commit_scope else {})})
+    assert refused["not_approved"], refused
+
+
+async def test_held_or_foreign_batch_keeps_the_gate(handler):
+    held = await _released_batch(handler, state="held")
+    scope = await _repair_supervisor(handler)
+    proposed = await _repair(handler, held, scope, edits=[
+        {"task_id": "outside", "parent_id": "docs", "reason": "regroup"}])
+    assert proposed["success"], proposed
+    assert "is held, not released" in proposed["diff"]["impact"]["bypass"]["refusal"]
+    missing = await _repair(handler, "no-such-batch", scope, edits=[
+        {"task_id": "outside", "parent_id": "docs", "reason": "regroup"}])
+    assert "is not an ingest batch of project" in missing["diff"]["impact"]["bypass"]["refusal"]
+
+
+async def test_stamp_is_server_owned_and_rechecked_at_commit(handler):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    # A caller-supplied stamp on an ordinary source never bypasses the gate.
+    forged = await handler.execute("task_batch_propose", {
+        "project_id": "p1", "source": "change-set:test", "_scope": scope,
+        "edits": [{"task_id": "ui", "title": "Forged"}],
+        "batch_repair": {"batch_id": batch_id, "actor": "supervisor session:sup-p1"}})
+    assert forged["success"], forged
+    refused = await handler.execute("task_batch_commit", {
+        "proposal_id": forged["proposal_id"], "_scope": scope})
+    assert refused["not_approved"], refused
+    # A stamped repair re-checks the committing principal: the operator needs a gate.
+    proposed = await _repair(handler, batch_id, scope, edits=[
+        {"task_id": "ui", "parent_id": "docs", "reason": "regroup"}])
+    refused = await handler.execute("task_batch_commit", {"proposal_id": proposed["proposal_id"]})
+    assert refused["not_approved"] and "out of scope" in refused["error"], refused
+    # Updating a stamped repair outside its scope is refused, not silently gated.
+    widened = await handler.execute("task_batch_update", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope,
+        "payload": {"edits": [{"task_id": "ui", "title": "Renamed"}]}})
+    assert widened["success"] is False and "leave its scope" in widened["error"], widened
+
+
+async def test_retirement_evidence_needs_an_archive_edit_with_reason(handler):
+    await _existing(handler, "a")
+    await _existing(handler, "b")
+    for edit in ({"task_id": "a", "replacement_task_id": "b", "reason": "x"},
+                 {"task_id": "a", "action": "archive", "satisfied_by": "b"},
+                 {"task_id": "a", "action": "archive", "reason": "x", "satisfied_by": " "}):
+        refused = await handler.execute("task_batch_propose", {
+            "project_id": "p1", "source": "change-set:test", "edits": [edit]})
+        assert refused["success"] is False, refused
+
+
+async def test_repair_preview_names_the_active_owner(handler):
+    batch_id = await _released_batch(handler)
+    await handler._db.update_task("api", branch_name="aq/api")
+    await handler._db.add_dependency("api", "outside")
+    scope = await _repair_supervisor(handler)
+    preview = await _repair(handler, batch_id, scope, dry_run=True, edits=[
+        {"task_id": "api", "parent_id": "docs", "reason": "API docs first"}])
+    assert preview["success"] and preview["dry_run"], preview
+    impact = preview["diff"]["impact"]
+    assert impact["active_owner"]["tasks"] == [
+        {"task_id": "api", "assigned_agent_id": None, "branch_name": "aq/api"}]
+    assert impact["prerequisites"] == {"api": [{"task_id": "outside", "dep_type": "blocks"}]}
+    assert impact["bypass"]["eligible"] is True
+    assert (await handler._db.get_task("api")).parent_task_id == "core"
+
+
 async def _editable_batch(handler, *, receipt=True):
     from src.database.queries import ingest_batch_queries as batches
 
@@ -2163,3 +2445,362 @@ async def test_scoped_checks_read_updated_ownership_from_live_metadata(handler):
     assert next(m for m in members if m["member_key"] == "api")["owned_modules"] == ["src/shared.py"]
     checks = (await _live_batch(handler, batch))["check_results"]
     assert any(f["code"] == "concentrated_ownership" for f in checks["advisory"])
+
+
+async def _release_ready(handler, *, external=False, document_review=False):
+    """Use the real reviewer authority and attestation command before release."""
+    from tests.test_fidelity_review import _review_request, _record, _ensure, _reviewer_session
+    from src.database.queries import ingest_batch_queries as batches
+
+    if document_review:
+        path, ingest_scope, decision = await _ingest_assignment(handler, feedback="Keep constraints")
+        batch = await _ingest_propose(handler, path, ingest_scope, decision)
+        assert batch["success"], batch
+        await handler.db.create_profile(AgentProfile(
+            id="fidelity-reviewer", name="Fidelity Reviewer", harness="codex",
+            default_class="deep-high", needs_workspace=False,
+            aq_commands=["approved_spec_packet", "task_batch_validate", "task_batch_update",
+                         "task_batch_review_record"],
+        ))
+        reviewer = await _ensure(handler, batch)
+        assert reviewer["success"], reviewer
+        scope = await _reviewer_session(handler, reviewer["task_id"], "s-review")
+        async with handler.db.immediate() as conn:
+            active = await batches.members(conn, batch["batch_id"], state="active")
+        args = {
+            "batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+            "expected_digest": batch["structure_digest"],
+            "section_verdicts": {m["section_anchor"]: "faithful" for m in active},
+            "reverse_coverage_verdict": "faithful", "walkthrough_verdict": "faithful",
+            "structural_findings": [],
+        }
+    else:
+        batch, scope, args = await _review_request(handler)
+    if external:
+        await _existing(handler, "external")
+        await handler.db.add_dependency(batch["members"]["api"], "external", "blocks")
+        async with handler.db.immediate() as conn:
+            batch["structure_digest"] = await batches.store_live_digest(conn, batch["batch_id"])
+        args["expected_digest"] = batch["structure_digest"]
+    recorded = await _record(handler, scope, args)
+    assert recorded["success"] and recorded["passing"], recorded
+    return batch, scope, recorded["receipt"]
+
+
+async def _release(handler, batch, **overrides):
+    return await handler.execute("task_batch_release", {
+        "batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+        "expected_digest": batch["structure_digest"], **overrides,
+    })
+
+
+@pytest.mark.parametrize("stale", ["revision", "digest", "live_graph"])
+async def test_release_stale_digest(handler, stale):
+    batch, _, _ = await _release_ready(handler)
+    overrides = {}
+    if stale == "revision":
+        overrides["expected_revision"] = 2
+    elif stale == "digest":
+        overrides["expected_digest"] = "stale"
+    else:
+        await handler.db.update_task(batch["members"]["api"], description="Unreviewed work")
+    result = await _release(handler, batch, **overrides)
+    assert not result["success"] and result["error_code"] == "stale_revision", result
+    assert result["retryable"]
+    assert await handler.db.ingest_held_task_ids(set(batch["task_ids"])) == set(batch["task_ids"])
+    assert (await _live_batch(handler, batch))["release_receipt"] is None
+
+
+async def test_release_external_leaf_became_container(handler):
+    batch, _, _ = await _release_ready(handler, external=True)
+    await handler.db.set_task_meta("external", "container", True)
+    result = await _release(handler, batch)
+    assert not result["success"] and result["error_code"] == "container_endpoint", result
+    assert await handler.db.ingest_held_task_ids(set(batch["task_ids"])) == set(batch["task_ids"])
+
+
+async def test_release_replays_receipt(handler):
+    from sqlalchemy import select
+    from src.database.tables import events, integration_outbox
+
+    batch, _, receipt = await _release_ready(handler)
+    first = await _release(handler, batch)
+    assert first["success"] and not first["already_released"], first
+    row = await _live_batch(handler, batch)
+    assert row["state"] == "released" and row["release_revision"] == 1
+    assert row["release_digest"] == batch["structure_digest"]
+    assert row["release_actor"] and row["released_at"]
+    assert first["release_receipt"]["review_receipt_id"] == receipt["receipt_id"]
+    assert {m["task_id"] for m in first["release_receipt"]["members"]} == set(batch["task_ids"])
+    assert not await handler.db.ingest_held_task_ids(set(batch["task_ids"]))
+    assert (await get_proposal(handler.db, batch["batch_id"]))["status"] == "committed"
+    # Freeze replay evidence even after post-release work has changed.
+    await handler.db.update_task(batch["members"]["api"], description="Post-release repair")
+    again = await _release(handler, batch)
+    assert again["success"] and again["already_released"], again
+    assert again["release_receipt"] == first["release_receipt"]
+    async with handler.db.immediate() as conn:
+        notices = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type.in_(["batch.released", "task.change_set_committed"]),
+        ))).mappings().all()
+        assert {n["event_type"] for n in notices} == {"batch.released", "task.change_set_committed"}
+        assert len(notices) == 2
+        assert len((await conn.execute(select(events.c.id).where(
+            events.c.event_type == "task.change_set_committed",
+        ))).all()) == 1
+    stale = await _release(handler, batch, expected_digest="other")
+    assert stale["error_code"] == "stale_revision", stale
+
+
+@pytest.mark.parametrize("profile,elevated", [("spec-ingest", False), ("fidelity-reviewer", False),
+                                              ("worker-codex", True), ("supervisor", False)])
+async def test_release_refused_for_session_principal(handler, profile, elevated):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+
+    batch, _, _ = await _release_ready(handler)
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, session_id="s-review", project_id="p1",
+        profile_id=profile, elevated=elevated,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["task_batch_release"]),
+    )
+    with principal_context(principal):
+        refused = await _release(handler, batch)
+    assert not refused["success"] and refused["error_code"] == "not_authorized", refused
+    assert await handler.db.ingest_held_task_ids(set(batch["task_ids"])) == set(batch["task_ids"])
+
+
+@pytest.mark.parametrize("kind", ["service", "playbook"])
+async def test_release_admits_policy_and_refuses_wrong_project(handler, kind):
+    from dataclasses import replace
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+
+    batch, _, _ = await _release_ready(handler)
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind(kind), project_id="p2", service_name="ingestion",
+        parent_run_id="run", parent_step_id="step",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["task_batch_release"]),
+    )
+    with principal_context(principal):
+        refused = await _release(handler, batch)
+    assert refused["error_code"] == "not_authorized", refused
+    with principal_context(replace(principal, project_id="p1")):
+        result = await _release(handler, batch)
+    assert result["success"] and not result["already_released"], result
+
+
+@pytest.mark.parametrize("stale", [None, "instance", "stopped", "project"])
+async def test_release_only_live_project_supervisor(handler, stale):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+
+    batch, _, _ = await _release_ready(handler)
+    if stale == "project":
+        created = await handler.execute("create_project", {"name": "p2"})
+        assert created["created"] == "p2", created
+    await handler.db.create_session(SessionRecord(
+        id="sup", task_id=None, project_id="p1" if stale != "project" else "p2",
+        profile_id="supervisor", harness="codex", provider="fake", name="n-supervisor--p1",
+        lifecycle="named", state="stopped" if stale == "stopped" else "running",
+        desired_state="running", work_dir="/tmp", epoch="test", instance_token="instance",
+        started_at=time.time(),
+    ))
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, session_id="sup", project_id="p1", elevated=True,
+        session_instance_token="stale" if stale == "instance" else "instance",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["task_batch_release"]),
+    )
+    with principal_context(principal):
+        result = await _release(handler, batch)
+    assert result["success"] is (stale is None), result
+    if stale:
+        assert result["error_code"] == "not_authorized", result
+
+
+@pytest.mark.parametrize("invalid", ["absent", "reviewer", "digest", "section", "scope_section",
+                                      "reverse", "walkthrough", "verdict"])
+async def test_release_revalidates_entire_receipt(handler, invalid):
+    from sqlalchemy import delete, update
+    from src.database.tables import ingest_batch_receipts, ingest_batches
+
+    batch, _, receipt = await _release_ready(handler)
+    async with handler.db.immediate() as conn:
+        if invalid == "absent":
+            await conn.execute(delete(ingest_batch_receipts))
+        elif invalid == "reviewer":
+            await conn.execute(update(ingest_batches).values(reviewer_task_id="replacement"))
+        else:
+            changes = {}
+            if invalid == "digest":
+                changes["structure_digest"] = "different"
+            elif invalid in {"section", "scope_section", "verdict"}:
+                verdicts = dict(receipt["section_verdicts"])
+                section = next(iter(verdicts))
+                if invalid == "section":
+                    del verdicts[section]
+                else:
+                    verdicts[section] = "scope_question" if invalid == "scope_section" else "pass"
+                changes["section_verdicts"] = verdicts
+            else:
+                changes[f"{invalid}_coverage_verdict" if invalid == "reverse"
+                        else "walkthrough_verdict"] = "scope_question"
+            await conn.execute(update(ingest_batch_receipts).values(**changes))
+    result = await _release(handler, batch)
+    assert not result["success"], result
+    assert result["error_code"] in {"fidelity_review_required", "incomplete_review"}, result
+    assert (await _live_batch(handler, batch))["release_receipt"] is None
+
+
+async def test_release_refuses_open_scope_ask_from_previous_revision(handler):
+    from sqlalchemy import update
+    from src.asks.batch_scope import scope_source
+    from src.database.tables import human_asks
+    from tests.test_fidelity_review import _review_request, _record
+
+    batch, scope, args = await _review_request(handler)
+    result = await _record(handler, scope, {**args, "walkthrough_verdict": "scope_question"})
+    assert result["success"] and result["ask_id"], result
+    # Preserve a real open ask while simulating a corrupted passing receipt.
+    from src.database.tables import ingest_batch_receipts, ingest_batches
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(ingest_batch_receipts).values(
+            passing=True, walkthrough_verdict="faithful",
+        ))
+        await conn.execute(update(ingest_batches).values(state="reviewing"))
+        await conn.execute(update(human_asks).where(human_asks.c.id == result["ask_id"]).values(
+            source_key=f"batch-scope:{batch['batch_id']}:0",
+            source_identity=scope_source(await _live_batch(handler, batch), 0).reference,
+        ))
+    refused = await _release(handler, batch)
+    assert refused["error_code"] == "needs_scope", refused
+    assert (await _live_batch(handler, batch))["state"] == "reviewing"
+
+
+@pytest.mark.parametrize("change", [None, "state", "revision", "hash", "pending"])
+async def test_release_refuses_diverged_approved_source(handler, change):
+    from sqlalchemy import update
+    from src.database.tables import doc_reviews, ingest_batches
+
+    batch, _, _ = await _release_ready(handler, document_review=True)
+    row = await _live_batch(handler, batch)
+    async with handler.db.immediate() as conn:
+        if change == "hash":
+            await conn.execute(update(ingest_batches).where(
+                ingest_batches.c.batch_id == batch["batch_id"],
+            ).values(source_content_sha256="0" * 64))
+        elif change:
+            changes = {"state": "withdrawn"} if change == "state" else (
+                {"current_revision": 2} if change == "revision"
+                else {"pending_decision_id": row["decision_id"]}
+            )
+            await conn.execute(update(doc_reviews).where(
+                doc_reviews.c.id == row["source_review_id"],
+            ).values(**changes))
+    result = await _release(handler, batch)
+    if change:
+        assert not result["success"] and result["error_code"] == "source_diverged", result
+        assert await handler.db.ingest_held_task_ids(set(batch["task_ids"])) == set(batch["task_ids"])
+    else:
+        assert result["success"], result
+        async with handler.db.immediate() as conn:
+            await conn.execute(update(doc_reviews).where(
+                doc_reviews.c.id == row["source_review_id"],
+            ).values(state="withdrawn"))
+        replay = await _release(handler, batch)
+        assert replay["success"] and replay["already_released"], replay
+        assert replay["release_receipt"] == result["release_receipt"]
+
+
+async def test_release_refuses_active_member_claim(handler):
+    batch, _, _ = await _release_ready(handler)
+    await handler.db.update_task(batch["members"]["api"], assigned_agent_id="ingester")
+    result = await _release(handler, batch)
+    assert not result["success"] and result["error_code"] == "active_claim", result
+    assert result["retryable"]
+
+
+async def test_release_preserves_pauses_human_routing_and_delivery_gates(handler):
+    from sqlalchemy import select
+    from src.database.tables import tasks
+    from src.database.queries import ingest_batch_queries as batches
+    from tests.test_fidelity_review import _review_request, _record
+
+    batch, scope, args = await _review_request(handler)
+    api, ui, draft = [batch["members"][key] for key in ("api", "ui", "draft")]
+    async with handler.db.immediate() as conn:
+        await handler.db.set_parent(draft, None, conn=conn)
+    # SQL projects ``delivery-of`` structurally (AdmissionView proves Git
+    # delivery), so an unfinished source is what keeps the gate visible here.
+    await _existing(handler, "undelivered", status=TaskStatus.IN_PROGRESS)
+    await handler.db.add_dependency(draft, "undelivered", "delivery-of")
+    await handler.db.update_task(ui, status=TaskStatus.PAUSED)
+    gate = await handler.execute("gate_create", {
+        "project_id": "p1", "task_id": api, "gate_type": "human", "title": "Still required",
+    })
+    assert gate["success"], gate
+    async with handler.db.immediate() as conn:
+        args["expected_digest"] = batch["structure_digest"] = await batches.store_live_digest(
+            conn, batch["batch_id"],
+        )
+        before = (await conn.execute(select(tasks.c.id, tasks.c.status, tasks.c.profile_id).where(
+            tasks.c.id.in_(batch["task_ids"]),
+        ).order_by(tasks.c.id))).all()
+    reviewed = await _record(handler, scope, args)
+    assert reviewed["success"], reviewed
+    released = await _release(handler, batch)
+    assert released["success"], released
+    async with handler.db.immediate() as conn:
+        after = (await conn.execute(select(tasks.c.id, tasks.c.status, tasks.c.profile_id).where(
+            tasks.c.id.in_(batch["task_ids"]),
+        ).order_by(tasks.c.id))).all()
+    assert before == after
+    assert (await handler.db.get_task(ui)).status == TaskStatus.PAUSED
+    assert (await handler.db.get_task(api)).is_blocked
+    assert (await handler.db.get_task(draft)).is_blocked
+    assert [(b[0], b[3]) for b in await handler.db.get_blocking_dependencies(draft)] == [
+        ("undelivered", "delivery-of"),
+    ]
+    assert not (await handler.db.get_gate(gate["gate_id"]))["resolution"]
+
+
+@pytest.mark.parametrize("failure", ["readiness", "batch_event", "commit_event"])
+async def test_release_rolls_back_hold_receipt_and_notifications(handler, monkeypatch, failure):
+    from src.commands import proposal_commands
+    from sqlalchemy import select
+    from src.database.tables import integration_outbox
+
+    batch, _, _ = await _release_ready(handler)
+    before = await _live_batch(handler, batch)
+    async def fail(*args, **kwargs):
+        raise RuntimeError("Release transaction fault")
+    if failure == "readiness":
+        monkeypatch.setattr(handler.db, "recompute_blocked", fail)
+    else:
+        monkeypatch.setattr(proposal_commands, "enqueue_batch_event" if failure == "batch_event"
+                            else "enqueue_integration_event", fail)
+    result = await _release(handler, batch)
+    assert not result["success"] and "Release transaction fault" in result["error"], result
+    assert await _live_batch(handler, batch) == before
+    assert await handler.db.ingest_held_task_ids(set(batch["task_ids"])) == set(batch["task_ids"])
+    assert (await get_proposal(handler.db, batch["batch_id"]))["status"] == "held"
+    async with handler.db.immediate() as conn:
+        assert not (await conn.execute(select(integration_outbox.c.id).where(
+            integration_outbox.c.event_type.in_(["batch.released", "task.change_set_committed"]),
+        ))).all()
+
+
+def test_release_contract_binds_revision_digest_and_business_outcomes():
+    from pydantic import ValidationError
+    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import TaskBatchReleaseArgs, _outcome_of
+
+    contract = CONTRACTS.require("task_batch_release").contract.execution
+    assert {o.name for o in contract.outcomes} == {"released", "already_released", "error"}
+    assert contract.retry_safe
+    for bad in (True, 0, "1"):
+        with pytest.raises(ValidationError):
+            TaskBatchReleaseArgs(batch_id="batch", expected_revision=bad, expected_digest="hash")
+    assert _outcome_of("task_batch_release", {"success": False, "error": "stale"}) == "error"
+    assert _outcome_of("task_batch_release", {"success": True}) == "released"
+    assert _outcome_of("task_batch_release", {"already_released": True}) == "already_released"

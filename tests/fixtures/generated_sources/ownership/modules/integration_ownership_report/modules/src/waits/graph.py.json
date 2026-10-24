@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/waits/graph.py::background_graph_work": {
+      "fingerprint": "92380561ae8bf4ca390e9700035b2bfc07ce70185c8a23877fcf0783ca7f1fa7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/graph.py::graph_locked": {
+      "fingerprint": "3b247a14466cfbe630a3371672c0f15bc2b5e41fcd1d6cf600fb9825a7c747ce",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

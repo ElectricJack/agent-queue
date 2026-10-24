@@ -1,0 +1,26 @@
+{
+  "shared": {
+    "src/api/graph_layout.py::build_graph_layout_router": {
+      "baseline_span": [
+        212,
+        1046
+      ],
+      "landing_span": [
+        212,
+        1046
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/graph_layout.py::import from src.api.scope import check_request_scope": {
+      "baseline_span": [
+        58,
+        58
+      ],
+      "landing_span": [
+        58,
+        58
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

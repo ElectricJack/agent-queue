@@ -26,6 +26,7 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, StaleFence
 from src.models import (
     Agent,
+    AgentProfile,
     AgentState,
     Project,
     RepoConfig,
@@ -272,6 +273,12 @@ async def _session(
         state=overrides.pop("state", "running"),
         **overrides,
     )
+    # Model a launched pool, not a pool whose profile has been deleted.
+    # The reconciler deliberately stops the latter, even during a wait.
+    if row.lifecycle == "pool" and await db.get_profile(row.profile_id) is None:
+        await db.create_profile(AgentProfile(
+            id=row.profile_id, name=row.profile_id, harness=row.harness, lifecycle="pool",
+        ))
     await db.create_session(row)
     return row
 
@@ -322,6 +329,89 @@ async def test_disabled_project_supervisor_does_not_restart_or_stop_without_turn
     await reconciler._converge_named_up(NOW + 1000)
     reconciler.starter.ensure_started.assert_not_awaited()
     assert (await db.get_session(row.id)).desired_state == "stopped"
+
+
+async def test_paused_project_supervisor_finishes_its_turn_before_stopping(
+    db, provider, reconciler, config, monkeypatch, tmp_path,
+):
+    """A paused project's supervisor stops the same way a disabled one does.
+
+    The pause does NOT touch ``supervisor_enabled``; when the reconciler
+    drains it the stop is recorded with a pause-specific ``end_reason`` so
+    an operator can tell the two apart.
+    """
+    from src.models import ProjectStatus
+
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", status=ProjectStatus.PAUSED)
+    assert (await db.get_project("p1")).supervisor_enabled is True
+    config.sessions.idle_stop_grace_seconds = 1
+    entry = SimpleNamespace(type="tool_use", text="working", ts=NOW, turn_complete=False)
+    reader = SimpleNamespace(
+        resolve_session=lambda _: tmp_path / "transcript",
+        read_new=AsyncMock(side_effect=lambda *_: ([entry], 1)),
+    )
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _, **kwargs: reader)
+    handle = reconciler._handle(row)
+    await reconciler.tick(now=NOW)
+    await reconciler.tick(now=NOW + 100)
+    assert await provider.is_running(handle)
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+    entry = SimpleNamespace(type="assistant", text="done", ts=NOW + 101, turn_complete=True)
+    await reconciler.tick(now=NOW + 102)
+    assert not await provider.is_running(handle)
+    stopped = await db.get_session(row.id)
+    assert stopped.state == "stopped"
+    # Distinct from the disable path so operators can tell it was the pause.
+    assert stopped.end_reason == "project_paused"
+
+
+async def test_paused_project_supervisor_does_not_respawn(
+    db, provider, reconciler,
+):
+    """The up-convergence safety net must not start a paused supervisor."""
+    from src.models import ProjectStatus
+
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", status=ProjectStatus.PAUSED)
+    # Even if a prior intent lingers as "running", the paused guard must
+    # refuse to start it and flip it back to "stopped".
+    await db.update_session(row.id, desired_state="running")
+    reconciler.starter = SimpleNamespace(ensure_started=AsyncMock())
+    await reconciler._converge_named_up(NOW + 1000)
+    reconciler.starter.ensure_started.assert_not_awaited()
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+    # The pause path never touches the operator's supervisor-enabled intent.
+    assert (await db.get_project("p1")).supervisor_enabled is True
+
+
+async def test_paused_project_does_not_drain_the_global_supervisor(
+    db, provider, reconciler,
+):
+    """A pause is project-scoped: the global supervisor stays running.
+
+    ``_disabled_project_supervisor`` keys off ``row.project_id``; a ``None``
+    project id is the global supervisor, which a pause must never touch.
+    """
+    from src.models import ProjectStatus
+
+    global_row = await _session(
+        db, provider, task_id=None, name="n-supervisor--global", lifecycle="named",
+        profile_id="supervisor", project_id=None, started_at=NOW - 100,
+        sid="global",
+    )
+    await db.update_project("p1", status=ProjectStatus.PAUSED)
+    assert (
+        await reconciler._disabled_project_supervisor(global_row)
+    ) is False
+    await reconciler._converge_named_up(NOW + 1000)
+    assert (await db.get_session(global_row.id)).desired_state == "running"
 
 
 async def _claimed_pool_session(
@@ -432,6 +522,7 @@ class TestWorkerContextRecovery:
     ):
         from src.database.tables import integration_branch_owners
         from src.orchestrator.pools import PoolsMixin
+        from src.orchestrator.workspace import WorkspaceMixin
         from src.sessions.worker_recovery import DISPOSITION_KEY, STREAK_KEY
 
         row = await _claimed_pool_session(db, provider, tmp_path)
@@ -459,7 +550,7 @@ class TestWorkerContextRecovery:
                 "instance_token": "previous-instance", "claim_epoch": row.last_claim_epoch - 1,
             })
 
-        class Orch(PoolsMixin):
+        class Orch(PoolsMixin, WorkspaceMixin):
             def __init__(self):
                 self.db, self.config, self.bus = db, config, bus
                 self.session_providers = registry
@@ -483,6 +574,9 @@ class TestWorkerContextRecovery:
         if handoff_state == "released":
             assert current.status is (TaskStatus.READY if count == 1 else TaskStatus.BLOCKED)
             assert current.assigned_agent_id is None
+            assert (await db.get_session(row.id)).state == "stopped"
+            assert (await db.get_agent(row.agent_id)).state is AgentState.IDLE
+            assert "pool.session_drained" in bus.types()
             receipt = await db.get_task_meta("t1", DISPOSITION_KEY)
             assert receipt["disposition"] == ("retry_ready" if count == 1 else "attention_required")
             assert ("task.restarted" in bus.types()) == (count == 1)
@@ -5186,3 +5280,40 @@ async def test_refusal_reconciliation_revalidates_instance(db, provider, pool_re
     await db.update_session(row.id, **changed)
     await pool_reconciler._step_claim_refusals([row], NOW)
     assert not pool_reconciler.test_orch.terminations
+
+
+async def test_slow_wait_bridge_never_delays_reaping_a_killed_session(
+    db, provider, config, registry, tmp_path, monkeypatch
+):
+    """A wedged legacy bridge runs beside the cycle, never ahead of reaping."""
+    orch = _installed_wait_orchestrator(db, config, registry, tmp_path, monkeypatch)
+    release = asyncio.Event()
+    started = []
+
+    class _WedgedBridge:
+        async def tick(self):
+            started.append(True)
+            await release.wait()
+
+    orch.wait_service = _WedgedBridge()
+    orch.cycle_waits.budget = 0.05
+    await _task(db, status=TaskStatus.COMPLETED)
+    row = await _session(db, provider)
+    provider.script_death(row.name)
+    monkeypatch.setattr("src.orchestrator.core.time.time", lambda: NOW)
+    try:
+        await asyncio.wait_for(orch._reconcile_sessions(), timeout=5)
+        assert (await db.get_session("s1")).state == "stopped"
+        assert started == [True] and not release.is_set()
+        # Later cycles keep reconciling and never queue a second bridge pass.
+        await asyncio.wait_for(orch._reconcile_sessions(), timeout=5)
+        assert started == [True]
+        release.set()
+        await asyncio.wait_for(orch.cycle_waits.task, timeout=5)
+        await orch._reconcile_sessions()
+        # The replacement pass starts asynchronously and first reconciles agent waits.
+        await asyncio.wait_for(orch.cycle_waits.task, timeout=5)
+        assert started == [True, True]
+    finally:
+        release.set()
+        await orch.cycle_waits.stop()

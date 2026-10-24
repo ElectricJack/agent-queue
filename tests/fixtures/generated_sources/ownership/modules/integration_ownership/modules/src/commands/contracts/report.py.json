@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/report.py::register_report_contracts": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

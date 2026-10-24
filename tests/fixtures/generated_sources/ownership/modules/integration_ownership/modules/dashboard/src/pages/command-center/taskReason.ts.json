@@ -1,0 +1,13 @@
+{
+  "shared": {
+    "dashboard/src/pages/command-center/taskReason.ts::export interface ReasonInput {": {
+      "reason": "The card reason input carries an epic's integration delivery projection among the fields the reason line is derived from."
+    },
+    "dashboard/src/pages/command-center/taskReason.ts::function deliveryReason(delivery: EpicDelivery | null | undefined): Reason | null {": {
+      "reason": "Renders the first line of an epic delivery projection's reason as the card's reason; display only, no integration authority."
+    },
+    "dashboard/src/pages/command-center/taskReason.ts::import type { EpicDelivery } from \"../../components/epicDeliveryFormat\";": {
+      "reason": "The card reason line reads the epic delivery projection type to explain an integration hold."
+    }
+  }
+}

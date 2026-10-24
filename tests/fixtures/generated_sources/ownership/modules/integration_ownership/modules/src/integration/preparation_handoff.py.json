@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/preparation_handoff.py::recover_preparation_handoffs::608f2360bd225b1ababc8c68f1c89fa535c9aa8aac7a17e52b6b902351dd8c82": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 135,
+      "owner": "recover_preparation_handoffs",
+      "owner_fingerprint": "ab1084ec2089e77e47910c182fe17e6a7e54ce820a1657f9ce4b71edecc1eb65",
+      "reason": "Reviewed hand-integration reconciliation smart-nexus-83, size-cap-delegation-2026-10-23: charged integration adapter, source authority, policy or storage observation; no new storage category."
+    }
+  }
+}

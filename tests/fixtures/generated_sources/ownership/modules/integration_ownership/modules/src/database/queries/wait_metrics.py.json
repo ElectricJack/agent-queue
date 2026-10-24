@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/wait_metrics.py::wait_metrics_snapshot": "Read-only fleet wait metrics aggregate owned by metrics; wait_graph's cost projection imports it, but it writes nothing and holds no integration fence or source."
+  }
+}

@@ -20,26 +20,26 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
 |---|---|---|
 | Orchestrator cycle, workspaces, pools | `orchestrator.py`, `src/orchestrator/` | `docs/specs/design/agent-coordination.md`, `docs/guides/worker-pools.md` |
 | Commands (the single entry point) | `src/commands/` (handler + mixins, `contracts/builtin.py`) | `docs/specs/design/aq-surface.md` |
-| Task graph: hierarchy, phases, subtasks, formulas | `src/database/queries/hierarchy_queries.py`, `src/task_graph/`, `src/commands/phase_commands.py`, `task_subtask_commands.py` | `docs/specs/design/work-graph.md` |
+| Task graph: hierarchy, phases, subtasks, formulas | `src/database/queries/hierarchy_queries.py`, `src/task_graph/`, `src/commands/phase_commands.py`, `task_subtask_commands.py` | [current task-graph system map](docs/specs/systems/task-graph.md), `docs/specs/design/work-graph.md` |
 | Claims and the frontier | `src/database/queries/claim_queries.py`, `src/orchestrator/pools.py`, `src/claim_file.py` | `docs/guides/worker-pools.md`, `docs/guides/e2e-swarm.md` |
-| Playbooks (V2 only) | `src/playbooks/`; shipped markdown and reviewed bundles in `src/prompts/` | `docs/specs/design/playbooks.md` |
+| Playbooks (V2 only) | `src/playbooks/`; shipped markdown and reviewed bundles in `src/prompts/` | `docs/concepts/playbooks.md`, `docs/guides/playbook-building-blocks.md` |
 | Profiles, intelligence classes, MCP registry | `src/profiles/`, `src/intelligence_classes/`, `src/prompts/default_intelligence_classes/` | `docs/specs/design/profiles.md`, `docs/guides/worker-pools.md` §7b |
 | Sessions and harnesses | `src/sessions/` (`default_harnesses/`) | `docs/specs/design/session-runtime.md`, `docs/reference/harnesses.md` |
 | Integration, delivery, branch cleanup | `src/integration/`, `src/commands/ci_commands.py` | `docs/guides/hierarchical-integration-trains.md` |
 | Provider availability and failover | `src/providers/` | `docs/specs/provider-failover.md` |
-| Escalations, digest, Discord, messages | `src/escalations/`, `src/digest/`, `src/discord/`, `src/messages/` | `docs/guides/escalations.md` |
+| Messages, human asks, Discord, reports | `src/messages/`, `src/asks/`, `src/conversations/`, `src/delivery/`, `src/escalations/`, `src/digest/`, `src/reports/`, `src/discord/` | `docs/specs/systems/messaging-and-human-asks.md`, `docs/guides/escalations.md` |
 | Resource gating, fleet metrics | `src/resources/`, `src/metrics/` | `docs/guides/resource-gating.md`, `docs/specs/design/fleet-metrics.md` |
 | Graph layout | `src/task_graph/layout/`, `src/api/graph_layout.py`, `dashboard/src/pages/command-center/layout-v2/` | `docs/superpowers/specs/2026-09-01-task-graph-spatial-layout-design.md` |
 | API, generated clients, dashboard server | `src/api/` (`spec.py`), `packages/`, `src/dashboard_server/` | `docs/contributing/codegen.md`, `docs/specs/dashboard-server.md` |
 | Config, secrets, tuning | `src/config.py`, `config_editor.py`, `config_secrets.py`, `config_tuning.py` | `docs/specs/config.md`, `docs/guides/default-tuning.md` |
-| Plugins (internal: files, git, inbox, notes, vibecop; external `aq-memory`) | `src/plugins/` | `docs/specs/plugin-system.md`, `docs/specs/design/memory-plugin.md` |
+| Plugins (internal: files, git, inbox, notes, vibecop; legacy `aq-memory` loads fenced) | `src/plugins/` | `docs/specs/plugin-system.md`, `docs/specs/design/memory-plugin.md` |
 
 ## Invariants and gotchas
 
 - **Every state change goes through `CommandHandler`** (`src/commands/`), behind CLI,
   MCP, API and Discord alike. Commands return `{"success": bool, ...}` dicts.
 - **Mechanism in code, policy in playbooks.** Scheduling is deterministic and makes no
-  LLM calls; judgment (reflection, failover, escalation) is a playbook driving commands.
+  LLM calls; judgment (routing, failover, triage) is a playbook driving commands.
   Playbooks are V2 only — `tests/test_v1_removal.py` is the ratchet.
 - **Every agent is a tmux session** selected by the profile's `harness` (`claude`,
   `codex`, `gemini`). There is no in-process runtime: `src/runtimes/` is an injection
@@ -57,8 +57,9 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   shipped grants its vault copy lacks on every start and profile reload, additively
   (`src/profiles/capability_sync.py`; frontmatter `capability_sync: false` opts out).
 - **Reviewed playbook bundles** (`tests/fixtures/playbooks/v2/<id>/`): after editing, run
-  `scripts/rebuild-reviewed-playbook-artifacts.py`, update the `manifest.md` digests, and
-  review the recorded inputs in `tests/fixtures/generated_sources/playbooks/<id>/`.
+  `python scripts/rebuild-reviewed-playbook-artifacts.py <id>`; it updates fixture
+  manifests, recorded inputs and shipped copies. Review the diff and recorded inputs
+  in `tests/fixtures/generated_sources/playbooks/<id>/`.
   The authoring command refreshes the fixture and shipped copies; assembly uses
   `scripts/generate-recorded-artifacts.py` to project these approved inputs unchanged.
   `src/prompts/reviewed_playbooks/<id>/` is the only path an install imports from.
@@ -74,7 +75,7 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   playbook-commands index, playbook schema, `openapi.json`, `packages/aq-client/`) all
   come from `scripts/regenerate-generated.sh`. On a merge or rebase conflict in one, take
   either side, resolve the sources, run it and commit what it writes; `--check` is the
-  drift check. The development publisher does the same at merge time
+  drift check. The integration train does the same at merge time
   ([docs/contributing/codegen.md](docs/contributing/codegen.md#one-command-and-never-a-hand-merge)).
 - **Async first.** Use `GitManager`'s `a`-prefixed API; never `subprocess.run()` in
   production code.
@@ -104,7 +105,7 @@ agent on the machine. Rationale and the baseline workflow:
   (`-m "not perf and not migration and not slow and not tmux and not integration"`),
   and passes every non-`--aq-*` argument to pytest untouched.
   ```bash
-  aq test tests/test_playbook_runner.py                  # the file for the module you changed
+  aq test tests/test_v2_engine.py                       # the file for the module you changed
   aq test tests/test_claim_queries.py tests/test_pools.py
   aq test tests/ -k "schema_setup or run_schema"         # by name, across files
   aq test tests/test_x.py -x                             # stop at the first failure
@@ -187,7 +188,7 @@ only. In a worktree slot never run `alembic upgrade`, `alembic stamp` or `aq sta
   guard working (`src/database/migration_guard.py`): report it, do not upgrade around it.
   `aq db current` is the read-only answer; only an operator runs `aq db upgrade`.
 - A database stamped with a revision this checkout lacks:
-  `aq doctor --check db.alembic_orphan [--fix]`.
+  `aq doctor --offline --check db.alembic_orphan [--fix]` (operator only).
 
 ## Restarting after an update
 

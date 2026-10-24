@@ -18,6 +18,8 @@ if os.name != "posix" or shutil.which("tmux") is None:
     pytest.skip("requires POSIX and tmux", allow_module_level=True)
 
 from src.sessions.provider import SessionSpec
+from src.sessions.harness_parser import Harness
+from src.sessions.spec import SessionSpecBuilder
 from src.sessions.tmux import TmuxCommandError, TmuxProvider
 
 pytestmark = pytest.mark.tmux
@@ -175,3 +177,26 @@ async def test_tmux_exec_preserves_explicit_session_values(isolated_tmux, tmp_pa
         "AQ_STALE_CLAIM": "explicit-fresh-epoch",
     }
     assert observed["terminal"] is True
+
+
+@pytest.mark.parametrize("harness_id", ["codex", "claude"])
+async def test_tmux_launches_multi_megabyte_named_prompt(isolated_tmux, tmp_path, harness_id):
+    binary = fake_executable(tmp_path / "tools", "large-prompt-fixer")
+    output = tmp_path / "observed.json"
+    prompt = "Frozen batch evidence: é\n" * 100_000
+    assert len(prompt.encode()) > 2 * 1024 * 1024
+    harness = Harness(id=harness_id, command=str(binary), args=(str(output),),
+                      ready_prompt_prefix="READY", process_names=("python",))
+    profile = SimpleNamespace(id="batch-fixer", harness=harness_id, lifecycle="named")
+    spec = SessionSpecBuilder(isolated_tmux.config).build_named_spec(
+        profile=profile, harness=harness, project_id="p", work_dir=str(tmp_path),
+        session_id="large-prompt", instance_token="large-token", prompt=prompt,
+    )
+    await isolated_tmux.start(spec)
+    observed = json.loads(output.read_text())
+    assert observed["identity"] == "large-prompt-fixer"
+    assert len(observed["args"][-1].encode()) < 1024
+    rel, content = next((rel, content) for rel, content in spec.files if rel.endswith(".txt"))
+    assert rel in observed["args"][-1]
+    assert content == prompt
+    assert (tmp_path / rel).read_text(encoding="utf-8") == prompt

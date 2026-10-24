@@ -1,0 +1,312 @@
+{
+  "shared_definitions": {
+    "src/database/base.py::DatabaseBackend.append_integration_review_evidence": {
+      "baseline_span": [
+        825,
+        825
+      ],
+      "landing_span": [
+        822,
+        822
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.append_integration_subject_journal": {
+      "baseline_span": [
+        228,
+        229
+      ],
+      "landing_span": [
+        228,
+        229
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.due_integration_repair_stage_page": {
+      "baseline_span": [
+        177,
+        184
+      ],
+      "landing_span": [
+        177,
+        184
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.due_integration_schedule_page": {
+      "baseline_span": [
+        173,
+        176
+      ],
+      "landing_span": [
+        173,
+        176
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.due_integration_subject_page": {
+      "baseline_span": [
+        207,
+        216
+      ],
+      "landing_span": [
+        207,
+        216
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.ensure_integration_subject": {
+      "baseline_span": [
+        197,
+        200
+      ],
+      "landing_span": [
+        197,
+        200
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_active_integration_repair_for_task": {
+      "baseline_span": [
+        799,
+        799
+      ],
+      "landing_span": [
+        796,
+        796
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_applicable_integration_review_evidence": {
+      "baseline_span": [
+        826,
+        834
+      ],
+      "landing_span": [
+        823,
+        831
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_integration_batch": {
+      "baseline_span": [
+        797,
+        797
+      ],
+      "landing_span": [
+        794,
+        794
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_integration_checkpoint": {
+      "baseline_span": [
+        793,
+        796
+      ],
+      "landing_span": [
+        790,
+        793
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_integration_operation": {
+      "baseline_span": [
+        798,
+        798
+      ],
+      "landing_span": [
+        795,
+        795
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_integration_promotion_intent": {
+      "baseline_span": [
+        840,
+        840
+      ],
+      "landing_span": [
+        837,
+        837
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_integration_review_evidence": {
+      "baseline_span": [
+        835,
+        835
+      ],
+      "landing_span": [
+        832,
+        832
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_integration_subject": {
+      "baseline_span": [
+        201,
+        202
+      ],
+      "landing_span": [
+        201,
+        202
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_integration_subject_by_key": {
+      "baseline_span": [
+        203,
+        206
+      ],
+      "landing_span": [
+        203,
+        206
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.get_retired_integration_writer": {
+      "baseline_span": [
+        822,
+        824
+      ],
+      "landing_span": [
+        819,
+        821
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.list_integration_delivery_receipts": {
+      "baseline_span": [
+        863,
+        865
+      ],
+      "landing_span": [
+        860,
+        862
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.list_integration_subject_journal": {
+      "baseline_span": [
+        230,
+        238
+      ],
+      "landing_span": [
+        230,
+        238
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.mark_integration_promotion_conflict": {
+      "baseline_span": [
+        856,
+        858
+      ],
+      "landing_span": [
+        853,
+        855
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.mark_integration_promotion_prepared": {
+      "baseline_span": [
+        853,
+        855
+      ],
+      "landing_span": [
+        850,
+        852
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.mark_integration_promotion_pushed": {
+      "baseline_span": [
+        859,
+        859
+      ],
+      "landing_span": [
+        856,
+        856
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.mark_integration_resolution_push_started_on": {
+      "baseline_span": [
+        847,
+        849
+      ],
+      "landing_span": [
+        844,
+        846
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.pending_integration_cleanup_page": {
+      "baseline_span": [
+        193,
+        196
+      ],
+      "landing_span": [
+        193,
+        196
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.record_integration_resolution_push_on": {
+      "baseline_span": [
+        844,
+        846
+      ],
+      "landing_span": [
+        841,
+        843
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.reserve_integration_conflict_resolution": {
+      "baseline_span": [
+        841,
+        843
+      ],
+      "landing_span": [
+        838,
+        840
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.reserve_integration_promotion_intent": {
+      "baseline_span": [
+        839,
+        839
+      ],
+      "landing_span": [
+        836,
+        836
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.unresolved_integration_intent_page": {
+      "baseline_span": [
+        189,
+        192
+      ],
+      "landing_span": [
+        189,
+        192
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/base.py::DatabaseBackend.wake_integration_subjects": {
+      "baseline_span": [
+        217,
+        227
+      ],
+      "landing_span": [
+        217,
+        227
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import shlex
+import sys
 import time
 import uuid
 from collections import defaultdict
@@ -37,6 +38,7 @@ if os.name != "posix":  # pragma: no cover - the registry's gate
     raise ImportError("the tmux session provider requires a POSIX host")
 
 from src.sessions import proctable
+from src.metrics.perf import timed_operation
 from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal
 from src.sessions.provider import (
     Cap,
@@ -63,6 +65,25 @@ __all__ = ["TmuxCommandError", "TmuxProvider"]
 #: Shell commands that mean "the agent has not started yet" during the
 #: readiness poll (the pane briefly shows the wrapper shell).
 _SHELLS = frozenset({"sh", "bash", "zsh", "fish", "dash", "ksh"})
+
+# Exec in the pane process, retaining an error even if tmux removes the pane
+# before readiness can capture it. Log no argument/environment values (tokens).
+_EXEC_SCRIPT = """import errno, os, sys
+try:
+    os.execvp(sys.argv[2], sys.argv[2:])
+except OSError as exc:
+    code = errno.errorcode.get(exc.errno, str(exc.errno))
+    message = f"Harness exec failed: {code}: {exc.strerror}"
+    if exc.errno == errno.E2BIG:
+        message += "; argument or environment too large; deliver large prompts by file"
+    print(message, file=sys.stderr, flush=True)
+    try:
+        with open(sys.argv[1], "a", encoding="utf-8") as log:
+            log.write(message + "\\n")
+    except OSError:
+        pass
+    sys.exit(127)
+"""
 
 #: NBSP-insensitive comparison for readiness prefixes — Claude's ``❯`` is
 #: followed by a non-breaking space, and harness files are written by
@@ -248,6 +269,7 @@ class TmuxProvider(SessionProvider):
 
     # -- plumbing ----------------------------------------------------------
 
+    @timed_operation("session.tmux")
     async def _tmux(self, *args: str, timeout: float = 30.0, stdin: bytes | None = None) -> str:
         """Run ``tmux -u -L <socket> <args…>`` and return stdout.
 
@@ -322,6 +344,7 @@ class TmuxProvider(SessionProvider):
 
     # -- lifecycle ---------------------------------------------------------
 
+    @timed_operation("provider.tmux.start")
     async def start(self, spec: SessionSpec) -> SessionHandle:
         require_session_executable(spec)
         work_dir = Path(spec.work_dir)
@@ -331,6 +354,10 @@ class TmuxProvider(SessionProvider):
         if not spec.command:
             raise ValueError(f"session {spec.session_name!r} has an empty command")
 
+        state_dir = self._state_dir(spec.session_name)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        startup_log = state_dir / "start-stderr.log"
+        startup_log.write_text("", encoding="utf-8")
         await self._probe_server()
 
         # ``exec`` so the agent *is* the pane process, not a child of a
@@ -349,6 +376,7 @@ class TmuxProvider(SessionProvider):
             shlex.quote(arg)
             for arg in (
                 *(f"{key}={value}" for key, value in launch_env.items()),
+                sys.executable, "-c", _EXEC_SCRIPT, str(startup_log),
                 *spec.command,
             )
         )
@@ -443,7 +471,19 @@ class TmuxProvider(SessionProvider):
             path = state_dir / "start-stderr.log"
             try:
                 await asyncio.to_thread(state_dir.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(path.write_text, text, "utf-8")
+                # The exec wrapper may already have written the only evidence.
+                # Never erase it with an empty/missing pane capture.
+                def record_failure():
+                    previous = path.read_text(encoding="utf-8") if path.exists() else ""
+                    with path.open("a", encoding="utf-8") as log:
+                        log.write(f"Startup failed: {detail}\n")
+                        if text:
+                            log.write(text + "\n")
+                    return previous.strip()
+
+                diagnostic = await asyncio.to_thread(record_failure)
+                if diagnostic:
+                    detail += ": " + diagnostic[:2000]
             except OSError:
                 path = None  # type: ignore[assignment]
             with contextlib.suppress(Exception):
@@ -550,6 +590,7 @@ class TmuxProvider(SessionProvider):
             # since, so look for it again on the remaining budget.
             ready_deadline = max(ready_deadline, time.monotonic() + dialog_budget.remaining())
 
+    @timed_operation("provider.tmux.stop")
     async def stop(self, h: SessionHandle, *, grace: float = 2.0) -> None:
         if await self._fenced(h):
             pid = await self._pane_pid(h.name)
@@ -751,6 +792,7 @@ class TmuxProvider(SessionProvider):
                             await self._tmux("delete-buffer", "-b", buffer)
             self._last_input_at[h.name] = time.monotonic()
 
+    @timed_operation("provider.tmux.nudge")
     async def nudge(self, h: SessionHandle, text: str) -> None:
         lock = self._nudge_locks[h.name]
         async with lock:

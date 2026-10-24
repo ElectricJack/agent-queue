@@ -8,14 +8,20 @@ row as evidence that a delivery producer is progressing.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import wait_measurements, wait_records
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_WINDOW_SECONDS = 7 * 24 * 3600
 THRESHOLD_REFRESH_SECONDS = 24 * 3600
@@ -86,60 +92,6 @@ async def measured_threshold_on(
     )
 
 
-@dataclass(frozen=True)
-class DeliveryProgress:
-    state: str
-    reason: str
-    age_seconds: float
-    wait_id: str | None
-
-
-def classify_delivery_progress(
-    *, completed_at: float, now: float, threshold: DeliveryThreshold,
-    wait: Mapping[str, Any] | None, escalation: Mapping[str, Any] | None = None,
-    decision_budget_seconds: float,
-) -> DeliveryProgress:
-    """Classify an exactly bound producer wait without treating age as failure.
-
-    The reader must first bind the wait to this repository, completion generation
-    and target. In particular a live wait for another batch is not evidence.
-    Completion age is immutable; neither wait creation nor a retry resets it.
-    The shared wait subsystem owns deadline firing and supervisor decisions.
-    """
-    if not math.isfinite(decision_budget_seconds) or decision_budget_seconds <= 0:
-        raise ValueError("a positive supervisor decision budget is required")
-    age = max(0, now - completed_at)
-    wait_id = wait["id"] if wait else None
-
-    def result(state, reason):
-        return DeliveryProgress(state, reason, age, wait_id)
-
-    if wait is None:
-        return result("stuck", "publisher_unavailable")
-    inputs = wait.get("decision_inputs") or {}
-    if inputs.get("delivery_watchdog_projection"):
-        return result("stuck", inputs.get("delivery_reason", "publisher_unavailable"))
-    if wait.get("origin") != "integration":
-        return result("stuck", "publisher_unavailable")
-    if wait.get("outcome") == "source_unavailable":
-        return result("stuck", "target_unavailable")
-    if wait.get("outcome") != "pending":
-        return result("stuck", "policy_reobserve_due")
-    if wait.get("verification_state") != "verified":
-        return result("unknown", "delivery_observation_unavailable")
-    if escalation and escalation.get("decided_at") is None:
-        if now >= escalation["raised_at"] + decision_budget_seconds:
-            return result("stuck", "awaiting_supervisor_decision")
-        return result("progressing", "awaiting_supervisor_decision")
-    deadline = wait.get("escalate_at")
-    if deadline is None or deadline <= now:
-        # An expired deadline without its committed escalation is incomplete
-        # observation, not authority to wake or merge anything.
-        return result("unknown", "delivery_observation_unavailable")
-    return result("slow" if age >= threshold.stuck_after_seconds else "progressing",
-                  inputs.get("delivery_reason", "policy_reobserve_due"))
-
-
 # -- the scan ---------------------------------------------------------------
 #
 # Mechanism only: the scan classifies, projects one blocker row per stuck
@@ -166,15 +118,11 @@ _WATCHED = {
 
 
 def _digest(text: str, size: int = 16) -> str:
-    import hashlib
-
     return hashlib.sha256(text.encode()).hexdigest()[:size]
 
 
 def _policy_options(raw: Any) -> dict[str, Any]:
     """The project's ``delivery_watchdog`` override; defaults when absent or invalid."""
-    import json
-
     from pydantic import ValidationError
 
     from src.integration.models import DeliveryWatchdogPolicy
@@ -193,8 +141,6 @@ def _policy_options(raw: Any) -> dict[str, Any]:
 
 
 async def _config_get(conn, key: str) -> Any:
-    import json
-
     from src.database.tables import system_config
 
     value = await conn.scalar(select(system_config.c.value).where(system_config.c.key == key))
@@ -202,14 +148,10 @@ async def _config_get(conn, key: str) -> Any:
 
 
 async def _config_put(conn, key: str, value: Any) -> None:
-    import json
-
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     from src.database.tables import system_config
 
     text = json.dumps(value, sort_keys=True)
-    await conn.execute(pg_insert(system_config).values(key=key, value=text).on_conflict_do_update(
+    await conn.execute(insert(system_config).values(key=key, value=text).on_conflict_do_update(
         index_elements=["key"], set_={"value": text},
     ))
 
@@ -292,8 +234,6 @@ async def _pending_rows_on(conn, project_id: str) -> list[dict[str, Any]]:
 
 async def _settle_on(db, conn, row: Mapping[str, Any], *, now: float, outcome: str) -> None:
     """Containment satisfies the projection and resolves its incident."""
-    from sqlalchemy import update
-
     from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
     from src.database.tables import escalations
     from src.waits.adapters.legacy_escalation import execute_mutation
@@ -310,12 +250,13 @@ async def _settle_on(db, conn, row: Mapping[str, Any], *, now: float, outcome: s
             escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
         ).values(
             state="resolved", revision=escalations.c.revision + 1, updated_at=now,
-            terminal_at=now, terminal_outcome=outcome,
-            terminal_evidence={"task_id": row["owner_id"], "head": inputs.get("head")},
+            terminal_at=now, terminal_outcome=outcome, outcome="sweep",
+            terminal_evidence={"task_id": row["owner_id"], "head": inputs.get("head"),
+                               "target_ref": inputs.get("target_ref"),
+                               "source_generation": row["source_generation"],
+                               "automatic_rule": "delivery_contained"},
         ))
     if inputs.get("redrive"):
-        import json
-
         await db.log_event("delivery.recovered", project_id=row["project_id"],
                            task_id=row["owner_id"], payload=json.dumps({
                                "generation": row["condition"].get("generation"),
@@ -324,8 +265,6 @@ async def _settle_on(db, conn, row: Mapping[str, Any], *, now: float, outcome: s
 
 
 async def _mark_rows_on(conn, rows, *, reason: str, verification: str, now: float) -> None:
-    from sqlalchemy import update
-
     for row in rows:
         inputs = {**(row["decision_inputs"] or {}), "delivery_state": "unknown",
                   "delivery_reason": reason, "stuck_scans": 0}
@@ -336,7 +275,7 @@ async def _mark_rows_on(conn, rows, *, reason: str, verification: str, now: floa
 
 
 async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
-                            repository_id: str, target_ref: str) -> str:
+                            repository_id: str, target_ref: str, hierarchy=None) -> str:
     """One agent task per generation lands the stuck work; the id makes it idempotent."""
     from src.integration.models import INTEGRATION_REPAIR_PRIORITY
     from src.models import Task, TaskStatus, TaskType
@@ -361,14 +300,13 @@ async def _file_takeover_on(db, conn, *, key: str, entry: Mapping[str, Any],
         priority=INTEGRATION_REPAIR_PRIORITY, dedup_key=key,
         created_by_kind="system", created_by_id="delivery-watchdog",
     ), conn=conn)
+    if hierarchy is not None:
+        await hierarchy.reserve_ready_root_origin_on(conn, task_id)
     return task_id
 
 
 async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
                              inputs: Mapping[str, Any], now: float) -> str:
-    import json
-
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     from src.database.tables import messages
 
@@ -380,7 +318,7 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
                 "landing task, land the branch by hand, or abandon the generation. The "
                 "incident resolves itself once the work is on the default branch.")
     incident, created = await db.create_escalation(
-        conn=conn, id=incident_id, project_id=project_id,
+        conn=conn, id=incident_id, project_id=project_id, task_id=task_id,
         source_kind=INCIDENT_SOURCE_KIND, source_identity=key,
         incident_key="delivery-stuck:" + key, supervisor_owner=f"supervisor-{project_id}",
         task_title=f"Land stuck delivery of {task_id}", summary=summary,
@@ -388,7 +326,7 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
         decision_requested=decision, severity="high", now=now,
     )
     if created:
-        await conn.execute(pg_insert(messages).values(
+        await conn.execute(insert(messages).values(
             id="msg-" + incident_id, project_id=project_id, from_kind="system",
             from_id="delivery-watchdog", to_kind="session", to_id=incident["supervisor_owner"],
             subject=summary, body=f"{summary}\n{decision}\nIncident: {incident_id}",
@@ -400,7 +338,7 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
 
 async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any, *,
                        threshold: DeliveryThreshold, repository_id: str, target_ref: str,
-                       now: float) -> dict[str, Any]:
+                       now: float, hierarchy=None) -> dict[str, Any]:
     """Classify one owed generation and write its projection; at most one handover."""
     from src.metrics.delivery_latency import generation_of
 
@@ -408,19 +346,60 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
     generation = (generation_of(request) if request is not None else None) or (
         "head:" + entry["head"])
     key = f"{repository_id}:{task_id}:{generation}:{target_ref}"
-    completed_at = (request.completed_at if request is not None and request.completed_at
-                    else None)
+
+    completed_at = request.completed_at if request is not None else None
     state, reason = _WATCHED[entry["rule"]]
     if (entry["rule"] == "unreconciled" and request is not None
             and not request.has_recorded_source):
         reason = "missing_source_provenance"
     async with db.immediate() as conn:
-        row = previous if previous is not None and previous["source_key"] == (
-            "delivery-watchdog:" + key) else None
-        if previous is not None and row is None:
+        wait_id = "delivery-watchdog-" + _digest(key, 24)
+        if previous is not None and previous["id"] != wait_id:
             await _settle_on(db, conn, previous, now=now, outcome="superseded by a newer "
                              "completion generation")
-        inputs = dict(row["decision_inputs"]) if row is not None else {}
+        # The pending-only scan snapshot can omit a terminal projection or race
+        # another scan. Reuse its identity and lock its current inputs before
+        # counting scans or handing over; never reset a committed wait outcome.
+        await conn.execute(insert(wait_records).values(
+            id=wait_id, project_id=project_id,
+            owner_kind="scheduler", owner_id=task_id, origin="integration",
+            condition_kind="task", condition={"kind": "task", "task_id": task_id,
+                                              "generation": generation,
+                                              "target_ref": target_ref},
+            source_key="delivery-watchdog:" + key, source_generation=0,
+            source_watermark_seq=0, created_at=now, request_hash=_digest(key, 32),
+            verification_state="verified", evidence_ref=entry["head"], verified_at=now,
+        ).on_conflict_do_nothing())
+        row = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id,
+        ).with_for_update())).mappings().one()
+        inputs = dict(row["decision_inputs"] or {})
+
+        # Supervisor withdrawal is scoped to this exact generation. Re-read
+        # the durable incident even when the pending snapshot omitted this row,
+        # so a later scan or daemon restart cannot reopen the false alarm.
+        if incident_id := inputs.get("incident_id"):
+            from src.database.tables import escalations
+
+            cancelled = await conn.scalar(select(escalations.c.id).where(
+                escalations.c.id == incident_id, escalations.c.project_id == project_id,
+                escalations.c.source_kind == INCIDENT_SOURCE_KIND,
+                escalations.c.source_identity == key, escalations.c.state == "cancelled",
+            ))
+            if cancelled:
+                inputs.update(delivery_state="cleared", delivery_reason="supervisor_cancelled",
+                              stuck_scans=0)
+                if row["outcome"] != "cancelled":
+                    await conn.execute(update(wait_records).where(
+                        wait_records.c.id == wait_id,
+                    ).values(outcome="cancelled", resolved_at=now, cleared_at=now,
+                             decision_reason="supervisor_cancelled", decision_inputs=inputs,
+                             version=wait_records.c.version + 1))
+                return {"task_id": task_id, "generation": generation, "state": "cleared",
+                        "reason": "supervisor_cancelled", "age_seconds": inputs.get("age_seconds"),
+                        "stuck_scans": 0, "redrive": inputs.get("redrive"),
+                        "incident_id": incident_id}
+
         first = inputs.get("first_completed_at") or completed_at or now
         age = max(0.0, now - first)
         if state == "progressing" and age >= threshold.stuck_after_seconds:
@@ -440,7 +419,7 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
                 async with conn.begin_nested():
                     redrive = {"task_id": await _file_takeover_on(
                         db, conn, key=key, entry=entry, repository_id=repository_id,
-                        target_ref=target_ref), "at": now}
+                        target_ref=target_ref, hierarchy=hierarchy), "at": now}
             except Exception as exc:  # noqa: BLE001 - a refusal is the incident's evidence
                 refused = f"{type(exc).__name__}: {exc}"[:500]
         inputs.update(
@@ -457,37 +436,25 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
             incident_id = await _raise_incident_on(db, conn, key=key, entry=entry,
                                                    inputs=inputs, now=now)
         inputs["incident_id"] = incident_id
-        values = {"decision_reason": reason, "decision_inputs": inputs,
-                  "verification_state": "verified", "evidence_ref": entry["head"],
-                  "verified_at": now}
-        if row is None:
-            await conn.execute(insert(wait_records).values(
-                id="delivery-watchdog-" + _digest(key, 24), project_id=project_id,
-                owner_kind="scheduler", owner_id=task_id, origin="integration",
-                condition_kind="task", condition={"kind": "task", "task_id": task_id,
-                                                  "generation": generation,
-                                                  "target_ref": target_ref},
-                source_key="delivery-watchdog:" + key, source_generation=0,
-                source_watermark_seq=0, created_at=now, request_hash=_digest(key, 32),
-                **values,
-            ))
-        else:
-            from sqlalchemy import update
+        await conn.execute(update(wait_records).where(wait_records.c.id == wait_id).values(
+            decision_reason=reason, decision_inputs=inputs, verification_state="verified",
+            evidence_ref=entry["head"], verified_at=now, outcome="pending", resolved_at=None, cleared_at=None,
+            version=wait_records.c.version + 1,
 
-            await conn.execute(update(wait_records).where(wait_records.c.id == row["id"])
-                               .values(version=wait_records.c.version + 1, **values))
+        ))
     return {"task_id": task_id, "generation": generation, "state": state, "reason": reason,
             "age_seconds": age, "stuck_scans": stuck_scans, "redrive": redrive,
             "incident_id": incident_id}
 
 
 async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
-                                page_size: int = PAGE_SIZE) -> dict[str, Any]:
+                                page_size: int = PAGE_SIZE, hierarchy=None) -> dict[str, Any]:
     """One bounded, oldest-first pass over projects after the persisted cursor.
 
     Projects are scanned whole, so an owed generation missing from a scanned
     project's inventory is contained and its projection settles. An unavailable
-    repository still advances the cursor and never counts as stuck.
+    repository still advances the cursor and never counts as stuck. Each task
+    commits separately; failures are reported and retried on a later pass.
     """
     from src.database.tables import projects, repos
     from src.integration.delivery_branches import DELIVERING_MODES
@@ -497,7 +464,8 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
         from src.integration.delivery_branches import observe_completed_branches as observe
     async with db._engine.connect() as conn:
         targets = [dict(row) for row in (await conn.execute(
-            select(projects.c.id, projects.c.hierarchical_integration_mode.label("mode"),
+            select(projects.c.id, projects.c.status,
+                   projects.c.hierarchical_integration_mode.label("mode"),
                    projects.c.hierarchical_integration_policy.label("policy"),
                    repos.c.id.label("repository_id"), repos.c.default_branch)
             .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
@@ -507,7 +475,7 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
     ordered = ([t for t in targets if cursor is None or t["id"] > cursor]
                + [t for t in targets if cursor is not None and t["id"] <= cursor])
     report: dict[str, Any] = {"projects": [], "deliveries": [], "unavailable": [],
-                              "train_disabled": []}
+                              "train_disabled": [], "project_inactive": [], "errors": []}
     seen = 0
     for target in ordered:
         if seen >= page_size:
@@ -516,6 +484,13 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
         report["projects"].append(project_id)
         async with db.immediate() as conn:
             pending = {row["owner_id"]: row for row in await _pending_rows_on(conn, project_id)}
+            if target["status"] != "ACTIVE":
+                report["project_inactive"].append(project_id)
+                await _mark_rows_on(conn, pending.values(),
+                                    reason="project_" + target["status"].lower(),
+                                    verification="verified", now=now)
+                await _config_put(conn, CURSOR_KEY, project_id)
+                continue
             if target["mode"] not in DELIVERING_MODES:
                 report["train_disabled"].append(project_id)
                 await _mark_rows_on(conn, pending.values(), reason="train_disabled",
@@ -544,14 +519,29 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
                                      requests[e["task_id"]].completed_at) or now, e["task_id"]))
         for entry in entries:
             seen += 1
-            report["deliveries"].append(await _watch_entry(
-                db, entry, requests.get(entry["task_id"]), pending.pop(entry["task_id"], None),
-                threshold=threshold, repository_id=target["repository_id"],
-                target_ref=target_ref, now=now,
-            ))
+            previous = pending.pop(entry["task_id"], None)
+            try:
+                report["deliveries"].append(await _watch_entry(
+                    db, entry, requests.get(entry["task_id"]), previous,
+                    threshold=threshold, repository_id=target["repository_id"],
+                    target_ref=target_ref, now=now, hierarchy=hierarchy,
+                ))
+            except Exception as exc:
+                logger.exception("delivery watchdog entry failed for %s/%s",
+                                 project_id, entry["task_id"])
+                report["errors"].append({"project_id": project_id, "task_id": entry["task_id"],
+                                         "error": type(exc).__name__})
+        for row in pending.values():
+            try:
+                async with db.immediate() as conn:
+                    await _settle_on(db, conn, row, now=now,
+                                     outcome="the completed work reached the default branch")
+            except Exception as exc:
+                logger.exception("delivery watchdog settlement failed for %s/%s",
+                                 project_id, row["owner_id"])
+                report["errors"].append({"project_id": project_id, "task_id": row["owner_id"],
+                                         "error": type(exc).__name__})
+
         async with db.immediate() as conn:
-            for row in pending.values():
-                await _settle_on(db, conn, row, now=now,
-                                 outcome="the completed work reached the default branch")
             await _config_put(conn, CURSOR_KEY, project_id)
     return report

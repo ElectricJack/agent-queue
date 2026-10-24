@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/pr_delivery.py::DeliveredPullRequestClosure.run::4115e00148ee733c5c57eb5a2bd2132388dffb1b9ee2dbbeaf53748f9578f64f": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 106,
+      "owner": "DeliveredPullRequestClosure.run",
+      "owner_fingerprint": "941f4247ee75c6f0cfa1720f7119cc27e552a84458e4c5bd0a99ae24d12acc6c",
+      "reason": "Diagnostic audit of a Git-proven PR closure, written after project/task locks reject unfinished tasks and attached writers. Records the existing proof and operator reason only; never replays refs, mutates tasks or authorizes delivery."
+    }
+  }
+}

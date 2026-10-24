@@ -22,6 +22,7 @@ from src.integration.ownership import BranchOwnership
 from src.integration.records import ParentEpisodeRecords
 from src.integration.owner_guards import parent_engine_guard
 from src.integration.reviews import ReviewEvidenceProducer
+from src.integration.row_query import select_row
 from src.models import TaskStatus
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
@@ -99,31 +100,12 @@ class ParentSourceReverification:
         )
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
-            parent = (
-                (
-                    await conn.execute(
-                        select(t.tasks)
-                        .where(
-                            t.tasks.c.id == task_id,
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
-            project = (
-                (
-                    await conn.execute(
-                        select(t.projects)
-                        .where(
-                            t.projects.c.id == source["project_id"],
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            parent = await select_row(conn, t.tasks, t.tasks.c.id == task_id, lock=True)
+            project = await select_row(
+                conn,
+                t.projects,
+                t.projects.c.id == source['project_id'],
+                lock=True,
             )
             if (
                 parent is None
@@ -161,23 +143,14 @@ class ParentSourceReverification:
                 .mappings()
                 .one()
             )
-            operation = (
-                (
-                    await conn.execute(
-                        select(t.integration_repair_operations)
-                        .where(
-                            t.integration_repair_operations.c.id
-                            == checkpoint["last_completed_operation_id"],
-                            t.integration_repair_operations.c.parent_task_id == task_id,
-                            t.integration_repair_operations.c.episode_id
-                            == checkpoint["episode_id"],
-                            t.integration_repair_operations.c.state == "completed",
-                        )
-                        .with_for_update()
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            operation = await select_row(
+                conn,
+                t.integration_repair_operations,
+                t.integration_repair_operations.c.id == checkpoint['last_completed_operation_id'],
+                t.integration_repair_operations.c.parent_task_id == task_id,
+                t.integration_repair_operations.c.episode_id == checkpoint['episode_id'],
+                t.integration_repair_operations.c.state == 'completed',
+                lock=True,
             )
             if operation is None:
                 raise HierarchyError("invalid", "parent has no completed aggregate operation")

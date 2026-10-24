@@ -224,6 +224,13 @@ class ReleaseWorkspaceResponse(BaseModel):
     released_from_task: str | None = None
 
 
+class RebindWorkspaceResponse(BaseModel):
+    success: bool
+    workspace_id: str
+    task_id: str
+    session_id: str
+
+
 class WorkspaceRetireClaimResponse(BaseModel):
     workspace_id: str
     retired: bool = False
@@ -367,6 +374,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_workspaces": ListWorkspacesResponse,
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
+    "rebind_workspace": RebindWorkspaceResponse,
     "workspace_retire_claim": WorkspaceRetireClaimResponse,
     "workspace_clear_sentinel": WorkspaceClearSentinelResponse,
     "edit_workspace": EditWorkspaceResponse,

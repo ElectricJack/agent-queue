@@ -12,6 +12,13 @@ tags: [spec, git, workspace]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+Current Git, credential and workspace behavior is documented in
+[Projects, Git branches, and workspaces](../concepts/projects-and-workspaces.md)
+and [system 6](systems/projects-workspaces-git.md). In particular, the old
+direct `gh` calls and implicit lease descriptions below are historical;
+production GitHub calls use the shared runner and rewrites require an exact
+observed remote OID.
+
 **Source:** `src/git/manager.py`
 
 ## 1. Overview
@@ -444,9 +451,10 @@ The caller is responsible for ensuring `onto` is up-to-date (e.g. via a prior fe
 
 High-level merge-and-push flow. Returns `(success: bool, error_msg: str)`.
 
-Encapsulates the full sync-merge-push flow as a single operation. Callers (e.g. the
-orchestrator's `_merge_and_push`) no longer need to coordinate fetch / checkout /
-reset / merge / push individually. **Resolves G1, G2, G3.**
+Encapsulates the full sync-merge-push flow as a single operation. Callers no longer
+need to coordinate fetch / checkout / reset / merge / push individually (the
+orchestrator's former `_merge_and_push` caller was retired by azure-ridge-72; delivery
+belongs to the integration service). **Resolves G1, G2, G3.**
 
 **Steps:**
 
@@ -502,7 +510,7 @@ Reset workspace to a clean state after a failed merge-and-push. **Resolves G2.**
 2. Runs `git reset --hard origin/<default_branch>`.
 
 This undoes any local merge commit left behind by a failed push, ensuring the workspace
-is ready for the next task. The orchestrator's `_merge_and_push` calls `recover_workspace` automatically after `sync_and_merge` returns a failure. Best-effort: callers should wrap in try/except if they cannot tolerate failures.
+is ready for the next task. Callers invoke `recover_workspace` after `sync_and_merge` returns a failure. Best-effort: callers should wrap in try/except if they cannot tolerate failures.
 
 ---
 
@@ -829,8 +837,7 @@ approval merge the branch into the default branch and push. Both paths include
 error handling with user-facing notifications. The orchestrator polls PR merge
 status for approval-gated tasks.
 
-**Maintained by:** `_complete_workspace`, `_merge_and_push`,
-`_create_pr_for_task`, `check_pr_merged`.
+**Maintained by:** `_complete_workspace`, `_create_pr_for_task`, `check_pr_merged`.
 
 ### P7. Worktree-Aware Branching
 
@@ -856,7 +863,7 @@ After successful merge or PR completion, task branches are deleted locally and
 remotely. Cleanup failures are silently ignored to avoid blocking the workflow when
 a branch was already deleted (e.g. by GitHub's "delete branch after merge" setting).
 
-**Maintained by:** `delete_branch` (called from `_merge_and_push`).
+**Maintained by:** `delete_branch`.
 
 ---
 

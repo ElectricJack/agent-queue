@@ -1,0 +1,10 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/stranded_work.py::RESUME_POINT_META": {
+      "reason": "Task metadata key for the saved-WIP resume point, read only by exact-origin preparation; vocabulary with no storage or authority of its own."
+    },
+    "src/orchestrator/stranded_work.py::record_resume_point": {
+      "reason": "Records the commit a stopped hierarchy/train writer's work was saved at, pinned to the task's canonical origin (repository, branch, base SHA). Exact-origin preparation honours it only while Git proves base, saved commit and origin/<branch> are in order, and the launch deletes it; no publication, ref replay or lifecycle journal."
+    }
+  }
+}

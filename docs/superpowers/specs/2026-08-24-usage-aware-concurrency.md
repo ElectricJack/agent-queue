@@ -1,6 +1,6 @@
 ---
 tags: [tokens, budget, scheduling, observability, design]
-status: draft
+status: historical proposal; observation and headroom routing shipped, reset pacing unimplemented
 date: 2026-08-24
 ---
 
@@ -11,6 +11,13 @@ date: 2026-08-24
 > designed, not as the code stands today. Start at [the documentation
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
+
+Current behaviour: [providers system spec](../../specs/systems/providers.md),
+[usage accounting](../../reference/usage-accounting.md),
+[scheduling and provider availability](../../concepts/scheduling.md), and
+[worker pools](../../guides/worker-pools.md). This historical proposal does not
+describe the current fleet sizing algorithm or replace its configured ceilings;
+its proposed implementation details are not setup instructions.
 
 ## 1. Goal
 

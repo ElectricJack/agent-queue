@@ -1,0 +1,53 @@
+{
+  "discord_purge_channel": {
+    "argument_reads_diagnostic_only": [
+      "confirm",
+      "limit"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_resolve_discord_channel": "sha256:9e28ceaebcdb747afd57101875b71f247cc14f647ce9ff3addd73905cdb014f4"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/discord_commands.py:DiscordCommandsMixin._cmd_discord_purge_channel",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'could not read channel history: {e}'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'dry_run': True, 'channel': getattr(channel, 'name', str(channel.id)), 'deletable': len(recent), 'too_old_to_bulk_delete': old, 'note': 're-run with confirm=true to delete'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'purge failed after {deleted} message(s): {e}', 'deleted': deleted}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'channel': getattr(channel, 'name', str(channel.id)), 'deleted': deleted, 'too_old_to_bulk_delete': old}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:5172eda8dee676642d5bc7c5d4a9b2755a548cbd12a8c0b932631de22776b67b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_discord_housekeeping.py"
+    ]
+  }
+}

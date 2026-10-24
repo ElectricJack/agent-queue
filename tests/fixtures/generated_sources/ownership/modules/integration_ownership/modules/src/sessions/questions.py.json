@@ -1,0 +1,25 @@
+{
+  "generic_dependencies": {
+    "src/sessions/questions.py::AgentQuestionService": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/sessions/questions.py::AgentQuestionService._native_plan::aa6c5d0c1b30091482569a6d39a2770d8640228ff9deb37a3361d0b064977889": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1016,
+      "owner": "AgentQuestionService._native_plan",
+      "owner_fingerprint": "94360bc69f2f48884e34d2e4e52dd1c5583bf7e18b6eff534709f078e9ae95de",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _dismiss_key(q['id'])"
+    },
+    "src/sessions/questions.py::AgentQuestionService.answer::b9447634eee2e9f8306f54b9e7df0b083226e4ffc77b0675af9cb69cd594f187": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 788,
+      "owner": "AgentQuestionService.answer",
+      "owner_fingerprint": "3f56bf454359e646b53b4caa98f84288c439886814dd49d5f6fbdf29c7e5a8dc",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _answered_key(question_id) Owner now also fences accepted ask decisions and domain receipts."
+    }
+  }
+}

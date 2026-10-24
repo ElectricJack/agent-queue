@@ -1,0 +1,26 @@
+{
+  "shared": {
+    "dashboard/src/pages/command-center/layout-v2/ContainerNode.tsx::function ContainerNode({ data, selected }: ContainerNodeProps) {": {
+      "baseline_span": [
+        11,
+        130
+      ],
+      "landing_span": [
+        11,
+        130
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/pages/command-center/layout-v2/ContainerNode.tsx::import { EpicDeliveryBadge } from \"../../../components/EpicDelivery\";": {
+      "baseline_span": [
+        6,
+        6
+      ],
+      "landing_span": [
+        6,
+        6
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

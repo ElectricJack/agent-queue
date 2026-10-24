@@ -1414,21 +1414,6 @@ async def test_enablement_projection_is_read_only_and_fail_closed(attestation_db
 
 
 @pytest.mark.asyncio
-async def test_green_candidate_remains_retryable_until_main_promotion(attestation_db):
-    rows = await attestation_db.pending_candidate_ci_page(after=None, limit=10)
-    assert [(row["batch_id"], row["revision"]) for row in rows] == [("batch", 0)]
-
-    async with attestation_db.immediate() as conn:
-        await conn.execute(
-            update(integration_batches)
-            .where(integration_batches.c.id == "batch")
-            .values(lifecycle="promoting")
-        )
-
-    assert await attestation_db.pending_candidate_ci_page(after=None, limit=10) == []
-
-
-@pytest.mark.asyncio
 async def test_two_fresh_services_reserve_one_provider_publication(attestation_db, tmp_path):
     class RacingProvider(ProviderClient):
         def __init__(self):

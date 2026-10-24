@@ -1,0 +1,24 @@
+{
+  "shared": {
+    "src/commands/workspace_checkout_repair.py::import from src.commands.supervisor_authority import operator_or_global_supervisor": {
+      "reason": "Imports the authority guard used by the integration-aware base-checkout repair; conservatively charges the adapter's imported authorization seam."
+    },
+    "src/commands/workspace_checkout_repair.py::import from src.database.tables import integration_branch_owners, projects, sessions, workspaces": {
+      "reason": "Imports integration writer reservations so base-checkout repair cannot replace a checkout retained by an active integration owner."
+    },
+    "src/commands/workspace_checkout_repair.py::repair": {
+      "reason": "Verifies slot sentinels, common Git object store, origins and absence of integration writers before a proof-bound base path repair."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/workspace_checkout_repair.py::repair::b65ea6d1051a573dd1b8d1c1df949680e8a1850b6e52d54c0bb704dc0ccdd848": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 154,
+      "owner": "repair",
+      "owner_fingerprint": "d535aa3f4f2341b2356e20ec6588aebef67d326f7aca38a77fc9e9aba9e4350c",
+      "reason": "Audits the applied base-checkout path repair with before/after slot identity proof and operator id; live locks and origin checks authorize the transaction."
+    }
+  }
+}

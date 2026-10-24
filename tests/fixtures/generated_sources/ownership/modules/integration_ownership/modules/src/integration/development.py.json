@@ -1,0 +1,112 @@
+{
+  "storage_sinks": {
+    "src/integration/development.py::DevelopmentIntegration._operation_insert::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 850,
+      "owner": "DevelopmentIntegration._operation_insert",
+      "owner_fingerprint": "9dccb8abf0f98c1a55c1c322312ace56a3a444198b1df6ec727244f497234794",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development.py::DevelopmentIntegration._reclaim_repair::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2371,
+      "owner": "DevelopmentIntegration._reclaim_repair",
+      "owner_fingerprint": "0e31edcd0a97b2407157c17213a1ed629ddccfcf1404e6e6969aef952ea6e7ac",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development.py::DevelopmentIntegration._record_branch_cleanup::ddd593ce696f5186ab814e9198ce8e1b7caedb763494a55f6a824601db607427": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 3183,
+      "owner": "DevelopmentIntegration._record_branch_cleanup",
+      "owner_fingerprint": "bad8f59120285ea2dc4ee66d3912d0e3d2dcf6e1b57d8539ef71f0e6046853d4",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development.py::DevelopmentIntegration.ensure_repair::0c1846cfc9ab97a1a2c4fe90b4fb61c5e5b1a236ffe196eb4d0ae41449f343db": {
+      "call": "set_task_meta",
+      "disposition": "retire",
+      "integration_signal": false,
+      "line": 4166,
+      "owner": "DevelopmentIntegration.ensure_repair",
+      "owner_fingerprint": "36970af54eebdf296de07acc7dcce5b2e6129fd61ad5561c41a19a372efa8bd0",
+      "reason": "Legacy duplicate delivery/repair-evidence metadata: REPAIR_EVIDENCE_KEY"
+    },
+    "src/integration/development.py::DevelopmentIntegration.ensure_repair::c2eb96bffbc976f357270cc999eaf773d7a948e8c925a9626e33b21f72eefd70": {
+      "call": "set_task_meta",
+      "disposition": "retire",
+      "integration_signal": false,
+      "line": 4164,
+      "owner": "DevelopmentIntegration.ensure_repair",
+      "owner_fingerprint": "36970af54eebdf296de07acc7dcce5b2e6129fd61ad5561c41a19a372efa8bd0",
+      "reason": "Legacy duplicate delivery/repair-evidence metadata: 'development_repair_sources'"
+    },
+    "src/integration/development.py::DevelopmentIntegration.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 3249,
+      "owner": "DevelopmentIntegration.stale_branches",
+      "owner_fingerprint": "024a084b28c16536d892ea4caac836da19d3189890ab0593316a54fee7180a21",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development.py::DevelopmentPrimitives._operation_insert::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 485,
+      "owner": "DevelopmentPrimitives._operation_insert",
+      "owner_fingerprint": "9dccb8abf0f98c1a55c1c322312ace56a3a444198b1df6ec727244f497234794",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development.py::DevelopmentPrimitives._reclaim_repair::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 518,
+      "owner": "DevelopmentPrimitives._reclaim_repair",
+      "owner_fingerprint": "0e31edcd0a97b2407157c17213a1ed629ddccfcf1404e6e6969aef952ea6e7ac",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development.py::DevelopmentPrimitives._record_branch_cleanup::ddd593ce696f5186ab814e9198ce8e1b7caedb763494a55f6a824601db607427": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 868,
+      "owner": "DevelopmentPrimitives._record_branch_cleanup",
+      "owner_fingerprint": "bad8f59120285ea2dc4ee66d3912d0e3d2dcf6e1b57d8539ef71f0e6046853d4",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/development.py::DevelopmentPrimitives.ensure_repair::0c1846cfc9ab97a1a2c4fe90b4fb61c5e5b1a236ffe196eb4d0ae41449f343db": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1157,
+      "owner": "DevelopmentPrimitives.ensure_repair",
+      "owner_fingerprint": "ce55b0712e0a21c0300fa40a6a5b2502185225364c0eef8634129691d06066ea",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority. Re-reviewed after filing the repair at INTEGRATION_REPAIR_PRIORITY (bright-stone-28): only the task's priority changed; the metadata write is unchanged."
+    },
+    "src/integration/development.py::DevelopmentPrimitives.ensure_repair::c2eb96bffbc976f357270cc999eaf773d7a948e8c925a9626e33b21f72eefd70": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1155,
+      "owner": "DevelopmentPrimitives.ensure_repair",
+      "owner_fingerprint": "ce55b0712e0a21c0300fa40a6a5b2502185225364c0eef8634129691d06066ea",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority. Re-reviewed after filing the repair at INTEGRATION_REPAIR_PRIORITY (bright-stone-28): only the task's priority changed; the metadata write is unchanged."
+    },
+    "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 782,
+      "owner": "DevelopmentPrimitives.stale_branches",
+      "owner_fingerprint": "1f173a3c75d29afd835477d8e4998dcc98f0c1d9c42733a2b893cb0e9d67aeef",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

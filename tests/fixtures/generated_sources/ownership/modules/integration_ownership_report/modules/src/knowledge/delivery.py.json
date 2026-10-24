@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/knowledge/delivery.py::UNKNOWN": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

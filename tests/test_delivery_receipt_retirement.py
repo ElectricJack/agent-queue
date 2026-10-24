@@ -44,7 +44,6 @@ READERS = {
     "src/integration/observe.py": "close_merge: parent episode protocol",
     "src/integration/parent_repair_heads.py": "fixers: resolution identity",
     "src/integration/parent_source.py": "close_merge: parent episode protocol",
-    "src/integration/parent_subjects.py": "close_merge: parent episode protocol",
     "src/integration/records.py": "close_merge: disposition audit",
     "src/integration/release.py": "dispatch: terminal batch release",
     "src/integration/repair.py": "fixers: conflict-resolution identity",

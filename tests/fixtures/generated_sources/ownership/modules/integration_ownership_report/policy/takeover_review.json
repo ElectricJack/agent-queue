@@ -1,0 +1,84 @@
+{
+  "takeover_review": {
+    "current_owned_groups": {
+      "companions": 12573,
+      "engine": 87440,
+      "guards": 639,
+      "policy": 480,
+      "policy_sources": 1999,
+      "shared": 47581,
+      "ui": 333
+    },
+    "current_owned_total": 151045,
+    "current_table_count": 45,
+    "fixed_baseline_and_caps_unchanged": true,
+    "historical_park_retirement_review": {
+      "added_definition_fingerprints": 10,
+      "added_file_fingerprints": 3,
+      "definitions": [
+        "src/commands/contracts/integration.py::DESIGN_INTEGRATION_COMMANDS",
+        "src/commands/contracts/integration.py::IntegrationRetireLegacyParkArgs",
+        "src/commands/contracts/integration.py::IntegrationRetireLegacyParkArgs.exact_abandonment",
+        "src/commands/contracts/integration.py::IntegrationRetireLegacyParkValue",
+        "src/commands/contracts/integration.py::register_integration_contracts",
+        "src/commands/integration_commands.py::IntegrationCommandsMixin",
+        "src/commands/integration_commands.py::IntegrationCommandsMixin._cmd_integration_retire_legacy_park",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.<header>",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.__init__",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement._inactive_on",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run"
+      ],
+      "escalation_sweep_review": "The same measured revision includes historical escalation sweep reads and factual rule changes in src/escalations/sweep.py. The sweep remains outside the integration-owned definitions and introduces no new metadata or event writer. Current inventory contains no unreviewed storage site.",
+      "files": [
+        "src/commands/contracts/integration.py",
+        "src/commands/integration_commands.py",
+        "src/integration/legacy_park_retirement.py"
+      ],
+      "new_storage_sites": {
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::44714f7cb26e83228b185710d18977e72d64ead34c438f688b00c1ec53fbcd80": "ordinary",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": "retire"
+      },
+      "reason": "The LOCAL-only control retires exactly previewed parked legacy records whose complete selected manifest is terminal and whose project has no active integration authority. Existing repository-engine, hierarchy and per-operation exclusions fence both writes. Prior journal revisions, Git refs, completions and branch-owner fences remain intact; no new tables, retained delivery mechanism, source admission, baseline or cap changed.",
+      "reviewed_revision": "b6c82b36d0533ee12786ac43929476d9409a2b6c"
+    },
+    "new_storage_sites": {
+      "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_hotfix::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
+      "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
+      "src/integration/delivered_close.py::DeliveredClose.record::1d2b10658739ab0587d184ca964bbeca56c51b0b984a7acb06655c1484bcb7e6": "ordinary",
+      "src/integration/delivered_close.py::DeliveredClose.record::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": "ordinary",
+      "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::44714f7cb26e83228b185710d18977e72d64ead34c438f688b00c1ec53fbcd80": "ordinary",
+      "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": "retire",
+      "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": "ordinary",
+      "src/integration/quiesce.py::TrainQuiesce.run::bba5a9b32fdbb8a1feca353b791766c5e46c29caa87665ba2236dd63e3be814b": "ordinary",
+      "src/integration/quiesce.py::TrainQuiesce.run::c8bd8e346bc9e9a88d824b9c32abc9bc3203c20d2c9814ad165154e2fd57968d": "retire",
+      "src/integration/train_sources.py::BackmergeAdmission.author::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "intent"
+    },
+    "owned_definition_additions": 27,
+    "published_ci_repair_review": "Train parent completion produces exact review evidence through retained RepositoryGit; its fixture rejects the legacy service hook. Promotion notification no-consumer proof retains healthy activation and loaded-rule checks. The retained promotion event names and runtime import are explicitly owned. No storage authority, baseline/cap or writer disposition changed.",
+    "refreshed_owner_fingerprints": 33,
+    "reviewed_revision": "b6c82b36d0533ee12786ac43929476d9409a2b6c",
+    "ruleset_reader_review": "Explicit LOCAL verification may supplement hidden bypass actors using the existing operator login only for the exact repository and ruleset id, after App and operator policy documents agree. App bypass observations remain App-owned; no writer, replay journal, duplicate lifecycle state, storage classification or baseline/cap changed.",
+    "trust_identity_review": {
+      "added_definition_fingerprints": 6,
+      "added_file_fingerprints": 3,
+      "definitions": [
+        "src/commands/integration_commands.py::IntegrationCommandsMixin",
+        "src/commands/integration_commands.py::IntegrationCommandsMixin._cmd_integration_trust_manifest",
+        "src/integration/app_mode.py::_manifest",
+        "src/integration/trust_manifest.py::__all__['flow_attestation_names']",
+        "src/integration/trust_manifest.py::flow_attestation_names",
+        "src/integration/trust_manifest.py::manifest_for_policy"
+      ],
+      "files": [
+        "src/commands/integration_commands.py",
+        "src/integration/app_mode.py",
+        "src/integration/trust_manifest.py"
+      ],
+      "new_storage_sites": [],
+      "reason": "Manifest generation, App verification and functional preflight derive promotion attestation identities from the same bound stored flow. The command reads existing configuration; the pure helper validates and orders names. No metadata writer, replay journal, duplicate lifecycle state, storage classification, baseline or cap changed.",
+      "reviewed_revision": "abe4debe475b802a5c2895f23d8bf70488922933"
+    },
+    "unknown_definitions": [],
+    "unknown_storage_sites": []
+  }
+}

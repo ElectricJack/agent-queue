@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/api/app.py::create_app": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
