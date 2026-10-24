@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/records/models.py::RecordError": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

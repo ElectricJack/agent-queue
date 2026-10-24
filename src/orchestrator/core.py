@@ -94,6 +94,7 @@ from src.messaging.types import (
 from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
 )
+from src.metrics.perf import timed_operation
 from src.models import (
     DAEMON_AUTHORED_TASK_TYPES,
     AgentProfile,
@@ -651,7 +652,7 @@ class Orchestrator(
         self.record_outbox = None
         self.knowledge_generation_loop = None
         self.integration_service = None
-        # IntegrationTrain | None — the delivery engine when git_first is active.
+        # IntegrationTrain | None — initialized during integration startup.
         self.integration_train = None
         self._batch_push_unsub = None
         #: When this process began; refreshed by ``initialize()`` for playbook recovery.
@@ -771,6 +772,13 @@ class Orchestrator(
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    @cached_property
+    def cycle_waits(self):
+        """Agent-wait and wait-service maintenance, off the cycle's critical path."""
+        from src.wait_runtime.cycle import CycleWaitMaintenance
+
+        return CycleWaitMaintenance(self)
 
     @cached_property
     def morning_due(self):
@@ -1122,7 +1130,8 @@ class Orchestrator(
             await self._finish_manual_pause(task_id, snapshot)
 
     async def resume_task(
-        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator"
+        self, task_id: str, *, recover_stale_pause: bool = False, actor: str = "local-operator",
+        defer_recovery_supersession: bool = False,
     ):
         async with self._task_control_lock(task_id):
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
@@ -1169,8 +1178,13 @@ class Orchestrator(
                     if stopped is not True:
                         raise ValueError("Slot reset recovery must wait for the old writer to stop")
                     stopped_sessions.append(session)
-                return await self.db.resume_task(task_id, stopped_sessions=stopped_sessions)
-            return await self.db.resume_task(task_id)
+                return await self.db.resume_task(
+                    task_id, stopped_sessions=stopped_sessions,
+                    defer_recovery_supersession=defer_recovery_supersession,
+                )
+            return await self.db.resume_task(
+                task_id, defer_recovery_supersession=defer_recovery_supersession,
+            )
 
     async def _recover_stale_pause(self, task_id, snapshot, *, retained, actor):
         """Prove the captured writers gone before rebinding obsolete pause identities."""
@@ -1222,12 +1236,22 @@ class Orchestrator(
 
         Distinct from :meth:`pause_task` so the retry can back off between
         attempts: an operator asking for the pause (or the resume) again is
-        an explicit request and never defers.
+        an explicit request and never defers. A fence refusal retains the
+        exact snapshot for recovery instead of retrying it after every scan.
         """
+        from src.database.queries.task_queries import PauseFenceError
+
         async with self._task_control_lock(task_id):
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
             if isinstance(snapshot, dict) and snapshot.get("cleanup_pending"):
-                await self._finish_manual_pause(task_id, snapshot, deferrable=True)
+                retained = await self.db.get_task_meta(task_id, "manual_pause_cleanup_retained")
+                if isinstance(retained, dict) and retained.get("snapshot") == snapshot:
+                    return
+                try:
+                    await self._finish_manual_pause(task_id, snapshot, deferrable=True)
+                except PauseFenceError as exc:
+                    if await self.db.record_task_pause_cleanup_retained(task_id, snapshot, str(exc)):
+                        logger.warning("Task %s pause cleanup retained for recovery: %s", task_id, exc)
 
     async def _finish_manual_pause(
         self, task_id: str, snapshot: dict, *, deferrable: bool = False
@@ -1635,6 +1659,14 @@ class Orchestrator(
         with principal_context(ExecutionPrincipal.service("integration-admission")):
             return await self._command_handler.repair_root_pr_checks(observation)
 
+    async def _refresh_root_pr(self, observation, gitops, snapshot):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-admission")):
+            return await self._command_handler.refresh_root_pr(observation, gitops, snapshot)
+
     async def _repair_integration_source_ancestry(self, observation):
         from src.commands.principal import ExecutionPrincipal, principal_context
         if self._command_handler is None:
@@ -1650,15 +1682,6 @@ class Orchestrator(
             return {"success": False, "outcome": "not_ready"}
         with principal_context(ExecutionPrincipal.service("integration-parent-source")):
             return await self._command_handler.reverify_integration_parent_source(observation)
-
-    async def _dispatch_integration_repair_stage(self, row):
-        """Dispatch one stage the integration service selected; it owns pacing."""
-        from src.commands.principal import ExecutionPrincipal, principal_context
-        if self._command_handler is None:
-            return {"success": False, "outcome": "not_ready"}
-        with principal_context(ExecutionPrincipal.service("integration-repair-continuation")):
-            return await self._command_handler._cmd_integration_repair_dispatch({
-                "operation_id": row["operation_id"], "stage": int(row["ordinal"])})
 
     async def _drain_branch_materializations(self, now: float) -> None:
         """Materialize reserved task refs through the fenced hierarchy service."""
@@ -1982,14 +2005,12 @@ class Orchestrator(
         self.db._admission_reader = self._delivery_admission
         # Git-first promotion writes no delivery receipt, so sibling
         # prerequisites are proven from the parent branch in Git instead.
-        if self.config.integration.git_first == "active":
-            from src.integration.delivery_observer import DeliveryObserver
-            from src.integration.git_truth import GitTruth
-
-            self.db.set_prerequisite_observer(DeliveryObserver(
-                self.db, git=self.git, data_dir=Path(self.config.data_dir) / "prerequisites",
-                truth=GitTruth(self.git),
-            ))
+        from src.integration.delivery_observer import DeliveryObserver
+        from src.integration.git_truth import GitTruth
+        self.db.set_prerequisite_observer(DeliveryObserver(
+            self.db, git=self.git, data_dir=Path(self.config.data_dir) / "prerequisites",
+            truth=GitTruth(self.git),
+        ))
         # aq-surface Phase S2: construct the session-token store now that
         # the DB is live.  The API layer prefers this instance so
         # revocations from the cascade sweep share the same cache as
@@ -2436,20 +2457,17 @@ class Orchestrator(
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
-        # git_first: active hands every target to the train; the subject
-        # runtimes are never built beside it.
+        # The train owns every target; subject runtimes are never built beside it.
         self.integration_train = train_for(self)
         if self._batch_push_unsub is not None:
             self._batch_push_unsub()
             self._batch_push_unsub = None
-        if self.integration_train is not None:
-            from src.integration.batch_repair_publication import wake_pushed_batch
+        from src.integration.batch_repair_publication import wake_pushed_batch
 
-            async def on_batch_push(event):
-                await wake_pushed_batch(self.db, self.integration_train, event)
+        async def on_batch_push(event):
+            await wake_pushed_batch(self.db, self.integration_train, event)
 
-            self._batch_push_unsub = self.bus.subscribe("git.push", on_batch_push)
-        train_active = self.integration_train is not None
+        self._batch_push_unsub = self.bus.subscribe("git.push", on_batch_push)
         from src.integration.task_removal import settle_orphaned_parent_operations
 
         async def settle_orphaned_parents(now):
@@ -2462,8 +2480,7 @@ class Orchestrator(
             self.db, self.integration_outbox,
             bus=self.bus,
             # The service drives the train through integration_train_tick.
-            train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
-            if train_active else None,
+            train=TrainCommandDriver(self.integration_train, lambda: self._command_handler),
             maintenance={
                 "git truth": reconcile_git_truth,
                 "orphaned parent operations": settle_orphaned_parents,
@@ -3362,6 +3379,13 @@ class Orchestrator(
             await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
         await self.cancel_claim_preparations()
         await stop_ready_owner_recovery(self)
+        if "cycle_waits" in self.__dict__:
+            await self.cycle_waits.stop()
+        for name in ("_operational_retention_dispatch", "_operational_retention_task",
+                     "_worktree_maintenance_task"):
+            pending = getattr(self, name, None)
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
         await self.message_delivery_service.stop()
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
@@ -3436,6 +3460,7 @@ class Orchestrator(
         except Exception:
             logger.exception("Tracked deployment check failed")
 
+    @timed_operation("orchestrator.cycle")
     async def run_one_cycle(self) -> None:
         """Run one iteration of the orchestrator's main loop.
 
@@ -4125,6 +4150,21 @@ class Orchestrator(
             return
         self._last_worktree_reaper = now
 
+        pending = getattr(self, "_worktree_maintenance_task", None)
+        if pending is None or pending.done():
+            self._worktree_maintenance_task = asyncio.create_task(
+                self._reap_worktree_slots_background(), name="worktree-maintenance",
+            )
+
+    async def _reap_worktree_slots_background(self) -> None:
+        """One serialized maintenance pass; Git subprocesses never block a cycle."""
+        try:
+            await self._reap_worktree_slots_pass()
+        except Exception:
+            logger.exception("Worktree maintenance failed; retrying on the next pass")
+
+    async def _reap_worktree_slots_pass(self) -> None:
+
         try:
             projects = await self.db.list_projects()
         except Exception as e:
@@ -4206,11 +4246,9 @@ class Orchestrator(
                     logger.debug("prune_branches(%s) failed: %s", ws.id, e)
 
     def _schedule_daily_git_branch_sweep(self) -> None:
-        """Run the fleet branch audit once daily while Git-first is active."""
+        """Run the fleet branch audit once daily."""
         from datetime import UTC, datetime
 
-        if getattr(self.config.integration, "git_first", "shadow") != "active":
-            return
         if self._git_branch_sweep_task is not None and not self._git_branch_sweep_task.done():
             return
         today = datetime.now(UTC).date().isoformat()
@@ -4280,6 +4318,7 @@ class Orchestrator(
                                exc_info=True)
             reports: list[BranchSweepReport] = []
             failures: list[str] = []
+            skipped: list[str] = []
             unregistered: dict[str, list[str]] = {}
             retired: list[tuple[str, str | None]] = []
             migrations: list[dict] = []
@@ -4390,15 +4429,17 @@ class Orchestrator(
                 if kind is not None and not getattr(kind, "is_git_repo", True):
                     continue
                 try:
-                    common = await self.git._arun(
-                        ["rev-parse", "--git-common-dir"], cwd=checkout
-                    )
+                    common = await self.git._arun(["rev-parse", "--git-common-dir"], cwd=checkout)
                     common_path = str((Path(checkout) / common).resolve())
                 except Exception:
                     continue
                 if common_path in seen_common_dirs:
                     continue
                 try:
+                    # Foreign detached worktrees: no push prep; the common dir stays eligible.
+                    if not workspace.is_slot and await self.git.aclean_detached_worktree(checkout):
+                        skipped.append(checkout)
+                        continue
                     retained_origin = retained_origins.get(str(Path(checkout).resolve()))
                     if retained_origin:
                         await ensure_retained_origin(self.git, checkout, retained_origin)
@@ -4436,12 +4477,8 @@ class Orchestrator(
                 safety = SweepSafety(self.db, repository.id,
                                      default_branch=repository.default_branch,
                                      git=self.git, checkout=checkout)
-                backup = (
-                    Path(self.config.vault_projects)
-                    / str(project.id)
-                    / "notes"
-                    / f"git-branch-sweep-{date}.tsv"
-                )
+                backup = (Path(self.config.vault_projects) / str(project.id) / "notes"
+                          / f"git-branch-sweep-{date}.tsv")
                 audit = partial(_append_backup, backup, repository=repository_url)
 
                 def audit_migration(scope, branch, sha, proof):
@@ -4476,10 +4513,8 @@ class Orchestrator(
                             project.name, checkout, stash,
                         )
                 except Exception as exc:
-                    logger.warning(
-                        "Daily Git branch sweep skipped %s (%s): %s",
-                        project.name, checkout, exc,
-                    )
+                    logger.warning("Daily Git branch sweep skipped %s (%s): %s",
+                                   project.name, checkout, exc)
                     failures.append(f"{project.name} ({checkout}): {exc}")
 
             for paths in unregistered.values():
@@ -4509,6 +4544,9 @@ class Orchestrator(
             ]
             if failures:
                 lines.append(f"Failures ({len(failures)}): " + "; ".join(failures[:10]))
+            if skipped:
+                lines.append(f"Skipped clean detached non-slot worktrees ({len(skipped)}): "
+                             + "; ".join(skipped[:10]))
             new_notices = [detail for key, detail in missing_notices.items()
                            if key not in previous_notices]
             if new_notices:
@@ -4578,20 +4616,8 @@ class Orchestrator(
                     logger.error("CollaborationReconciler tick refused: %s", result)
             except Exception:
                 logger.error("CollaborationReconciler tick failed", exc_info=True)
-            try:
-                from src.agent_waits import AgentWaitReconciler
-                result = await _bounded_stage(
-                    "agent waits", AgentWaitReconciler(self._command_handler).tick())
-                if not result.get("success"):
-                    logger.error("AgentWaitReconciler tick refused: %s", result)
-            except Exception:
-                logger.error("AgentWaitReconciler tick failed", exc_info=True)
-            try:
-                wait_service = getattr(self, "wait_service", None)
-                if wait_service is not None:
-                    await _bounded_stage("wait service", wait_service.tick())
-            except Exception:
-                logger.error("WaitService recovery tick failed", exc_info=True)
+            # A bounded single-flight task keeps slow graph maintenance off the cycle.
+            await self.cycle_waits.tick()
             try:
                 result = await _bounded_stage("agent cron", self.agent_cron.tick())
                 if not result.get("success"):

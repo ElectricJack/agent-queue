@@ -1,0 +1,9 @@
+{
+  "exclusions": {
+    "src/task_graph/layout/constants.py::VARIANTS['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/task_graph/layout/constants.py::FINISHED_STATUSES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/constants.py::VARIANTS": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

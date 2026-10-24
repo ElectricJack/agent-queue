@@ -17,6 +17,12 @@ related:
 > home](../../README.md) for current behaviour; see [historical
 > material](../../history/README.md).
 
+> **Runtime update (2026-10-22).** Layout is implemented and enabled by default.
+> Current rules version 4, geometry, deterministic container ordering, durable
+> tidy/reflow work and operator commands are documented in the
+> [task-graph system map](../../specs/systems/task-graph.md#338-showing-the-graph-persisted-spatial-layout).
+> The defaults, constants and budgets below describe the original design.
+
 ## 1. Outcome
 
 The Command Center **Graph** tab must stay readable and fast as a project accumulates

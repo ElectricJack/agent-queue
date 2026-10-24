@@ -1,0 +1,385 @@
+{
+  "message_inbox": {
+    "argument_reads_diagnostic_only": [
+      "include_consumed",
+      "inject",
+      "limit",
+      "to_id",
+      "to_kind"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_inbox_mailbox_scope_error": "sha256:63cdd8725ce0a61f8ef0b7a121957a1b2d02b4b80f2562dc48b54b2b1540163f",
+      "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95",
+      "_system_message_scope_error": "sha256:bb8b3907d3e936931d43b2c4f37118e164281848c268d5477789213e2ed1afb7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/message_commands.py:MessageCommandsMixin._cmd_message_inbox",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'to_kind': to_kind, 'to_id': to_id, 'count': len(rendered), 'injected': len(rendered), 'archived': archived, 'messages': rendered, **({'consumed': len(consumed), 'consumed_messages': [message_to_dict(m) for m in consumed]} if include_consumed else {})}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "disabled"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid to_kind '{to_kind}'. Allowed: {', '.join(sorted(MESSAGE_TO_KINDS))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'to_id is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "mailbox_error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "project_mailbox_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'limit must be a non-negative integer'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'to_kind': to_kind, 'to_id': to_id, 'count': len(pending), 'messages': [message_to_dict(m) for m in pending], **({'consumed': len(consumed), 'consumed_messages': [message_to_dict(m) for m in consumed]} if include_consumed else {})}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "scope_error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "scope_error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "scope_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: recipient mailbox project mismatch'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "scope_error"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:807561f708421b2bbcaa5a37be5d9efbb062227787c96ba6b0f5f90e8356cd00",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_api_messages.py",
+      "tests/test_message_commands.py",
+      "tests/test_project_supervisors.py",
+      "tests/test_session_commands.py"
+    ]
+  },
+  "message_list": {
+    "argument_reads_diagnostic_only": [
+      "include_archived",
+      "limit",
+      "project_id",
+      "session_addresses",
+      "since",
+      "system_only",
+      "thread_id",
+      "to_id",
+      "to_kind"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95",
+      "_system_message_scope_error": "sha256:bb8b3907d3e936931d43b2c4f37118e164281848c268d5477789213e2ed1afb7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/message_commands.py:MessageCommandsMixin._cmd_message_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'count': len(rows), 'messages': [message_to_dict(m) for m in rows]}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "disabled"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid to_kind '{to_kind}'. Allowed: {', '.join(sorted(MESSAGE_TO_KINDS))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'limit must be a non-negative integer'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "scope_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: project_id mismatch'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'since must be an epoch timestamp (number)'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:195e39f26737dd3aa32591cda8610eea6338e66af4bc81c143edb42378bd8924",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_message_commands.py"
+    ]
+  },
+  "message_reply": {
+    "argument_reads_diagnostic_only": [
+      "body",
+      "from_id",
+      "from_kind",
+      "idempotency_key",
+      "message_id",
+      "priority",
+      "subject",
+      "via"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_cmd_supervisor_inbox_reply": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+      "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95",
+      "_send_collaboration_message": "sha256:47207c4d2dcca9b0e53bb086936bf805ab07722ac121832c2d0cb94abd998632",
+      "_system_message_scope_error": "sha256:bb8b3907d3e936931d43b2c4f37118e164281848c268d5477789213e2ed1afb7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/message_commands.py:MessageCommandsMixin._cmd_message_reply",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'message_id': original.id, 'reply_id': reply.id, 'reply': message_to_dict(reply)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "disabled"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'message_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Message '{message_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer: dictionary expansion retains producer outcome",
+        "return": "{**result, 'message_id': message_id, 'reply_id': result['reply_message_id']}"
+      },
+      {
+        "protocol": "delegated_producer: dictionary expansion retains producer outcome",
+        "return": "{**result, 'message_id': original.id, 'reply_id': result['message_id'], 'reply': message_to_dict(await self.db.get_message(result['message_id']))}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Message '{message_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'body is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"cannot reply to a '{original.from_kind}' message — '{original.from_kind}' is not an addressable recipient (addressable: {', '.join(sorted(MESSAGE_TO_KINDS))})\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid from_kind '{from_kind}'. Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'reply identity is server-derived'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "scope_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'conversation input no longer exists'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'conversation reply identity is server-derived'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "scope_error"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:bedde816848173d18bc19c5bb306b06f39df563c88c648a0c9b307bed11d53ef",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_wait_commands.py",
+      "tests/test_api_messages.py",
+      "tests/test_message_commands.py"
+    ]
+  },
+  "message_send": {
+    "argument_reads_diagnostic_only": [
+      "_body_kind",
+      "archive_after_inject",
+      "body",
+      "from_id",
+      "from_kind",
+      "pane_open",
+      "priority",
+      "project_id",
+      "reply_to_id",
+      "subject",
+      "system_only",
+      "thread_id",
+      "to_id",
+      "to_kind"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/message_commands.py:MessageCommandsMixin._cmd_message_send",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "disabled"
+      },
+      {
+        "protocol": "delegated_producer; existing held-member transaction",
+        "return": "_send_collaboration_message"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "prepare_submission failure envelope"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "queued message envelope"
+      }
+    ],
+    "review_notes": "Shared submission preserves body, priority, reply-thread, pane and recipient normalization validation. PLAYBOOK sends derive their system sender/provenance and verify recipient ownership. Collaboration still requires a live member session and uses its existing sequence transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:b5f366331763d8148f6d74df2fea686fffd11b9eedda3c0bf55d0232bcb7b39f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_message_commands.py",
+      "tests/test_playbook_state_notify.py::test_normal_send_shares_sender_validation_and_atomic_insert_can_rollback"
+    ]
+  },
+  "message_status": {
+    "argument_reads_diagnostic_only": [
+      "message_id",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/message_commands.py:MessageCommandsMixin._cmd_message_status",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "disabled"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'message_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Message '{message_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'wait.held_message', 'error': 'Message is held until wait acknowledgement'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'message_id': message.id, 'state': state, 'via': message.via, 'delivered_at': message.delivered_at, 'acknowledged_at': message.read_at, 'message': message_to_dict(message)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f7f3a1d1c04d6b6568fc75a763bd391fa5590281db1819bf12635075a13e4f6c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_questions.py",
+      "tests/test_delivery_integration.py",
+      "tests/test_message_commands.py"
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "source_base": "94e69a6a60eaa640ee3cae13dd21edffb1ffc2c7",
+  "merged_source": "ddc3e6e6d9ba2ffa9af6fb1da041fa55115d2c5a",
+  "reason": "Combine held-ingestion P3 with current dev. The merge adds exactly the reviewed held-release delta (doctor transport, spec_ingest_legacy_adopt, task_batch_release, task_batch_retire) to dev's frozen catalogue and changes no other descriptor byte.",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "source_cli_catalogue_sha256": "933dcba27a323845d88a6df6fbd92997975ebb53ac930629375ad847a15c54ff",
+  "cli_catalogue_sha256": "1a2e0fd21174ae77b0c37b3eabdfbf54f2868ab0e6ac38d7db25aee0274a3378"
+}

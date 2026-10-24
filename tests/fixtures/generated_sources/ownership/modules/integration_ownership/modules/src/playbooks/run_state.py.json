@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/run_state.py::ArtifactVerificationFailed": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/run_state.py::PendingEventIntegrityError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/run_state.py::PlaybookStorageError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/run_state.py::TERMINAL_LIFECYCLES": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

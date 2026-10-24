@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/formula_checks.py::formula_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

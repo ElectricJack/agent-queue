@@ -1,0 +1,1161 @@
+{
+  "exclusions": {
+    "src/database/tables.py::GATE_STATUSES['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/database/tables.py::LAYOUT_VARIANTS['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/database/tables.py::TASK_DEP_TYPES['related']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/database/tables.py::admission_reservations": "Scheduler admission reservations for continuations and other work; train_repair is priority provenance, not integration delivery authority.",
+    "src/database/tables.py::agent_cron": "Session-owned recurring prompts and message delivery diagnostics introduced by revision 86; no integration state, ref mutations or replay journal.",
+    "src/database/tables.py::agent_cron['last_delivery_status']": "Recurring prompt terminal delivery status, unrelated to code delivery.",
+    "src/database/tables.py::continuations": "Verified-wait resume checkpoint and admission storage owned by sessions; no Git ref mutation or delivery replay state.",
+    "src/database/tables.py::wait_bridge_progress": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged.",
+    "src/database/tables.py::wait_deadlines": "Generic verified-wait deadline scheduling and generation fences for all wait kinds; no integration delivery journal.",
+    "src/database/tables.py::wait_edges": "Generic verified-wait dependency edges used for cycle detection and priority donation; no integration delivery or Git ref authority.",
+    "src/database/tables.py::wait_escalations": "Generic verified-wait escalation evidence and supervisor decisions; no integration delivery or Git ref mutation state.",
+    "src/database/tables.py::wait_measurements": "Generic wait duration and continuation cost samples; no integration lifecycle or reference replay authority.",
+    "src/database/tables.py::wait_priority_projection": "Derived task priority donation projection from the verified-wait graph; no integration delivery or Git ref authority.",
+    "src/database/tables.py::wait_records": "Verified-wait condition and outcome storage owned by session waits; integration_outcome is a source kind, not an integration delivery journal.",
+    "src/database/tables.py::wait_source_events": "Generic wait outbox for all source kinds. Payloads are evidence hints; consumers re-observe authoritative state, never replay integration refs or lifecycle from this table."
+  },
+  "generic_dependencies": {
+    "src/database/tables.py::agent_profiles": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::agent_questions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::agent_waits": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::agents": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::api_session_tokens": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::approved_document_snapshots": "Generic immutable approved document bytes and approval provenance when no review revision is available (docs/specs/database.md). Ingestion release reads this source evidence; it stores no integration subject, branch, code publication or ref replay authority. The release command and shared outbox adapter remain independently charged.",
+    "src/database/tables.py::archived_tasks": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_external_bindings": "Generic external notification root, receipt and generation storage for every ask source; no integration branch, gate lifecycle or ref replay authority.",
+    "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
+    "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
+    "src/database/tables.py::branch_deletion_audit": "Generic git branch-lifecycle storage: explicit retirement requests and the pre-delete SHA audit, owned by branch retirement rather than integration delivery; no integration_ prefix, journal or replay authority.",
+    "src/database/tables.py::branch_retirements": "Generic git branch-lifecycle storage: explicit retirement requests and the pre-delete SHA audit, owned by branch retirement rather than integration delivery; no integration_ prefix, journal or replay authority.",
+    "src/database/tables.py::chat_analyzer_suggestions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::collaboration_members": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::collaboration_messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::collaboration_threads": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::conversation_backfill_cursors": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::conversation_inputs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::conversation_intake_gaps": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::dashboard_state_documents": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::digest_windows": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::doc_review_comments": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::doc_review_dispatches": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::doc_review_revisions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::doc_reviews": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::escalation_actions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::escalation_deliveries": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::escalation_messages": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::escalations": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::events": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::gates": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::hierarchy_migration_rejects": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::human_asks": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ingest_batch_members": "Generic specification-ingestion task membership, section coverage and structure revision history. It records neither integration candidate membership nor code delivery, publication or ref replay authority; shared outbox transport remains independently charged.",
+    "src/database/tables.py::ingest_batch_receipts": "Generic specification-to-task fidelity review evidence, fenced by batch structure revision, digest and assigned reviewer. It grants ingestion admission only, not integration delivery, code publication or ref replay authority; shared outbox transport remains independently charged.",
+    "src/database/tables.py::ingest_batches": "Generic specification-ingestion approval state and held task structure. Reconciliation uses shared outbox transport, but this table stores no integration branch, code publication or ref replay authority; the outbox adapter remains independently charged.",
+    "src/database/tables.py::job_input_pins": "Playbook-only immutable script input retention; no integration owner, workspace lease or ref replay storage.",
+    "src/database/tables.py::job_outbox": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::job_workspace_pins": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::jobs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::layout_dirty": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::layout_jobs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::layout_reflow_requests": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::layout_tidy_request_pairs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::layout_tidy_requests": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::merge_slots": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::message_discord_receipts": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::messages": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::metrics_samples": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::morning_report_coverage": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::morning_report_facts": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::morning_reports": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::operator_decisions": "Project-scoped append-only operator instructions for tasks, batches and operations; stacked prerequisite authorization consumes existing decisions without adding integration storage. Integration authorization adapters remain charged.",
+    "src/database/tables.py::outbound_deliveries": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::playbook_activations": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::playbook_artifacts": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::playbook_pending_events": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::playbook_step_receipts": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::playbook_v2_runs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::playbook_waits": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::plugin_data": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::plugins": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::project_constraints": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::project_layout_meta": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::project_onboarding_requests": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::projects": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::provider_availability": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::provider_availability_transitions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::provider_usage_snapshots": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::pull_request_inbox_snapshot": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::rate_limits": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::repos": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
+    "src/database/tables.py::sessions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::subagent_events": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::supervisor_conversations": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::supervisor_report_requests": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::system_config": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_assignment_routes": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_comments": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_completion_records": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_context": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_criteria": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_dependencies": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_gates": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_labels": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_layout_cells": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_layouts": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_metadata": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_proposals": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_reroutes": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_results": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_session_attempts": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_subtasks": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_tools": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::task_workspace_requirements": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::tasks": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::test_selection_promotions": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::test_selections": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::token_ledger": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::transcript_checkpoints": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::wait_listener_cursors": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::wait_measurements": "Generic wait duration and continuation cost samples; no integration lifecycle or reference replay authority.",
+    "src/database/tables.py::workflows": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::workspace_kinds": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::workspaces": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/tables.py::INTEGRATION_JOURNAL_KINDS": {
+      "baseline_span": [
+        4873,
+        4873
+      ],
+      "landing_span": [
+        4806,
+        4806
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::INTEGRATION_JOURNAL_MODES": {
+      "baseline_span": [
+        4874,
+        4874
+      ],
+      "landing_span": [
+        4807,
+        4807
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::INTEGRATION_PRIMITIVES": {
+      "baseline_span": [
+        4875,
+        4896
+      ],
+      "landing_span": [
+        4808,
+        4829
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::INTEGRATION_SUBJECT_ENGINES": {
+      "baseline_span": [
+        4871,
+        4871
+      ],
+      "landing_span": [
+        4804,
+        4804
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::INTEGRATION_SUBJECT_KINDS": {
+      "baseline_span": [
+        4853,
+        4859
+      ],
+      "landing_span": [
+        4786,
+        4792
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::INTEGRATION_SUBJECT_PHASES": {
+      "baseline_span": [
+        4860,
+        4870
+      ],
+      "landing_span": [
+        4793,
+        4803
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::INTEGRATION_WRITER_STATUSES": {
+      "baseline_span": [
+        4872,
+        4872
+      ],
+      "landing_span": [
+        4805,
+        4805
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::archived_tasks['integration_mode']": {
+      "baseline_span": [
+        2175,
+        2175
+      ],
+      "landing_span": [
+        2108,
+        2108
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::epic_dependencies": {
+      "baseline_span": [
+        4513,
+        4524
+      ],
+      "landing_span": [
+        4446,
+        4457
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_attestation_publications": {
+      "baseline_span": [
+        4154,
+        4211
+      ],
+      "landing_span": [
+        4087,
+        4144
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_batch_members": {
+      "baseline_span": [
+        3454,
+        3495
+      ],
+      "landing_span": [
+        3387,
+        3428
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_batches": {
+      "baseline_span": [
+        3402,
+        3453
+      ],
+      "landing_span": [
+        3335,
+        3386
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_branch_owners": {
+      "baseline_span": [
+        3067,
+        3090
+      ],
+      "landing_span": [
+        3000,
+        3023
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_candidate_member_results": {
+      "baseline_span": [
+        3526,
+        3569
+      ],
+      "landing_span": [
+        3459,
+        3502
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_candidate_publications": {
+      "baseline_span": [
+        3570,
+        3610
+      ],
+      "landing_span": [
+        3503,
+        3543
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_candidate_ref_mutations": {
+      "baseline_span": [
+        3726,
+        3794
+      ],
+      "landing_span": [
+        3659,
+        3727
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_candidate_resolutions": {
+      "baseline_span": [
+        3611,
+        3708
+      ],
+      "landing_span": [
+        3544,
+        3641
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_candidate_revisions": {
+      "baseline_span": [
+        3496,
+        3525
+      ],
+      "landing_span": [
+        3429,
+        3458
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_check_evidence": {
+      "baseline_span": [
+        4114,
+        4153
+      ],
+      "landing_span": [
+        4047,
+        4086
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_child_dispositions": {
+      "baseline_span": [
+        3970,
+        3998
+      ],
+      "landing_span": [
+        3903,
+        3931
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_cleanup_items": {
+      "baseline_span": [
+        4212,
+        4326
+      ],
+      "landing_span": [
+        4145,
+        4259
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_close_attempts": {
+      "baseline_span": null,
+      "landing_span": [
+        7761,
+        7793
+      ],
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15)."
+    },
+    "src/database/tables.py::integration_delegate_releases": {
+      "baseline_span": [
+        4048,
+        4086
+      ],
+      "landing_span": [
+        3981,
+        4019
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_episode_receipt_acceptances": {
+      "baseline_span": [
+        4426,
+        4475
+      ],
+      "landing_span": [
+        4359,
+        4408
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_history_waiver_consumptions": {
+      "baseline_span": [
+        4670,
+        4705
+      ],
+      "landing_span": [
+        4603,
+        4638
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_history_waivers": {
+      "baseline_span": [
+        4592,
+        4619
+      ],
+      "landing_span": [
+        4525,
+        4552
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_legacy_deliveries": {
+      "baseline_span": [
+        4810,
+        4852
+      ],
+      "landing_span": [
+        4743,
+        4785
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_legacy_suppression": {
+      "baseline_span": [
+        4747,
+        4766
+      ],
+      "landing_span": [
+        4680,
+        4699
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_operation_artifact_pins": {
+      "baseline_span": [
+        4494,
+        4512
+      ],
+      "landing_span": [
+        4427,
+        4445
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_outbox": {
+      "baseline_span": [
+        4767,
+        4791
+      ],
+      "landing_span": [
+        4700,
+        4724
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_outbox_artifact_pins": {
+      "baseline_span": [
+        4792,
+        4809
+      ],
+      "landing_span": [
+        4725,
+        4742
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_owner_recoveries": {
+      "baseline_span": [
+        4087,
+        4113
+      ],
+      "landing_span": [
+        4020,
+        4046
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_parent_episodes": {
+      "baseline_span": [
+        3951,
+        3969
+      ],
+      "landing_span": [
+        3884,
+        3902
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_parent_operation_completions": {
+      "baseline_span": [
+        4392,
+        4425
+      ],
+      "landing_span": [
+        4325,
+        4358
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_parent_verification_evidence": {
+      "baseline_span": [
+        4476,
+        4493
+      ],
+      "landing_span": [
+        4409,
+        4426
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_parent_verifications": {
+      "baseline_span": [
+        4352,
+        4391
+      ],
+      "landing_span": [
+        4285,
+        4324
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_promotion_intents": {
+      "baseline_span": [
+        3171,
+        3307
+      ],
+      "landing_span": [
+        3104,
+        3240
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_release_results": {
+      "baseline_span": [
+        4576,
+        4591
+      ],
+      "landing_span": [
+        4509,
+        4524
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_repair_operations": {
+      "baseline_span": [
+        3885,
+        3950
+      ],
+      "landing_span": [
+        3818,
+        3883
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_repair_stage_evidence": {
+      "baseline_span": [
+        4327,
+        4351
+      ],
+      "landing_span": [
+        4260,
+        4284
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_repair_stages": {
+      "baseline_span": [
+        3999,
+        4041
+      ],
+      "landing_span": [
+        3932,
+        3974
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_review_evidence": {
+      "baseline_span": [
+        3091,
+        3133
+      ],
+      "landing_span": [
+        3024,
+        3066
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_rollout_transitions": {
+      "baseline_span": [
+        4620,
+        4669
+      ],
+      "landing_span": [
+        4553,
+        4602
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_root_authorizations": {
+      "baseline_span": [
+        3134,
+        3170
+      ],
+      "landing_span": [
+        3067,
+        3103
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_root_intent_members": {
+      "baseline_span": [
+        3795,
+        3884
+      ],
+      "landing_span": [
+        3728,
+        3817
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_source_ci": {
+      "baseline_span": [
+        679,
+        703
+      ],
+      "landing_span": [
+        679,
+        703
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_subject_journal": {
+      "baseline_span": [
+        5088,
+        5161
+      ],
+      "landing_span": [
+        5021,
+        5094
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::integration_subjects": {
+      "baseline_span": [
+        4901,
+        5087
+      ],
+      "landing_span": [
+        4834,
+        5020
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::jobs['integration_operation_id']": {
+      "baseline_span": [
+        5429,
+        5429
+      ],
+      "landing_span": [
+        5362,
+        5362
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::playbook_pending_events['protected']": {
+      "baseline_span": [
+        2521,
+        2524
+      ],
+      "landing_span": [
+        2454,
+        2457
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/database/tables.py::project_integration_leases": {
+      "baseline_span": [
+        4562,
+        4575
+      ],
+      "landing_span": [
+        4495,
+        4508
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::project_integration_schedules": {
+      "baseline_span": [
+        4525,
+        4561
+      ],
+      "landing_span": [
+        4458,
+        4494
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects[\"hierarchical_integration_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')\"]": {
+      "baseline_span": [
+        111,
+        114
+      ],
+      "landing_span": [
+        111,
+        114
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects[\"hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')\"]": {
+      "baseline_span": [
+        107,
+        110
+      ],
+      "landing_span": [
+        107,
+        110
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_desired_mode']": {
+      "baseline_span": [
+        80,
+        85
+      ],
+      "landing_span": [
+        80,
+        85
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_draining']": {
+      "baseline_span": [
+        86,
+        91
+      ],
+      "landing_span": [
+        86,
+        91
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_generation >= 0']": {
+      "baseline_span": [
+        115,
+        118
+      ],
+      "landing_span": [
+        115,
+        118
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_generation']": {
+      "baseline_span": [
+        92,
+        97
+      ],
+      "landing_span": [
+        92,
+        97
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_mode']": {
+      "baseline_span": [
+        72,
+        77
+      ],
+      "landing_span": [
+        72,
+        77
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_policy']": {
+      "baseline_span": [
+        79,
+        79
+      ],
+      "landing_span": [
+        79,
+        79
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['integration_mode']": {
+      "baseline_span": [
+        69,
+        71
+      ],
+      "landing_span": [
+        69,
+        71
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::projects['integration_repository_id']": {
+      "baseline_span": [
+        78,
+        78
+      ],
+      "landing_span": [
+        78,
+        78
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::statement:4dabdb185c7434ff": {
+      "baseline_span": [
+        4042,
+        4047
+      ],
+      "landing_span": [
+        3975,
+        3980
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::statement:5a39aa7edc596451": {
+      "baseline_span": [
+        3709,
+        3721
+      ],
+      "landing_span": [
+        3642,
+        3654
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::statement:64219311db8694ae": {
+      "baseline_span": [
+        3722,
+        3725
+      ],
+      "landing_span": [
+        3655,
+        3658
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::task_branch_origins": {
+      "baseline_span": [
+        3008,
+        3066
+      ],
+      "landing_span": [
+        2941,
+        2999
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::task_delivery_receipts": {
+      "baseline_span": [
+        3308,
+        3401
+      ],
+      "landing_span": [
+        3241,
+        3334
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::task_integration_checkpoints": {
+      "baseline_span": [
+        2929,
+        3007
+      ],
+      "landing_span": [
+        2862,
+        2940
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/tables.py::tasks['integration_mode']": {
+      "baseline_span": [
+        198,
+        200
+      ],
+      "landing_span": [
+        198,
+        200
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "shared_state": {
+    "src/database/tables.py::INTEGRATION_JOURNAL_KINDS": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::INTEGRATION_JOURNAL_MODES": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::INTEGRATION_PRIMITIVES": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::INTEGRATION_SUBJECT_ENGINES": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::INTEGRATION_SUBJECT_KINDS": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::INTEGRATION_SUBJECT_PHASES": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::INTEGRATION_WRITER_STATUSES": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::archived_tasks['integration_mode']": {
+      "classification": "ordinary",
+      "reason": "Historical archived task policy; retains ordinary archive/restore ownership and asserts no live delivery/ref state."
+    },
+    "src/database/tables.py::epic_dependencies": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_attestation_publications": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_batch_members": {
+      "classification": "intent_after_reshape",
+      "reason": "Retained name; reshape to minimal lock, frozen intent, check or review evidence. Current lifecycle copies retire."
+    },
+    "src/database/tables.py::integration_batches": {
+      "classification": "intent_after_reshape",
+      "reason": "Retained name; reshape to minimal lock, frozen intent, check or review evidence. Current lifecycle copies retire."
+    },
+    "src/database/tables.py::integration_branch_owners": {
+      "classification": "intent_after_reshape",
+      "reason": "Retained name; reshape to minimal lock, frozen intent, check or review evidence. Current lifecycle copies retire."
+    },
+    "src/database/tables.py::integration_candidate_member_results": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_candidate_publications": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_candidate_ref_mutations": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_candidate_resolutions": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_candidate_revisions": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_check_evidence": {
+      "classification": "intent_after_reshape",
+      "reason": "Retained name; reshape to minimal lock, frozen intent, check or review evidence. Current lifecycle copies retire."
+    },
+    "src/database/tables.py::integration_child_dispositions": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_cleanup_items": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_delegate_releases": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_episode_receipt_acceptances": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_history_waiver_consumptions": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_history_waivers": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_legacy_deliveries": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_legacy_suppression": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_operation_artifact_pins": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_outbox": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_outbox_artifact_pins": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_owner_recoveries": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_parent_episodes": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_parent_operation_completions": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_parent_verification_evidence": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_parent_verifications": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_promotion_intents": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_release_results": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_repair_operations": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_repair_stage_evidence": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_repair_stages": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_review_evidence": {
+      "classification": "intent_after_reshape",
+      "reason": "Retained name; reshape to minimal lock, frozen intent, check or review evidence. Current lifecycle copies retire."
+    },
+    "src/database/tables.py::integration_rollout_transitions": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_root_authorizations": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_root_intent_members": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_source_ci": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_subject_journal": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::integration_subjects": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::jobs['integration_operation_id']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::playbook_pending_events['protected']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::project_integration_leases": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::project_integration_schedules": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects[\"hierarchical_integration_desired_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')\"]": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects[\"hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')\"]": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_desired_mode']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_draining']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_generation >= 0']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_generation']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_mode']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects['hierarchical_integration_policy']": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::projects['integration_mode']": {
+      "classification": "intent",
+      "reason": "Configuration/authorization or ordinary resource-job ownership, not asserted ref/delivery state."
+    },
+    "src/database/tables.py::projects['integration_repository_id']": {
+      "classification": "intent",
+      "reason": "Configuration/authorization or ordinary resource-job ownership, not asserted ref/delivery state."
+    },
+    "src/database/tables.py::statement:4dabdb185c7434ff": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::statement:5a39aa7edc596451": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::statement:64219311db8694ae": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::task_branch_origins": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::task_delivery_receipts": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::task_integration_checkpoints": {
+      "classification": "retire",
+      "reason": "Legacy integration lifecycle/protocol projection or replay state."
+    },
+    "src/database/tables.py::tasks['integration_mode']": {
+      "classification": "intent",
+      "reason": "Configuration/authorization or ordinary resource-job ownership, not asserted ref/delivery state."
+    }
+  }
+}

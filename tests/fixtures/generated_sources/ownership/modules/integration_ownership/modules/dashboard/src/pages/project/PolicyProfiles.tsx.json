@@ -1,0 +1,7 @@
+{
+  "shared": {
+    "dashboard/src/pages/project/PolicyProfiles.tsx::export function PolicyDialog({ projectId, mode = \"import\", initialProfile = \"exported\", onClose }: {": {
+      "reason": "Renders integration-settings import previews and applies selected project policy; the dialog includes integration configuration controls and is charged in full."
+    }
+  }
+}

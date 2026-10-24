@@ -1,0 +1,37 @@
+{
+  "shared": {
+    "src/doctor/__init__.py::__all__['integration_checks']": {
+      "baseline_span": [
+        66,
+        66
+      ],
+      "landing_span": [
+        62,
+        62
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/__init__.py::default_registry": {
+      "baseline_span": [
+        84,
+        145
+      ],
+      "landing_span": [
+        80,
+        137
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/__init__.py::import from src.doctor.integration_checks import integration_checks": {
+      "baseline_span": [
+        21,
+        21
+      ],
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

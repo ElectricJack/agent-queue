@@ -1,19 +1,40 @@
-# Integration troubleshooting with durable Subjects
+# Integration troubleshooting
 
-The reconciler owns enabled root, parent and development delivery. Read the
-Subject's recorded phase, policy pin, wait reason, last decision and next visit:
+The Git-first train owns enabled root, epic and development delivery. Inspect
+current target visits, batch intent, exact candidate/check evidence and blockers:
 
 ```bash
 aq integration status PROJECT_ID
 aq task show TASK_ID
+aq doctor --check integration.delivery_engine
+aq doctor --check integration.train_batches_stalled
+```
+
+These are read-only projections. `integration.git_first: active` constructs the
+train; the code default `shadow` starts no delivery engine. After project train
+policy installation, a disabled activation preserves sources and candidates
+while stopping admission and fenced writes. Check that binding before treating
+a paused lane as a broken publisher. See the [train runbook](git-first-train-runbook.md).
+
+Historical Subject rows retain their gates and ownership evidence. A restart
+or configuration edit never grants authority to bypass a hold. Status can read
+Git to verify delivery but never advances a target.
+
+The retained Subject diagnostics still inspect unfinished rows in
+`integration_subjects`:
+
+```bash
 aq doctor --check integration.subjects_overdue
 aq doctor --check integration.subjects_held
 ```
 
-These are read-only projections. An overdue visit is retried from durable state
-once the daemon can run it. A held Subject needs the named gate resolved;
-configuration changes and daemon restarts do not clear that gate or grant a
-writer authority. Status can read Git to verify delivery evidence; it never advances delivery.
+`integration.subjects_overdue` reports rows whose `next_due_at` is more than
+60 seconds overdue; `integration.subjects_held` reports rows with no
+`next_due_at`. Inspect their `wait_reason` and `gate_id` for the recorded blocker.
+These checks expose historical Subject state; use the train diagnostics above
+for current delivery progress. For a stranded branch owner, preview the separate
+ownership proof with `aq integration release-owner --task-id TASK_ID --dry-run`
+as described below.
 
 Inspect App credentials and branch protection with `aq integration app-verify
 PROJECT_ID`. `app-setup` prints the fixes; applying GitHub settings is a separate
@@ -22,10 +43,21 @@ repository administrator action. See [App-mode setup](../config/app-mode-train.m
 ## A passed task blocked at delivery
 
 Passing close records execution, while delivery requires the exact revision to
-be present on its target. Check `task show` for its checkpoint, current receipts
-and blockers. Resolve missing source evidence or CI under the reviewed policy.
-For a missing no-code receipt, a local operator records a no-code child's disposition with `aq integration record-noop`.
-No worker or supervisor session can invoke that operator control.
+be present on its target. Check `task show` for its checkpoint, current Git delivery
+ evidence and blockers. Historical receipts alone do not prove current delivery.
+Resolve missing source evidence or CI under the reviewed policy. For a missing
+no-code receipt, a local operator or live elevated named supervisor can use
+`aq integration record-noop`; ordinary workers cannot invoke that control.
+
+`obsolete_child` means the child's diff only edits paths the parent has removed.
+Review the reported source and parent heads and the parent commit removing those
+paths. A local operator or project/global supervisor can run
+`aq integration redrive-child CHILD_ID --dispose-obsolete --superseded-by SHA
+--apply --head SOURCE --parent-head TARGET --reason "Why the work is obsolete"`.
+Omit `--apply` to preview. The fenced ours merge preserves the parent's files,
+records the reason and actor, and makes the child a real ancestor. Active writers,
+batches, changed heads or missing supersession proof refuse it. No human gate is
+required. `record-noop` continues to require a code-free completion.
 
 A completed child missing from a parent's collection can be inspected through
 `aq integration redrive-child CHILD_ID`. A completed root missing its PR can be
@@ -56,11 +88,17 @@ reviewing the gate answer, release that exact hold:
 aq integration release-held-gate SUBJECT_ID GATE_ID --apply --expected-version VERSION --reason REASON
 ```
 
-Repair delegates keep their frozen starting commit, fence, deadline and attempt
-budget. A stopped writer's preserved work can be inspected with
-`recover-preserved-repair`; detached attachments can be inspected with
-`rebind-detached-repair`. These controls repeat their Git and ownership proofs
-before applying. See [repair recovery](hierarchical-integration-trains.md#repair-and-collection-recovery).
+Current batch repairs use one task-free fixer session and retained checkout.
+Inspect the batch's fixer state, failure evidence, current head and finite revisit
+rather than looking for a new repair task. Distinct red results reuse the same
+session; exhaustion reports once to the supervisor and preserves work. A fixer
+publishes through `aq integration batch-fix --action push` and changes its clean
+binding only with `--action rebind`. Exact green can still deliver after exhaustion.
+Existing ordinary repair tasks retain their frozen input, ancestry checks and
+close handoff. The retired `recover-preserved-repair`, `rebind-repair` and
+`rebind-detached-repair` controls are unavailable; use the retained
+[repair recovery procedures](hierarchical-integration-trains.md#repair-and-collection-recovery)
+for the named current blocker.
 
 A historical cancelled parent collection can be previewed with
 `aq integration reopen-collection PARENT_ID`. It reuses the existing episode and

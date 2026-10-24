@@ -1,7 +1,9 @@
 """``aq doctor``, ``aq costs`` and benchmark evidence commands.
 
-Both delegate to the daemon through the REST client (like ``src/cli/tasks.py``);
-no business logic lives here.  ``aq doctor`` exits with the runner's exit code
+Normally these delegate to the daemon through the REST client. The explicit
+``doctor --offline --check db.alembic_orphan`` operator recovery path runs the
+same check and fix locally, without automatic schema initialization or upgrade.
+``aq doctor`` exits with the runner's exit code
 so CI can gate on it (design §5.6):
 
 ===== ===========================================
@@ -132,8 +134,52 @@ def _as_dict(obj: Any) -> dict:
     return dict(obj or {})
 
 
+async def _offline_doctor(*, fix: bool) -> dict:
+    """Run only orphan recovery, using an engine that has never initialized."""
+    import os
+    from contextlib import redirect_stdout
+    from types import SimpleNamespace
+
+    from src.database.migration_guard import OPERATOR, WORKER, current_scope, process_scope
+    from src.doctor.db_checks import db_checks
+    from src.doctor.models import DoctorContext
+    from src.doctor.runner import DoctorRegistry, run_doctor
+
+    from .db import _load_config, _make_engine
+    from .exceptions import ScopeDeniedError
+
+    if current_scope() == WORKER or os.environ.get("AQ_API_TOKEN"):
+        raise ScopeDeniedError(
+            "doctor --offline",
+            "offline doctor is a local operator workflow; worker and agent sessions "
+            "must ask the operator to run it outside a worktree slot"
+        )
+    config = _load_config()
+    engine, _ = _make_engine(config)
+    try:
+        # Do not turn a connection failure into an INFO 'not initialised' result.
+        async with engine.connect():
+            pass
+        context = DoctorContext(config=config, db=SimpleNamespace(_engine=engine))
+        registry = DoctorRegistry()
+        for check in db_checks():
+            registry.register(check)
+        # Alembic and borrowed migration files can print diagnostics. Keep the
+        # CLI's stdout available for the doctor JSON envelope.
+        with process_scope(OPERATOR), redirect_stdout(sys.stderr):
+            result = await run_doctor(registry, context, fix=fix, only=["db.alembic_orphan"])
+        return {"success": True, **result}
+    finally:
+        await engine.dispose()
+
+
 @cli.command("doctor")
 @click.option("--fix", is_flag=True, help="Apply fixes for failing fixable checks, then re-run.")
+@click.option("--leave-gated", is_flag=True,
+              help="Leave legacy spec proposals on their existing approval path during --fix.")
+@click.option("--offline", is_flag=True,
+              help="Run db.alembic_orphan locally without the daemon (operator only).")
+
 @click.option("--json", "as_json", is_flag=True, help="Emit the versioned JSON envelope.")
 @click.option(
     "--check",
@@ -143,16 +189,24 @@ def _as_dict(obj: Any) -> dict:
 )
 @click.pass_context
 @_handle_errors
-def doctor(ctx: click.Context, fix: bool, as_json: bool, checks: tuple[str, ...]) -> None:
+def doctor(
+    ctx: click.Context, fix: bool, leave_gated: bool, offline: bool,
+    as_json: bool, checks: tuple[str, ...],
+) -> None:
+
     """Check whether this install is healthy, and what to do about it."""
     from rich.table import Table
+
+    if offline and set(checks) != {"db.alembic_orphan"}:
+        raise click.UsageError("--offline requires --check db.alembic_orphan exclusively")
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     async def _fetch():
         async with _get_client(api_url) as client:
             return await client.execute(
-                "doctor", {"fix": fix, "checks": list(checks) or None}
+                "doctor", {"fix": fix, "checks": list(checks) or None,
+                           **({"leave_gated": True} if leave_gated else {})}
             )
 
     json_mode = as_json or bool((ctx.obj or {}).get("json"))
@@ -160,7 +214,7 @@ def doctor(ctx: click.Context, fix: bool, as_json: bool, checks: tuple[str, ...]
         ctx.find_root().obj["json"] = True
 
     try:
-        result = _run(_fetch())
+        result = _run(_offline_doctor(fix=fix) if offline else _fetch())
     except Exception as exc:
         from .exceptions import CommandError, DaemonNotRunningError
 
@@ -169,7 +223,7 @@ def doctor(ctx: click.Context, fix: bool, as_json: bool, checks: tuple[str, ...]
         # Doctor initialization failures are classified with transport
         # failures by its long-standing operational exit-code contract.
         if json_mode:
-            emit_error("daemon_unreachable", str(exc))
+            emit_error("doctor_failed" if offline else "daemon_unreachable", str(exc))
         else:
             console.print(f"[bold red]doctor failed to run:[/] {exc}")
         sys.exit(3)

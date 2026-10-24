@@ -1,0 +1,108 @@
+{
+  "reconciliation_definitions": {
+    "src/tools/definitions.py::_TOOL_CATEGORIES['integration_batch_fix']": {
+      "fingerprint": "c8da975ebc4570e403c47ce3728ea47115998bb2f0fd3143bef551df5a2f6e93",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/tools/definitions.py::statement:9dbb3d96e20fc1cb": {
+      "fingerprint": "9dbb3d96e20fc1cbf2da9089e4cb9e4bb0fdf453f06477f6a142b00315d066d8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]": {
+      "reason": "Registers the operator-only first-repository binding command and its exact expected URL and audit reason; explicitly refuses reassignment and live integration."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[create_task]": {
+      "baseline_span": [
+        1262,
+        1530
+      ],
+      "landing_span": [
+        1254,
+        1522
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[edit_project]": {
+      "baseline_span": [
+        871,
+        952
+      ],
+      "landing_span": [
+        863,
+        944
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[edit_task]": {
+      "baseline_span": [
+        2252,
+        2362
+      ],
+      "landing_span": [
+        2226,
+        2336
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[ensure_task]": {
+      "baseline_span": [
+        1531,
+        1594
+      ],
+      "landing_span": [
+        1523,
+        1586
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[pr_merge]": {
+      "baseline_span": [
+        6293,
+        6347
+      ],
+      "landing_span": [
+        6267,
+        6321
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[task_batch_validate]": {
+      "reason": "Documents integration-owned and delivery-condition refusal semantics in the public batch validation tool schema."
+    },
+    "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_parent_action']": {
+      "baseline_span": [
+        7864,
+        7911
+      ],
+      "landing_span": [
+        7737,
+        7784
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_reconcile_git_truth']": {
+      "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."
+    },
+    "src/tools/definitions.py::_FALLBACK_INPUT_SCHEMAS['integration_train_tick']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/tools/definitions.py::_TOOL_CATEGORIES['integration_continue_close']": {
+      "baseline_span": null,
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15)."
+    },
+    "src/tools/definitions.py::statement:678f1f7bd3e0177e": {
+      "baseline_span": null,
+      "landing_span": [
+        9471,
+        9480
+      ],
+      "reason": "Author-assisted close candidate authority, persisted proposal, or public continuation surface (stark-willow-95.15)."
+    }
+  }
+}

@@ -1,0 +1,187 @@
+{
+  "exclusions": {
+    "src/models.py::CLAIM_PHASES['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/models.py::Agent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::AgentOutput": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::AgentResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::AgentState": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::BLOCKING_DEP_TYPES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::ClaimResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::DAEMON_AUTHORED_TASK_TYPES": "Generic daemon task-kind classification used by startup recovery and routing; missing-session recovery only uses it to exclude daemon-authored work, and integration-specific guards remain independently charged.",
+    "src/models.py::DEP_TYPE_VALUES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::DepType": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::KIND_MODE_EXCLUSIVE_CLONE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::KIND_MODE_WORKTREE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::MESSAGE_FROM_KINDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::MESSAGE_TO_KINDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::PhaseResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::PipelineContext": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::Project": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::ProjectStatus": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::RepoConfig": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::RepoSourceType": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::SUSPENDED_TASK_STATUSES": "Generic task lifecycle vocabulary shared with verified waits; contains no delivery state or ref mutation.",
+    "src/models.py::SYSTEM_KIND_SCOPE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::SessionRecord": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::TASK_TYPE_VALUES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::Task": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::TaskCompletion": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::TaskEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::TaskStatus": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::TaskType": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::VerificationType": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::WORKSPACE_KIND_MODES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::WORKSPACE_MODE_VALUES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::WORKTREE_SENTINEL_NAME": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::Workspace": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::WorkspaceMode": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::worktree_setup_hash": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/models.py::INTEGRATION_MODES": {
+      "baseline_span": [
+        139,
+        139
+      ],
+      "landing_span": [
+        139,
+        139
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::INTEGRATION_MODE_DIRECT": {
+      "baseline_span": [
+        116,
+        137
+      ],
+      "landing_span": [
+        116,
+        137
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::INTEGRATION_MODE_PULL_REQUEST": {
+      "baseline_span": [
+        138,
+        138
+      ],
+      "landing_span": [
+        138,
+        138
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_desired_mode": {
+      "baseline_span": [
+        423,
+        423
+      ],
+      "landing_span": [
+        423,
+        423
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_draining": {
+      "baseline_span": [
+        424,
+        424
+      ],
+      "landing_span": [
+        424,
+        424
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_generation": {
+      "baseline_span": [
+        425,
+        425
+      ],
+      "landing_span": [
+        425,
+        425
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_mode": {
+      "baseline_span": [
+        418,
+        420
+      ],
+      "landing_span": [
+        418,
+        420
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_policy": {
+      "baseline_span": [
+        422,
+        422
+      ],
+      "landing_span": [
+        422,
+        422
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.integration_mode": {
+      "baseline_span": [
+        415,
+        417
+      ],
+      "landing_span": [
+        415,
+        417
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.integration_repository_id": {
+      "baseline_span": [
+        421,
+        421
+      ],
+      "landing_span": [
+        421,
+        421
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Task.integration_mode": {
+      "baseline_span": [
+        492,
+        496
+      ],
+      "landing_span": [
+        492,
+        496
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::resolve_integration_mode": {
+      "baseline_span": [
+        179,
+        197
+      ],
+      "landing_span": [
+        179,
+        197
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::resolve_integration_mode_with_source": {
+      "baseline_span": [
+        140,
+        178
+      ],
+      "landing_span": [
+        140,
+        178
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -377,6 +377,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`observation_snapshot_cleanup`](observation_snapshot_cleanup.md) | Observation Snapshot Cleanup | Collect at most 100 expired snapshots; daemon/operator maintenance only. |
 | [`observe_integration_source_ci`](observe_integration_source_ci.md) | Observe Integration Source Ci | Daemon-only adapter for trusted CI observations, never a raw tool input. |
 | [`onboard_project`](onboard_project.md) | Onboard Project | Link, initialise or clone a repository beneath a configured root and register it. |
+| [`operational_retention`](operational_retention.md) | Operational Retention | Run one archive-first batch on a private worker loop and DB pool. |
 | [`operator_execute`](operator_execute.md) | Operator Execute | Execute the operator_execute command. |
 | [`operator_preflight`](operator_preflight.md) | Operator Preflight | Execute the operator_preflight command. |
 | [`orchestrator_control`](orchestrator_control.md) | Orchestrator Control | Execute the orchestrator_control command. |
@@ -424,6 +425,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`policy_apply`](policy_apply.md) | Policy Apply | Execute the policy_apply command. |
 | [`policy_diff`](policy_diff.md) | Policy Diff | Execute the policy_diff command. |
 | [`policy_export`](policy_export.md) | Policy Export | Execute the policy_export command. |
+| [`pool_delete`](pool_delete.md) | Pool Delete | Delete a global pool, stopping its sessions and invalidating its routes. |
 | [`pool_rename`](pool_rename.md) | Pool Rename | Rename a pool's display name, preserving its stable profile ID. |
 | [`pool_scale`](pool_scale.md) | Pool Scale | Set global pool bounds, optionally stopping surplus idle workers now. |
 | [`pool_set_enabled`](pool_set_enabled.md) | Pool Set Enabled | Set the global pool profile's operator kill-switch. |
@@ -473,6 +475,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`read_logs`](read_logs.md) | Read Logs | Read and filter the daemon's JSONL log file. |
 | [`read_note`](read_note.md) | Read Note | Execute the read_note command. |
 | [`read_prompt`](read_prompt.md) | Read Prompt | Read a specific prompt template's content and metadata. |
+| [`rebind_workspace`](rebind_workspace.md) | Rebind Workspace | Restore a lost lock from the exact active claim, without rewriting it. |
 | [`reconcile_agent_cron`](reconcile_agent_cron.md) | Reconcile Agent Cron | Execute the reconcile_agent_cron command. |
 | [`reconcile_agent_waits`](reconcile_agent_waits.md) | Reconcile Agent Waits | Execute the reconcile_agent_waits command. |
 | [`reconcile_collaborations`](reconcile_collaborations.md) | Reconcile Collaborations | Execute the reconcile_collaborations command. |
@@ -482,7 +485,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
 | [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
 | [`release_project_constraint`](release_project_constraint.md) | Release Project Constraint | Release (remove) the scheduling constraint from a project. |
-| [`release_workspace`](release_workspace.md) | Release Workspace | Admin force-release a stuck workspace lock. |
+| [`release_workspace`](release_workspace.md) | Release Workspace | Release only after rechecking the checkout's independent fences. |
 | [`reload_config`](reload_config.md) | Reload Config | Manually trigger a config hot-reload from disk. |
 | [`remove_dependency`](remove_dependency.md) | Remove Dependency | Remove a dependency edge: *task_id* no longer depends on *depends_on*. |
 | [`remove_task`](remove_task.md) | Remove Task | Deprecated alias for the unified delete action. |
@@ -544,6 +547,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`show_playbook_graph`](show_playbook_graph.md) | Show Playbook Graph | Execute the show_playbook_graph command. |
 | [`skip_task`](skip_task.md) | Skip Task | Skip a BLOCKED/FAILED task to unblock its dependency chain. |
 | [`spec_approve`](spec_approve.md) | Spec Approve | Execute the spec_approve command. |
+| [`spec_ingest_legacy_adopt`](spec_ingest_legacy_adopt.md) | Spec Ingest Legacy Adopt | Execute the spec_ingest_legacy_adopt command. |
 | [`spec_ingest_legacy_inventory`](spec_ingest_legacy_inventory.md) | Spec Ingest Legacy Inventory | Execute the spec_ingest_legacy_inventory command. |
 | [`spec_ingest_reconcile`](spec_ingest_reconcile.md) | Spec Ingest Reconcile | Execute the spec_ingest_reconcile command. |
 | [`start_agent_terminal`](start_agent_terminal.md) | Start Agent Terminal | Execute the start_agent_terminal command. |
@@ -555,6 +559,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_restart`](supervisor_restart.md) | Supervisor Restart | Execute the supervisor_restart command. |
 | [`task_batch_discard`](task_batch_discard.md) | Task Batch Discard | Execute the task_batch_discard command. |
 | [`task_batch_propose`](task_batch_propose.md) | Task Batch Propose | Execute the task_batch_propose command. |
+| [`task_batch_release`](task_batch_release.md) | Release a reviewed ingestion batch | Verify source approval, the live graph and its fidelity receipt before release. |
+| [`task_batch_retire`](task_batch_retire.md) | Finalize an obsolete ingestion batch | Require prior supported retirement of every member and reviewer; retain evidence. |
 | [`task_batch_review_record`](task_batch_review_record.md) | Record a batch fidelity review | Attest every mapped section and whole-batch intent on the exact held graph. |
 | [`task_batch_update`](task_batch_update.md) | Task Batch Update | Execute the task_batch_update command. |
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
@@ -576,6 +582,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_route_override`](task_route_override.md) | Task Route Override | Pin one task to a worker profile in an emergency (spec §7, D2). |
 | [`task_set`](task_set.md) | Task Set | Work-state contract writes. Never performs status transitions. |
 | [`task_show`](task_show.md) | Task Show | Full task detail in one round trip: fields + deps + context + labels. |
+| [`task_split`](task_split.md) | Split task acceptance | Keep code on its existing delivery path and relocate explicit remaining acceptance. |
 | [`task_subtask_add`](task_subtask_add.md) | Task Subtask Add | Execute the task_subtask_add command. |
 | [`task_subtask_get`](task_subtask_get.md) | Task Subtask Get | Execute the task_subtask_get command. |
 | [`task_subtask_update`](task_subtask_update.md) | Task Subtask Update | Execute the task_subtask_update command. |

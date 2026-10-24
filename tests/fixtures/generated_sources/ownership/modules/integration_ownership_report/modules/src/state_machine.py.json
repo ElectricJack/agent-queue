@@ -1,0 +1,8 @@
+{
+  "exclusions": {
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.ASSIGNED, TaskEvent.AGENT_STARTED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.READY, TaskEvent.ASSIGNED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.READY, TaskEvent.CLAIMED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.WAITING_INPUT, TaskEvent.HUMAN_REPLIED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

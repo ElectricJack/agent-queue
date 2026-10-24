@@ -12,8 +12,8 @@ integration branches AQ itself creates. A push to `main` does not start it, so
 tested them. Knowing that saves you from waiting for a run that is never going
 to appear. The one exception is the break-glass audit: in App credential mode, a
 push to `main` without a valid integration attestation runs the suite after the
-fact ([`main-attestation.yml`](#main-attestationyml)). The only other workflow
-that runs on `main` runs no tests: it keeps the dependency cache that every
+fact ([`main-attestation.yml`](#main-attestationyml)). The dependency-cache workflow
+also runs on `main` without tests; it keeps the cache that every
 other run restores ([dependency cache](#dependency-cache)).
 
 ## Vocabulary
@@ -22,12 +22,12 @@ other run restores ([dependency cache](#dependency-cache)).
   eight default shards and three specialized arms, each with its own command.
 * **Integration branch** — a branch AQ's integration service creates to assemble
   and test candidate work before it reaches `main`; its refs look like
-  `aq/integration/p-<32 hex>/r-<32 hex>`. The train promotes the exact SHA
-  tested there.
+  `aq/integration/p-<32 hex>/r-<32 hex>` and `aq/batches/**`. The train
+  promotes the exact tested SHA to its configured target (currently `dev`).
 * **Parent snapshot ref** — an immutable
-  `aq/parent/<task>/<operation hash>/<generation>/<sha>` ref that parent CI
-  ([`src/integration/parent_ci.py`](../../src/integration/parent_ci.py))
-  publishes so the workflow tests one parent generation.
+  `aq/parent/<task>/<operation hash>/<generation>/<sha>` ref that tests one
+  parent generation. The parent-CI publisher that pushed these refs had no
+  production caller and is retired; the `aq/parent/**` trigger is kept.
 
 ## The workflows
 
@@ -38,27 +38,25 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `dev`, `staging` or `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**`, `aq/batches/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `dev`, `staging` or `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**`, `aq/batches/**`, `aq/parent/**`, `aq/promote/**` and `aq/backmerge/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
+| [`train-candidate.yml`](../../.github/workflows/train-candidate.yml) | Successful push-triggered `Tests` completion on `aq/integration/**` or `aq/batches/**` | Posts `aq-train/candidate` on the exact tested head SHA; runs no tests. |
 | [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `dev`, `staging` or `main` | Verifies the pushed SHA's branch attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
 | [`venv-cache.yml`](../../.github/workflows/venv-cache.yml) | After each `Main attestation` run (`workflow_run`); hourly `schedule`; `workflow_dispatch` | Saves `tests.yml`'s `.venv` cache entry on `main`. Installs dependencies and runs no tests. See [dependency cache](#dependency-cache). |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
-> **Note.** A push to `main` runs no tests of its own: only the attestation
-> audit and, after it, the dependency-cache warm-up. Everything that reaches
-> `main` was tested first: by its PR's run, as the integration candidate the
-> train promotes by exact SHA, or by the development publisher's pre-publish
-> validation ([pull requests and delivery](pull-requests.md)). The per-commit
-> `main` run this replaced repeated that work: 66 runs in the two days before
-> 2026-09-24.
+> **Note.** Pushes to `dev`, `staging` and `main` run the attestation
+> audit rather than starting `tests.yml` directly. An unattested push in App
+> mode does run the reusable suite. Candidate, PR and managed local validation
+> remain distinct evidence; see [pull requests and delivery](pull-requests.md).
 
 ## `tests.yml`
 
 ```mermaid
 flowchart TD
-    A[PR into main] --> S{draft, or a same-repo<br/>aq/integration head?}
+    A[PR into dev, staging or main] --> S{draft, or a same-repo<br/>aq/integration head?}
     S -->|yes| D[skipped: waits for ready_for_review,<br/>or the push run already tests the head]
     S -->|no| C[test matrix]
-    B[push to aq/integration or aq/parent,<br/>or workflow_dispatch] --> C
+    B[push to candidate, parent, promotion or backmerge ref,<br/>or workflow_dispatch] --> C
     C --> E[cli-conformance]
     C --> F[default: shards 1–8]
     C --> G[migration-and-slow]
@@ -69,7 +67,7 @@ flowchart TD
 
 ### Which pull requests run
 
-Every pull request into `main` runs the Python matrix, E2E groups and dashboard
+Every pull request into `dev`, `staging` or `main` runs the Python matrix, E2E groups and dashboard
 job, from a fork or a task branch alike, with two exceptions decided by each job's `if:`:
 
 * A **draft** runs nothing until it is marked ready for review; the
@@ -98,18 +96,18 @@ thread stacks; `-rfE` keeps failed/error node IDs in the final summary, and
 `--durations=50` reports the 50 slowest setup, call and teardown phases.
 
 Known slow tests may use a bounded `@pytest.mark.timeout(seconds)` override.
-Each stateful CLI group has a 600-second local test limit covering its
-setup, smoke subprocess including daemon shutdown, and fallback cleanup.
-Setup is limited to 180 seconds; the smoke subprocess gets the remaining
-time with 90 seconds reserved for fallback cleanup. Unused setup time stays
-available to the scenarios. This does not extend the job deadline.
+Each stateful CLI scenario item has its own 540-second limit, including a
+fresh world's setup on its shard's first item. Items share a module-scoped
+world within a shard; setup, scenario subprocesses and teardown also have bounded
+timeouts. The whole group still has an eleven-minute
+Actions step deadline. A marker does not extend that deadline.
 See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
 for marker precedence and timeout behavior.
 
 `fail-fast: false`, so one red arm does not hide the others. A cache-miss
 dependency install has a 12-minute step deadline and the test step a 20-minute
-one (11 minutes for an E2E scenario group, a minute above its 600-second test
-limit); each job times out at their sum plus three minutes for checkout,
+one (11 minutes for an E2E scenario group, whose individual items have 540-second
+limits); each job times out at their sum plus three minutes for checkout,
 PostgreSQL, migrations and cleanup (35 minutes, 26 for `e2e-cli`). A shared 10-minute total let a slow PyPI spend the
 tests' time: in the 40 runs up to 36831813696, eight jobs were cancelled after
 installs of 306–600 seconds, while no test or scenario step took over 332
@@ -129,6 +127,10 @@ Worker counts are explicit: four for the broad suite arms, matching the
 profiled hosted runner, and two for the two CLI test files. Local `aq test`
 runs still use the box's resource caps; these counts apply to CI.
 
+The conformance job also runs a separate serial CLI startup performance check:
+`AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/test_cli_startup_offline.py`.
+This is the explicit exception to CI's usual wall-clock-budget opt-out.
+
 The default shards inherit the marker deselects from `pyproject.toml`'s
 `addopts`, which is why the other two arms exist: they select exactly what the
 default one drops. Tests with a `migration` or `slow` marker belong to
@@ -141,7 +143,7 @@ is the one arm that goes through the `aq test` wrapper. Its two files are
 ignored by every default shard, so they execute once.
 
 Wall-clock budgets still skip in the `postgres-integration` arm: they need
-`AQ_PERF_STRICT=1`, which CI does not set, because a hosted runner's load makes
+`AQ_PERF_STRICT=1`, which CI does not set for that arm, because a hosted runner's load makes
 them measure the runner rather than the code. Statement-count budgets, which
 are deterministic, do run. See [testing](testing.md#latency-budgets).
 
@@ -178,16 +180,15 @@ to four workers with `--dist loadfile`. The eight groups are disjoint and
 together select the complete default suite. New test IDs use the average
 stored duration; removed IDs do not affect selection.
 
-The test step has a 15-minute deadline. Run `39368476563`, job `118450643210`,
-reported 3,985 passing tests in 594.60 seconds on `default-8/8`, then hit the
-former 10-minute deadline during shutdown. The new deadline puts that observed
-runtime at 66% of its budget, below the 70% target, with room for reporting and
-worker teardown. The job allows 30 minutes: 12 for a cold dependency install,
-15 for tests, and three for setup and cleanup.
+The test step has a 20-minute deadline and each matrix job has 35 minutes:
+12 for a cold dependency install, 20 for tests, and three for setup and cleanup.
+Earlier 10- and 15-minute step budgets cancelled progressing shards during
+slow collection, PostgreSQL checkpoints or shutdown. The current limits leave
+room for reporting and worker teardown without changing per-test timeouts.
 
 After every started test step, including failures, `Check test runtime budget`
 measures elapsed wall time and emits an Actions warning above 80% of the step
-budget (12 minutes). The annotation names the suite and elapsed/budget seconds;
+budget (16 minutes). The annotation names the suite and elapsed/budget seconds;
 it does not change the test result. Investigate these warnings and refresh the
 timing map from a complete passing hosted run before rebalancing shards.
 Stored test seconds are summed across workers; they are a balancing input,
@@ -294,72 +295,44 @@ test time measured on hosted runners after any performance changes.
 ### Stateful CLI scenario groups
 
 The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
-the same PR, candidate and parent events. Its four matrix entries run in
-parallel, each with an 11-minute scenario step and `fail-fast: false`. A
-branch's first run can install from PyPI, which took 25 seconds to 7.5 minutes
-on hosted runners; run 36829390463 spent 5m06s installing and its failover
-group was cancelled at the former shared ten-minute cap while finishing S16a.
-The install's own step deadline keeps that time out of the scenario step, so a
-hung group fails under pytest's 600-second limit, with its diagnostics, rather
-than being cancelled:
+the same PR, candidate, parent, promotion and backmerge events. Its four matrix
+entries run in parallel with `fail-fast: false`, each with a twelve-minute
+cache-miss install step, an eleven-minute scenario step and a 26-minute total
+job deadline. The scenario step selects by the trailing hyphen in pytest IDs
+(`-k 'claims-'`, for example); using `-k cli` would also match the module name.
 
 | Group | Scenarios |
 |---|---|
-| `claims` | S1–S3, S6–S7, S11, S14, S19 |
-| `cli` | S5, S8–S9, S13, S17 |
-| `graphs` | S10, S12, S16b |
-| `failover` | S4, S15, S18, S16a |
+| `claims` | S1–S3, S7, S19 |
+| `cli` | S5, S8–S9, S12, S17, S20 |
+| `graphs` | S10, S16b, S18, S6 |
+| `failover` | S4, S11, S13–S15, S16a |
 
-Hosted runs
-[36650001662](https://github.com/ElectricJack/agent-queue/actions/runs/36650001662)
-[36782814278](https://github.com/ElectricJack/agent-queue/actions/runs/36782814278)
-and [36783591351](https://github.com/ElectricJack/agent-queue/actions/runs/36783591351)
-reported passing group tests taking 238–272 seconds, then job cancellation
-at the five-minute cap. Setup consumed 20–60 seconds and individual scenario
-timings varied substantially between runners. The groups spread independent
-S11 and S14 into claims, S13 into CLI, S12 into graphs and S18 into failover.
-This balances scenario work near 218–230 seconds per group using the slower
-measured timings, retaining every scenario.
-Balancing alone did not fit the former five-minute cap: in run
-[36786775568](https://github.com/ElectricJack/agent-queue/actions/runs/36786775568)
-the `graphs` group passed in a 236.68-second test, but a cold dependency
-installation (37 seconds) left the job cancelled at 5:03 during finalization.
-The smoke subprocess now shares the group's 600-second test limit, and the
-job budget also covers cold installation and post-job cache/container cleanup.
-Fresh hosted runs must verify the complete job result, including finalization.
+These are **21 individually reported pytest items**, covering all 20 shell
+scenarios once, with S16 split into two items. S16a checks outage detection and
+rerouting; S16b prepares its own outage and checks recovery, undo and all-down.
+S15 now checks the current integration command surface and absence of retired
+controls. S20 proves train-mode delivery through local managed validation.
 
-Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
-with `-m integration -s`. It creates and cleans up its own database, daemon,
-port, vault and repositories. S16a covers outage detection and rerouting;
-S16b prepares its own outage to cover recovery, undo and every provider down.
-Together they retain the original S16 assertions. No xdist workers or other test suites share
-these runners, and successful runs print every scenario's duration.
-The smoke subprocess shares the 600-second test limit. The job budget also
-covers cold dependency installation and post-job cache/container cleanup:
-run [36654088476](https://github.com/ElectricJack/agent-queue/actions/runs/36654088476)
-passed all six failover scenarios in a 231.30-second test but exceeded the
-former five-minute job limit during cleanup.
-Run [36784304939](https://github.com/ElectricJack/agent-queue/actions/runs/36784304939)
-measured S15 at 59.4 seconds and S6 at 18.8 seconds; every scenario stays covered
-once and S1–S3 stay together.
-`--durations=0` also reports the complete group call, including environment
-setup and cleanup, alongside pytest fixture setup and teardown.
-The earlier five-minute job cap cancelled healthy groups on a cold cache:
-[run 36787814561](https://github.com/ElectricJack/agent-queue/actions/runs/36787814561)
-logged every `cli` and `failover` scenario passing, but cancelled the jobs
-before they could finish pytest or action cleanup. The scenario step's
-11-minute deadline leaves room for the 600-second test limit and runner
-overhead; setup is limited to 180 seconds, the smoke subprocess gets the rest
-of the limit less 90 seconds reserved for fallback cleanup.
-Fixture registration/cleanup and background state inspection use the public
-command API to avoid repeated Python CLI startup. Scenario mutations, scope
-refusals and explicit CLI output assertions still run through the CLI.
+Each shard owns one module-scoped disposable world: database, daemon, port,
+vault and repositories. S1–S3 share state; selecting S2 or S3 alone prepares its
+predecessors. Other item boundaries remove task/session fixtures and restore
+configuration. Failed cleanup prevents reuse, and teardown destroys the world.
+These runners use no xdist. Each item has its own 540-second pytest limit;
+`--durations=0` reports every item's phases. CI uploads JUnit and per-shard
+`TIMING` JSONL artifacts, including on failure.
+
+Fixture registration, cleanup and condition inspection use the public command
+API. Ordinary CLI calls use a preloaded Unix-socket launcher that forks a fresh
+process per invocation. Races, wait commands, plugin probes, help and version
+still use fresh interpreters. See [the shared-fixture measurement
+report](../reports/2026-09-30-e2e-shared-fixtures.md) for the measured changes.
 
 Both boundaries in [the train policy](../config/agent-queue-train-policy.json)
-require all four `E2E CLI (...)` checks. Existing installations must rebind
-the updated policy and add these names to any explicit merge-required checks
-or GitHub branch rules; a green `postgres-integration` check now covers the
-remaining integration tests.
+require all four `E2E CLI (...)` checks. Existing installations must rebind the
+policy and update explicit merge-required checks or GitHub branch rules when
+adopting a changed check set. `postgres-integration` excludes the E2E module
+and covers the remaining integration tests.
 
 ### Environment
 
@@ -511,8 +484,8 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 | Input | Output |
 |---|---|
-| A PR into `main` opened, updated, reopened or marked ready | Sixteen check runs on the PR's merge with its base |
-| A push to `aq/integration/**` or `aq/parent/**` | Sixteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
+| A PR into `dev`, `staging` or `main` opened, updated, reopened or marked ready | Sixteen check runs on the PR's merge with its base |
+| A push to `aq/integration/**`, `aq/batches/**`, `aq/parent/**`, `aq/promote/**` or `aq/backmerge/**` | Sixteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
 | A draft PR, or a same-repository PR from `aq/integration/**` | A skipped job; the push run covers the integration head |
 | `workflow_dispatch` | The same matrix, on demand, from the Actions tab |
 | A push to `main` | One `Main attestation` check run; with the Actions variables set and no valid attestation, also sixteen `unattested-ci / …` check runs; then one `Warm venv cache` run, which saves the venv cache only if `main`'s key is new |
@@ -530,7 +503,7 @@ their checkouts use the default token and push nothing.
 
 | Symptom | Likely cause | Do |
 |---|---|---|
-| No `Tests` check on your PR | The PR is a draft, or it does not target `main`. | Mark it ready for review, or run `gh workflow run tests.yml --ref <branch>`. |
+| No `Tests` check on your PR | The PR is a draft, or its base is outside `dev`, `staging` and `main`. | Mark it ready for review, or run `gh workflow run tests.yml --ref <branch>`. |
 | No `Tests` run on a `main` commit | Expected — a push to `main` is not a trigger. A promoted candidate's commit shows its integration run's checks. | `gh workflow run tests.yml --ref main` if you need one. |
 | `unattested-ci / Tests (…)` checks on a `main` commit | The push carried no valid integration attestation: a break-glass push, or the `Main attestation` step's `reason`. | Read the `Main attestation` run's summary; fix forward if the suite is red. |
 | `default` arm red, others green | An ordinary regression. | Reproduce locally: `aq test <the failing file>`. |
@@ -553,9 +526,9 @@ their checkouts use the default token and push nothing.
 
 [`.github/workflows/tests.yml`](../../.github/workflows/tests.yml),
 [`.github/workflows/main-attestation.yml`](../../.github/workflows/main-attestation.yml),
+[`.github/workflows/train-candidate.yml`](../../.github/workflows/train-candidate.yml),
 [`.github/workflows/venv-cache.yml`](../../.github/workflows/venv-cache.yml),
 [`src/integration/hosted_attestation.py`](../../src/integration/hosted_attestation.py),
-[`src/integration/parent_ci.py`](../../src/integration/parent_ci.py),
 [`.github/agent-queue-integration.example.json`](../../.github/agent-queue-integration.example.json).
 
 ```bash

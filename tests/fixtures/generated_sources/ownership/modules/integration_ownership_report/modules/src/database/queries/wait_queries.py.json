@@ -1,0 +1,23 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/wait_queries.py::wait_explain": {
+      "fingerprint": "1485a87b1b977b2183c2448d2efa6e6664cde69d37ec3b841e4190756d1951d5",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, events, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "landing_span": [
+        23,
+        42
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/database/queries/wait_queries.py::wait_graph": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    }
+  }
+}

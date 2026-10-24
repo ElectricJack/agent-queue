@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/conversations/outbox.py::UnboundOutbox": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

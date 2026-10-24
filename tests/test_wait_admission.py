@@ -1,18 +1,19 @@
 """Real PostgreSQL admission bindings, deadlines, claim predicates and restart replay."""
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from src.commands.principal import ExecutionPrincipal
 from src.config import AppConfig
 from src.config_wait_policy import parse_wait_policy
 from src.database import Database
 from src.database.tables import (
-    admission_reservations, integration_branch_owners, tasks, wait_deadlines,
+    admission_reservations, integration_branch_owners, projects, tasks, wait_deadlines,
     wait_escalations, wait_records,
 )
 from src.models import Agent, AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -20,9 +21,10 @@ from src.integration.admission import observe_admission
 from src.integration.stacked_branches import StackView
 from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
+from src.waits.graph import GRAPH_LOCK, recompute_from
 from src.waits.registry import build_registry
 from src.waits.reservations import consume_reservation
-from src.wait_runtime.scheduler import SchedulerWaitService
+from src.wait_runtime.scheduler import SchedulerWaitService, close_row
 from tests.db_fixtures import lease_dsn
 
 NOW = 1_800_000_000.0
@@ -135,6 +137,48 @@ async def test_branch_deadline_survives_restart_and_escalates_once(env):
     assert (await rows(env, admission_reservations))[0]["state"] == "overdue"
     env.o.bus.emit.assert_awaited_once()
     assert env.o.bus.emit.call_args.args[1]["project_id"] == "p"
+
+
+async def test_admission_alarm_tracks_recent_capacity_progress_and_survives_restart(env):
+    await sync(env)
+    first = (await rows(env, wait_deadlines))[0]
+    await fire(env, first, NOW + 1800)
+    second = next(d for d in await rows(env, wait_deadlines) if d["deadline_type"] == "escalation")
+    reservation = (await rows(env, admission_reservations))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(admission_reservations).values(
+            id="capacity-progress", project_id="p", task_id="finished-owner",
+            scope=reservation["scope"], effective_priority=0, provenance="branch_blocker",
+            deadline_at=NOW + 3600, state="consumed", created_at=NOW + 1800,
+            granted_at=NOW + 3300, consumed_at=NOW + 3350,
+        ))
+    result = await fire(env, second, NOW + 3600)
+    assert result["reason"] == "admission_queue_progressing" and not result["fired"]
+    assert not await rows(env, wait_escalations)
+    deferred = next(d for d in await rows(env, wait_deadlines) if d["id"] == second["id"])
+    assert deferred["due_at"] == NOW + 5150 and deferred["fired_at"] is None
+    env.service = SchedulerWaitService(env.o, clock=lambda: NOW)
+    assert (await fire(env, deferred, NOW + 5150))["fired"]
+    assert len(await rows(env, wait_escalations)) == 1
+
+
+async def test_one_capacity_incident_covers_multiple_branch_holders(env):
+    await env.db.create_task(Task(id="holder2", project_id="p", title="Holder2", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override", branch_name="aq/holder2"))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="branch2", repository_id="repo", ref="aq/holder2", owner_id="holder2",
+            owner_role="task", fence_token=1, handoff_state="reserved", created_at=NOW, updated_at=NOW,
+        ))
+    await sync(env)
+    for deadline in await rows(env, wait_deadlines):
+        await fire(env, deadline, NOW + 1800)
+    deadlines = [d for d in await rows(env, wait_deadlines) if d["deadline_type"] == "escalation"]
+    assert len(deadlines) == 2
+    results = [await fire(env, deadline, NOW + 3600) for deadline in deadlines]
+    assert sorted(result["fired"] for result in results) == [False, True]
+    assert any(result.get("reason") == "admission_incident_coalesced" for result in results)
+    assert len(await rows(env, wait_escalations)) == 1
 
 
 async def test_resource_reader_reobserves_and_rejects_rebinding(env):
@@ -532,6 +576,191 @@ async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
     service.command.assert_not_awaited()
 
 
+async def test_startup_bridge_backs_off_a_held_project_instead_of_rerunning_every_tick(
+    env, monkeypatch,
+):
+    from src.wait_runtime.service import WaitService
+
+    clock = NOW
+    monkeypatch.setattr("src.wait_runtime.service.time", SimpleNamespace(monotonic=lambda: clock))
+    service = WaitService(env.o, clock=lambda: clock)
+    service.command = AsyncMock(return_value={
+        'success': True, 'result': {'projects': {'p': {'state': 'held'}}},
+    })
+    await service.startup_bridge()
+    await service.startup_bridge()
+    assert service.command.await_count == 1
+    clock = NOW + service.legacy_bridge.RETRY_SECONDS + 1
+    await service.startup_bridge()
+    assert service.command.await_count == 2
+
+
+@pytest.mark.parametrize("running", ["background", "foreground"])
+async def test_wait_tick_never_queues_behind_a_running_bridge(env, monkeypatch, running):
+    from src.wait_runtime.service import WaitService
+
+    service = WaitService(env.o, clock=lambda: NOW)
+    monkeypatch.setattr(service, 'processing_enabled', AsyncMock(return_value=True))
+    monkeypatch.setattr(service, 'startup_bridge', AsyncMock())
+    monkeypatch.setattr(service.lifecycle, 'tick', AsyncMock())
+    monkeypatch.setattr(service.listener, 'tick', AsyncMock(return_value=True))
+    release = asyncio.Event()
+    if running == "background":
+        service._bridge_task = asyncio.create_task(release.wait())
+    else:
+        await service._bridge_lock.acquire()
+    try:
+        assert await asyncio.wait_for(service.tick(), timeout=2) is True
+        service.startup_bridge.assert_not_awaited()
+    finally:
+        release.set()
+        if running == "background":
+            await service._bridge_task
+        else:
+            service._bridge_lock.release()
+async def test_scheduler_sync_uses_one_connection_under_graph_fence(env):
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    original = env.db._engine
+    engine = create_async_engine(original.url, pool_size=1, max_overflow=0, pool_timeout=0.2)
+    env.db._engine = engine
+    try:
+        assert (await sync(env))["success"]
+        assert await rows(env, wait_records)
+    finally:
+        env.db._engine = original
+        await engine.dispose()
+
+
+async def test_scheduler_dirty_projects_and_recovery_scan(env, monkeypatch):
+    from src.event_bus import EventBus
+
+    bus = env.o.bus = EventBus(validate_events=False)
+    service = SchedulerWaitService(env.o)
+    projects = [SimpleNamespace(id="p"), SimpleNamespace(id="other")]
+    monkeypatch.setattr("src.wait_runtime.scheduler.time.monotonic", lambda: 100)
+    assert service.due(projects) == projects
+    service._dirty.clear()
+    service._last_sync = {p.id: 100 for p in projects}
+    assert service.due(projects) == []
+    await bus.emit("task.closed", {"project_id": "p"})
+    assert service.due(projects) == projects[:1]
+    service._dirty.clear()
+    await bus.emit("config.updated", {})
+    assert service.due(projects) == projects
+    service._dirty.clear()
+    monkeypatch.setattr("src.wait_runtime.scheduler.time.monotonic", lambda: 160)
+    assert service.due(projects) == projects
+    service._unsubscribe()
+
+
+async def test_prepared_admission_does_not_admit_changed_project(env):
+    reader = env.service.reader
+    async with reader.prepared(project_id="p"):
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_generation=projects.c.hierarchical_integration_generation + 1,
+            ))
+            observation = await reader.observe_task(conn, "holder")
+    assert observation.constraints["batch_hold"]["blocked"]
+    assert "delivery_not_verified" in observation.constraints["batch_hold"]["reasons"]
+
+
+
+
+@pytest.mark.parametrize("entrypoint", ["sync", "startup_bridge"])
+async def test_slow_authorization_yields_graph_lock_between_owners(env, monkeypatch, entrypoint):
+    from src.wait_runtime.service import WaitService
+
+    await env.db.create_task(Task(
+        id="z-last", project_id="p", title="Last", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    service = WaitService(env.o, clock=lambda: NOW)
+    scheduler = service.scheduler
+    started, release = asyncio.Event(), asyncio.Event()
+    queued, mutated = asyncio.Event(), asyncio.Event()
+    observe = scheduler.reader.observe_task
+
+    async def slow_authorization(conn, task_id, **kwargs):
+        if task_id == "holder" and not started.is_set():
+            started.set()
+            await release.wait()
+        if task_id == "z-last":
+            # The concurrent mutation must commit before this next slow item
+            # can finish. A project-wide transaction keeps it locked out.
+            await asyncio.wait_for(mutated.wait(), timeout=10)
+        return await observe(conn, task_id, **kwargs)
+
+    monkeypatch.setattr(scheduler.reader, "observe_task", slow_authorization)
+
+    async def mutate_wait():
+        await started.wait()
+        async with env.db._engine.begin() as conn:
+            queued.set()
+            # Queue on the real PostgreSQL fence while authorization is slow.
+            # PostgreSQL hands the fence to this writer at the item boundary.
+            await conn.execute(select(func.pg_advisory_xact_lock(GRAPH_LOCK)))
+            row = (await conn.execute(select(wait_records).where(
+                wait_records.c.owner_id == "holder", wait_records.c.origin == "scheduler",
+            ).with_for_update())).mappings().first()
+            assert row is not None
+            changed = await close_row(conn, row, now=NOW + 1)
+            await recompute_from(conn, changed, now=NOW + 1)
+        mutated.set()
+
+    async def command(name, args):
+        assert name == "wait_legacy_bridge"
+        return await service.legacy_bridge.run(args, principal=SERVICE)
+
+    service.command = command
+    work = asyncio.create_task(
+        scheduler.sync({"project_id": "p", "cycle_id": "concurrent"}, principal=SERVICE)
+        if entrypoint == "sync" else service.startup_bridge()
+    )
+    mutation = asyncio.create_task(mutate_wait())
+    try:
+        await asyncio.wait_for(queued.wait(), timeout=10)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(work, mutation), timeout=20)
+    finally:
+        release.set()
+        work.cancel()
+        mutation.cancel()
+        await asyncio.gather(work, mutation, return_exceptions=True)
+    assert mutated.is_set()
+    assert any(r["owner_id"] == "holder" and r["outcome"] == "cancelled"
+               for r in await rows(env, wait_records))
+
+
+async def test_interrupted_sync_replays_committed_owner_receipts(env, monkeypatch):
+    await env.db.create_task(Task(
+        id="z-last", project_id="p", title="Last", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+    ))
+    observe = env.service.reader.observe_task
+
+    async def interrupted(conn, task_id, **kwargs):
+        if task_id == "z-last":
+            raise RuntimeError("interrupted after first owner committed")
+        return await observe(conn, task_id, **kwargs)
+
+    monkeypatch.setattr(env.service.reader, "observe_task", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await env.service.sync({"project_id": "p", "cycle_id": "first", "now": NOW,
+                                "initial_audit": True}, principal=SERVICE)
+    before = await rows(env, wait_records)
+    assert before and all(r["owner_id"] == "holder" for r in before)
+    assert all("legacy_audit" in r["decision_inputs"] for r in before)
+    deadlines = await rows(env, wait_deadlines)
+    env.service = SchedulerWaitService(env.o, clock=lambda: NOW + 50)
+    await env.service.sync({"project_id": "p", "cycle_id": "replay", "now": NOW + 50,
+                            "initial_audit": True}, principal=SERVICE)
+    after = [r for r in await rows(env, wait_records) if r["owner_id"] == "holder"]
+    assert {r["id"] for r in after} == {r["id"] for r in before}
+    assert {r["id"]: r["decision_inputs"]["registration_receipt"] for r in after} == {
+        r["id"]: r["decision_inputs"]["registration_receipt"] for r in before}
+    assert await rows(env, wait_deadlines) == deadlines
 async def test_tick_runs_startup_bridge_beside_the_scheduler(env, monkeypatch):
     import asyncio
     from src.wait_runtime.service import WaitService

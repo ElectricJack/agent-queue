@@ -1,0 +1,18 @@
+{
+  "generic_dependencies": {
+    "src/cli/menus.py::fuzzy_select_task": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/cli/menus.py::task_creation_wizard": {
+      "baseline_span": [
+        182,
+        290
+      ],
+      "landing_span": [
+        182,
+        290
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

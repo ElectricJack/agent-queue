@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/vault_index.py::VaultIndexGenerator": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/vault_index.py::_is_hub_file": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/vault_index.py::is_generated_hub_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

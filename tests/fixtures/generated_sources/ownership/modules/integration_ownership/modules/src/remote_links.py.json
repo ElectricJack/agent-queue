@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/remote_links.py::DashboardLinkResolver": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

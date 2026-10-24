@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/discord/notifications.py::format_task_started": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

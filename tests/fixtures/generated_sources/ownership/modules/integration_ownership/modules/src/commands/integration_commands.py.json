@@ -1,0 +1,40 @@
+{
+  "storage_sinks": {
+    "src/commands/integration_commands.py::IntegrationCommandsMixin._reconcile_integration_completion::20af44411adc62a380af35b1443d4cd14955a017c36efafe0b02f53081d6e823": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1666,
+      "owner": "IntegrationCommandsMixin._reconcile_integration_completion",
+      "owner_fingerprint": "d019774ea7b0d0a843b36570d738acdad1784696d94c8dd363800cf1ec6c00a0",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/commands/integration_commands.py::IntegrationCommandsMixin._reopen_source_ci::99067e5d5da4bc5efd63f84a8dbf3d8a88481ddf555f7b70a646a51fe37b5581": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 974,
+      "owner": "IntegrationCommandsMixin._reopen_source_ci",
+      "owner_fingerprint": "7b9013f11ca0a1bc98a161e362b6f5f2d9286af9327dde60e3d9807664b4369c",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/commands/integration_commands.py::IntegrationCommandsMixin._reopen_source_ci_once::99067e5d5da4bc5efd63f84a8dbf3d8a88481ddf555f7b70a646a51fe37b5581": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 863,
+      "owner": "IntegrationCommandsMixin._reopen_source_ci_once",
+      "owner_fingerprint": "c6fc0a4c606d946b039eda742965603117fe951d8157a18ca15285a10f5e810b",
+      "reason": "Audits integration.source_ci_reopened with the already selected source head, generation and attempt; the event reports a guarded reopen and is not its authority."
+    },
+    "src/commands/integration_commands.py::IntegrationCommandsMixin._repair_integration_source_ancestry::9eab08d21f786b378f964334010c8a4823b27a4418b6da4ed8f1f302331de9ea": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 993,
+      "owner": "IntegrationCommandsMixin._repair_integration_source_ancestry",
+      "owner_fingerprint": "f4c9187dca25662dc9b113cb61730807ca67f8f3f9d236a6f90865a817c4c322",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

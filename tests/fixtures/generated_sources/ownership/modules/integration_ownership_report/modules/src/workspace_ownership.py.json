@@ -1,0 +1,24 @@
+{
+  "reconciliation_definitions": {
+    "src/workspace_ownership.py::claim_blocks_acquisition": {
+      "fingerprint": "5403d6b6692a8950bcff4e37498c89515b5ccabe6d73f57e984dcab2d43ba1e9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::import from src.database.tables import agents, integration_branch_owners as owners, sessions, task_metadata, tasks, workspaces": {
+      "fingerprint": "b300cefb99e5b1d8db3e441dc8440b248170c712a30c57d1a6782ec2bf57e585",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::import from src.integration.row_query import select_row": {
+      "fingerprint": "7422fbc976e826b945f127797df1eceeacc40ab61a08b69c45b419fba7c352a3",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::ownership_blockers": {
+      "fingerprint": "61c9456267d20c2c835888175607d62ba7dbceca933990c607b0545c66409bfb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::unattached_workspace": {
+      "fingerprint": "2fb636e59a30f83515f4d46461874496f5e00e94b658f70cd21d5a25bf76c474",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

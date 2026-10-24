@@ -2,17 +2,16 @@
 
     python scripts/integration-cutover-evidence.py [--out DIR]
 
-The ledger is the three things the cutover decision rests on, in one file a
+The ledger records the cutover evidence in one file a
 reviewer can read without running anything:
 
 * the ownership inventory — which definitions are charged to integration, the
   45-table predicate, and the unreviewed-writer set;
 * the replay report — every reconstructed case, its family and its declared
-  assertions, plus which historical captures are still gaps;
-* the shadow families — the four guard families the diagnostic compares, the
-  classifications it can emit, and that it is read-only.
+  assertions, plus which historical captures are still gaps.
 
-It runs the pure source inventory and imports the replay/shadow modules; it does
+The trial comparison adapter has been retired. The ledger describes the
+always-active train. It runs the pure source inventory and replay modules; it does
 not touch a database, the daemon, or any live queue.
 """
 
@@ -20,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -47,11 +45,13 @@ def ownership() -> dict:
         "unreviewed_writers": report["unknown_sinks"],
         "legacy_sinks_pending_stage4": report["legacy_sinks"],
         "budget_errors": io.budget_errors(report, manifest),
-        "engine_cap_in_phase": (io.BASELINE_ENGINE_LINES + io.REPLACEMENT_ALLOWANCE
+        "engine_cap_in_phase": (io.transition_engine_cap(manifest)
                                 if transition else io.FINAL_ENGINE_CAP),
         "owned_cap_in_phase": (io.transition_owned_cap(manifest)
                                if transition else io.FINAL_TOTAL_CAP),
         "transition_exception": manifest.get("transition_exception") if transition else None,
+        "hand_integration_reconciliation": (
+            manifest.get("hand_integration_reconciliation") if transition else None),
         "final_caps": {
             "engine": io.FINAL_ENGINE_CAP, "owned_total": io.FINAL_TOTAL_CAP,
             "tables": io.FINAL_TABLE_CAP, "target_tables": io.TARGET_TABLES,
@@ -76,21 +76,6 @@ def replay() -> dict:
     }
 
 
-def shadow() -> dict:
-    source = (ROOT / "src/integration/shadow.py").read_text()
-    families = sorted(set(re.findall(r'self\.record\(\s*\n?\s*subject,\s*"([a-z_]+)"',
-                                     source)))
-    classifications = sorted(set(re.findall(r'"(agreement|disagreement|unknown)"', source)))
-    return {
-        "families": families,
-        "classifications": classifications,
-        "read_only_ports": "GitTruth read ports plus SELECT observation rows",
-        "action_ports": "none",
-        "installed_only_when": "integration.git_first == shadow",
-        "subjects": "reconciler-owned subjects only",
-    }
-
-
 def cutover() -> dict:
     from src.commands.principal import PrincipalKind
     from src.integration.service import IntegrationService
@@ -98,7 +83,7 @@ def cutover() -> dict:
 
     init = train_for.__doc__ or ""
     return {
-        "selector": "integration.git_first: shadow | active",
+        "engine": "Git-first train (always active)",
         "train_selected_when": init.strip(),
         "service_refuses_train_beside_runtimes": "replaces the subject runtimes"
         in IntegrationService.__doc__ if IntegrationService.__doc__ else True,
@@ -132,7 +117,6 @@ def main() -> int:
         "source_base": git_rev(args.source_base or "HEAD"),
         "ownership": ownership(),
         "replay": replay(),
-        "shadow": shadow(),
         "cutover": cutover(),
     }
     text = json.dumps(ledger, indent=2, sort_keys=False)
@@ -155,7 +139,7 @@ def git_rev(rev: str) -> str:
 
 
 def render(ledger: dict) -> str:
-    own, rep, shad = ledger["ownership"], ledger["replay"], ledger["shadow"]
+    own, rep = ledger["ownership"], ledger["replay"]
     rows = [
         "# Git-first cutover evidence",
         "",
@@ -179,6 +163,7 @@ def render(ledger: dict) -> str:
          f"{len(own['legacy_sinks_pending_stage4'])}"),
         f"- budget errors: {own['budget_errors'] or 'none'}",
         f"- one-time batch exception: {own.get('transition_exception') or 'none'}",
+        f"- hand-integration reconciliation: {own.get('hand_integration_reconciliation') or 'none'}",
         "",
         "## Replay",
         "",
@@ -187,13 +172,6 @@ def render(ledger: dict) -> str:
         (f"- removed controls guarded: {len(rep['removed_controls']['guarded'])}, of which "
          f"{len(rep['removed_controls']['already_retired_in_this_checkout'])} were already "
          "retired in this checkout"),
-        "",
-        "## Shadow",
-        "",
-        f"- families: {', '.join(shad['families'])}",
-        f"- classifications: {', '.join(shad['classifications'])}",
-        f"- installed only when {shad['installed_only_when']}, over {shad['subjects']}",
-        f"- ports: {shad['read_only_ports']}; action ports: {shad['action_ports']}",
         "",
     ]
     return "\n".join(rows) + "\n"

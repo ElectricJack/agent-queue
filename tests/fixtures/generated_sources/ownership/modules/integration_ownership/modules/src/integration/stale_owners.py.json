@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/stale_owners.py::StaleOwnerRelease._release_stale::442e67b871abb9af88114dc8578e8889b7f2d64853464e2ccd4ec3edd2ee3525": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 401,
+      "owner": "StaleOwnerRelease._release_stale",
+      "owner_fingerprint": "9a502b221851ab388905ae624f16e3cd035004df03629e0cbd943562ff5b8d79",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/stale_owners.py::StaleOwnerRelease._stale_leases::3de3bca7dd14f5b933934d7759af4e3e72527186c369c5645089dfbc3db311a7": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 487,
+      "owner": "StaleOwnerRelease._stale_leases",
+      "owner_fingerprint": "0a4a42a832250935571ca0ff7ab3d51a8fac7bd281d8aa2743ccb6cbff5a2677",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

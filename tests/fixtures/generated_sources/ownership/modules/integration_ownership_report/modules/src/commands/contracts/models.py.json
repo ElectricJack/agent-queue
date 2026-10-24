@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/commands/contracts/models.py::EffectSubject.INTEGRATION_OPERATION": {
+      "baseline_span": [
+        76,
+        76
+      ],
+      "landing_span": [
+        76,
+        76
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

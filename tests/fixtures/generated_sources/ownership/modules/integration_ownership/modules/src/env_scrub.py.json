@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/env_scrub.py::is_harness_session_marker": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/env_scrub.py::scrub_env": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/env_scrub.py::scrub_env_from_config": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/env_scrub.py::strip_harness_session_markers": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

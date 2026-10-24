@@ -74,6 +74,7 @@ areas:
     description: "Task hierarchy: dotted child ids, set-parent and children reads, container settlement and close, subtree delete/archive, phases, standing parents and hierarchy doctor checks and statement budgets."
     match:
       - tests/test_hierarchy_*.py
+      - tests/test_task_split.py
       - tests/test_phases.py
       - tests/perf/test_hierarchy_statements.py
       - tests/test_worker_filing.py
@@ -376,8 +377,11 @@ areas:
   - id: shipped-playbooks
     description: "Shipped and reviewed playbooks: reviewed V2 artifact fixtures and their digests, prose-only playbook sources, the default pipeline intake, agent-type playbooks, the V1 removal ratchet and cron-to-playbook migration."
     match:
+      - tests/test_fast_smooth_train.py
       - tests/test_default_playbook_v2_artifacts.py
+      - tests/test_project_defaults_playbook.py
       - tests/test_playbook_v2_fixtures.py
+      - tests/test_quilt_health_watch.py
       - tests/test_shipped_playbook_sources.py
       - tests/test_default_agent_type_playbooks.py
       - tests/test_default_pipeline_intake.py
@@ -404,6 +408,7 @@ areas:
       - tests/test_integration_service.py
       - tests/test_integration_stall_recovery.py
       - tests/test_integration_delivery_watchdog.py
+      - tests/test_integration_delivery_watchdog_regressions.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
@@ -469,7 +474,6 @@ areas:
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, restoring missing canonical train owners, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
       - tests/test_integration_lock.py
-      - tests/test_integration_writers.py
       - tests/test_integration_ownership.py
       - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py
@@ -491,6 +495,8 @@ areas:
       - tests/test_integration_properties.py
       - tests/test_promotion_backmerge.py
       - tests/test_promotion_policy.py
+      - tests/test_promotion_continuous_equivalence.py
+      - tests/test_promotion_request_playbook.py
       - tests/test_promote_commands.py
       - tests/test_promotion_notes_input.py
       - tests/test_integration_train_promotion.py
@@ -613,6 +619,7 @@ areas:
     match:
       - tests/test_provider_availability*.py
       - tests/test_provider_commands.py
+      - tests/test_provider_failover_playbook.py
       - tests/test_provider_escalation.py
       - tests/test_provider_evidence.py
       - tests/test_provider_inflight.py
@@ -742,6 +749,7 @@ areas:
     description: "The PostgreSQL database layer: adapter CRUD and channels, engine startup safeguards, backend selection, immediate transactions, metadata-cast safety, model round trips and the SQLite removal ratchet."
     match:
       - tests/test_database*.py
+      - tests/test_operational_retention.py
       - tests/test_db_immediate.py
       - tests/test_metadata_cast_safety.py
       - tests/test_sqlite_removal.py

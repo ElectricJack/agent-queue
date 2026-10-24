@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_requirements_queries.py::TaskRequirementsQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
