@@ -66,18 +66,18 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 488,
+      "line": 496,
       "owner": "ObsoleteClose.close",
-      "owner_fingerprint": "87443db5e14bc5882a0b0b93bfb5a8735adfa4a9bfcfe87608168902237d09e9",
+      "owner_fingerprint": "b9a4e57cd86e2ebfbbe148cfdc1d926cc06ae98acb7d3d4049763d9044cd565e",
       "reason": "Audits obsolete/cancelled task closure with reason, disposition, principal, previous status and released resources; explicit close guards own retirement authority."
     },
     "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "call": "delete",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 425,
+      "line": 430,
       "owner": "ObsoleteClose.close",
-      "owner_fingerprint": "87443db5e14bc5882a0b0b93bfb5a8735adfa4a9bfcfe87608168902237d09e9",
+      "owner_fingerprint": "b9a4e57cd86e2ebfbbe148cfdc1d926cc06ae98acb7d3d4049763d9044cd565e",
       "reason": "Deletes ordinary close/claim metadata during fenced obsolete closure; branch retirement remains an independently guarded request rather than a metadata-driven ref replay."
     }
   }

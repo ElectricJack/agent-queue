@@ -10,9 +10,9 @@
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 80,
+      "line": 81,
       "owner": "acknowledge_in_place",
-      "owner_fingerprint": "e2817a41c581088dc14f977ee4ae0d13754cdc0afa5f018bcbef10062da61b34",
+      "owner_fingerprint": "c62ce3183f17591d48939c34c338a475e18e97173ecc05367c71a95fb46c3553",
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     }
   }

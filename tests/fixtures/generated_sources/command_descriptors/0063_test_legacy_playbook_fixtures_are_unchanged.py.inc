@@ -6,6 +6,7 @@ def test_legacy_playbook_fixtures_are_unchanged():
         "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
     }
     changes = {**changes, **_script_changes()["playbook_fixtures"]}
+    continuous = json.loads(CONTINUOUS_CHANGES.read_text())["playbook_fixtures"]
     main = _main_changes()["playbook_fixtures"]
     watch = _watch_changes()["playbook_fixtures"]
     ingest = json.loads(INGEST_CHANGES.read_text())["playbook_fixtures"]
@@ -102,6 +103,12 @@ def test_legacy_playbook_fixtures_are_unchanged():
             assert hourly[path]["previous_sha256"] == digest
             assert hourly[path]["sha256"] != digest
             digest = hourly[path]["sha256"]
+        if path in continuous:
+            change = continuous[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            digest = change["sha256"]
         if path in promotion_request:
             change = promotion_request[path]
             assert change["previous_sha256"] == digest

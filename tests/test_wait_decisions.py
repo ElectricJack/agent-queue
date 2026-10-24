@@ -562,7 +562,7 @@ async def test_original_pr_1858_human_conversion_uses_verified_thread_and_no_ope
             await conn.execute(update(escalation_deliveries).where(
                 escalation_deliveries.c.id == delivery["id"],
             ).values(status="unknown", attempt_count=1, last_error=(
-                "operational incident is internal-only; nothing was sent" if legacy == "fenced"
+                "supervisor delivery incident is internal-only; nothing was sent" if legacy == "fenced"
                 else "send timed out; delivery may have happened")))
     result = await decide(service, receipt, "escalate_to_human")
     assert result["success"], result
@@ -578,7 +578,7 @@ async def test_original_pr_1858_human_conversion_uses_verified_thread_and_no_ope
     from src.escalations.facts import EscalationFacts
 
     facts = EscalationFacts.from_row(await env.db.get_escalation(incident["id"]))
-    assert facts.human_requested and facts.wants_human_delivery
+    assert facts.human_delivery_authorized and facts.wants_human_delivery
     await env.db.accept_escalation_reply(incident["id"], transport="test", external_message_id="reply",
                                         verified_actor="user:jack", text="Proceed", received_at=NOW+61)
     cond = Condition.from_record(wait["condition"])

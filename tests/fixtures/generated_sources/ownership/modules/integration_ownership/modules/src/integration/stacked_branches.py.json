@@ -1,30 +1,39 @@
 {
   "storage_sinks": {
+    "src/integration/stacked_branches.py::EpicRefresh._delivered::884f021b11bb909333fff6f69efb0e3a7cd5f2d37e6496923fe15d102855d05f": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1772,
+      "owner": "EpicRefresh._delivered",
+      "owner_fingerprint": "c37c7d5cfd425a7cc54af6c77480f3ed61487085a22e878b3bbc88dab01a6d2a",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
     "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1410,
+      "line": 1743,
       "owner": "EpicRefresh.refresh",
-      "owner_fingerprint": "da94a4fb509abae8b7b7919a5a932c73135fd3c2c12ee713b94481999d9e9891",
+      "owner_fingerprint": "1064e55bec0188eeef43578bd2cc7f259569a06676b185c52d16fd932cc68878",
       "reason": "Audit of a requested epic refresh with principal and observed train state. Frozen batch inputs and exact Git/check proofs remain authoritative; this event cannot replay refs or authorize delivery."
     },
     "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1290,
+      "line": 1595,
       "owner": "StackedBranches._file_repair",
-      "owner_fingerprint": "346120aaac647a1f815fe778e50f800d3ccae981395e087b0c883b8a537c9e2d",
+      "owner_fingerprint": "a6679b5ddc3e948023d277c0272c79671b80fcde208f5d67bb67246cfa4d3afa",
       "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
     },
     "src/integration/stacked_branches.py::StackedBranches.refresh::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
       "call": "pg_insert",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1126,
+      "line": 1427,
       "owner": "StackedBranches.refresh",
-      "owner_fingerprint": "b9d779123ccbf8c04958794d1ef5ba125d158dbd65ce50b9ae51cd6c76ba28f7",
+      "owner_fingerprint": "73bafa448db36c6d1ad8b2793b4a0ac8e75e003e3eda9ae8b527fc2095e39e59",
       "reason": "Upserts DEVELOPMENT_COMPLETION_ID_KEY to locate the immutable completion produced by a fenced stacked-source merge; it is a completion pointer, not a delivery state machine."
     }
   }

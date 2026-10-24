@@ -1,4 +1,14 @@
 {
+  "reconciliation_definitions": {
+    "src/plugins/internal/git.py::GitPlugin._push_delegated": {
+      "fingerprint": "74322cbe14a7c0ff186c6edf7cb210155e10e8f1339c563028a9a824cbebbf68",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/plugins/internal/git.py::GitPlugin._worker_publication": {
+      "fingerprint": "cfffb4f336d4bdd4ce6be340db388f049fd1805b6d3a5ea2de54e6dc4a0c664f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/plugins/internal/git.py::GitPlugin._push": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."

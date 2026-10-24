@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/orchestrator/core.py::Orchestrator._schedule": {
+      "fingerprint": "1d6f0a28ad2c3bfb7c359d796be54f26d97561e698f4dc5548aded93fb6c868c",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/orchestrator/core.py::Orchestrator.__init__": {
       "baseline_span": [

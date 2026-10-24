@@ -5844,19 +5844,22 @@ async def test_unavailable_stack_evidence_allows_preparation_without_overlay(
     # The observation still proves nothing; admission does not assert delivery.
     assert not await stack.fresh()
 
+    # Independent-first admission claims the root before observing dependent
+    # work. Once it is held, the fallback must still prepare the dependent using
+    # unavailable evidence without inventing a stacked overlay.
     result = await settled_claim(scoped(handler, sid), {"next": True})
     assert result["result"] == "claimed", result
-    assert result["task"]["id"] == "dependent"
-    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "dependent"
-    origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
-    assert not origin["stack_snapshot"]
-    assert origin["base_sha"] == env.base
+    assert result["task"]["id"] == "solo"
+    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "solo"
 
     sid2, work_dir2 = await _cloned_pool_session(db, tmp_path, env, "s2", "agent-2")
     result = await settled_claim(scoped(handler, sid2), {"next": True})
     assert result["result"] == "claimed", result
-    assert result["task"]["id"] == "solo"
-    assert json.loads((work_dir2 / ".aq/claim.json").read_text())["task_id"] == "solo"
+    assert result["task"]["id"] == "dependent"
+    assert json.loads((work_dir2 / ".aq/claim.json").read_text())["task_id"] == "dependent"
+    origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
+    assert not origin["stack_snapshot"]
+    assert origin["base_sha"] == env.base
 
     # Recovery yields real stack proof again without changing the claimed origin.
     clock[0] += 61
@@ -5866,7 +5869,7 @@ async def test_unavailable_stack_evidence_allows_preparation_without_overlay(
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/dependent"),
     )
-    assert owner["handoff_state"] == "attached" and owner["session_id"] == sid
+    assert owner["handoff_state"] == "attached" and owner["session_id"] == sid2
 
 
 async def test_moving_stack_ref_refuses_after_bounded_reobservation(

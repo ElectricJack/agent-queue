@@ -1,5 +1,14 @@
 {
   "storage_sinks": {
+    "src/integration/train_controls.py::TrainControls.release_withheld_source::2d9df3e813a854d8f9680885a47ef904674d4760deb8ba30239b389450e4d599": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 895,
+      "owner": "TrainControls.release_withheld_source",
+      "owner_fingerprint": "e745b316629a5fb784b829277cecb40278f7f148dfaa32c8887023397bd87809",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
     "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
       "call": "log_event",
       "disposition": "ordinary",
@@ -40,9 +49,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 481,
+      "line": 656,
       "owner": "TrainControls.settle_batch",
-      "owner_fingerprint": "104ff215f6845c0ba5e3d1fad25357e9340c1c5828373091895d662ceea6a2c4",
+      "owner_fingerprint": "b76196d0f938f99e9c45ec4284d68550625b36d99fa9e1e012ba51c8a8d8d82e",
       "reason": "Audits a batch settlement result with operator and reason after the settlement command; current batch and Git proof remain authoritative."
     }
   }

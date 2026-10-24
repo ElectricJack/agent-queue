@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_branch_origins, task_dependencies, task_session_attempts, tasks": {
+      "fingerprint": "455c28d55acee925165d18e6c76c13978a42ebff92c767bdd1f9fa1adbab8dfd",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_authorized_source_heads": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."

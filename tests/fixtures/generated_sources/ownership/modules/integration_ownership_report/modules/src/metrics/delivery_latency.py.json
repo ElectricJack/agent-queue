@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/metrics/delivery_latency.py::_wait_view": {
+      "fingerprint": "a0a72eef1fb26362b07ab69346ba8cd165cfec35a3f98d403ae2b308ca20e872",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/metrics/delivery_latency.py::generation_of": {
+      "fingerprint": "ed978ec120f1468b39a5c797520f18f7ac962c479177ae1700f9fbce14cea178",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

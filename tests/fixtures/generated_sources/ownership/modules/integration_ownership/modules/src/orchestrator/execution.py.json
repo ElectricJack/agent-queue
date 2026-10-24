@@ -105,45 +105,45 @@
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1927,
+      "line": 1950,
       "owner": "ExecutionMixin._complete_session_task_locked",
-      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
+      "owner_fingerprint": "b794187091b3e058a7207a71a2d988f4f7ab596908e14c98ec3962a744ed5513",
       "reason": "Updates the existing identity-bound pending completion draft with verified source work before the terminal transition; accepted-close recovery uses no separate integration lifecycle journal."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::ae8c919429f58dac2642af5184c5d10500c81e12bf5ef7db9da07251fc6b167d": {
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1918,
+      "line": 1917,
       "owner": "ExecutionMixin._complete_session_task_locked",
-      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
+      "owner_fingerprint": "b794187091b3e058a7207a71a2d988f4f7ab596908e14c98ec3962a744ed5513",
       "reason": "Stores completion_ci diagnostics collected while completing the worker task; actual check attestations and integration gates remain independently verified."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 2462,
+      "line": 2436,
       "owner": "ExecutionMixin._complete_session_task_locked",
-      "owner_fingerprint": "97455149cce9c4d4c192f4ba776bfe521b4a18c82a8ab04dae66253e0cd2aeb4",
+      "owner_fingerprint": "b794187091b3e058a7207a71a2d988f4f7ab596908e14c98ec3962a744ed5513",
       "reason": "Marks integration_handoff_unproven after failed completion handoff; the attention marker preserves the blocked state rather than granting release."
     },
     "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::8984da29e38cdef16a89fdb5710ce864b3017bdca5db3309dce9f87f9f13fe70": {
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 2599,
+      "line": 2557,
       "owner": "ExecutionMixin._preserve_unpushed_on_failure",
-      "owner_fingerprint": "3469e4902d7ce1776353595687d4530639a9670117a995811d0601df821323bc",
+      "owner_fingerprint": "884a13a1ea23502c63fa9f4bc9a2820ed8b47143bc3e7d34e631e35d7c10fb33",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_BRANCH_META"
     },
     "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::f2a065e87b9ac1c2c29f709808b528c8ed38ee71d4c075de9a7daf013baee912": {
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 2601,
+      "line": 2559,
       "owner": "ExecutionMixin._preserve_unpushed_on_failure",
-      "owner_fingerprint": "3469e4902d7ce1776353595687d4530639a9670117a995811d0601df821323bc",
+      "owner_fingerprint": "884a13a1ea23502c63fa9f4bc9a2820ed8b47143bc3e7d34e631e35d7c10fb33",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_COMMIT_META"
     },
     "src/orchestrator/execution.py::ExecutionMixin._validated_resume_key::9cffd21ce60de4627d260fcf4dd92ec40ed6503b232666553235c882f1d565bb": {

@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/continuation_queries.py::retire_task_waits": {
+      "fingerprint": "510021c2214216898adab6b36f10ad3c51c60679aa48aed4afa9d3148c133973",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}
