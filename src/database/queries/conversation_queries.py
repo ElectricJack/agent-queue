@@ -44,6 +44,8 @@ from src.database.tables import (
     doc_review_comments,
     messages,
     outbound_deliveries,
+    projects,
+    sessions,
     supervisor_conversations,
 )
 
@@ -147,38 +149,37 @@ class ConversationQueriesMixin:
     # ------------------------------------------------------------------
 
     async def resolve_conversation_supervisor(
-        self, project_id: str = ""
+        self, project_id: str = "", *, conn=None
     ) -> tuple[str | None, str | None]:
-        """Choose a live project supervisor, then global, otherwise keep the input queued.
+        """Resolve the addressed named supervisor even when it needs waking.
 
-        A shared channel may belong to more than one project, and a message
-        there cannot be attributed to any of them.  Rather than refusing to
-        guess and leaving the input on ``conversation-queued`` forever (the
-        2026-10-04 shared-channel stall), the global supervisor is the one
-        launch that can answer for the installation, so the fallback is what
-        runs.  Only when it is not live either does the input stay queued --
-        which the caller must say out loud, not leave silent.
+        A stopped project supervisor keeps its address instead of handing the
+        conversation to a different live supervisor. Only a missing supervisor
+        falls back to global, then the unassigned queue.
         """
         from src.sessions.spec import named_session_name
 
+        if conn is None:
+            async with self._engine.connect() as connection:
+                return await self.resolve_conversation_supervisor(project_id, conn=connection)
         if not project_id:
-            projects = await self.list_projects()
-            if len(projects) == 1:
-                project_id = projects[0].id
-            # A shared channel cannot guess which project's supervisor owns it,
-            # so it goes to the global supervisor rather than waiting forever.
+            project_ids = list((await conn.execute(select(projects.c.id).limit(2))).scalars())
+            if len(project_ids) == 1:
+                project_id = project_ids[0]
         for scope in [project_id, None] if project_id else [None]:
-            live = await self.get_session_by_name(
-                named_session_name("supervisor", scope or "global")
-            )
-            if (
-                live is not None
-                and live.state in {"starting", "running"}
-                and live.desired_state == "running"
-                and live.profile_id == "supervisor"
-                and live.lifecycle == "named"
-                and live.project_id == scope
+            if scope and not await conn.scalar(
+                select(projects.c.supervisor_enabled).where(projects.c.id == scope)
             ):
+                continue
+            supervisor = await conn.scalar(
+                select(sessions.c.id).where(
+                    sessions.c.name == named_session_name("supervisor", scope or "global"),
+                    sessions.c.profile_id == "supervisor",
+                    sessions.c.lifecycle == "named",
+                    sessions.c.project_id == scope,
+                ).limit(1)
+            )
+            if supervisor is not None:
                 return f"supervisor-{scope or 'global'}", scope
         return None, project_id or None
 
@@ -237,6 +238,7 @@ class ConversationQueriesMixin:
         now: float | None = None,
         enforce_limits: bool = False,
         kind: str = KIND_THREAD,
+        resolve_project_id: str | None = None,
     ) -> dict[str, Any]:
         """Persist one verified operator message and queue its supervisor notice.
 
@@ -245,6 +247,10 @@ class ConversationQueriesMixin:
         -- (b) the ``conversation_inputs`` row and (c) the deterministic
         ``msg-<input id>`` message to ``session:<supervisor_recipient>`` in
         the conversation's thread.
+
+        With *resolve_project_id* (including an empty string), resolve the
+        named supervisor on this same connection before inserting the notice.
+        Otherwise the explicit recipient arguments are used.
 
         *kind* is ``thread`` for one conversation per opened thread and
         ``channel`` for the one a channel carries (chat-extension spec §2.2).
@@ -324,6 +330,7 @@ class ConversationQueriesMixin:
                 now=stamp,
                 enforce_limits=enforce_limits,
                 kind=kind,
+                resolve_project_id=resolve_project_id,
             )
         except IntegrityError as exc:
             # The lock order above makes this unreachable for one message, but
@@ -358,6 +365,7 @@ class ConversationQueriesMixin:
         now: float,
         enforce_limits: bool,
         kind: str,
+        resolve_project_id: str | None,
     ) -> dict[str, Any]:
         async with self.immediate() as conn:
             if enforce_limits:
@@ -464,6 +472,11 @@ class ConversationQueriesMixin:
             if conversation["state"] == "closed":
                 raise ConversationClosed(f"conversation {conversation['id']} is closed")
 
+            if resolve_project_id is not None:
+                recipient, supervisor_project_id = await self.resolve_conversation_supervisor(
+                    resolve_project_id, conn=conn
+                )
+                supervisor_recipient = recipient or QUEUED_SUPERVISOR_RECIPIENT
             input_id = f"cinput-{uuid.uuid4()}"
             supervisor_message_id = f"msg-{input_id}"
             # The renderer needs the server-allocated ids. Render before any
@@ -784,9 +797,9 @@ class ConversationQueriesMixin:
         return int(total or 0)
 
     async def stalled_conversation_queue(self) -> dict[str, Any]:
-        """Conversation inputs no supervisor session is live to answer.
+        """Conversation inputs with no eligible supervisor to answer.
 
-        An input accepted while no supervisor was running stays addressed to
+        An input accepted before any eligible supervisor exists stays addressed to
         :data:`QUEUED_SUPERVISOR_RECIPIENT`.  Nothing delivers it and nothing
         retries it, so the count and the age of the oldest such row are the
         only honest evidence that a message went unanswered; the stall sweep
