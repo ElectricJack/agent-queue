@@ -8,5 +8,10 @@
       "fingerprint": "35aaceece5d461f27373841ea8dd05cc2d4c1a5b4b75f2b3cb8ee8bf7d983eec",
       "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
     }
+  },
+  "shared_definitions": {
+    "src/api/graph.py::build_graph_router": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    }
   }
 }

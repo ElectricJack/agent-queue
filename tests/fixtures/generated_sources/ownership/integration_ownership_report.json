@@ -2780,8 +2780,38 @@
   },
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2031,
+    "authorized_owned_delta": 2045,
     "expires_at": "s4_modules",
+    "held_ingestion_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82420,
+      "previous_measured_owned_total": 157507,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "8e4496f7763808591ec8db0c79b4591b263829d0",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with repaired dev, explicitly preapproved in bright-quest-30 under operator decision 6679052c. Preserve all historical evidence and original caps; no new headroom or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
+    "held_ingestion_dev_merge_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "6cb338192d569c4df75539e5848fd32be05ac980",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157530,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "67341d693cd448e6eca98392a3a4b9104bf2e449",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with current dev and its approved large-session prompt amendment, preapproved in bright-quest-30. Preserve both original composition records, all historical evidence and original caps; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
     "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
     "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
     "large_session_prompt_composition": {
@@ -2799,7 +2829,7 @@
       "task_id": "swift-lantern-21"
     },
     "measured_engine_lines": 82443,
-    "measured_owned_total": 157530,
+    "measured_owned_total": 157544,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -2821,6 +2851,60 @@
     "source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
     "supervisor_decision_message_id": "msg-2077aa41ec2c4f8685869fa59596627b",
     "task_id": "smart-nexus-83"
+  },
+  "held_ingestion_children_landing_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 14,
+    "authorized_table_delta": 0,
+    "dev_source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+    "measured_engine_lines": 82361,
+    "measured_groups": {
+      "companions": 10308,
+      "engine": 82361,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 62379,
+      "ui": 262
+    },
+    "measured_owned_total": 157457,
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 82361,
+    "previous_owned_total": 157443,
+    "previous_table_count": 45,
+    "reason": "Exact combined-tree ownership amendment for landing held-ingestion children. Preapproved by operator decision 6679052c on sharp-cascade-53 under size-cap-delegation-2026-10-23, as directed in bright-quest-30. Preserve historical measurements, existing classifications and original caps; no added headroom. Dev already exceeds the original transition owned cap (157443 versus 155499); this landing adds 14 owned shared lines, no engine lines or tables.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "repaired_dev_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+      "measured_engine_lines": 82420,
+      "measured_groups": {
+        "companions": 10308,
+        "engine": 82420,
+        "guards": 633,
+        "policy": 493,
+        "policy_sources": 1021,
+        "shared": 62384,
+        "ui": 262
+      },
+      "measured_owned_total": 157521,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82420,
+      "previous_measured_owned_total": 157507,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "8e4496f7763808591ec8db0c79b4591b263829d0",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with repaired dev, explicitly preapproved in bright-quest-30 under operator decision 6679052c. Preserve all historical evidence and original caps; no new headroom or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
+    "source_revision": "65a3009e776b490bd2665a44512d2813a4125675",
+    "task_id": "bright-quest-30"
   },
   "held_ingestion_p4_merge_measurement": {
     "authority": "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
@@ -6283,6 +6367,9 @@
       ],
       "reason": "Imports or references an explicitly owned integration primitive."
     },
+    "src/api/graph.py::build_graph_router": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    },
     "src/api/graph_layout.py::build_graph_layout_router": {
       "baseline_span": [
         212,
@@ -6305,6 +6392,7 @@
       ],
       "reason": "Imports or references an explicitly owned integration primitive."
     },
+    "src/api/graph_layout.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/api/messages.py::get_session_messages": {
       "baseline_span": [
         195,
@@ -8581,6 +8669,9 @@
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_set_task_status": {
       "reason": "Refuse administrative completion of a branched Git root in train modes without explicit completion provenance."
     },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_children": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_recover": {
       "baseline_span": [
         4273,
@@ -8616,6 +8707,12 @@
     },
     "src/commands/task_commands.py::TaskCommandsMixin._keep_for_delivery": {
       "reason": "The archive command's deliver disposition: keeps the task, names its undelivered holders and the root delivery answer from the existing authorize-root read, and records an ordinary comment and audit. Archives nothing and moves no ref."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_flat": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_hierarchical": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._materialized_branches_under": {
       "baseline_span": [
@@ -8719,6 +8816,7 @@
     "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
       "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
+    "src/commands/task_commands.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/commands/workspace_checkout_repair.py::import from src.commands.supervisor_authority import operator_or_global_supervisor": {
       "reason": "Imports the authority guard used by the integration-aware base-checkout repair; conservatively charges the adapter's imported authorization seam."
     },
@@ -16019,8 +16117,38 @@
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2031,
+      "authorized_owned_delta": 2045,
       "expires_at": "s4_modules",
+      "held_ingestion_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 14,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82420,
+        "previous_measured_owned_total": 157507,
+        "previous_measured_table_count": 45,
+        "published_source_revision": "8e4496f7763808591ec8db0c79b4591b263829d0",
+        "pull_request": 1918,
+        "reason": "Exact ancestry-preserving composition of the held-ingestion children with repaired dev, explicitly preapproved in bright-quest-30 under operator decision 6679052c. Preserve all historical evidence and original caps; no new headroom or storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bright-quest-30"
+      },
+      "held_ingestion_dev_merge_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 14,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "6cb338192d569c4df75539e5848fd32be05ac980",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82443,
+        "previous_measured_owned_total": 157530,
+        "previous_measured_table_count": 45,
+        "published_source_revision": "67341d693cd448e6eca98392a3a4b9104bf2e449",
+        "pull_request": 1918,
+        "reason": "Exact ancestry-preserving composition of the held-ingestion children with current dev and its approved large-session prompt amendment, preapproved in bright-quest-30. Preserve both original composition records, all historical evidence and original caps; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bright-quest-30"
+      },
       "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
       "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
       "large_session_prompt_composition": {
@@ -16038,7 +16166,7 @@
         "task_id": "swift-lantern-21"
       },
       "measured_engine_lines": 82443,
-      "measured_owned_total": 157530,
+      "measured_owned_total": 157544,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16062,7 +16190,7 @@
       "task_id": "smart-nexus-83"
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157530,
+    "owned_total_cap": 157544,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

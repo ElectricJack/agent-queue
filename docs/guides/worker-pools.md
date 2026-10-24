@@ -279,6 +279,18 @@ profile — READY tasks routed to it. An unrouted task is demand for no pool, an
 neither is a legacy route once its project's router is ready: pools size for
 claimable work only.
 
+**Held ingestion work is not demand.** A spec-ingest batch is created held
+(`tasks.held_batch_id` set) until its fidelity review releases it
+([spec-ingestion](../specs/implementation/spec-ingestion.md)). The claim
+frontier's `ingest_held` predicate excludes those members, and
+`count_ready_by_profile` reads the same frontier, so a large held batch starts
+no workers, even when its members are READY and routed. `aq task explain` on a
+member names the reason: "member of ingestion batch <id> awaiting fidelity
+review". The batch's one reviewer task is an ordinary, non-held root task routed
+to the `fidelity-reviewer` profile, and it does count as demand for that pool.
+On release, the members join the frontier on the next cycle and the pools size
+for them like any other READY work.
+
 `min_active` is raised to `max(min_active, Σ min_per_project over eligible
 projects)` before the clamp, so a per-project warm floor the global floor
 cannot fund raises the floor instead of being silently ignored.

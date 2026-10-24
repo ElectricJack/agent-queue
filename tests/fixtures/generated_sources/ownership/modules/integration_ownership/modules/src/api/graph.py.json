@@ -1,0 +1,7 @@
+{
+  "shared": {
+    "src/api/graph.py::build_graph_router": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    }
+  }
+}
