@@ -285,7 +285,9 @@ async def build_integration_delivery_summary(db: Any, task: Any) -> str:
 async def build_review_revision_summary(db: Any, task: Any) -> str:
     """Keep revision publication instructions visible even in bounded prime."""
     response = await db.get_task_meta(task.id, "review_response")
-    return review_revision_guidance(response) if response else ""
+    if not response or response.get("task_kind") == "followup":
+        return ""
+    return review_revision_guidance(response)
 
 
 async def build_review_deliverable_summary(db: Any, task: Any) -> str:

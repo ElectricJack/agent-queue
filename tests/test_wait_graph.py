@@ -469,15 +469,16 @@ async def test_busy_graph_lock_refuses_within_bound_then_admits(env):
 
 
 @pytest.mark.parametrize("end", ["commit", "rollback"])
+@pytest.mark.parametrize("queued", [False, True])
 async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(
-    env, monkeypatch, caplog, end,
+    env, monkeypatch, caplog, end, queued,
 ):
     from src.waits import graph
 
     monkeypatch.setattr(graph, "GRAPH_LOCK_WARN_SECONDS", 0.01)
     async with env.db._engine.connect() as conn:
         transaction = await conn.begin()
-        await graph.lock_graph(conn)
+        await graph.lock_graph(conn, queued=queued)
         await graph.lock_graph(conn)  # Nested helpers share one watchdog.
         await asyncio.sleep(0.03)
         assert len(caplog.records) == 1
@@ -491,6 +492,66 @@ async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(
             await graph.lock_graph(conn)
         await asyncio.sleep(0.03)
         assert len(caplog.records) == 1
+
+
+async def test_queued_graph_timeout_preserves_transaction_and_lock_setting(env):
+    from sqlalchemy import func
+    from src.waits.graph import graph_locked, lock_graph
+
+    async with env.db._engine.begin() as holder:
+        await lock_graph(holder)
+        async with env.db._engine.begin() as waiter:
+            await waiter.execute(select(func.set_config("lock_timeout", "1234ms", True)))
+            await waiter.execute(update(tasks).where(tasks.c.id == "a").values(title="kept"))
+            with pytest.raises(WaitError, match="within 0.05s") as refused:
+                await lock_graph(waiter, queued=True, timeout=0.05)
+            assert refused.value.code == "wait.graph_busy"
+            assert not graph_locked(waiter)
+            assert await waiter.scalar(select(func.current_setting("lock_timeout"))) == "1234ms"
+            assert await waiter.scalar(select(tasks.c.title).where(tasks.c.id == "a")) == "kept"
+    async with env.db._engine.begin() as conn:
+        await conn.execute(select(func.set_config("lock_timeout", "1234ms", True)))
+        await lock_graph(conn, queued=True)
+        assert graph_locked(conn)
+        assert await conn.scalar(select(func.current_setting("lock_timeout"))) == "1234ms"
+        # Successful savepoint release must retain the transaction's fence.
+        async with env.db._engine.begin() as other:
+            with pytest.raises(WaitError):
+                await lock_graph(other, timeout=0.05)
+
+
+async def test_cancelling_queued_graph_acquisition_leaves_no_lock(env):
+    from sqlalchemy import event
+    from src.waits.graph import lock_graph
+
+    waiting = asyncio.Event()
+
+    def executing(conn, cursor, statement, parameters, context, executemany):
+        if "SELECT pg_advisory_xact_lock(" in statement:
+            waiting.set()
+
+    async def acquire():
+        async with env.db._engine.begin() as conn:
+            await lock_graph(conn, queued=True)
+
+    engine = env.db._engine.sync_engine
+    event.listen(engine, "before_cursor_execute", executing)
+    contender = None
+    try:
+        async with env.db._engine.begin() as holder:
+            await lock_graph(holder)
+            contender = asyncio.create_task(acquire())
+            await asyncio.wait_for(waiting.wait(), 5)
+            contender.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await contender
+        async with env.db._engine.begin() as conn:
+            await lock_graph(conn, queued=True, timeout=0.2)
+    finally:
+        event.remove(engine, "before_cursor_execute", executing)
+        if contender:
+            contender.cancel()
+            await asyncio.gather(contender, return_exceptions=True)
 
 
 async def test_graph_reacquires_after_savepoint_rollback(env):

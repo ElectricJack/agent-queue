@@ -147,6 +147,36 @@ single-flight lock; it does not acquire a project-wide database fence.
 
 ## Transaction and graph ownership
 
+### Resume graph-lock fairness — 2026-10-24
+
+The source listener commits one event, its dispatch effects and its cursor in
+each graph transaction. It releases the fence between events even when the
+backlog fits in one batch and no renewal interval has elapsed. A slow individual
+event still uses the lease budget and rolls back atomically on failure.
+
+Supervisor requeue joins the advisory-lock queue before reading or writing its
+held continuation. Refusal and cancellation roll back all changes, including
+the version and audit record; suspension generation is preserved on success as
+well. Restart starts continuation maintenance alongside legacy bridge adoption,
+so a blocked startup bridge cannot suppress RESUME_PENDING retries.
+
+After external admission preparation, resume reservation joins PostgreSQL's
+advisory-lock queue before reading its wait/task/continuation transaction state.
+The listener's nonblocking acquisition cannot overtake a queued resume between
+batches. Resume uses a 35-second acquisition budget, exceeding the listener's
+30-second batch lease budget; unrelated background reconciliation retains its
+short polling budget. An acquisition timeout remains `wait.graph_busy`, rolls
+back its savepoint and restores the connection's prior `lock_timeout`. A successful
+acquisition retains the same transaction-scoped graph fence through all reservation
+revalidation and mutations. Generation, stopped-writer, task-control and admission
+checks remain required; queue position supplies no authority to resume.
+
+The lifecycle emits `wait.resume_graph_busy` with continuation id, suspension
+generation and consecutive refusal count. Any other dispatch result resets that
+generation's streak; continuations leaving the ready set discard their local
+counter. The diagnostic is process-local and does not rewrite durable outcomes
+or reset the wait's age.
+
 ### Short graph transactions — 2026-10-22
 
 The graph fence protects database revalidation and mutations. Git, filesystem,
