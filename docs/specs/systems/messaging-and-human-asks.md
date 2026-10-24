@@ -611,8 +611,12 @@ to write a short first-person developer update in plain English: what changed
 since the last update, highlights, anything blocked or needing Jack, and what
 comes next. It prioritizes meaningful changes and human decisions, combines
 related evidence and omits repeated noise; it does not invent progress or plans
-when evidence is missing. Only the submitted narrative becomes the report body,
-with server-owned links and marker. Submit rejects URLs, validates references against the frozen
+when evidence is missing.
+The update avoids internal IDs and train, batch or loop jargon unless Jack must
+act on one; a blocker asks the exact question he needs to answer. A window with
+no new facts stays silent even if work is still active.
+Only the submitted narrative becomes the report body, with server-owned links
+and marker. Submit rejects URLs, validates references against the frozen
 brief and requires a `delivery:` reference for any claim that something shipped.
 The enforced 600-character limit includes the server footer and marker. A grace
 period of 5 minutes and a limit of 12 per day apply.

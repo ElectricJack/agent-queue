@@ -178,6 +178,7 @@ def test_seeded_supervisor_writes_hourly_developer_narrative(tmp_path):
         "INPUT ONLY", "first-person developer-style", "progress since the last update",
         "highlights", "blocked/needs you", "next steps", "deduplicate noise",
         "Never relay the brief or concatenate its facts", "600 characters",
+        "without internal IDs", "ask the exact question", "No new facts means silence",
     ):
         assert instruction in rules
 

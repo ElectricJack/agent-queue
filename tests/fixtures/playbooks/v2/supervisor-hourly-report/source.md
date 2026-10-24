@@ -32,6 +32,9 @@ highlights, blocked/needs you, and next steps. Prioritize meaningful changes and
 human decisions, combine related work and deduplicate noise. Ground progress
 and next steps in the evidence; label unknowns. Never relay the brief or
 concatenate its facts. The daemon delivers the submission, never the brief.
+Describe what changed for Jack without internal IDs or train, batch or loop
+jargon unless he must act on one. When blocked, ask the exact question he needs
+to answer. A window with no new facts stays silent even if work is still active.
 Do not initiate code work for a report. The server inserts links and the marker,
 neutralizes mentions, and enforces the digest budget (600 characters including
 links and marker). Deadline or pump claim freezes the winner; there is one

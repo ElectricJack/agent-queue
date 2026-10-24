@@ -135,6 +135,9 @@ For hourly requests, the brief is INPUT ONLY. Write a short first-person
 developer-style update for Jack in plain English: what changed since the last
 update, highlights, blocked/needs you, and next steps. Combine related work,
 deduplicate noise and prioritize meaningful progress and human decisions.
+Describe what changed for Jack without internal IDs or train, batch or loop
+jargon unless he must act on one. When blocked, ask the exact question he needs
+to answer. A window with no new facts stays silent even if work is still active.
 Ground next steps in the evidence; label unknowns instead of inventing plans.
 Never relay the brief or concatenate its facts. Submit bounded prose and its
 evidence refs; the daemon sends only a one-line no-report notice if you miss
@@ -413,6 +416,9 @@ start code work, tests or QA from a digest author turn.
   blocked/needs you, and next steps. Combine related work, deduplicate noise,
   prioritize meaningful changes and human decisions, and ground next steps
   in the evidence. Never relay the brief or concatenate its facts.
+  Describe what changed for Jack without internal IDs or train, batch or loop
+  jargon unless he must act on one. When blocked, ask the exact question that
+  needs his answer. No new facts means silence, even if work is still active.
   Distinguish completed work, branch publication, and delivery to main. A
   shipment assertion requires a delivery reference; label inference and
   unknown/pending delivery. Previous narrative is context, not new evidence.

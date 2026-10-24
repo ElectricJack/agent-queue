@@ -5,7 +5,7 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-10-24T17:12:49.065048Z",
+  "compiled_at": "2026-10-24T17:21:24.537340Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "supervisor-hourly-report",
   "purpose": "routine",
@@ -15,11 +15,11 @@
       "id": "request-window",
       "name": "request-window",
       "source": {
-        "end_line": 40,
+        "end_line": 43,
         "excerpt": "## Rule: request-window",
         "heading": "Rule: request-window",
         "path": "source.md",
-        "start_line": 40
+        "start_line": 43
       },
       "trigger": {
         "event_type": "digest.window_ready"
@@ -30,11 +30,11 @@
       "id": "recover-window",
       "name": "recover-window",
       "source": {
-        "end_line": 46,
+        "end_line": 49,
         "excerpt": "## Rule: recover-window",
         "heading": "Rule: recover-window",
         "path": "source.md",
-        "start_line": 46
+        "start_line": 49
       },
       "trigger": {
         "event_type": "timer.1m"
@@ -45,17 +45,17 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:06f2d39cae7ebdd63c913e78956bf053034ed2dc408b9cb5e274076c2763601e",
+  "source_hash": "sha256:ab4e2ecbb0a8198f723c51c200b59f7b552f84e6fa995ecd989491b6e6e4a564",
   "steps": {
     "recover-window--done": {
       "outcome": "completed",
       "rule": "recover-window",
       "source": {
-        "end_line": 52,
+        "end_line": 55,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "source.md",
-        "start_line": 52
+        "start_line": 55
       },
       "title": "Completed",
       "type": "terminal"
@@ -64,11 +64,11 @@
       "outcome": "failed",
       "rule": "recover-window",
       "source": {
-        "end_line": 52,
+        "end_line": 55,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "source.md",
-        "start_line": 52
+        "start_line": 55
       },
       "title": "Failed",
       "type": "terminal"
@@ -79,11 +79,11 @@
       "rule": "recover-window",
       "save_result_as": "requests",
       "source": {
-        "end_line": 48,
+        "end_line": 51,
         "excerpt": "1. On `timer.1m`, call `report_reconcile` without inputs and bind the result",
         "heading": "Rule: recover-window",
         "path": "source.md",
-        "start_line": 48
+        "start_line": 51
       },
       "title": "request",
       "transitions": {
@@ -97,11 +97,11 @@
       "outcome": "completed",
       "rule": "request-window",
       "source": {
-        "end_line": 52,
+        "end_line": 55,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "source.md",
-        "start_line": 52
+        "start_line": 55
       },
       "title": "Completed",
       "type": "terminal"
@@ -110,11 +110,11 @@
       "outcome": "failed",
       "rule": "request-window",
       "source": {
-        "end_line": 52,
+        "end_line": 55,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "source.md",
-        "start_line": 52
+        "start_line": 55
       },
       "title": "Failed",
       "type": "terminal"
@@ -125,11 +125,11 @@
       "rule": "request-window",
       "save_result_as": "requests",
       "source": {
-        "end_line": 42,
+        "end_line": 45,
         "excerpt": "1. Call `report_reconcile` without inputs and bind the result as `requests`.",
         "heading": "Rule: request-window",
         "path": "source.md",
-        "start_line": 42
+        "start_line": 45
       },
       "title": "request",
       "transitions": {

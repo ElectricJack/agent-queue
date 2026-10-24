@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -320,6 +321,27 @@ async def test_unavailable_author_never_delivers_concatenated_facts(db, skip_rea
         msg.content for msg in transport.messages.values()
         if msg.content.endswith(marker_for(window["id"]))
     ) == window["payload"]["text"] + marker_for(window["id"])
+
+
+async def test_active_work_without_new_facts_stays_silent(db):
+    clock = Clock(BASE + HOUR + 30)
+    digest, transport, _ = service(db, clock)
+    active = (ActiveTask(task_id="ongoing", project_id="p", title="Ongoing", started_at=BASE),)
+    digest._evaluate_window = AsyncMock(return_value=DigestResult(
+        send=True,
+        reason="active_execution",
+        text="Deterministic active-work counts must not be delivered",
+        active_count=1,
+        eligibility=Eligibility(send=True, reason="active_execution", facts=(), active=active),
+    ))
+    assert (await digest.tick()).sent == 0
+    window, request = await request_for(db, digest)
+    assert request is None
+    assert window["send_status"] == "suppressed"
+    assert window["suppression_reason"] == "no_new_facts"
+    assert window["payload"] is None
+    assert transport.messages == {}
+    assert (await digest.tick()).evaluated == 0
 
 
 async def test_disable_releases_fallback_without_waiting_for_deadline(db):

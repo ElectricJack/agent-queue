@@ -297,6 +297,7 @@ async def test_lost_window_event_and_duplicate_ticks_queue_one_author_message(db
     for instruction in (
         "INPUT ONLY", "first-person developer-style", "Since the last update:",
         "Highlights:", "Blocked/needs you:", "Next:", "deduplicate noise",
+        "without internal IDs", "ask the exact question",
         "aq report submit", "--brief-hash HASH", "--expected-version VERSION",
         "--evidence-ref REF", "600 characters", "one-line no-report notice",
     ):

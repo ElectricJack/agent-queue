@@ -329,6 +329,17 @@ class DigestScheduleService:
             # that posts when nobody authors in time.
             return await self._evaluate_authored(schedule, window, window_id, report, now=now)
         result = await self._evaluate_window(schedule, window, now=now)
+        hourly_narrative = (
+            self._reports.hourly.enabled
+            and self._reports.hourly.full_fleet_visibility
+            and not schedule.project_ids
+        )
+        unchanged = (
+            hourly_narrative
+            and result.send
+            and result.eligibility is not None
+            and not result.eligibility.facts
+        )
         payload = (
             {
                 "text": result.text,
@@ -338,16 +349,12 @@ class DigestScheduleService:
                 "active_count": result.active_count,
                 "catchup": window.catchup,
             }
-            if result.send
+            if result.send and not unchanged
             else None
         )
         report_candidate = None
         if payload is not None:
-            if (
-                self._reports.hourly.enabled
-                and self._reports.hourly.full_fleet_visibility
-                and not schedule.project_ids
-            ):
+            if hourly_narrative:
                 # Facts are author input only. Reserve a minimal notice even
                 # when no author slot is available (cap, quiet hours, etc.).
                 payload["text"] = NO_REPORT_TEXT
@@ -392,6 +399,9 @@ class DigestScheduleService:
                     "day_end": day_end,
                     "now": now,
                 }
+        suppression_reason = None
+        if payload is None:
+            suppression_reason = "no_new_facts" if unchanged else (result.reason or "no_activity")
         completed = await self.db.complete_digest_evaluation(
             window_id,
             activity_cursor={
@@ -405,7 +415,7 @@ class DigestScheduleService:
                 else None
             ),
             payload=payload,
-            suppression_reason=None if result.send else (result.reason or "no_activity"),
+            suppression_reason=suppression_reason,
             report_candidate=report_candidate,
         )
         if completed is None:

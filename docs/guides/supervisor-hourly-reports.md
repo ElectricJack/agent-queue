@@ -17,8 +17,12 @@ Review sample narratives before enabling it for general use.
 The supervisor writes a short first-person developer update for Jack in plain
 English: progress since the last update, highlights, anything blocked or needing
 Jack, and next steps. It combines related changes and drops repeated noise,
-grounding claims and plans in the evidence. The bounded brief contains facts,
-counts and links as INPUT ONLY; it is never the delivered text. The durable wake
+grounding claims and plans in the evidence.
+The update describes what changed for Jack without internal IDs or train, batch
+or loop jargon unless he must act on one. A blocker names the exact question he
+needs to answer. Windows without new facts stay silent even if work is active.
+The bounded brief contains facts, counts and links as INPUT ONLY; it is never
+the delivered text. The durable wake
 includes these writing instructions, so existing installations receive them
 without overwriting operator-edited supervisor profiles. The server appends its
 dashboard link and marker to the submitted prose within the existing 600-character
