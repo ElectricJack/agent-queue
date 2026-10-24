@@ -6955,6 +6955,8 @@ _ALL_TOOL_DEFINITIONS = [
             "for fidelity review and returns batch_id, revision, digest and members. "
             "task_batch_commit refuses held batches; authorized release is separate. "
             "Design approval creates an already released epic and authoring leaf. "
+            "For an already delivered design, explicit no_op records delivered evidence "
+            "without creating work; only its live ingester may settle an empty change set. "
             "Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance."
         ),
         "input_schema": {
@@ -6975,6 +6977,20 @@ _ALL_TOOL_DEFINITIONS = [
                 "dry_run": {
                     "type": "boolean",
                     "description": "Validate and return the diff without storing a proposal.",
+                },
+                "no_op": {
+                    "type": "object",
+                    "description": "Design-ingest settlement when every approved goal is already delivered; requires no change operations.",
+                    "properties": {
+                        "reason": {"type": "string", "minLength": 1},
+                        "delivered_evidence": {
+                            "type": "array", "minItems": 1,
+                            "items": {"type": "string", "minLength": 1},
+                            "description": "Merged PR or commit citations checked by the ingester.",
+                        },
+                    },
+                    "required": ["reason", "delivered_evidence"],
+                    "additionalProperties": False,
                 },
                 "edits": {
                     "type": "array",
