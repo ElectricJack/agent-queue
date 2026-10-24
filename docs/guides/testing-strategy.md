@@ -1,7 +1,8 @@
 # Testing strategy
 
 Status: draft for the A2 interview and review (`bright-ridge-12.2`). Jack's
-interview answers and strategy acceptance are pending. This draft records the
+Q1 answer is recorded; the remaining interview and strategy acceptance are
+pending. This draft records the
 existing approved obligations; it does not authorize a check removal or suite
 cutover. H1 BUILD authoring requires A2 acceptance.
 
@@ -91,13 +92,15 @@ agent recommendation is not Jack's acceptance.
 
 | Exchange | Question | Evidence and disposition |
 |---|---|---|
-| Q1 — confidence | When a change is green, what do you need that green result to tell you before it lands on the frequently automatically deployed dev branch? | Requested through supervisor in `msg-c4047ba007f9459592021d79d3afbf5d`, thread `bright-ridge-12.2-interview-q1`; reply pending. |
+| Q1 — confidence | When a change is green, what do you need that green result to tell you before it lands on the frequently automatically deployed dev branch? | Jack's verified answer on 2026-10-24: “If it’s green and it’s an epic (complete feature) I want it merged, and that should be all tasks at the root level”. Discord input `cinput-6970a5ab` at 19:54Z; supervisor relay `msg-80ee66dc374447e98cca5fea1c8073ab`. Identical confirmation `cinput-6d17114e` at 20:46Z, relayed in `msg-6a5de3917fd145eeb213e87a315edff2`. Treat these as one answer. |
+| Q2 — blocking failures | Which failures must block a root epic from merging to dev, even when its focused feature tests pass? | Requested once on 2026-10-24 through supervisor in `msg-e47448e6c35341009a6062d5fb906004`, thread `bright-ridge-12.2-interview-q2`; verified answer pending. |
 
-Supervisor status `msg-8c59e8fbec3e4a83b91dd0bc0ae20d14` on 2026-10-24
-confirms that Q1 was relayed verbatim through the global supervisor for Jack.
-It explicitly supplies no interview answer. Q2 remains unasked pending Jack's
-verified reply; the status update does not establish confidence requirements or
-acceptance.
+Q1 establishes Jack's desired delivery outcome: merge a green, complete feature
+at the root level. It does not yet specify which failures must block that green
+result, authorize a change to task hierarchy or merge policy, or accept this
+strategy. The earlier supervisor status
+`msg-8c59e8fbec3e4a83b91dd0bc0ae20d14` only confirmed relay; the verified
+human inputs above supply the answer.
 
 After Q1, continue with failures worth blocking, redundant assertions and the
 risk of frequent automatic deployment, adapting each next question to Jack's
