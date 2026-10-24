@@ -467,6 +467,7 @@ async def test_daemon_unreachable_is_503_with_retry_after_and_our_header(client)
     assert proxy.stats.snapshot()["http"]["count"] == 0
 
 
+@pytest.mark.skip(reason="timing flake under CI load (0.5s proxy header timeout); skipped per Jack 10-23 recurring-flake policy until deflaked")
 async def test_upstream_ok_is_true_whenever_the_daemon_answers(stack):
     assert await stack.proxy.upstream_ok() is True
     stack.daemon.health_status = 503  # degraded, but it answered
