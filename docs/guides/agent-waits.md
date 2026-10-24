@@ -111,6 +111,17 @@ registration cannot reset the age. Human waits have no automatic deadline and
 require hibernation support. The supervisor resolves one with verified human
 evidence or an explicit `aq wait lift --response ...`; a worker cannot lift it.
 
+Operational wait and continuation incidents remain internal during Discord
+reconciliation and delivery retries. Only a committed `escalate_to_human` decision
+authorizes a wait incident's human delivery. Unread supervisor notices follow the
+message delivery engine's existing global-supervisor fallback.
+
+The wait service periodically refreshes pending CI subscriptions independently of
+train visits, including after activation is disabled for new waits. GitHub quota
+failures retain the subscription and retry after the provider's backoff; they are
+not source-unavailable outcomes. Remote verification is bounded so a stalled
+GitHub request cannot indefinitely retain the wait graph fence.
+
 Managed job admission remains opt-in (`resources.jobs.enabled`). Job results and
 logs remain under the job owner; inspect `aq job result JOB_ID --json`. Matter
 capture and editor pinning are documented in the [object-loop guide](object-loop.md).
@@ -121,6 +132,15 @@ During cutover, check the atomic submit-with-wait readiness item in the
 
 Continuation recovery runs independently of source draining and the main
 orchestration cycle. A slow resume attempt does not block other continuations.
+A slow hibernation attempt also runs independently; maintenance inspects persisted
+suspension intents even when their transition deadline has not fired. After the
+stop budget expires, AQ makes one read-only proof attempt before holding ownership.
+A `stop_uncertain` hold receives up to five total proof attempts, each bounded to
+five seconds, with persisted delays of 5, 10, 20 and 40 seconds. Successful proof
+withdraws the operational escalation and continues saving and parking; exhausted
+retries preserve the hold for supervisor recovery. An absent instance token never
+authorizes a stop signal. A same-named successor, live process or unavailable proof
+retains the checkout.
 If a resolved wait remains `RESUME_PENDING` for five minutes, the project
 supervisor receives one durable stall notice per continuation generation.
 Set `wait_policy.resume_stall_seconds` globally or in a project override to

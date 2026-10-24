@@ -279,6 +279,10 @@ class SurfaceCommandsMixin:
             return {"success": False, "error": "retained_workspace_stop is reserved; use stop_task."}
         if "integration_batch_repair" in (args.get("meta") or {}):
             return {"success": False, "error": "integration_batch_repair is reserved; use --repair-batch."}
+        if any(str(key).startswith("root_pr_conflict_refresh")
+               for key in (args.get("meta") or {})):
+            return {"success": False,
+                    "error": "root_pr_conflict_refresh is reserved for daemon-owned bot merges."}
 
         if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
             "backmerge_result", "promotion_intent", "promotion_result",

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/activity.py::load_activity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/activity.py::task_activity": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

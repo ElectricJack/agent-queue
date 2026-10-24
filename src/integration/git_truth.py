@@ -600,7 +600,7 @@ async def is_delivered(
         evidence = GitDeliveryEvidence(
             request, state, observed.target_oid, source, reason, source_base, error_detail,
         )
-        if proof_key is not None and state is not DeliveryState.UNKNOWN:
+        if proof_key is not None and not evidence.unloaded and error_detail is None:
             snapshot.truth._remember(snapshot.truth._proofs, proof_key, evidence)
         return evidence
 

@@ -1,0 +1,40 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/playbook_artifact_queries.py::PlaybookArtifactQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/playbook_artifact_queries.py::PlaybookArtifactQueryMixin._referenced_artifact_shas": {
+      "baseline_span": [
+        439,
+        456
+      ],
+      "landing_span": [
+        439,
+        456
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/playbook_artifact_queries.py::PlaybookArtifactQueryMixin.collect_playbook_artifacts": {
+      "baseline_span": [
+        457,
+        597
+      ],
+      "landing_span": [
+        457,
+        597
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/playbook_artifact_queries.py::import from src.database.tables import integration_operation_artifact_pins, integration_outbox_artifact_pins, integration_subject_journal, integration_subjects, playbook_activations, playbook_artifacts, playbook_pending_events, playbook_v2_runs": {
+      "baseline_span": [
+        16,
+        26
+      ],
+      "landing_span": [
+        16,
+        26
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/database/hierarchy_migration.py::apply::f3a03da8e5010f2aeaeb7816df7fcc4aaa236b0deeec5551c0c407f2667cc644": {
+      "call": "text",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 175,
+      "owner": "apply",
+      "owner_fingerprint": "04225632a928ed4bd392c49f540a5c412548440f8c57a1a5cedae1dc5ff542c6",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

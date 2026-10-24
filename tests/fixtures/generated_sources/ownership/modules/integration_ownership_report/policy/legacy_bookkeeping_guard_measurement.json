@@ -1,0 +1,27 @@
+{
+  "legacy_bookkeeping_guard_measurement": {
+    "authorization": "Supervisor reopen instructions, 2026-10-23: record the exact measured amendment without asking.",
+    "authorized_engine_delta": 352,
+    "authorized_owned_delta": 352,
+    "authorized_shared_delta": 0,
+    "authorized_table_delta": 0,
+    "measured_engine_lines": 85895,
+    "measured_owned_total": 161514,
+    "measured_sources_sha256": {
+      "src/integration/bookkeeping_guard.py": "919f524776c0d9989b3c4283936fc958ab380076c945cae64a39bf2f9b91262b",
+      "src/integration/development.py": "0523ad2f59f852dc623b2155a64cfbab6d43f0e9c5a23d98647181307c2136e2",
+      "src/integration/generated_merge_driver.py": "91f79cf8c4d0f7cc91bcc6427693ed3999214154234c388b994c35524cbfc720",
+      "src/integration/gitops.py": "920cebc4a60a17361489c70a49a5c81e7daa3f6f588a43f6aaa4cd838d316023",
+      "src/integration/regeneration.py": "ebb5053f3734bfa05ffc9339511bab273425528f55b873f23b7641598336976c"
+    },
+    "measured_table_count": 45,
+    "previous_engine_lines": 85543,
+    "previous_owned_total": 161162,
+    "previous_source_revision": "2f84216797cfb17b6cf0cda921d659a96ca8447b",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1906",
+    "reason": "Fail closed on unported reviewed legacy bookkeeping deltas before train regeneration, Git generated merges and regeneration checks. Exact scoped guard footprint; preserve all frozen batch grants and original baselines.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "prime-vault-39"
+  }
+}

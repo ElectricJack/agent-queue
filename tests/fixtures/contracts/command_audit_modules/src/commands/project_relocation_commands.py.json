@@ -1,0 +1,42 @@
+{
+  "project_relocate": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": "resource_audit_required",
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "denied",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/project_relocation_commands.py:ProjectRelocationCommandsMixin._cmd_project_relocate",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "generated invocation disabled; operator-only producer",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'relocation requires local operator authority'}"
+      },
+      {
+        "protocol": "delegated_producer: explicit success True on applied and already_applied exits",
+        "return": "await service.apply(...)"
+      },
+      {
+        "protocol": "delegated_producer: explicit success True",
+        "return": "await service.preview(...)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'relocation_refused', 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Reviewed operator-only relocation: current bound playbook and exact-SHA check cache are required; preview/apply retain storage generation and ownership fences. Nested policy_reader returns internal policy data, not a command result. Generic resource audit remains required; generated invocation stays disabled.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:ed10c97598671d3b6f36e54413f8148d1eb47d1dc13984f9fcb727c8cd567e5c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_project_relocation.py::test_command_rejects_agent_authority",
+      "tests/test_project_relocation.py::test_command_uses_current_playbook_and_trusted_exact_head_evidence"
+    ]
+  }
+}

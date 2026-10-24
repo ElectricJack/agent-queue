@@ -1,0 +1,92 @@
+{
+  "shared_definitions": {
+    "dashboard/src/components/TaskFieldsEditor.tsx::export const INTEGRATION_MODE_OPTIONS = [\"pull_request\", \"direct\"];": {
+      "baseline_span": [
+        40,
+        41
+      ],
+      "landing_span": [
+        40,
+        41
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/components/TaskFieldsEditor.tsx::export default function TaskFieldsEditor({": {
+      "baseline_span": [
+        148,
+        357
+      ],
+      "landing_span": [
+        148,
+        357
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/components/TaskFieldsEditor.tsx::export function diffTaskForm(": {
+      "baseline_span": [
+        120,
+        147
+      ],
+      "landing_span": [
+        120,
+        147
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/components/TaskFieldsEditor.tsx::export function integrationModeDisplay(task: {": {
+      "baseline_span": [
+        110,
+        119
+      ],
+      "landing_span": [
+        110,
+        119
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/components/TaskFieldsEditor.tsx::export interface EditableTask {": {
+      "baseline_span": [
+        42,
+        65
+      ],
+      "landing_span": [
+        42,
+        65
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/components/TaskFieldsEditor.tsx::export interface FormState {": {
+      "baseline_span": [
+        78,
+        89
+      ],
+      "landing_span": [
+        78,
+        89
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/components/TaskFieldsEditor.tsx::function statusDisplay(task: EditableTask): string {": {
+      "baseline_span": [
+        72,
+        77
+      ],
+      "landing_span": [
+        72,
+        77
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "dashboard/src/components/TaskFieldsEditor.tsx::function taskToForm(t: EditableTask | null | undefined): FormState {": {
+      "baseline_span": [
+        90,
+        102
+      ],
+      "landing_span": [
+        90,
+        102
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

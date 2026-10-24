@@ -19,9 +19,7 @@ so braces in test output are preserved. There are no conditionals or executable
 expressions. Unknown or malformed placeholders and unreadable edits raise errors;
 a missing installed file uses the shipped default. Empty templates are allowed.
 Optional sections are selected by code and rendered separately, so wording cannot
-change repair budgets, branch authority, or required acceptance gates. The factual
-`Development repair generation:` prefix remains outside the template because
-retry accounting reads it.
+change repair budgets, branch authority, or required acceptance gates.
 
 The supervisor and local operator can access this directory through existing file
 commands. Worker and playbook principals gain no extra file access. Escaping
@@ -59,10 +57,6 @@ wording does not display all of them.
 | `ci-repair-no-test-ids` | `src/commands/ci_commands.py` | None |
 | `ci-repair-other-owners` | `src/commands/ci_commands.py` | `task_ids` |
 | `ci-repair` | `src/commands/ci_commands.py` | `acceptance`, `attempt`, `facts`, `ref` |
-| `development-conflict-recovery` | `src/integration/development.py` | `target_branch` |
-| `development-regeneration` | `src/integration/development.py` | `command`, `generated_merge_driver` |
-| `development-repair` | `src/integration/development.py` | `branches`, `candidate_sha`, `failure_details`, `generation`, `recovery`, `sources`, `target_branch` |
-| `development-source-recovery` | `src/integration/development.py` | `target_branch` |
 | `git-verification-feedback` | `src/orchestrator/git_ops.py` | `attempt`, `bullet_list`, `closing`, `max_retries` |
 | `git-verification-held` | `src/orchestrator/git_ops.py` | None |
 | `git-verification-restart` | `src/orchestrator/git_ops.py` | None |

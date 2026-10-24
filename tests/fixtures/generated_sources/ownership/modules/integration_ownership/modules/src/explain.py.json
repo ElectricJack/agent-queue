@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/explain.py::Reason": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/explain.py::build_capacity_reasons": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

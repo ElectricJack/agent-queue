@@ -1,0 +1,2175 @@
+{
+  "add_dependency": {
+    "argument_reads_diagnostic_only": [
+      "dep_type",
+      "depends_on",
+      "reason",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_add_dependency",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'depends_on is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'A task cannot depend on itself'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid dep_type '{dep_type}'. Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Dependency task '{depends_on}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Dependency already exists: '{task_id}' already has a '{dep_type}' edge to '{depends_on}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Cannot add dependency: {exc}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Cannot add waits-for dependency: '{task_id}' is a child of '{depends_on}' and would fan in over itself ({exc})\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'hierarchy.{exc.code}: {exc.detail}', 'code': f'hierarchy.{exc.code}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{'ok': True, 'task_id': task_id, 'depends_on': depends_on, 'dep_type': dep_type, 'reason': reason, 'task_title': task.title, 'depends_on_title': dep_task.title}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:2e21f2aa3ca03d1a0a177af53b4a3c3a127f3bf83edd6f667153ec2fb0995996",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "archive_settings": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_archive_settings",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'enabled': cfg.enabled, 'after_hours': cfg.after_hours, 'statuses': cfg.statuses, 'archived_count': archived_count, 'eligible_count': eligible, 'blocked_count': blocked_total, 'blocked': blocked}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2758b935d9a00a12c13f165705286ea2368ebc30a0edcba7dc36b8c6bade6de5",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_archive.py"
+    ]
+  },
+  "archive_task": {
+    "argument_reads_diagnostic_only": [
+      "abandon_undelivered",
+      "disposition",
+      "include_failed",
+      "project_id",
+      "reason",
+      "replacement",
+      "replacement_task_id",
+      "rewire",
+      "satisfied_by",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_hierarchy_failure": "sha256:abb65e8a19902eb86db00890f0937747a05e8846ab23d421eb0e70059143e42c",
+      "_keep_for_delivery": "sha256:a97e398cc4ab742b7dcf686649025ff688bbc34ff7dde3e9f14db115d46d86fe"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_archive_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'archived_count': len(archived), 'archived_ids': [a['id'] for a in archived], 'archived': archived, 'skipped': skipped, 'archive_dir': archive_dir, 'project_id': project_id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': '--disposition deliver keeps the work; drop --abandon-undelivered.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._keep_for_delivery(task_id, reason=abandon_reason)"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'archived': task_id, 'title': task.title, 'status': task.status.value, 'disposition': disposition or ''}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Provide task_id or project_id.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'message': f'No completed tasks to archive{scope}.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'obsolete.invalid_disposition', 'error': 'Replacement, satisfied-by and rewire require a single obsolete archive.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.abandon_not_for_sessions', 'error': '--abandon-undelivered is an operator decision; a worker session cannot make it.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': '--abandon-undelivered is available only with task_id.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': '--abandon-undelivered requires --reason.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.disposition_required', 'error': 'Abandoning undelivered work needs a disposition: `--disposition deliver` keeps it for the train, `--disposition obsolete` archives it with --reason as the note, `--disposition retire` archives it; both retire its branches after a backup bundle.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Cannot archive task in {task.status.value} status. Archive PAUSED, DEFINED, or READY tasks with --reason, or stop running work with Remove.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Failed to archive task '{task_id}'\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._hierarchy_failure(exc)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:a001fdd33a773061d54b970cd5aaf7fd2da524b993347fcd8197e45ffb9e79a7",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_archive.py",
+      "tests/test_task_graph_live_events.py"
+    ]
+  },
+  "create_task": {
+    "argument_reads_diagnostic_only": [
+      "dedup_key",
+      "parent_id",
+      "parent_key",
+      "parent_title",
+      "project_id",
+      "root"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_create_task",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "reserved"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._create_task(args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "malformed"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.parent_key_not_for_sessions', 'error': 'parent_key is for automated creators; a worker files under the task it holds by default, or names a parent with parent_id'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.parent_conflict', 'error': 'parent_key selects the parent, so it cannot be combined with parent_id or root; pass exactly one of them'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required (no active project set)'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "unsupported"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._create_task(child_args)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.parent_key_busy', 'error': f\"the standing parent for '{parent_key}' is being resolved by another creator and did not free up; retry the call\"}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:2537200146a9054a66ce4c15d3ed8459fd8c975eb3dbbbd6755f8f2aa765a6ec",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "create_task_graph": {
+    "argument_reads_diagnostic_only": [
+      "after_review",
+      "dry_run",
+      "graph",
+      "intelligence_class",
+      "parent_id",
+      "project_id",
+      "root",
+      "spec_path"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_phases_need_root_refusal": "sha256:d481798f50c5a538259072e7b8e68c4924aed7265363813f73bdbc54e1f7528d",
+      "_review_for_gating": "sha256:8ff69f62996fd66f774c5c489d87dde10e42aa055fdeab3fa92e7e67251d56d7",
+      "_scoped_graph_filing": "sha256:62562b97e1050122d4c8f4c5b3717f3f1ab726753809b68ce62573bf9f41d1db",
+      "_validate_graph_parent": "sha256:87dd51ba36089dc3328b385abde1f382270084c2da661875221e1699461d1f67"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_create_task_graph",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required (no active project set)'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{project_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"exactly one of 'graph' or 'spec_path' is required\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "review_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.parent_conflict', 'error': 'root and parent_id are mutually exclusive; pass one of them'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "parent_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Spec '{spec_path}' resolves outside the vault — spec paths must stay inside the vault root\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Spec '{spec_path}' not found in the vault\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refused"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'graph document is invalid', 'errors': [e.to_dict() for e in exc.errors]}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Could not read spec '{spec_path}': {exc}\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "phases_refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "filing_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'graph.root_needs_parent', 'error': \"a worker graph filed at the project root must declare its container with a document-level 'parent:' block\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.parent_out_of_scope', 'error': f\"project '{project_id}' delivers hierarchically, where a new container owns its children's delivery; a worker graph there files under the task it holds and cannot declare a document-level parent\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "phases_refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'graph validation failed with {len(errors)} error(s) — nothing was created', 'errors': [e.to_dict() for e in errors], 'warnings': [w.to_dict() for w in warnings]}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': exc.code, 'error': f'{exc.code}: {exc.detail} — nothing was created'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'hierarchy.{exc.code}: {exc.detail} — nothing was created', 'code': f'hierarchy.{exc.code}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "report"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b51acafd7ae9dba0ec1c738e5181870b84fa19d3fb1a06c5895545fe370d72ca",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_api_execute_contract.py",
+      "tests/test_create_task_graph_command.py",
+      "tests/test_integration_hierarchy.py",
+      "tests/test_phases.py",
+      "tests/test_provider_intent.py"
+    ]
+  },
+  "delete_task": {
+    "argument_reads_diagnostic_only": [
+      "branches",
+      "cascade",
+      "confirmed",
+      "reason",
+      "recursive",
+      "stop_running",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_delete_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'deletion.forbidden', 'error': refusal}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'invalid_branches', 'error': \"branches must be 'keep' or 'delete'\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "plan"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b401e37c3991c5db77be1ff20fbedda9154ec6b6403743cd69c43041061e8139",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_hierarchy_commands.py",
+      "tests/test_phases.py",
+      "tests/test_task_command_authorization.py",
+      "tests/test_task_graph_live_events.py"
+    ]
+  },
+  "discard_pause_checkpoint": {
+    "argument_reads_diagnostic_only": [
+      "reason",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_discard_pause_checkpoint",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'discarded': True, 'branch': discarded.get('branch'), 'ref': discarded.get('ref'), 'commit': discarded.get('commit')}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'reason is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' has no paused checkpoint\"}"
+      }
+    ],
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c884566feca87afc7cc13f3898e94edb8cee2d91457f9a584ecf82470f01427e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_task_controls.py",
+      "tests/test_generated_command_contracts.py",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol"
+    ]
+  },
+  "edit_task": {
+    "argument_reads_diagnostic_only": [
+      "affinity_agent_id",
+      "affinity_reason",
+      "after_review",
+      "clear_needs_attention",
+      "description",
+      "integration_mode",
+      "intelligence_class",
+      "max_retries",
+      "needs_attention",
+      "priority",
+      "project_id",
+      "skip_verification",
+      "status",
+      "task_id",
+      "task_type",
+      "title",
+      "verification_type",
+      "workflow_id",
+      "workspace_mode"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_edit_task",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Use pause_task to pause safely and stop any running session.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{args['task_id']}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "review_error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Task is manually paused; use resume_task.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Task is running or claimed; stop the task before changing its class hint.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid status '{new_status_raw}'. Valid: {valid}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Project '{new_pid}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(TaskProjectMoveError(task.id, new_pid, blockers))}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Promotion and backmerge task types are daemon-owned.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid task_type '{raw_tt}'. Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': class_error}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid integration_mode '{mode}'. Allowed: {', '.join(sorted(INTEGRATION_MODES))} (null clears the override — the task inherits the project/system policy)\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Agent '{val}' not found for affinity\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid affinity_reason '{val}'. Allowed: {', '.join(sorted(valid_reasons))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid workspace_mode '{val}'. Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'No fields to update. Provide project_id, title, description, priority, task_type, status, max_retries, verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id, affinity_reason, workspace_mode, after_review, needs_attention, or clear_needs_attention.'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:b2aa7796e906c3009b1adf63c5f23be7158184052f45db94cf484de7841fcb35",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "ensure_task": {
+    "argument_reads_diagnostic_only": [
+      "dedup_key",
+      "description",
+      "initial_status",
+      "intelligence_class",
+      "parent_key",
+      "priority",
+      "profile_id",
+      "project_id",
+      "task_type",
+      "title"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_ensure_task",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'dedup_key is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Promotion and backmerge task types are daemon-owned.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'title is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "reserved"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "malformed"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "unsupported"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': class_error}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"task '{reviewed_id}' is itself a pipeline review ({reviewed.dedup_key}); reviews are not reviewed\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': existing.id, 'created': False}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'initial_status is reserved for playbook-run presentation tasks'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid playbook-run initial status '{args['initial_status']}'\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "ensured"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:0e1cb4921c1585bc76461cefa0e746ad8a756cffc1608c1d2388b79b7e4f8b40",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "explain_task": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_explain_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'reasons': reasons, 'reason_codes': [reason['code'] for reason in reasons], 'operator_decisions': operator_decisions, 'assignment_route': assignment_route, 'provider_hold': provider_hold, 'phase_hold': phase_hold, 'claim_timing': claim_timing}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "out_of_scope"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "measurement"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev ff25a7d71 only appends the available next action to integration blocker detail; return branches and task resource gates are unchanged. Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged. Merge repair: retain dev manual-pause Resume proofs, stale repair refusal and worker integration policy. Restart guards the hold before Resume and defers supersession through Resume until the audited restart READY transaction. Unified admission projects Git prerequisite and frontier reasons; all producer exits retain explicit boolean or delegated outcomes, and original-principal resource gates are unchanged. Active-only Git-first fallback selects the train projection; reviewed return branches and original-principal resource gates remain unchanged.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b4f795d95ecbeac3c15a3b5e8703e477be685db1ce8693da9ac5909fcffe7aa1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_assignment_routing.py",
+      "tests/test_checkpoint_c3.py",
+      "tests/test_claim_commands.py",
+      "tests/test_delivery_consumers.py",
+      "tests/test_explain.py",
+      "tests/test_doctor_observations.py",
+      "tests/test_integration_train_sources.py::test_aborted_batch_names_each_withheld_source_instead_of_idling",
+      "tests/test_supervisor_recovery.py"
+    ]
+  },
+  "get_agent_error": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_agent_error",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "info"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "info"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:09a2f15161a1a845e8f5e55d5cba0117923ae7d0862fd859e181d26cac38dfd4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "get_chain_health": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_chain_health",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'status': task.status.value, 'stuck_downstream': [], 'message': 'Task is not blocked — no stuck chain.'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'title': task.title, 'status': task.status.value, 'stuck_downstream': [{'id': t.id, 'title': t.title, 'status': t.status.value} for t in stuck], 'stuck_count': len(stuck)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'project_id': pid, 'stuck_chains': chains, 'total_stuck_chains': len(chains)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:1696d4fcc83ff87312ed37df433b777edcdc138231fbc94b12868a3ee82f0230",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "get_downstream_tasks": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_downstream_tasks",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'tasks': out}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "context"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"task '{task_id}' not found\"}"
+      }
+    ],
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "typed",
+    "source_digest": "sha256:24e2191c8ac0646732319105013d71fb84c044664ac5cac76d716c646ff5e5dc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "get_task": {
+    "argument_reads_diagnostic_only": [
+      "clear_needs_attention",
+      "needs_attention",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_task_dependency_rows": "sha256:06bce0a384a0a28be0d9cd340ea5cde1ab8f4e7486caf59ba422555af985aaf1"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_task",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "info"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "context"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{args['task_id']}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._fidelity_member_detail(task, context)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': '--clear-needs-attention and --needs-attention are mutually exclusive'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "out_of_scope"
+      }
+    ],
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270, merged with PR1689 source 6fe7d2ce5cf5ef8b13cca9881778737fe6751f1b): reviewed _task_dependency_rows batching of the same dependency/dependent IDs in groups of 900, missing-row omission and sorted dependent output. The helper only reads edges and tasks; it adds no mutations or authority. All six producer exits and typed read outcomes are unchanged. Original-principal dispatch, fidelity-review context/member filtering and _assert_task_in_scope still precede ordinary dependency expansion. GetTaskArgs remains task_id-only; diagnostic legacy attention flags gain no schema or mutation authority. The typed adapter retains its domain gates; resource_audit_required is unchanged and is not a new generated grant.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:94b80ee7ce74b1ffcbef7483fdad1bf2e3c8739255b980df46248610eee8c693",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_deps_command.py::test_related_task_reads_do_not_scale_with_dependency_fanout"
+    ]
+  },
+  "get_task_dependencies": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_cmd_task_deps": "sha256:416d9481d1bf04f62ee1ae9d91aa25189f255479c45321f89b949f2f2f35d687"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_task_dependencies",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._cmd_task_deps(args)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_task_deps dependency batching as recorded on task_deps. This wrapper and its producer exits are unchanged; existing project_resources, handler_gates authority remains required. Only the reviewed helper digest is refreshed.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c3ff84b1a4cd6dcaab185390c829ccbee33eec5b54c5a74aecdddacc369638fb",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_deps_command.py"
+    ]
+  },
+  "get_task_result": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_task_result",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"No results found for task '{args['task_id']}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{**result, 'success': True}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f572cc06f906714227644a5438f5f631ff30d3c5ffdd9e8bc4c22f08066797ce",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "get_task_tree": {
+    "argument_reads_diagnostic_only": [
+      "compact",
+      "max_depth",
+      "show_dependencies",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_get_task_tree",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:0b72f21c3eae691313e102dd7396fd4a5c716c14fb4ee36e19f3b9e33dfde48e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "list_active_tasks_all_projects": {
+    "argument_reads_diagnostic_only": [
+      "include_completed"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_list_active_tasks_all_projects",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'by_project': by_project, 'tasks': flat, 'total': len(tasks), 'project_count': len(by_project), 'hidden_completed': hidden_completed}"
+      },
+      {
+        "protocol": "delegated_producer: dictionary expansion retains producer outcome",
+        "return": "{**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e0224b596d9193d2a6c2507a21555e19e9c2583bd266d7492650b2d94ec03796",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "list_archived": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_list_archived",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'tasks': tasks, 'count': len(tasks), 'total': total, 'project_id': project_id}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:1dbe8539f935d1848958439772ecf420e2cf4fd1046995682a39194defbfb494",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_archive.py"
+    ]
+  },
+  "list_tasks": {
+    "argument_reads_diagnostic_only": [
+      "any_label",
+      "display_mode",
+      "include_completed",
+      "labels",
+      "project_id",
+      "show_all",
+      "show_dependencies",
+      "status"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_list_tasks",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._list_tasks_hierarchical(args, kwargs, explicit_status, compact=display_mode == 'compact', show_dependencies=show_dependencies)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await snapshot_command(self, 'list_tasks', args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._fidelity_list_tasks(args, context)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._list_tasks_flat(args, kwargs, explicit_status, show_dependencies=show_dependencies)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "context"
+      }
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "typed",
+    "source_digest": "sha256:49ee843726c3a54c254a33b94d1352edaf5f416ef1565552b9c68507498811dd",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_observation_snapshots.py"
+    ]
+  },
+  "pause_task": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b",
+      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_pause_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'status': task.status.value}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e1c7ec02955b87ac70c56a707b393312019efe73550937e26318bf8f78cc2055",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_assignment_routing.py"
+    ]
+  },
+  "project_ready": {
+    "argument_reads_diagnostic_only": [
+      "any_label",
+      "brief",
+      "labels",
+      "profile_id",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_project_ready",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'ready': ready, 'withheld': withheld}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:97191bc5570ea79b01b2fa129c0b63bb026bcf0eb4577bbe0297bf1449d6c14f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_claim_commands.py",
+      "tests/test_explain.py"
+    ]
+  },
+  "provide_input": {
+    "argument_reads_diagnostic_only": [
+      "input",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_provide_input",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'input text is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Task is not waiting for input (status: {task.status.value})'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'title': task.title, 'status': 'READY'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e8baf94b99e74904b85a37b3de11df8bf7f17e401731cbb7590c5ce4de8550b4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "remove_dependency": {
+    "argument_reads_diagnostic_only": [
+      "dep_type",
+      "depends_on",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_remove_dependency",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'depends_on is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid dep_type '{dep_type}'. Allowed: {', '.join(sorted(DEP_TYPE_VALUES))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"No dependency found: '{task_id}' does not depend on '{depends_on}'{suffix}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'ok': True, 'task_id': task_id, 'removed_dependency': depends_on, 'removed_dep_types': sorted(matching), 'task_title': task.title}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f347938b14fca97f2e702eb75230dacbbeaa4409f3256dcbe10a83ba995a2d6a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_graph_live_events.py",
+      "tests/test_work_graph_commands.py",
+      "tests/test_worker_filing.py"
+    ]
+  },
+  "remove_task": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_remove_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "{**result, 'deprecated_alias': 'remove_task', 'removed': result.get('deleted')}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:bd0e9a31c0c32766298097be719fed90e9e9ca3f122f15e2f0ff6c7cda5d9276",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "reopen_with_feedback": {
+    "argument_reads_diagnostic_only": [
+      "feedback",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_hierarchy_failure": "sha256:abb65e8a19902eb86db00890f0937747a05e8846ab23d421eb0e70059143e42c"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_reopen_with_feedback",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'reopened': task_id, 'title': task.title, 'previous_status': old_status, 'status': 'READY', 'feedback_added': True, 'integration_mode': task.integration_mode, 'cancelled_reviews': cancelled_reviews}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'feedback text is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Task is currently in progress. Stop it first.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'integration review evidence refused: {exc}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._hierarchy_failure(exc)"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Sealed-target repair reconciliation: hierarchy exceptions return the existing false envelope with the original delivery refusal code; service, reviewer, foreign and stopped-supervisor guards remain enforced. Fast-smooth completion merge: observe current Git removal delivery before the locked review-evidence reopen, retaining the dev HierarchyError failure response.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b5167496b924e38e6c49e76989c2e4af1c343ec9a1b99a0e529bcff85658b9e3",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_train_sources.py",
+      "tests/test_review_reopen_cascade.py",
+      "tests/test_routing_router.py",
+      "tests/test_delivery_consumers.py::test_missing_provenance_reopen_requires_operator_control"
+    ]
+  },
+  "reparent_task": {
+    "argument_reads_diagnostic_only": [
+      "parent_id",
+      "root",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_worker_reparent_refusal": "sha256:577fedffb326cf8ad8166eca91544957e0b16db1b5cdd2804a92857139524ca6"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_reparent_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "out"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'exactly one of parent_id or root is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'no session in scope'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'idle_session_cannot_file', 'error': 'idle sessions cannot reparent work; claim a task first'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'hierarchy.reparent_out_of_scope', 'error': _REPARENT_SCOPE_ERROR}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'hierarchy.{exc.code}: {exc.detail}', 'code': f'hierarchy.{exc.code}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': exc.code, 'outcome': exc.code, 'error': f'{exc.code}: {exc.detail}', **exc.context}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'unauthorized', 'error': 'caller cannot mutate this hierarchy'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:820fe9d8b7695f96424d7a183dd8aa345fdd272b1ca2dab753c1c87945f7d045",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_claim_commands.py",
+      "tests/test_hierarchy_commands.py",
+      "tests/test_worker_filing.py",
+      "tests/test_integration_hierarchy.py"
+    ]
+  },
+  "restart_task": {
+    "argument_reads_diagnostic_only": [
+      "override_hold",
+      "reason",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_restart_repair_delegate": "sha256:36da9e3baf68fa15433b6caf181834518d2975156216297a369d1006fca9f8f8",
+      "_restart_task": "sha256:087b04ca01149f13072bdd76bc587cce290967406d090f8ae73350fff8fea70f",
+      "_resume_manual_pause": "sha256:95debb0dfedd5f648a0018e8e4fb3f2ff37ce9d1558fbadf128774bc5d47654b"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_restart_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'override_hold must be a boolean'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'override_hold requires a reason of 1 to 4000 characters'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await TaskCommandsMixin._restart_task(self, args, hold_override)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': refusal}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'task_recovery.held', 'error': str(exc), 'recovery_hold': exc.incident}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged. Merge repair: retain dev manual-pause Resume proofs, stale repair refusal and worker integration policy. Restart guards the hold before Resume and defers supersession through Resume until the audited restart READY transaction.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:9559903767857486338a36b1b734038600d6f8129122977717a438dd1ff32c36",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_canonical_reservation.py",
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_integration_repair.py",
+      "tests/test_integration_repair_rollover.py",
+      "tests/test_routing_router.py",
+      "tests/test_wait_hibernation.py",
+      "tests/test_supervisor_recovery.py",
+      "tests/test_task_controls.py"
+    ]
+  },
+  "resume_task": {
+    "argument_reads_diagnostic_only": [
+      "recover_stale_pause",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_confirm_recovery_worker_stopped": "sha256:782b33c9f86faaa3e7d7bc88e33d0c5e0d5f9d110610d849a3069149e6f448af",
+      "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b",
+      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_resume_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'status': task.status.value}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'status': task.status.value}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': refusal}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "stopped"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Merge repair: the internal restart-only Resume path defers recovery supersession until the audited restart READY transaction; ordinary Resume retains its existing behavior and resource gates.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:93a0d163ec3c1e02db40410a55d44abfedf4fe1636eedc27f6d61977afd3a934",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_assignment_routing.py",
+      "tests/test_claim_commands.py",
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_supervisor_recovery.py"
+    ]
+  },
+  "set_task_status": {
+    "argument_reads_diagnostic_only": [
+      "status",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_set_task_status",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Use pause_task to pause safely and stop any running session.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'task {task_id} has open children: {', '.join(open_children)}', 'code': 'hierarchy.open_children', 'open_children': open_children}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'A task with a Git branch or origin needs completion provenance. Use task close for held work, or integration record-root-noop for an unheld no-change root whose published head equals its recorded base.', 'code': 'integration.completion_provenance_required'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'old_status': old_status, 'new_status': new_status, 'title': task.title}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:ff97a9ccdecdd3f271df9329afa2f3eea8df1335167f824fa220ac4c70e5a0a9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_hierarchy_commands.py",
+      "tests/test_integration_root_noop.py"
+    ]
+  },
+  "skip_task": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_skip_task",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': error}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'skipped': args['task_id'], 'unblocked_count': len(unblocked), 'unblocked': [{'id': t.id, 'title': t.title} for t in unblocked]}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:a677fb2750645d84bf7e99dad9030c3add899fd1971a6085b69d527651320a90",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_hierarchy_commands.py"
+    ]
+  },
+  "stop_task": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_stop_task",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': error}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{'stopped': args['task_id']}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:c94bee3b9f993fda6737224d1ca37b93bfe40896d0571f508054965e6670177c",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_children": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "offset",
+      "recursive",
+      "status",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_children",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task_id, 'count': len(rows), 'children': rows}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "out_of_scope"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:fd4b81bfb1580c1f586e4c284906e15421ef443cdc7bd0d8643dd2a5145e83c5",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_hierarchy_commands.py"
+    ]
+  },
+  "task_deps": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_task_dependency_rows": "sha256:06bce0a384a0a28be0d9cd340ea5cde1ab8f4e7486caf59ba422555af985aaf1"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_deps",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task.id, 'title': task.title, 'status': task.status.value, 'depends_on': depends_on, 'blocks': blocks, 'provenance': provenance}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed the shared _task_dependency_rows read helper replacing per-edge lookups. Blocking-edge reasons, nonblocking provenance, omission of missing rows and sorted dependents are retained; all three return branches keep explicit boolean success. Original-principal project_resources and handler_gates remain required, and the get_task_dependencies alias still delegates here. Batching only loads the existing related IDs in groups of 900; it grants no additional resource or mutation authority.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:416d9481d1bf04f62ee1ae9d91aa25189f255479c45321f89b949f2f2f35d687",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_deps_command.py",
+      "tests/test_task_deps_command.py::test_related_task_reads_do_not_scale_with_dependency_fanout"
+    ]
+  },
+  "task_failure_triage_notify": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_failure_triage_notify",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "disabled"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found in this project\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:6b646905ecc47b1a6d24430c5f773cf0ef4be9b979a65a7f2611bc74447abc3f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_progress": {
+    "argument_reads_diagnostic_only": [
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_progress",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "out_of_scope"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **progress, **await task_activity(self.db, task_id)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:a75cb3db2b4966ddc56c521e1a99cff4da97a106f4b32f3e3ae615003259180f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_hierarchy_commands.py",
+      "tests/test_task_graph_activity.py"
+    ]
+  },
+  "task_recent_activity": {
+    "argument_reads_diagnostic_only": [
+      "hours",
+      "limit",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_recent_activity",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'hours must be a number'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'hours must be greater than 0'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'limit must be an integer'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'since': since, 'until': until, 'hours': hours, 'project_id': project_id, 'items': items, 'total': total, 'truncated': total > len(items), 'by_model': sorted(by_model.values(), key=lambda e: (-e['attempts'], e['model'] or '\\uffff'))}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:78ed5197eb94538ff86f01e0168ed8efd3c12dc5a7ab7fb517cf7a55dba6ebb4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_activity.py"
+    ]
+  },
+  "task_recover": {
+    "argument_reads_diagnostic_only": [
+      "decision",
+      "expected_hold_at",
+      "incident_id",
+      "operator_release",
+      "reason",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_confirm_recovery_worker_stopped": "sha256:782b33c9f86faaa3e7d7bc88e33d0c5e0d5f9d110610d849a3069149e6f448af",
+      "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b",
+      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_recover",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Provide decision retry|hold|release and a reason of 1 to 4000 characters'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'operator_release must be a boolean'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': \"expected_hold_at requires retry|release and the prior hold's decided_at\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Task recovery is owned by integration operation {operation['id']}; use the integration operation's existing controls and budgets\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'operator_release requires retry|release and expected_hold_at'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': refusal}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'decision release requires operator_release'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Incident is stale or not found'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "stopped_session"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': refusal}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Incident is stale or not found'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'task_recovery.refused', 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Completion racing a direct recovery decision returns task_recovery.refused with success false; ask decisions still raise for their operation reconciler. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7e3b79eb18e3676887b507b6b50cffe4070441d2a69a5979ba16687526fb55f9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_owner_recovery.py",
+      "tests/test_supervisor_recovery.py::test_operator_close_resolves_open_recovery_incident",
+      "tests/test_supervisor_recovery.py::test_recover_racing_completion_refuses_cleanly"
+    ]
+  },
+  "task_recovery_notify": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_task_recovery_notify",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._cmd_task_failure_triage_notify(args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:864df5215109a09945cf585406034bd06d1681937f2fe1080535dd70691d09b5",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/repair.py::RepairService._refile_stage::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 4225,
+      "owner": "RepairService._refile_stage",
+      "owner_fingerprint": "086817816b6a9340805fd9cefb88fccbbb3286e6ef44a6508b03dbf5950f46fd",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/continuation_queries.py::continuation_prime_context": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::degrade_checkpoint": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::measurement_medians": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::wait_outcome_envelope": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

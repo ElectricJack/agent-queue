@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, StrictInt, StringConstraints, ValidationError, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -30,6 +30,48 @@ from src.commands.contracts.models import (
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
 from src.observations.models import SnapshotArgs, SnapshotValue
+
+
+SplitText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class TaskSplitMoved(CommandArgs):
+    title: SplitText
+    acceptance: list[SplitText] = Field(min_length=1)
+    placement: Literal["operational_root", "child"] = Field(
+        description="Post-delivery operations become a root; finite build work stays beside the source."
+    )
+    delivery_targets: list[SplitText] = Field(
+        default_factory=list,
+        description="Same-project code leaves whose verified delivery gates operational work; include the source.",
+    )
+
+    @model_validator(mode="after")
+    def delivery_placement(self):
+        if (self.placement == "operational_root") != bool(self.delivery_targets):
+            raise ValueError("only operational_root requires delivery_targets")
+        return self
+
+
+class TaskSplitArgs(CommandArgs):
+    task_id: SplitText
+    retained_acceptance: list[SplitText] = Field(
+        min_length=1, description="Exact source criteria retained; together with moved.acceptance, an exhaustive partition."
+    )
+    moved: TaskSplitMoved
+    reason: SplitText
+    # Parent checkpoint generation. Roots and disabled integration use
+    # task_metadata.split.generation, initially zero, preserving code checks.
+    expected_generation: StrictInt = Field(
+        ge=0, description="Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0)."
+    )
+
+
+class TaskSplitValue(CommandValue):
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
 
 
 class CreateTaskArgs(CommandArgs):
@@ -475,6 +517,41 @@ class TaskBatchCommitArgs(CommandArgs):
 
 class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
+
+
+class TaskBatchReleaseArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    project_id: str | None = None
+
+
+class TaskBatchReleaseValue(CommandValue):
+    batch_id: str | None = None
+    release_receipt: dict[str, Any] | None = None
+    released_task_ids: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    retryable: bool = False
+
+
+class TaskBatchRetireArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    reason: str = Field(min_length=1)
+    project_id: str | None = None
+
+    @model_validator(mode="after")
+    def retirement_reason(self):
+        if not self.reason.strip():
+            raise ValueError("Retirement requires a reason")
+        return self
+
+
+class TaskBatchRetireValue(CommandValue):
+    batch_id: str | None = None
+    state: str | None = None
+    already_retired: bool = False
+    error_code: str | None = None
 
 
 class TaskBatchValidateArgs(CommandArgs):
@@ -942,6 +1019,10 @@ def _handler() -> Any:
 def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     """Map each legacy return shape to a declared business outcome."""
     refused = bool(raw.get("error")) or raw.get("success") is False
+    if name == "task_batch_release":
+        return "error" if refused else "already_released" if raw.get("already_released") else "released"
+    if name == "task_batch_retire":
+        return "error" if refused else "already_retired" if raw.get("already_retired") else "retired"
     if name == "ci_baseline_status" and (raw.get("success") is True or not refused):
         # A successful verdict explains ``unknown`` (no GitHub remote, checks
         # unreadable) in ``error``; that is the next tick's problem, not a
@@ -1021,6 +1102,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _PROVIDER_REROUTE_OUTCOMES else "rejected"
     return {
+        "task_split": "split",
         "create_task": "created",
         "edit_task": "updated",
         "add_dependency": "linked",
@@ -1158,6 +1240,11 @@ def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
 # effect clauses use; ``test_presentation_labels_name_real_fields`` pins that.
 
 PRESENTATIONS: dict[str, CommandPresentation] = {
+    "task_split": CommandPresentation(
+        title="Split task acceptance",
+        summary="Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        outcome_labels={"split": "Split", "rejected": "Rejected"},
+    ),
     "get_stuck_tasks": CommandPresentation(
         title="Read stuck tasks",
         summary="Read aged active tasks, orphaned workers and failed routes in active projects.",
@@ -1449,6 +1536,29 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
     ),
+    "task_batch_release": CommandPresentation(
+        title="Release a reviewed ingestion batch",
+        summary="Verify source approval, the live graph and its fidelity receipt before release.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "expected_digest": "Expected digest", "project_id": "Project"},
+        outcome_labels={"released": "Released", "already_released": "Already released",
+                        "error": "Release refused"},
+        result_labels={"batch_id": "Batch", "release_receipt": "Release receipt",
+                       "released_task_ids": "Released tasks", "error_code": "Refusal code",
+                       "retryable": "Retryable"},
+        subject_labels={"task_graph": "the reviewed task graph"},
+    ),
+    "task_batch_retire": CommandPresentation(
+        title="Finalize an obsolete ingestion batch",
+        summary="Require prior supported retirement of every member and reviewer; retain evidence.",
+        arg_labels={"batch_id": "Held batch", "expected_revision": "Expected revision",
+                    "reason": "Retirement reason", "project_id": "Project"},
+        outcome_labels={"retired": "Retired", "already_retired": "Already retired",
+                        "error": "Retirement refused"},
+        result_labels={"batch_id": "Batch", "state": "State", "already_retired": "Replay",
+                       "error_code": "Refusal code"},
+        subject_labels={"task_graph": "the obsolete task graph"},
+    ),
     "task_batch_review_record": CommandPresentation(
         title="Record a batch fidelity review",
         summary="Attest every mapped section and whole-batch intent on the exact held graph.",
@@ -1526,7 +1636,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         arg_labels={
             "project_id": "Project",
             "ref": "Branch or commit",
-            "max_attempts": "Repair attempts before escalating",
+            "max_attempts": "Repair attempts before escalating (0 = unlimited; default)",
         },
         outcome_labels={
             "green": "Green",
@@ -1877,6 +1987,12 @@ def _contract(
 def register_builtin_contracts(registry: ContractRegistry) -> None:
     definitions = (
         (
+            "task_split", TaskSplitArgs, TaskSplitValue, _outcomes("split"),
+            SideEffectClass.COMPOSITE,
+            (CreateClause(subject=EffectSubject.TASK), UpdateClause(subject=EffectSubject.TASK)),
+            IdempotencySpec(mode="none"), False,
+        ),
+        (
             "list_projects", ListProjectsArgs, ListProjectsValue, _outcomes("listed"),
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
@@ -2027,6 +2143,22 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (CreateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="keyed", key_field="proposal_id"),
             False,
+        ),
+        (
+            "task_batch_release", TaskBatchReleaseArgs, TaskBatchReleaseValue,
+            (OutcomeSpec(name="released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_released", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "task_batch_retire", TaskBatchRetireArgs, TaskBatchRetireValue,
+            (OutcomeSpec(name="retired", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="already_retired", classification=OutcomeClass.SUCCESS),
+             OutcomeSpec(name="error", classification=OutcomeClass.FAILURE)),
+            SideEffectClass.COMPOSITE, (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_batch_validate",

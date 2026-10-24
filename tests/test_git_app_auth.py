@@ -1329,11 +1329,23 @@ async def test_authenticated_default_branch_discovery_uses_pinned_https_source(
 @pytest.mark.asyncio
 async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkeypatch):
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    _git(["init", "--initial-branch=main"], checkout)
-    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
     manager = GitManager(github_access=_BoundAppAccess())
-    lock = asyncio.Lock()
+    # This tests serialization, not subprocess latency on a busy CI runner.
+    async def read_origin(args, **kwargs):
+        assert args == ["config", "--get", "remote.origin.url"]
+        assert kwargs == {"cwd": str(checkout)}
+        return "https://github.com/acme/widgets.git"
+
+    monkeypatch.setattr(manager, "_arun", read_origin)
+    contended = asyncio.Event()
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                contended.set()
+            return await super().acquire()
+
+    lock = ObservedLock()
     manager.set_lock_provider(lambda _cwd: lock)
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -1341,6 +1353,7 @@ async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkey
 
     async def held_fetch(*_args, **_kwargs):
         nonlocal runs
+        assert lock.locked()
         runs += 1
         entered.set()
         await release.wait()
@@ -1349,15 +1362,23 @@ async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkey
     first = asyncio.create_task(
         manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
     )
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    second = asyncio.create_task(
-        manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
-    )
-    await asyncio.sleep(0.05)
-    assert runs == 1
-    release.set()
-    await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
-    assert runs == 2
+    tasks = [first]
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        tasks.append(asyncio.create_task(
+            manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
+        ))
+        await asyncio.wait_for(contended.wait(), timeout=1)
+        assert runs == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert runs == 2
+        assert not lock.locked()
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -2528,7 +2549,7 @@ async def test_app_push_expired_authority_deadline_never_enters_transport(
 
 
 @pytest.mark.asyncio
-async def test_app_push_error_never_repeats_remote_output_or_token(tmp_path):
+async def test_app_push_error_retains_remote_diagnostic_without_token(tmp_path):
     secret = "high-authority-secret"
     checkout, target, _, base, tip = _git_push_case(tmp_path)
     failed_git = tmp_path / "failed-git"
@@ -2546,7 +2567,8 @@ async def test_app_push_error_never_repeats_remote_output_or_token(tmp_path):
             expected_old_oid=base,
         )
     assert secret not in str(caught.value)
-    assert "remote echoed" not in str(caught.value)
+    assert "reason=git_exit, returncode=1" in str(caught.value)
+    assert "remote echoed ***" in str(caught.value)
 
 
 def test_askpass_username_and_invalid_prompts_do_not_send_broker_requests():
@@ -2821,6 +2843,29 @@ async def test_oversized_broker_request_setup_closes_and_zeroizes():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("ending", [b"\n", b""])
+async def test_push_stderr_drain_bounds_and_scrubs_before_truncating(ending):
+    credential = bytearray(b"private-installation-token")
+    stream = asyncio.StreamReader()
+    stream.feed_data(
+        b"old progress\n" * 10000
+        + b"https://alice:" + b"secret" * 2000 + b"@github.com/test/repo.git\n"
+        + (("進捗" * 600 + "\n") * 2).encode() + b"private-installation-token\n"
+        + b"Authorization: Bearer private-installation-token\n"
+        + b"https://alice:password@github.com/test/repo.git\n"
+        + b"fatal: upstream unavailable" + ending
+    )
+    stream.feed_eof()
+    detail = await manager_module._read_push_stderr(stream, credential)
+    assert len(detail.encode("utf-8")) <= 4096
+    assert "fatal: upstream unavailable" in detail
+    assert "private-installation-token" not in detail
+    assert "password" not in detail and "alice:" not in detail and "secret" not in detail
+    assert "old progress" not in detail
+    assert credential == bytearray()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
 async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
     tmp_path, monkeypatch, cancel
@@ -2862,7 +2907,7 @@ async def test_app_push_timeout_or_cancellation_kills_entire_process_group(
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        with pytest.raises(GitError, match="authenticated Git push failed"):
+        with pytest.raises(GitError, match="reason=timeout, exception=TimeoutError"):
             await task
 
     for _ in range(200):
@@ -2883,7 +2928,7 @@ async def test_app_push_spawn_failure_closes_broker_reader_before_waiting(tmp_pa
     manager._APP_GIT_EXECUTABLE = str(tmp_path / "missing-git")
     open_fds_before = _fd_baseline()
 
-    with pytest.raises(GitError, match="authenticated Git push failed"):
+    with pytest.raises(GitError, match="reason=spawn_or_wait, exception=FileNotFoundError"):
         await manager._apush_oid_with_app_auth_to_url(
             str(checkout),
             destination_url=target.as_uri(),

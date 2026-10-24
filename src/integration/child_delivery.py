@@ -4,8 +4,8 @@ Active Git-first redrive observes current parent containment and leaves delivery
 with the train. Shadow collection proves the child's published checkpoint head
 and origin ancestry, then records approved leaf evidence. Rejected heads and
 open reviewers retain authority; failed proof backs off without overriding them.
-``ensure_evidence`` serves the collector, ``run`` serves the supervisor's
-``redrive-child``, and ``stuck_children_statement`` serves doctor diagnostics.
+``ensure_evidence`` serves the collector and ``run`` serves the supervisor's
+``redrive-child``.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import and_, exists, insert, select
+from sqlalchemy import exists, insert, select
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
@@ -227,90 +227,6 @@ def _parent_refusal(snapshot: dict[str, Any]) -> str | None:
     return None
 
 
-def stuck_children_statement(*, updated_before: float, limit: int = 200):
-    """Completed code children a collecting parent has not assembled.
-
-    Require a COMPLETED child with a working leaf checkpoint and a PAUSED parent
-    awaiting children in a live collection. Exclude receipted or promoting heads
-    and tasks or checkpoints changed since updated_before.
-    """
-    child = tasks
-    parent = tasks.alias("stuck_child_parent")
-    checkpoint = task_integration_checkpoints.alias("stuck_child_checkpoint")
-    parent_checkpoint = task_integration_checkpoints.alias("stuck_child_parent_checkpoint")
-    operation = integration_repair_operations
-    origin = task_branch_origins
-    delivered = exists(
-        select(task_delivery_receipts.c.id).where(
-            task_delivery_receipts.c.source_task_id == child.c.id,
-            task_delivery_receipts.c.repository_id == checkpoint.c.repository_id,
-            task_delivery_receipts.c.target_branch == parent.c.branch_name,
-            task_delivery_receipts.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-        )
-    )
-    promoting = exists(
-        select(integration_promotion_intents.c.id).where(
-            integration_promotion_intents.c.source_task_id == child.c.id,
-            integration_promotion_intents.c.source_head == checkpoint.c.checkpoint_sha,
-            integration_promotion_intents.c.state.not_in(_SETTLED_INTENT_STATES),
-        )
-    )
-    grandchild = tasks.alias("stuck_child_grandchild")
-    nested = exists(select(grandchild.c.id).where(grandchild.c.parent_task_id == child.c.id))
-    return (
-        select(
-            child.c.id.label("task_id"),
-            child.c.project_id,
-            child.c.parent_task_id,
-            child.c.branch_name.label("branch"),
-            child.c.updated_at,
-            checkpoint.c.checkpoint_sha.label("head_sha"),
-            checkpoint.c.generation,
-            checkpoint.c.repository_id,
-            checkpoint.c.updated_at.label("checkpoint_updated_at"),
-            origin.c.base_sha,
-        )
-        .select_from(
-            child.join(parent, parent.c.id == child.c.parent_task_id)
-            .join(projects, projects.c.id == child.c.project_id)
-            .join(checkpoint, checkpoint.c.task_id == child.c.id)
-            .join(parent_checkpoint, parent_checkpoint.c.task_id == parent.c.id)
-            .join(
-                operation,
-                and_(
-                    operation.c.parent_task_id == parent.c.id,
-                    operation.c.episode_id == parent_checkpoint.c.episode_id,
-                ),
-            )
-            .join(
-                origin,
-                and_(
-                    origin.c.task_id == child.c.id,
-                    origin.c.repository_id == checkpoint.c.repository_id,
-                    origin.c.retired_at.is_(None),
-                ),
-            )
-        )
-        .where(
-            projects.c.hierarchical_integration_mode.in_(MANAGED_MODES),
-            child.c.status == TaskStatus.COMPLETED.value,
-            checkpoint.c.state == "working",
-            checkpoint.c.episode_id.is_(None),
-            checkpoint.c.checkpoint_sha != origin.c.base_sha,
-            parent.c.status == TaskStatus.PAUSED.value,
-            parent_checkpoint.c.state == "awaiting_children",
-            operation.c.state.in_(_COLLECTING_OPERATION_STATES),
-            child.c.updated_at < updated_before,
-            checkpoint.c.updated_at < updated_before,
-            ~nested,
-            ~delivered,
-            ~promoting,
-        )
-        .order_by(child.c.id)
-        .limit(limit)
-    )
-
-
 async def latest_evidence_on(
     conn,
     *,
@@ -376,6 +292,7 @@ class ChildDelivery:
         promotion_service: Any,
         *,
         collect: Collect | None = None,
+        train_blockers: Callable[[str], Awaitable[dict | None]] | None = None,
         clock: Callable[[], float] = time.time,
         retry_seconds: float = 60.0,
         max_backoff_seconds: float = 3600.0,
@@ -385,6 +302,7 @@ class ChildDelivery:
         self.db = db
         self.promotion = promotion_service
         self.collect = collect
+        self.train_blockers = train_blockers
         self.clock = clock
         self.retry_seconds = retry_seconds
         self.max_backoff_seconds = max_backoff_seconds
@@ -837,6 +755,36 @@ class ChildDelivery:
                 reason += (f"; preview source recovery with `aq integration redrive-child "
                            f"{task_id} --adopt-source`")
             return {**base, "outcome": "blocked", "reason": reason}, snapshot, None
+        if not proof.satisfied:
+            from src.integration.obsolete_children import obsolete_child_blocker
+            from src.integration.status import IntegrationStatusService
+
+            for observed in view.snapshots:
+                if (observed.project_id, observed.repository_id, observed.target_ref) != (
+                    proof.request.project_id, proof.request.repository_id, proof.request.target_ref,
+                ):
+                    continue
+                obsolete = await obsolete_child_blocker(
+                    observed, task_id=task_id, source_base=snapshot["base_sha"],
+                    source_oid=proof.source_oid,
+                )
+                if obsolete:
+                    return {**base, "outcome": "blocked",
+                            "reason": "obsolete_child: " + obsolete["detail"]}, snapshot, None
+            read_blockers = self.train_blockers or IntegrationStatusService(
+                self.db, git_first="active", delivery=observer,
+            ).train_task_blockers
+            status = await read_blockers(task_id) or {}
+            blockers = status.get("blockers", [])
+            if blockers:
+                return {**base, "outcome": "blocked", "reason": "; ".join(
+                    f"{item['code']}: {item['detail']}" for item in blockers
+                )}, snapshot, None
+            if not status.get("batches"):
+                return {**base, "outcome": "blocked", "reason": (
+                    f"no batch contains this child; {proof.reason}; "
+                    "the train has not reported a source admission decision"
+                )}, snapshot, None
         return {
             **base, "outcome": "nothing_to_redrive",
             "reason": ("already delivered into the parent (Git containment)" if proof.satisfied

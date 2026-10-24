@@ -16,7 +16,7 @@ from tests.test_promotion_steps import promotion as promotion, setup as setup
     ("active", False, "development", False),
     ("active", False, "hierarchy", False),
     ("active", False, "train", False),
-    ("shadow", True, "development", False),
+    ("shadow", True, "development", True),
     ("shadow", False, "development", True),
     ("shadow", False, "hierarchy", True),
     ("shadow", False, "train", True),
@@ -41,7 +41,7 @@ async def test_delivery_engine_matches_startup_selection(git_first, reconciler, 
     if broken:
         assert result.data["projects"][0]["mode"] == mode
         assert "no delivery engine for this project" in result.detail
-        assert "delivery visits are paused" in result.detail
+        assert "trial (shadow) mode has been removed" in result.detail
     if mode in {"disabled", "observe"} or broken:
         db.get_repo.assert_not_awaited()
 
@@ -544,9 +544,9 @@ async def test_stalled_train_batch_check_is_registered_and_read_only(sealed_trai
 
 @pytest.mark.parametrize("case,alerts", [
     ("before_deadline", False), ("at_deadline", True),
-    ("snapshot_unknown", True), ("visit_running", True),
+    ("snapshot_unknown", False), ("visit_running", False),
     ("discovery_failed", True),
-    ("active_repair_stalled", True), ("active_repair_recent", False),
+    ("active_repair_stalled", False), ("active_repair_recent", False),
     ("recent_progress", False), ("paused", False), ("promoted", False),
 ])
 async def test_train_command_alerts_after_one_hour_once_across_restarts(
@@ -617,5 +617,100 @@ async def test_train_command_alerts_after_one_hour_once_across_restarts(
         assert notice["to_id"] == "supervisor-p"
         assert notice["thread_id"] == incident["id"]
         assert "60m" in notice["body"]
-        [discord_delivery] = await env.db.list_escalation_deliveries(incident["id"])
-        assert discord_delivery["kind"] == "root"
+        assert await env.db.list_escalation_deliveries(incident["id"]) == []
+
+
+@pytest.mark.parametrize("case", ["retry_pending", "queue_progress", "long_visit"])
+async def test_train_alert_waits_for_real_queue_progress_and_measured_visits(sealed_train_batch, case):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_batches
+    from src.doctor.integration_checks import stalled_train_batches
+
+    env, now = sealed_train_batch, 1_800_000_000
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(updated_at=now - 3601))
+    lane = {"project_id": "p", "repository_id": "r", "target_ref": "refs/heads/dev",
+            "batch_id": "train-stuck"}
+    if case == "retry_pending":
+        lane["deferred_until"] = now + 270
+    elif case == "queue_progress":
+        lane.update(batch_id="another-batch", progress_at=now - 270)
+    else:
+        lane["timing"] = {"elapsed_seconds": 2100}
+    train = SimpleNamespace(status=lambda: [lane], visit_timeout_seconds=900)
+    ctx = DoctorContext(db=env.db, config=SimpleNamespace(), handler=SimpleNamespace(
+        orchestrator=SimpleNamespace(integration_train=train)))
+    assert await stalled_train_batches(ctx, now=now, alert_after_seconds=3600) == []
+    train.status = lambda: []
+    assert len(await stalled_train_batches(ctx, now=now, alert_after_seconds=3600)) == 1
+
+
+@pytest.mark.parametrize("lifecycle", ["promoted", "aborted", "empty", "failed", "sealed"])
+async def test_periodic_and_explicit_sweep_share_batch_lifecycle_rules(sealed_train_batch, lifecycle):
+    from sqlalchemy import insert, select, update
+
+    from src.database.tables import integration_batches
+    from src.escalations.autoresolve import EscalationAutoResolver
+    from src.escalations.sweep import EscalationSweeper
+
+    env, now = sealed_train_batch, 1_800_000_000
+    batch_id = "train-empty" if lifecycle == "empty" else "train-stuck"
+    config = SimpleNamespace(discord=SimpleNamespace(escalations=SimpleNamespace(stateful=True)))
+    incident, _ = await env.db.create_escalation(
+        id="batch-incident", project_id="p", source_kind="integration_train_stall",
+        source_identity=batch_id, incident_key="batch-stall", supervisor_owner="supervisor-p",
+        task_title="Recover stalled batch",
+        summary="Stalled", investigation="No progress", decision_requested="Recover", severity="high", now=now,
+    )
+    async with env.db.immediate() as conn:
+        if lifecycle == "empty":
+            values = dict((await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == "train-stuck"))).mappings().one())
+            values.update(id=batch_id, request_id="empty-request", lifecycle="empty",
+                          base_sha=None, integration_branch=None)
+            await conn.execute(insert(integration_batches).values(**values))
+        else:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch_id).values(lifecycle=lifecycle))
+    sweeper = EscalationSweeper(env.db, config, clock=lambda: now)
+    plan = await sweeper.plan(project_id="p")
+    resolver = EscalationAutoResolver(env.db, config, clock=lambda: now)
+    assert (await resolver.tick()).closed == (0 if lifecycle == "sealed" else 1)
+    row = await env.db.get_escalation(incident["id"])
+    if lifecycle == "sealed":
+        assert row["state"] == "needs_human"
+    else:
+        assert row["outcome"] == "sweep"
+        assert row["terminal_evidence"]["batch_id"] == batch_id
+        assert any(item.escalation_id == row["id"] and item.outcome == "sweep" for item in plan.items)
+        assert (await resolver.tick()).closed == 0
+
+
+async def test_saved_batch_sweep_plan_rechecks_reopened_source(sealed_train_batch):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_batches
+    from src.escalations.sweep import EscalationSweeper
+
+    env, now = sealed_train_batch, 1_800_000_000
+    config = SimpleNamespace(discord=SimpleNamespace(escalations=SimpleNamespace(stateful=True)))
+    await env.db.create_escalation(
+        id="batch-incident", project_id="p", source_kind="integration_train_stall",
+        source_identity="train-stuck", incident_key="batch-stall", supervisor_owner="supervisor-p",
+        task_title="Recover stalled batch",
+        summary="Stalled", investigation="No progress", decision_requested="Recover", severity="high", now=now,
+    )
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(lifecycle="aborted"))
+    sweeper = EscalationSweeper(env.db, config, clock=lambda: now)
+    plan = await sweeper.plan(project_id="p")
+    assert plan.items[0].outcome == "sweep"
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(lifecycle="sealed"))
+    report = await sweeper.apply(plan)
+    assert report.conflicts == 1 and report.closed == 0
+    assert (await env.db.get_escalation("batch-incident"))["state"] == "needs_human"

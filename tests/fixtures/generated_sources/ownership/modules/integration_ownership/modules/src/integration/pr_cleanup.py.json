@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/pr_cleanup.py::SettledTaskPullRequestClosure.run::1e86b73c75efa22081cdb10a0e3671713f323e33b203217f1757cb7ce3302076": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 296,
+      "owner": "SettledTaskPullRequestClosure.run",
+      "owner_fingerprint": "aeed57c9110f95ebdab3f18aef6c2fda11edd5f930f47325f80b5132f14fbd08",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/pr_cleanup.py::retry_settled_task_prs::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 363,
+      "owner": "retry_settled_task_prs",
+      "owner_fingerprint": "0a9a6e733ef23bda0fe140705f767840150b2c1e0911a553b46e099d4cb0e18c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

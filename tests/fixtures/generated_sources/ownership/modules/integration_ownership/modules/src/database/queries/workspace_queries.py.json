@@ -1,0 +1,42 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.acquire_one_unlocked": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.acquire_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.delete_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.release_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.release_workspaces_for_agent": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.release_workspaces_for_task": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::_is_worktree_mode": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::import from src.database.queries.job_queries import unpinned_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::import from src.models import KIND_MODE_WORKTREE, RepoSourceType, Workspace, WorkspaceMode": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::import from src.waits.sources import execute_workspace_release": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.acquire_one_unlocked": {
+      "baseline_span": null,
+      "landing_span": null,
+      "reason": "Workspace acquisition includes exact retained integration-repair successor admission; all generic lock checks and the final guarded CAS remain counted."
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.remove_missing_workspace_registration": {
+      "reason": "Prevents deletion of missing workspace/repository identities referenced by integration or historical tables, in addition to ordinary session and lock guards."
+    },
+    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.remove_missing_workspace_registration::a5f684862b5f1b5f0686966e672650a3dd7af3f0bf0904e8dfdd4ed91901feca": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 257,
+      "owner": "WorkspaceQueryMixin.remove_missing_workspace_registration",
+      "owner_fingerprint": "42d661a286261f42d5b20053e7be13cd0277ba64be0f359d2a817f348bc6370d",
+      "reason": "Audits workspace.registration_removed with confirmed missing path and removed repository identities after lock, session and reference checks."
+    }
+  }
+}

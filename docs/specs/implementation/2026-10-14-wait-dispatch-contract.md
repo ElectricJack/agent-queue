@@ -1,5 +1,22 @@
 # Wait outcome integration contract
 
+## Supervisor delivery and CI observation correction — 2026-10-23
+
+Operational wait and continuation incidents remain internal during initial
+delivery, reconciliation and retries. Only a committed `escalate_to_human` wait
+decision authorizes human delivery; `needs_human` alone does not. Unread project
+supervisor notices use the existing global-supervisor fallback. A previously
+suppressed, unbound root may be retried after that explicit decision, while an
+ambiguous transport attempt retains its reconciliation state.
+
+CI source observation runs independently of integration-train visits and
+continuation maintenance, including while new V2 admissions are disabled.
+Provider quota responses preserve pending waits and defer observation until the
+repository backoff expires. Each remote observation has a five-second budget,
+including reads under the graph fence, so stalled CI calls release supervisor
+controls. This narrows the remote-read budget without changing the source
+listener's lease or transaction fences.
+
 ## Terminal owners and refused deadlines — 2026-10-22
 
 Terminal task source events retire the owner's waits through the shared
@@ -115,7 +132,66 @@ Lifecycle-only status events do not reset the window. Missing Git evidence canno
 establish a loop. The loop event identifies the wait and registration history;
 checkpoint creates the actual continuation id and generation later.
 
+## Scheduler maintenance lock scope — 2026-10-22
+
+Scheduler sync discovers candidate owner identities without the graph lock, then
+reconciles each owner in a separate transaction. Fresh admission observations,
+wait receipts, deadline preservation, stale-row cleanup, initial age audit and
+priority retraction commit together for that owner. The graph fence is released
+between owners so slow per-item authorization cannot serialize an entire bridge
+or scheduler pass against unrelated wait mutations. New candidates are picked up
+on a later scan; cleanup always re-reads the current owner's rows under the fence.
+An interrupted pass resumes from committed receipts without renewing deadlines.
+The startup bridge retains its project and identity receipts and its local
+single-flight lock; it does not acquire a project-wide database fence.
+
 ## Transaction and graph ownership
+
+### Short graph transactions — 2026-10-22
+
+The graph fence protects database revalidation and mutations. Git, filesystem,
+provider/terminal operations, router artifact loading and observations using
+other database connections run before acquiring it. An admission pass captures
+external delivery identities first; `AdmissionReader` then checks those identities
+and current task, project, profile, occupancy and workspace inputs on the owned
+connection. Stale delivery evidence blocks admission. An unprepared admission
+read under the fence refuses instead of doing external work.
+
+Resume refreshes its Git prerequisites before capturing the admission pass.
+The locked reservation revalidates that pass, including expiry and policy, so
+newly loaded evidence can admit work without accepting expired observations.
+
+Scheduler reconciliation discovers candidates first and commits one owner at a
+time, including legacy age audit. It owns only scheduler-owned subscriptions;
+task-owned resource waits retain their delivery owner. Cycle checks read the
+reachable semantic component with the existing node budget rather than scanning
+every dependency and wait in the fleet.
+
+The caller audit covers these paths:
+
+| Callers | Work outside the graph transaction | Revalidation inside |
+| --- | --- | --- |
+| scheduler, resume, listener, deadlines, supervisor decisions | router/delivery observations | current admission inputs and delivery snapshot identities |
+| registration, atomic job wait, source dispatch | Git progress heads | task/session path and branch; comments and edits read fresh |
+| hibernation advance | fallback checkpoint facts | continuation generation, claim, branch, session instance and summary |
+| cold restart | provider stop proof, Git ancestry and checkout detach | all task/wait/continuation/workspace/session rows compared before retirement |
+| raw wait queries, graph helpers, recovery, acknowledgement, human waits, cancellation, eviction, measurements, legacy bridge/projections | no external effects in fenced bodies | transaction-local SQL and transactional source/lifecycle callbacks |
+| task deletion/archive | existing separate external-effect phase | existing fenced retirement transactions |
+
+Cold restart keeps its per-task control and row locks during external cleanup,
+then releases those row locks before acquiring the graph fence in the normal lock
+order. Failed revalidation retains database ownership for an idempotent retry.
+Escalation and routing helpers use the caller's connection when composing with a
+wait transaction. Transactional adapter callbacks must not open another
+connection or perform external I/O.
+
+Every graph acquisition, including the listener's nonblocking acquisition, arms
+one watchdog per transaction. After five seconds it logs `wait.graph_lock_slow`
+with the acquisition caller and elapsed hold time, even while Python is awaiting
+outside PostgreSQL. Commit and rollback cancel it; transaction-end timing also
+catches event-loop stalls. The existing twenty-second acquisition refusal remains
+retryable and does not authorize a stale write.
+
 
 `WakeDispatcher.commit` runs inside the listener's READ COMMITTED transaction.
 It validates the durable source event, takes the graph fence, discovers old edge

@@ -1,0 +1,25 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/event_queries.py::EventQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/event_queries.py::EventQueryMixin._insert_event_row::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 58,
+      "owner": "EventQueryMixin._insert_event_row",
+      "owner_fingerprint": "d1c98d726f88640bd798edfe45b624aa5e9ae2eab16b2e576d08b0b72732206d",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/event_queries.py::EventQueryMixin.log_events::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 50,
+      "owner": "EventQueryMixin.log_events",
+      "owner_fingerprint": "7aa14b4c07e9e2c8f22c2d9b1bd3940ac686a60d93e475cadf01cfc7496d9ba6",
+      "reason": "Generic bulk audit-log writer used for pool.bounds_rescoped fanout; preserves the existing audit rows and has no integration ref replay authority."
+    }
+  }
+}

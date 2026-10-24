@@ -1,0 +1,59 @@
+{
+  "shared_definitions": {
+    "src/api/scope.py::AGENT_COMMAND_SET": {
+      "baseline_span": [
+        14,
+        156
+      ],
+      "landing_span": [
+        12,
+        153
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/scope.py::INTEGRATION_ROLLOUT_FIELDS": {
+      "baseline_span": [
+        224,
+        241
+      ],
+      "landing_span": [
+        220,
+        237
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/scope.py::OPERATOR_INTEGRATION_CONTROLS": {
+      "baseline_span": [
+        184,
+        219
+      ],
+      "landing_span": [
+        181,
+        215
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/scope.py::check_command_scope": {
+      "baseline_span": [
+        277,
+        396
+      ],
+      "landing_span": [
+        267,
+        386
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/scope.py::check_request_scope": {
+      "baseline_span": [
+        817,
+        995
+      ],
+      "landing_span": [
+        774,
+        950
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -22,9 +22,11 @@ AUDIT = ROOT / "tests/fixtures/contracts/generated-command-audit.json"
 
 
 def main() -> int:
+    from scripts.bookkeeping_sources import AUDIT_MODULES, audit_module, load_shards, render
     from src.commands.handler import CommandHandler
 
-    rows = json.loads(AUDIT.read_text(encoding="utf-8"))
+    sharded = AUDIT == ROOT / "tests/fixtures/contracts/generated-command-audit.json"
+    rows = load_shards(ROOT / AUDIT_MODULES) if sharded else json.loads(AUDIT.read_text())
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--command", action="append", required=True, choices=sorted(rows),
                         help="Reviewed handler to refresh; repeat for multiple handlers.")
@@ -60,7 +62,13 @@ def main() -> int:
         if not args.write:
             print("Command audit digest drift: " + ", ".join(changed))
             return 1
-        AUDIT.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
+        if sharded:
+            for module in {audit_module(rows[name.split(".", 1)[0]]) for name in changed}:
+                selected = {name: row for name, row in rows.items() if audit_module(row) == module}
+                (ROOT / AUDIT_MODULES / module).write_bytes(render(selected))
+            AUDIT.write_bytes(render(rows))
+        else:
+            AUDIT.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
         print("Refreshed command audit digests: " + ", ".join(changed))
     else:
         print("Selected command audit digests are current")

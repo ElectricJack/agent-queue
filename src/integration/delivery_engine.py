@@ -25,12 +25,14 @@ def engine_refusal(mode: str, config, *, orchestrator=None) -> str | None:
     integration = getattr(config, "integration", None)
     if integration is None:
         return "integration runtime configuration is unavailable"
-    if getattr(integration, "git_first", "shadow") == "active":
-        # The train also delivers development; the absent legacy runtime is expected.
-        if orchestrator is not None and getattr(orchestrator, "integration_train", None) is None:
-            return "integration.git_first is active but the integration train is not running"
-    elif not getattr(integration, "reconciler_active", True):
-        return "integration.reconciler_active is false; delivery visits are paused"
+    if getattr(integration, "git_first", "active") != "active":
+        return (
+            "trial (shadow) mode has been removed; remove integration.git_first "
+            "or set it to active"
+        )
+    # The train also delivers development; the absent legacy runtime is expected.
+    if orchestrator is not None and getattr(orchestrator, "integration_train", None) is None:
+        return "the integration train is not running"
     if orchestrator is not None and hasattr(orchestrator, "integration_service"):
         return "the integration delivery service is not running"
     return None
