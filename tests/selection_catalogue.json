@@ -464,7 +464,6 @@
         "tests/test_git_manager_async.py",
         "tests/test_git_mutex.py",
         "tests/test_git_seed_helpers.py",
-        "tests/test_merge_and_push.py",
         "tests/test_merge_conflict_check.py",
         "tests/test_merge_slot.py",
         "tests/test_mid_chain_rebase.py",
@@ -584,8 +583,7 @@
         "tests/test_integration_ownership.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
-        "tests/test_integration_workspace_handoff.py",
-        "tests/test_integration_writers.py"
+        "tests/test_integration_workspace_handoff.py"
       ]
     },
     "integration-promotion": {
@@ -610,7 +608,6 @@
         "tests/test_integration_root_pull_requests.py",
         "tests/test_integration_stranded_children.py",
         "tests/test_integration_train_promotion.py",
-        "tests/test_parent_ci_publication.py",
         "tests/test_promote_commands.py",
         "tests/test_promotion_backmerge.py",
         "tests/test_promotion_continuous_equivalence.py",
@@ -3961,9 +3958,12 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:07f702de441923dda7184c40caffbad74e2203b3f5c7f16cfd61bee7a937a3c8",
+      "digest": "sha256:604b6fad59c3ff36e48b1f14a8cc5f8f18b10f4a16d62f60ec30d51b7cbf2d83",
       "imports": [
+        "src.api.scope",
         "src.cli.app",
+        "src.commands.contracts.integration",
+        "src.commands.integration_commands",
         "src.profiles.parser"
       ],
       "markers": [
@@ -5846,7 +5846,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:b6ff414c00111bda9f2edd10c4127aa2c4cad159811f21165d871e91d6a35a4d",
+      "digest": "sha256:e087908c515c23056028086aefe69981140b4077116c70078710a422bd8c8fcc",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5861,12 +5861,10 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
-        "src.integration.models",
         "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.repository_incidents",
-        "src.integration.status",
         "src.models",
         "src.prime.sections",
         "src.profiles.capabilities"
@@ -7295,16 +7293,12 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:157f34dba6c0a8c1e518aa51ce224b84bc9938bf5fd5cc14e8cd7f228178853c",
+      "digest": "sha256:a592df1b91df4cb118491c8fed9202e85d51a9cfbd5cd0cf9b600637716c0dfb",
       "imports": [
-        "src.git.manager",
-        "src.models",
-        "src.orchestrator"
+        "src.git.manager"
       ],
-      "markers": [
-        "asyncio"
-      ],
-      "summary": "Tests for --force-with-lease support in push_branch and _create_pr_for_task."
+      "markers": [],
+      "summary": "Tests for --force-with-lease support in push_branch."
     },
     "tests/test_formula_commands.py": {
       "areas": [
@@ -8816,7 +8810,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a49811f6c6e7a906859ba8d0a282571c847e120e96077c17ebebffdbbd073bc6",
+      "digest": "sha256:1de8b2d9668d4293b20b19a5e59d5f20588547c29c4bbcbb1d6b1ae35bf1495e",
       "imports": [
         "src.commands.job_commands",
         "src.config",
@@ -8824,9 +8818,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.ci",
-        "src.integration.ci_adapters",
         "src.integration.ci_producers",
-        "src.integration.promotion_contracts",
         "src.integration.runtime_contracts",
         "src.jobs.adapters",
         "src.jobs.policy",
@@ -8945,10 +8937,9 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:abac64d0ab61b3e7e189307cb33e0a4762829cf0371780798df363aa2330db0d",
+      "digest": "sha256:17f98494120421ebd2245f5a57da2c5c9d61cd9110528957e7a6edd3030e3b1f",
       "imports": [
         "src.database.tables",
-        "src.git.github_contracts",
         "src.integration",
         "src.integration.completion_recovery",
         "src.integration.ownership",
@@ -9043,7 +9034,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f5d435cb73c5c3384ea038f3d280b4825aa1b489b2598d1ab1df7370e99f7088",
+      "digest": "sha256:8479641d98e5f29f07f4629a97de9c94a81d065d55f07020c63bc600dfbf8558",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9062,7 +9053,6 @@
         "src.integration.records",
         "src.integration.removal_guard",
         "src.integration.service",
-        "src.integration.shadow",
         "src.integration.train",
         "src.integration.train_sources",
         "src.integration.trust_manifest",
@@ -9441,7 +9431,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0c05c4ce7674211474f930cbdd8cc8f58d10c486936738a6069636bec77fb5b6",
+      "digest": "sha256:8d3b615fdbef696ccd2086ca2f3c7f6dd4c34142bf2d8e98c27048d4bd777436",
       "imports": [
         "src.config",
         "src.database.queries.task_queries",
@@ -9452,7 +9442,6 @@
         "src.integration.delivery_truth",
         "src.models",
         "src.orchestrator",
-        "src.orchestrator.context",
         "src.orchestrator.git_ops"
       ],
       "markers": [
@@ -9479,12 +9468,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:58a1f647b8fc047043b202c93b108c60e324b44fcd23f31f6b797396cb82318f",
+      "digest": "sha256:9308f76a71a64703df4b3ac021993d12f911e74f22fe130640feec744b792165",
       "imports": [
         "src.database",
         "src.database.tables",
-        "src.git.manager",
-        "src.integration",
         "src.integration.models",
         "src.integration.observe",
         "src.integration.parent_adapters",
@@ -9685,7 +9672,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f38b0bb98ba102e05777abd44e3645f48343d3304e62723e3d8abad656661cc4",
+      "digest": "sha256:c93e1740bb071994fe9dc5839ecbe307e2fd2da4fdfc84d98862cc2d52d81144",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -9696,7 +9683,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Parent subjects retain exact lineage through failures, lost events and reopen."
+      "summary": "Parent subject bridge pins exact lineage and refuses mismatched identity."
     },
     "tests/test_integration_pr_delivery.py": {
       "areas": [
@@ -9823,20 +9810,19 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a931772376879798d5afce2113f20588f7663aba3c56fe2d59822bfb524eaa0f",
+      "digest": "sha256:7e1ef80b83361e446f33775b3d624af7b9b5b0ddd38abcf219c1fa46a4f5a8a5",
       "imports": [
         "src.asks.models",
         "src.commands.handler",
         "src.config",
         "src.database.tables",
         "src.integration.gates",
-        "src.integration.records",
         "src.integration.runtime_contracts"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Exact identity, human decisions and replay safety of primitives 14–19."
+      "summary": "Exact identity, immutable answers and replay safety of integration human gates."
     },
     "tests/test_integration_repair.py": {
       "areas": [
@@ -10059,15 +10045,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:06ffc8f870e855574b055e320e0d26d122a77e26d47c5d5471c55310ca47c62f",
+      "digest": "sha256:bd2de87a1216ae18e8dcd892182291a87dcbb69f1c716bf5aa435e4c63253216",
       "imports": [
         "src.config",
         "src.database.tables",
         "src.integration",
         "src.integration.models",
         "src.integration.outbox",
-        "src.integration.service",
-        "src.models"
+        "src.integration.service"
       ],
       "markers": [
         "parametrize"
@@ -10358,9 +10343,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ba43444068fc005ab605ca8e5809f4bb9a9133e587326dab937eae224dcb2ca9",
+      "digest": "sha256:a3c63dda0647babb731b09d07e93dc29878b57e3efb193037b843a9adf0ff612",
       "imports": [
         "src.commands",
+        "src.commands.contracts.integration",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.surface_commands",
@@ -10380,6 +10366,7 @@
         "src.integration.batches",
         "src.integration.candidate_baseline",
         "src.integration.checks",
+        "src.integration.child_delivery",
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.delivery_observer",
@@ -10391,6 +10378,8 @@
         "src.integration.hierarchy",
         "src.integration.lock",
         "src.integration.models",
+        "src.integration.obsolete_child_disposal",
+        "src.integration.obsolete_children",
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
@@ -10513,9 +10502,8 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:1542ffc4878ebc0c582d8d77d7093b96b562b289621ba8b95f8fbc53c7e9be14",
+      "digest": "sha256:df9dc74d3e48681ac135e97585f1e25bbbe2f9fb1286e78eb76b1ed5f30ac48d",
       "imports": [
-        "src.claim_file",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
@@ -10558,28 +10546,6 @@
         "parametrize"
       ],
       "summary": "Warm candidates and fixers keep durable ownership and job measurement fences."
-    },
-    "tests/test_integration_writers.py": {
-      "areas": [
-        "integration-ownership"
-      ],
-      "default_arm": true,
-      "digest": "sha256:5476651d85877be03aaba4b80400df08619165977f92a62a6e1d6d67154faf9d",
-      "imports": [
-        "src.database.tables",
-        "src.git.manager",
-        "src.integration.lock",
-        "src.integration.models",
-        "src.integration.owner_recovery",
-        "src.integration.ownership",
-        "src.integration.runtime_contracts",
-        "src.integration.writers",
-        "src.models"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Subject writers: replay, expiry, unknown stops and real-Git preservation."
     },
     "tests/test_intelligence_class_deletion.py": {
       "areas": [
@@ -11743,22 +11709,6 @@
         "asyncio"
       ],
       "summary": "Contract tests proving the memory plugin is reachable via the"
-    },
-    "tests/test_merge_and_push.py": {
-      "areas": [
-        "git-manager"
-      ],
-      "default_arm": true,
-      "digest": "sha256:7e8f222abac562cb14c9bb7723b9c7056c7421b5535982dc09bd036404668a56",
-      "imports": [
-        "src.git.manager",
-        "src.models",
-        "src.orchestrator"
-      ],
-      "markers": [
-        "asyncio"
-      ],
-      "summary": "Tests for _merge_and_push in the Orchestrator."
     },
     "tests/test_merge_conflict_check.py": {
       "areas": [
@@ -13333,25 +13283,6 @@
         "asyncio"
       ],
       "summary": "SSE pane stream endpoint (live capture-pane screens)."
-    },
-    "tests/test_parent_ci_publication.py": {
-      "areas": [
-        "integration-promotion"
-      ],
-      "default_arm": true,
-      "digest": "sha256:9fccad623b355bcfcf8b0a4ccefa6536ee70d474d88b771fb9d3c4f5cfe89b14",
-      "imports": [
-        "src.database.tables",
-        "src.git.github_contracts",
-        "src.git.manager",
-        "src.integration.attestation",
-        "src.integration.ci",
-        "src.integration.parent_ci"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": ""
     },
     "tests/test_pg_dsn.py": {
       "areas": [
@@ -15920,15 +15851,11 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:48d8ebd61d339a1dae487b02a1b41112def1e364e4f1d00fe567144771e22950",
+      "digest": "sha256:cd93a6ce05b93f8956d7b2a1b5f0b7ef6d569e08134ae43867bc2ac389c17342",
       "imports": [
-        "src.git.manager",
-        "src.models",
-        "src.orchestrator"
+        "src.git.manager"
       ],
-      "markers": [
-        "asyncio"
-      ],
+      "markers": [],
       "summary": "Tests for rebase-before-merge conflict resolution."
     },
     "tests/test_record_backfill.py": {
@@ -20836,12 +20763,11 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:e45dfbb987097d097315fd8796b7cbd6f879d2bedb409d9899955535c36d1dfa",
+      "digest": "sha256:e3bc0ea7d444b642ca1fca5cc3bff22511b8c8bdfb8ada472a1e1c4fc5f89f72",
       "imports": [
         "src.config",
         "src.git.manager",
         "src.models",
-        "src.orchestrator",
         "src.scheduler"
       ],
       "markers": [

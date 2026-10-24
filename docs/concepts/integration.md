@@ -57,11 +57,9 @@ is distinct from the task's direct or pull-request delivery preference.
 
 ## Git-first train
 
-The daemon-wide `integration.git_first` selector must be `active` for delivery.
-The code default remains `shadow`, but the Subject runtimes were retired:
-`shadow` constructs no delivery engine. It is not a rollback or fallback path.
-The `integration.delivery_engine` doctor check diagnoses unavailable delivery.
-With `active`, each target
+The Git-first train runs on every install. The compatibility key
+`integration.git_first` defaults to `active` and accepts only that value; remove
+an old `shadow` value or set `active` before restarting. Each target
 branch (a project default branch, a parent branch, or an open batch's target) is
 visited by its own bounded task. A visit fetches once, freezes completed sources
 that Git does not yet contain into a batch, merges them onto the target, pushes

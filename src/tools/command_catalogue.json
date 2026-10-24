@@ -534,7 +534,7 @@
               "train",
               "development"
             ],
-            "description": "LOCAL-only integration mode for new reconciler subjects."
+            "description": "LOCAL-only integration delivery mode for the Git-first train."
           },
           "promotion_flow": {
             "type": [
@@ -15912,6 +15912,35 @@
             "default": false,
             "title": "Adopt Source",
             "type": "boolean"
+          },
+          "dispose_obsolete": {
+            "default": false,
+            "title": "Dispose Obsolete",
+            "type": "boolean"
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Superseded By"
+          },
+          "expected_parent_head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Parent Head Sha"
           },
           "dry_run": {
             "default": true,

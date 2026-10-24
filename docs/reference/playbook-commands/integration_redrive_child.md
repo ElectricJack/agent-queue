@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:d1c67fe0f8a46e453b371a36a853e61cb5d9349de568dca0d21450a4af3558b1` |
+| Contract fingerprint | `sha256:65ab81877da060e112d892d2453972e3efba423537f01b55bc5423124fc7fb2c` |
 
 ## Parameters
 
@@ -22,6 +22,9 @@
 |---|---|---|---|---|
 | `task_id` | `string` | yes | — | — |
 | `adopt_source` | `boolean` | no | `false` | — |
+| `dispose_obsolete` | `boolean` | no | `false` | — |
+| `superseded_by` | `string \| null` | no | `null` | — |
+| `expected_parent_head_sha` | `string \| null` | no | `null` | — |
 | `dry_run` | `boolean` | no | `true` | — |
 | `expected_head_sha` | `string \| null` | no | `null` | — |
 | `reason` | `string \| null` | no | `null` | — |
@@ -40,6 +43,9 @@ Redacted in receipts and explanations: `reason`.
 | `head_sha` | `string \| null` | — |
 | `base_sha` | `string \| null` | — |
 | `remote_head_sha` | `string \| null` | — |
+| `parent_head_sha` | `string \| null` | — |
+| `merge_head_sha` | `string \| null` | — |
+| `superseded_by` | `string \| null` | — |
 | `tree_sha` | `string \| null` | — |
 | `evidence_id` | `string \| null` | — |
 | `completion_id` | `string \| null` | — |
@@ -47,7 +53,7 @@ Redacted in receipts and explanations: `reason`.
 | `checkpoint` | `object \| null` | — |
 | `reason` | `string \| null` | — |
 
-Projected into the run receipt: `task_id`, `project_id`, `parent_task_id`, `branch`, `parent_branch`, `head_sha`, `base_sha`, `remote_head_sha`, `tree_sha`, `evidence_id`, `completion_id`, `collection`, `checkpoint`, `reason`.
+Projected into the run receipt: `task_id`, `project_id`, `parent_task_id`, `branch`, `parent_branch`, `head_sha`, `base_sha`, `remote_head_sha`, `parent_head_sha`, `merge_head_sha`, `superseded_by`, `tree_sha`, `evidence_id`, `completion_id`, `collection`, `checkpoint`, `reason`.
 
 ## Outcomes
 

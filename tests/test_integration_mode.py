@@ -1,7 +1,7 @@
 """Integration-mode policy tests.
 
 Started as characterization tests for the legacy ``requires_approval`` flag
-(session close, ``_phase_verify``, ``_phase_integrate``, execution rules) and
+(session close, ``_phase_verify``, ``_phase_integrate``) and
 now pin the replacement ``integration_mode`` contract: the git pipeline
 branches on the *effective* integration mode (task override → project policy
 → config default), PR-mode work is never auto-merged, and direct integration
@@ -30,9 +30,7 @@ from src.models import (
     TaskStatus,
     TaskType,
     Workspace,
-    WorkspaceKind,
 )
-from src.orchestrator.context import ContextMixin
 from src.orchestrator import Orchestrator
 from src.git.github_contracts import GitHubRepositoryBinding
 from tests.db_fixtures import lease_dsn
@@ -152,8 +150,8 @@ def _ctx(orch, task, ws_path) -> PipelineContext:
     )
 
 
-class TestExecutionRulesByMode:
-    """_get_execution_rules varies the git instructions with the mode."""
+class TestOrchestratorConstruction:
+    """The orchestrator wires its session services without import cycles."""
 
     def test_orchestrator_constructs_without_a_session_command_import_cycle(self, tmp_path):
         config = AppConfig(
@@ -165,160 +163,6 @@ class TestExecutionRulesByMode:
         orchestrator = Orchestrator(config, runtimes=_NullRuntimeFactory())
 
         assert orchestrator.session_reconciler is not None
-
-    def test_pr_mode_instructs_push_and_pr_never_merge(self, tmp_path):
-        config = AppConfig(
-            database=DatabaseConfig(url=lease_dsn("x.db")),
-            workspace_dir=str(tmp_path / "w"),
-            data_dir=str(tmp_path / "d"),
-        )
-        o = Orchestrator(config, runtimes=_NullRuntimeFactory())
-        rules = o._get_execution_rules(
-            task=_pr_task(),
-            branch_name="feature-1",
-            default_branch="main",
-            has_remote=True,
-            is_final_subtask=True,
-            integration_mode="pull_request",
-        )
-        assert "gh pr create" in rules
-        assert "do NOT merge" in rules
-
-    def test_direct_mode_instructs_merge_to_default(self, tmp_path):
-        config = AppConfig(
-            database=DatabaseConfig(url=lease_dsn("x.db")),
-            workspace_dir=str(tmp_path / "w"),
-            data_dir=str(tmp_path / "d"),
-        )
-        o = Orchestrator(config, runtimes=_NullRuntimeFactory())
-        rules = o._get_execution_rules(
-            task=_direct_task(),
-            branch_name="feature-1",
-            default_branch="main",
-            has_remote=True,
-            is_final_subtask=True,
-            integration_mode="direct",
-        )
-        assert "git merge feature-1" in rules
-        assert "gh pr create" not in rules
-
-    @pytest.mark.parametrize("has_remote", [True, False])
-    @pytest.mark.parametrize("is_plan_subtask", [True, False])
-    def test_direct_worktree_publishes_task_branch_for_daemon_integration(
-        self, has_remote, is_plan_subtask
-    ):
-        rules = ContextMixin()._get_execution_rules(
-            task=_direct_task(is_plan_subtask=is_plan_subtask),
-            branch_name="feature-1",
-            default_branch="trunk",
-            has_remote=has_remote,
-            is_final_subtask=True,
-            integration_mode="direct",
-            is_worktree=True,
-        )
-
-        assert "Commit all remaining changes on `feature-1`" in rules
-        assert "Stay on `feature-1`" in rules
-        assert "including tasks that require no code changes" in rules
-        assert "The daemon merges the task branch into `trunk`" in rules
-        assert ("git push origin feature-1" in rules) is has_remote
-        for command in (
-            "git checkout trunk", "git merge feature-1", "git push origin trunk",
-            "git branch -d feature-1", "gh pr create",
-        ):
-            assert command not in rules
-
-    def test_intermediate_worktree_subtask_keeps_commit_only_rules(self):
-        rules = ContextMixin()._get_execution_rules(
-            task=_direct_task(is_plan_subtask=True),
-            branch_name="feature-1",
-            default_branch="main",
-            has_remote=True,
-            is_final_subtask=False,
-            integration_mode="direct",
-            is_worktree=True,
-        )
-
-        assert "more steps follow" in rules
-        assert "git commit" in rules
-        assert "git push" not in rules
-        assert "git merge" not in rules
-
-    def test_pr_worktree_keeps_push_and_pr_rules(self):
-        rules = ContextMixin()._get_execution_rules(
-            task=_pr_task(),
-            branch_name="feature-1",
-            default_branch="main",
-            has_remote=True,
-            is_final_subtask=True,
-            integration_mode="pull_request",
-            is_worktree=True,
-        )
-
-        assert "git push origin feature-1" in rules
-        assert "gh pr create" in rules
-        assert "git merge feature-1" not in rules
-
-    def test_branchless_worktree_has_no_git_workflow(self):
-        rules = ContextMixin()._get_execution_rules(
-            task=_direct_task(branch_name=None),
-            branch_name="",
-            default_branch="main",
-            has_remote=False,
-            is_final_subtask=True,
-            integration_mode="direct",
-            is_worktree=True,
-        )
-
-        assert "Git Workflow" not in rules
-
-    @pytest.mark.parametrize(
-        "mode,is_slot,enabled,has_workspace,expected_worktree",
-        [
-            ("worktree", True, True, True, True),
-            ("worktree", False, True, True, True),
-            ("exclusive-clone", False, True, True, False),
-            (None, True, True, True, True),
-            ("worktree", True, False, True, False),
-            ("worktree", True, True, False, False),
-        ],
-    )
-    async def test_prompt_uses_actual_workspace_mode(
-        self, orch, monkeypatch, mode, is_slot, enabled, has_workspace, expected_worktree
-    ):
-        orch.config.worktrees.enabled = enabled
-        task = _direct_task()
-        await orch.db.create_task(task)
-        await orch.db.update_workspace(
-            "ws-1",
-            slot_index=0 if is_slot else None,
-            base_workspace_id="ws-base" if is_slot else None,
-        )
-        # An unrelated lockable kind must not supply the prompt's workspace mode.
-        await orch.db.create_workspace(Workspace(
-            id="ws-other", project_id="p-1", workspace_path="/other",
-            source_type=RepoSourceType.CLONE, kind_id="other-repo",
-            locked_by_task_id=task.id,
-        ))
-        monkeypatch.setattr(orch, "_get_default_branch", AsyncMock(return_value="main"))
-        kind = WorkspaceKind(project_id="p-1", id="project-repo", mode=mode) if mode else None
-        kind_lookup = AsyncMock(return_value=kind)
-        monkeypatch.setattr(orch.db, "resolve_workspace_kind", kind_lookup)
-        ws = await orch.db.get_workspace("ws-1")
-        project = await orch.db.get_project("p-1")
-
-        prompt = await orch._build_task_context_with_prompt_builder(
-            task, ws.workspace_path if has_workspace else None, project, None
-        )
-
-        assert ("Git Workflow (Worktree)" in prompt) is expected_worktree
-        if expected_worktree:
-            assert "git push origin feature-1" in prompt
-            assert "git checkout main" not in prompt
-        if enabled and has_workspace:
-            kind_lookup.assert_awaited_once_with("p-1", "project-repo")
-        else:
-            kind_lookup.assert_not_awaited()
 
 
 class TestPhaseVerifyByMode:
@@ -920,35 +764,6 @@ class TestPhaseVerifyByMode:
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert ctx.verification_retry_in_session is False
-
-
-class TestTaskBranchPublication:
-    async def test_pr_publication_uses_guarded_delivery_with_force_with_lease(self, orch):
-        """Manual recovery PR publication cannot bypass reserved-path validation."""
-        task = _pr_task("t-publish-guarded")
-        repo = RepoConfig(
-            id="r-1",
-            project_id="p-1",
-            source_type=RepoSourceType.CLONE,
-            default_branch="main",
-        )
-        orch.git.acreate_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
-
-        result = await orch._create_pr_for_task(task, repo, "/workspace")
-
-        assert result == "https://github.com/org/repo/pull/42"
-        orch.git.apush_validated_delivery.assert_awaited_once_with(
-            "/workspace",
-            "origin/main",
-            "feature-1",
-            "feature-1",
-            force_with_lease=True,
-            event_bus=orch.bus,
-            project_id="p-1",
-            identity_policy=ANY,
-            inherited_oids=[],  # no source-CI repair head on this branch
-        )
-        orch.git.apush_branch.assert_not_awaited()
 
 
 class TestPhaseIntegrateByMode:

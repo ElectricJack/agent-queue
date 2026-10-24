@@ -11,4 +11,3 @@ def test_retention_original_catalogue_evidence():
                                     if name in categories}
     original = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
-

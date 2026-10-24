@@ -515,10 +515,11 @@ replacement can proceed. Missing Git proof retains the batch. Promotion requests
 keep their separately pinned check sets.
 
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
-`redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
-so authorization resolves their target project server-side. `record-noop` is an
-exception: a local operator records no-code receipts (or an authorized playbook),
-and *every* session is refused it, including the project's supervisor. See
+`redrive-child`, `record-noop`, `reopen-collection`, `reserve-owner`, `release-owner` —
+take no `project_id`, so authorization resolves their target project server-side.
+A live elevated named project supervisor or global supervisor may record no-code
+receipts, alongside a local operator or an authorized playbook. Workers and
+supervisors outside the child's project are refused. See
 [the command scope model](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
 
 Current recoveries reuse the existing episode, fence, receipts and stage budget.
@@ -569,8 +570,8 @@ for the retained contracts and table exclusions.
 A reviewer filed under an active parent is itself a child in the collection
 episode. Its `pass --work-outcome no-op` close records the review verdict, but
 the parent still needs a disposition receipt for the reviewer's own branch.
-When parent readiness reports `receipt_missing` for that child, a local
-operator records the exact no-code disposition:
+When parent readiness reports `receipt_missing` for that child, a local operator
+or live elevated named supervisor records the exact no-code disposition:
 
 ```bash
 aq --json task show CHILD_TASK_ID | jq -r '.data.integration_delivery.checkpoint_sha'
@@ -583,10 +584,20 @@ still its reserved base, resolves that commit's tree from Git, and writes a
 receipt for the current parent episode. Repeating the command returns the same
 receipt; a new no-op completion gets a new receipt revision. A playbook may
 invoke the contracted `integration_record_noop` command when its policy grants
-that exact capability. No session can invoke it: worker and supervisor
-principals are both refused, so a no-code child always needs a local operator
-(and a supervisor asked to record one reports the child id and its checkpoint
-head instead).
+that exact capability. Supervisors retain these evidence guards; ordinary worker
+sessions cannot invoke it. A child with real code requires an explicit obsolete
+disposition rather than a no-code receipt.
+
+For `obsolete_child`, the train and `redrive-child` supply the one-command
+`aq integration redrive-child CHILD --dispose-obsolete --superseded-by SHA
+--apply --head SOURCE --parent-head TARGET --reason REASON`.
+Review the exact source and parent heads first. The superseding commit must be
+on the parent and remove the last of the child's changed paths. Preview without
+`--apply` is read-only. Apply performs a fenced ours merge: the parent keeps its
+files and gains real child ancestry. The merge commit records the reason, actor
+and superseding commit; completion history remains intact. Local operators and
+live project/global supervisors can apply it without a human gate. Head movement,
+live writers, active batches and unverified provenance refuse the write.
 
 ### A parent whose last child was deleted
 

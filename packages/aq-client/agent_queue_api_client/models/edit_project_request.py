@@ -40,7 +40,8 @@ class EditProjectRequest:
         integration_repository_id (None | str | Unset): LOCAL-only designated integration repository ID.
         hierarchical_integration_policy (EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset): LOCAL-
             only complete typed hierarchical integration policy.
-        hierarchical_integration_mode (None | str | Unset): LOCAL-only integration mode for new reconciler subjects.
+        hierarchical_integration_mode (None | str | Unset): LOCAL-only integration delivery mode for the Git-first
+            train.
         promotion_flow (EditProjectRequestPromotionFlowType1 | list[Any] | None | Unset): LOCAL-only promotion flow
             (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS.
         expected_integration_generation (int | None | Unset): Required generation CAS for integration configuration.

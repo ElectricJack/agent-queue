@@ -446,49 +446,26 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
         assert result.exit_code == 0, (leaf, result.output)
 
 
-def test_no_code_receipts_are_documented_as_an_operator_control_not_a_supervisor_one():
-    """`record-noop` carries no ``project_id`` but admits no session either.
-
-    The handler authorizes a session principal only for
-    ``_SUPERVISOR_REDRIVE_CAPABILITIES``, so the guide must not list
-    `record-noop` among the controls a project's own supervisor may run, and
-    the shipped supervisor profile must name it as an operator's action only.
-    """
+def test_no_code_receipts_are_documented_and_granted_to_supervisors():
+    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
+    from src.commands.integration_commands import _SUPERVISOR_REDRIVE_CAPABILITIES
     from src.profiles.parser import parse_profile
 
     root = Path(__file__).parents[1]
-    guide = (root / "docs/guides/hierarchical-integration-trains.md").read_text(
-        encoding="utf-8"
-    )
+    guide = (root / "docs/guides/hierarchical-integration-trains.md").read_text()
     paragraph = guide.split("The controls keyed by a task, operation, batch or reservation")[1]
     paragraph = paragraph.split("\n\n")[0]
-    controls, _, exception = paragraph.partition("take no `project_id`")
-    assert "record-noop" not in controls
-    assert "local operator records no-code receipts" in exception
-    assert "every* session is refused it" in exception
-
+    assert "`record-noop`" in paragraph
+    assert "global supervisor" in paragraph
     section = guide.split("### No-code child receipts")[1].split("\n## ")[0]
-    assert "a local\noperator records the exact no-code disposition" in section
-    assert "No session can invoke it" in section
-
-    profile_text = (root / "src/profiles/defaults/supervisor/profile.md").read_text(
-        encoding="utf-8"
-    )
-    supervisor = parse_profile(profile_text)
+    assert "live elevated named supervisor" in section
+    assert "ordinary worker" in section
+    supervisor = parse_profile((root / "src/profiles/defaults/supervisor/profile.md").read_text())
     assert supervisor.errors == []
-    assert "integration_record_noop" not in supervisor.capabilities["aq_commands"]
-    mentions = [line for line in profile_text.splitlines() if "record-noop" in line]
-    assert mentions
-    for line in mentions:
-        assert "operator" in line, line
+    assert "integration_record_noop" in supervisor.capabilities["aq_commands"]
+    assert "integration_record_noop" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_record_noop" in _SUPERVISOR_REDRIVE_CAPABILITIES
 
-    troubleshooting = (root / "docs/guides/integration-troubleshooting.md").read_text(
-        encoding="utf-8"
-    )
-    assert (
-        "a local operator records a no-code child's disposition with "
-        "`aq integration record-noop`" in troubleshooting
-    )
 
 
 
@@ -692,6 +669,43 @@ def test_repair_target_cli_apply_requires_both_heads_and_reason(options):
                                           *options])
     assert result.exit_code == 2
     client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_redrive_child_obsolete_disposition_forwards_pinned_proof(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "would_advance"})
+    argv = ["integration", "redrive-child", "epic.1", "--dispose-obsolete",
+            "--superseded-by", "c" * 40]
+    if apply:
+        argv += ["--apply", "--head", "a" * 40, "--parent-head", "b" * 40,
+                 "--reason", "parent removed the path"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    command, args = client.execute.call_args.args
+    assert command == "integration_redrive_child"
+    assert args["dispose_obsolete"] is True
+    assert args["superseded_by"] == "c" * 40
+    assert args["dry_run"] is not apply
+    if apply:
+        assert args["expected_parent_head_sha"] == "b" * 40
+
+
+@pytest.mark.parametrize("options", [
+    {}, {"superseded_by": "a"},
+    {"superseded_by": "a" * 40, "adopt_source": True},
+    {"superseded_by": "a" * 40, "dry_run": False,
+     "expected_head_sha": "b" * 40, "reason": "superseded"},
+])
+def test_obsolete_disposition_requires_exact_proof_and_both_apply_heads(options):
+    from pydantic import ValidationError
+
+    from src.commands.contracts.integration import IntegrationRedriveChildArgs
+
+    with pytest.raises(ValidationError):
+        IntegrationRedriveChildArgs(task_id="child", dispose_obsolete=True, **options)
 
 
 @pytest.mark.parametrize("extra", [[], ["--head", "a" * 40], ["--reason", "adopt"]])

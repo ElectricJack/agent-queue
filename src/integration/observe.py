@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -36,7 +36,6 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.git.manager import GitError, GitManager, RemoteRefState, _validate_ref
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.row_query import select_row
 from src.integration.runtime_contracts import (
@@ -64,11 +63,6 @@ _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 Row = Mapping[str, Any]
 logger = logging.getLogger(__name__)
 
-#: A root frontier can name hundreds of source heads; one ls-remote per head
-#: costs a second or more each, which outlived the visit budget. Heads are
-#: read in batched round trips, a few at a time.
-_REMOTE_REF_CHUNK = 200
-_REMOTE_READS = 4
 #: Ports without a batched read, and local ancestry probes, run concurrently.
 _SINGLE_REMOTE_READS = 8
 _ANCESTRY_READS = 8
@@ -111,75 +105,6 @@ class GitReadPort(Protocol):
 
 SessionProbe = Callable[[Row], Awaitable[bool | None]]
 
-
-class GitObservationReader:
-    """GitManager's strict async reads only; missing objects are unknown.
-
-    A caller may supply its authorized checkout resolver. The default uses the
-    repository's base checkout. Full refs are converted to branch names for
-    GitManager's ``als_remote_ref`` branch API.
-    """
-
-    def __init__(
-        self, git: GitManager, *, checkout: Callable[[Row], str | None] | None = None
-    ) -> None:
-        self.git = git
-        self.checkout = checkout or (lambda repository: repository.get("checkout_base_path"))
-
-    async def remote_head(self, repository: Row, ref: str) -> RemoteHead:
-        path = self.checkout(repository)
-        if not path or not ref.startswith("refs/heads/"):
-            return RemoteHead(ref=ref, state="unknown")
-        result = await self.git.als_remote_ref(
-            path, ref.removeprefix("refs/heads/"), repository_url=repository["url"]
-        )
-        return _remote_head(ref, result)
-
-    async def remote_heads(self, repository: Row, refs: Sequence[str]) -> dict[str, RemoteHead]:
-        """Read several heads in batched round trips; an unreadable one stays unknown.
-
-        A ref GitManager would refuse, or a failed round trip, leaves only
-        its own heads unknown rather than the whole visit's.
-        """
-        heads = {ref: RemoteHead(ref=ref, state="unknown") for ref in refs}
-        path = self.checkout(repository)
-        branches: dict[str, str] = {}
-        for ref in refs:
-            if not path or not ref.startswith("refs/heads/"):
-                continue
-            try:
-                branches[_validate_ref(ref.removeprefix("refs/heads/"))] = ref
-            except GitError:
-                logger.debug("Subject remote head %s is not a readable branch", ref)
-        names = list(branches)
-        gate = asyncio.Semaphore(_REMOTE_READS)
-
-        async def read(chunk: list[str]) -> None:
-            async with gate:
-                try:
-                    results = await self.git.als_remote_refs(
-                        path, chunk, repository_url=repository["url"]
-                    )
-                except Exception:
-                    logger.debug("Subject remote heads unavailable", exc_info=True)
-                    return
-            for branch in chunk:
-                if branch in results:
-                    heads[branches[branch]] = _remote_head(branches[branch], results[branch])
-
-        await asyncio.gather(
-            *(
-                read(names[start : start + _REMOTE_REF_CHUNK])
-                for start in range(0, len(names), _REMOTE_REF_CHUNK)
-            )
-        )
-        return heads
-
-    async def is_ancestor(self, repository: Row, ancestor: str, descendant: str) -> bool | None:
-        path = self.checkout(repository)
-        if path is None:
-            return None
-        return await self.git.ais_ancestor(path, ancestor, descendant, strict=True)
 
 class DatabaseObservationReader:
     """Project/repository scoped SELECTs over the existing integration tables.
@@ -363,14 +288,6 @@ class DatabaseObservationReader:
     async def augment_on(self, conn, snapshot: ObservationRows) -> ObservationRows:
         """Extend a snapshot inside the same read-only repeatable-read transaction."""
         return snapshot
-
-
-def _remote_head(ref: str, result) -> RemoteHead:
-    if result.state is RemoteRefState.PRESENT:
-        return RemoteHead(ref=ref, state="present", sha=result.oid)
-    return RemoteHead(
-        ref=ref, state="absent" if result.state is RemoteRefState.ABSENT else "unknown"
-    )
 
 
 def _latest(rows, time_key="created_at") -> Row | None:

@@ -49,6 +49,7 @@ _SUPERVISOR_REDRIVE_CAPABILITIES = frozenset({
     "integration_mutate_hierarchy",
     "integration_release",
     "integration_repair_close_current",
+    "integration_record_noop",
 })
 
 
@@ -1561,7 +1562,7 @@ class IntegrationCommandsMixin:
 
         service = IntegrationStatusService(
             self.db,
-            git_first=getattr(self.config.integration, "git_first", "shadow"),
+            git_first=getattr(self.config.integration, "git_first", "active"),
             train=getattr(self.orchestrator, "integration_train", None),
             flow_problems=getattr(self.orchestrator, "promotion_flow_problems", None),
         )
@@ -1907,23 +1908,6 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", refusal)
         return _failure("unknown_batch", "batch is missing or belongs to the retired engine")
 
-
-    async def _reconcile_integration_completion(self, project_id: str) -> None:
-        from src.integration.completion_recovery import (
-            reconcile_closed_integration_owners, recover_completed_pr_links,
-        )
-
-        await reconcile_closed_integration_owners(self.orchestrator, project_id)
-        recovered = await recover_completed_pr_links(
-            self.db, self._integration_repository_git(), project_id
-        )
-        if recovered:
-            await self.db.log_event(
-                "integration.pr_links_recovered", project_id=project_id,
-                payload=json.dumps({"task_ids": recovered}),
-            )
-
-
     async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationReevaluateRepairArgs
 
@@ -2190,6 +2174,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationRedriveChildArgs
         from src.integration.child_delivery import ChildDelivery
+        from src.integration.status import IntegrationStatusService
 
         try:
             request = IntegrationRedriveChildArgs.model_validate(args)
@@ -2201,6 +2186,18 @@ class IntegrationCommandsMixin:
         )
         if refusal is not None:
             return _failure("unauthorized", refusal)
+        if request.dispose_obsolete:
+            from src.integration.obsolete_child_disposal import ObsoleteChildDisposal
+
+            result = await ObsoleteChildDisposal(
+                self.db, authorize=lambda: integration_operator(
+                    self.db, task.project_id if task is not None else None,
+                ),
+            ).run(request, operator_id=principal)
+            return {
+                "success": result["outcome"] in {"would_advance", "advanced", "nothing_to_redrive"},
+                "dry_run": request.dry_run, **result,
+            }
         collection = getattr(self.orchestrator, "integration_collection", None)
         collect = None
         if collection is not None:
@@ -2208,7 +2205,11 @@ class IntegrationCommandsMixin:
                 return await collection.collect_parent(parent_id, time.time())
 
         result = await ChildDelivery(
-            self.db, self._integration_repository_git(), collect=collect
+            self.db, self._integration_repository_git(), collect=collect,
+            train_blockers=IntegrationStatusService(
+                self.db, git_first="active",
+                train=getattr(self.orchestrator, "integration_train", None),
+            ).train_task_blockers,
         ).run(
             request.task_id,
             dry_run=request.dry_run,

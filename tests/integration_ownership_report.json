@@ -2039,6 +2039,14 @@
     },
     "starting_sha": "1e41a7288f0398149e0ef00bd0db486b594cedda"
   },
+  "git_first_active_measurement": {
+    "measured_engine_lines": 84430,
+    "measured_owned_total": 159841,
+    "measured_table_count": 45,
+    "reason": "Retiring shadow removes legacy delivery paths. Record the reduction exactly while preserving the approved historical transition exception, baseline, allowance and caps.",
+    "source_revision": "2ee133c6039c9255f71b01591d0afc49d7bba1a9",
+    "task_id": "brisk-impact-33"
+  },
   "github_background_budget_measurement": {
     "authority": "msg-a337e2c905ce4f5c8a236344a4e25211",
     "authorized_engine_delta": 82,
@@ -4022,6 +4030,27 @@
     "storage": "A writer key includes path, enclosing definition and call AST; enclosing AST changes require another classification review. Ordinary audits are not ref-replay authority."
   },
   "measurement": "Union physical newline-terminated rows per file (wc -l), full dedicated files, full shared definitions/columns/container registrations with attached comments and blanks.",
+  "obsolete_child_measurement": {
+    "authorized_engine_delta": 366,
+    "authorized_owned_delta": 430,
+    "authorized_table_delta": 0,
+    "decision_id": "size-cap-delegation-2026-10-23",
+    "decision_message_id": "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+    "grant_delivery_message_id": "msg-21f0bc97741343c39d69d7c5c7b97400",
+    "measured_engine_lines": 85376,
+    "measured_owned_total": 161647,
+    "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85010,
+    "previous_owned_total": 161217,
+    "previous_source_revision": "de9a68b81cfcabe55ca5ce527a933891d36c8a1d",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1789",
+    "reason": "Compose the reviewed obsolete-child disposition with current dev using a plain merge. Exact merged measurement pre-approved under size-cap-delegation-2026-10-23; preserve all historical grants and strict Git ancestry.",
+    "task_id": "fair-flare-67"
+  },
   "onboarding_repository_verifier_review": {
     "added_definition_fingerprints": 1,
     "current_owned_groups": {
@@ -15021,6 +15050,27 @@
           "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1816",
           "reason": "Preapproved exact PR #1816 conflict-repair measurement on merged dev tree. Preserve all historical grants and the charged extracted scheduler/resume helpers; no implementation changes beyond conflict resolution.",
           "task_id": "bold-flare-41"
+        },
+        {
+          "authorized_engine_delta": 366,
+          "authorized_owned_delta": 430,
+          "authorized_table_delta": 0,
+          "decision_id": "size-cap-delegation-2026-10-23",
+          "decision_message_id": "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+          "grant_delivery_message_id": "msg-21f0bc97741343c39d69d7c5c7b97400",
+          "measured_engine_lines": 85376,
+          "measured_owned_total": 161647,
+          "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
+          "measured_table_count": 45,
+          "operator_decision": "6679052c",
+          "operator_task": "sharp-cascade-53",
+          "previous_engine_lines": 85010,
+          "previous_owned_total": 161217,
+          "previous_source_revision": "de9a68b81cfcabe55ca5ce527a933891d36c8a1d",
+          "previous_table_count": 45,
+          "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1789",
+          "reason": "Compose the reviewed obsolete-child disposition with current dev using a plain merge. Exact merged measurement pre-approved under size-cap-delegation-2026-10-23; preserve all historical grants and strict Git ancestry.",
+          "task_id": "fair-flare-67"
         }
       ],
       "authenticated_push_measurement": {
@@ -15205,11 +15255,13 @@
         "msg-98d8517c56104e8fbf87e1330d2d5c1a",
         "size-cap-delegation-2026-10-23",
         "msg-000c812477994a65a62633a4a051224c",
-        "msg-d3de4e1b"
+        "msg-d3de4e1b",
+        "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+        "msg-21f0bc97741343c39d69d7c5c7b97400"
       ],
       "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
       "delivery_method": "operator direct integration; user request 2026-10-22",
-      "delta": 5718,
+      "delta": 6148,
       "expires_at": "s4_modules",
       "frozen_batch_composition": {
         "approved_deltas": {
@@ -15238,9 +15290,9 @@
         "source_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
         "starting_revision": "48adaddad079a7adc2930e470590621c1575e674"
       },
-      "measured_engine_lines": 85010,
-      "measured_owned_total": 161217,
-      "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
+      "measured_engine_lines": 85376,
+      "measured_owned_total": 161647,
+      "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
       "measured_table_count": 45,
       "merge_measurement": {
         "approval_message_id": "msg-a10c7ab8ff2946f8b1f27528a407524c",
@@ -15425,12 +15477,68 @@
       ],
       "verification_task": "stark-willow-95.18"
     },
+    "batch_exception_retirement": {
+      "base_revision": "feeb89e65",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "measured_engine_lines_after": 81861,
+      "measured_owned_total_after": 155342,
+      "measured_owned_total_before": 160874,
+      "measured_table_count_after": 45,
+      "reason": "Retired duplicated, replaced and uncalled integration code with the tests that only exercised it; removed the manifest opt-in. Fixed baseline, replacement allowance, final caps, history and retries unchanged.",
+      "reclaimed_owned_lines": 5532,
+      "restore_task": "azure-ridge-72",
+      "restored_owned_total_cap": 155499
+    },
     "engine_cap": 97627,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 161217,
+    "owned_total_cap": 161647,
     "phase": "transition",
+    "retired_batch_exception": {
+      "batch_id": "train-745592300af5cef0338dec80ebabb465",
+      "batch_measured_delta": 1916,
+      "category_approval_message_id": "msg-90f9f1b1e0cd4e8e8d28071cffc927a6",
+      "category_restore_task": "stark-willow-95.17",
+      "decision_message_id": "msg-7ed85e78d1af4f3e85b485a57967e794",
+      "decision_message_ids": [
+        "msg-7ed85e78d1af4f3e85b485a57967e794",
+        "msg-381054d695e64055979a687c4d811e7e"
+      ],
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "delivery_method": "operator direct integration; user request 2026-10-22",
+      "delta": 5375,
+      "expires_at": "s4_modules",
+      "measured_engine_lines": 85331,
+      "measured_owned_total": 160874,
+      "measured_source_revision": "83ef85ec7226f2c0c7c8ef64504919086bc394ba",
+      "measured_table_count": 45,
+      "original_owned_total_cap": 155499,
+      "predecessors": [
+        {
+          "batch_id": "train-77f0d8e451f6aed08d608e443031047a",
+          "decision_message_id": "msg-edb5f857de344716a38857406fa69958",
+          "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+          "delta": 1293,
+          "expires_at": "s4_modules",
+          "measured_owned_total": 156792,
+          "measured_source_revision": "d00e25221856145f24777f8b016a008b4e954bca",
+          "original_owned_total_cap": 155499,
+          "restore_task": "azure-ridge-72"
+        },
+        {
+          "authorized_delta": 2166,
+          "batch_id": "train-48d0a1c1f1f8292b2977546011609db6",
+          "measured_owned_total": 158958,
+          "measured_source_revision": "cbfd455b0e9f053854a2c1becfa1efaeef231582"
+        }
+      ],
+      "restore_task": "azure-ridge-72",
+      "storage_categories": [
+        "integration_close_attempts"
+      ],
+      "verification_task": "stark-willow-95.18"
+    },
     "table_cap": 45
   },
   "updater_safety_measurement": {

@@ -1451,7 +1451,7 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:e9768b3f2ff9aee1aeab5a51436a1feffb6b62bf6d55c8623b7e33e28bf70430",
+    "source_digest": "sha256:ee01383461ba57a4f106cc8f2ec93b5062f85e6dd2095fb0dacbdc2beeb5b740",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -1459,7 +1459,10 @@
       "tests/test_integration_child_delivery.py::test_source_adoption_command_forwards_explicit_opt_in",
       "tests/test_integration_child_delivery.py::test_git_first_redrive_adopts_missing_source_without_claiming_delivery",
       "tests/test_integration_child_delivery.py::test_source_adoption_refuses_unproven_or_live_bindings",
-      "tests/test_command_descriptors.py::test_dev_redrive_contract_only_adds_explicit_source_adoption"
+      "tests/test_command_descriptors.py::test_dev_redrive_contract_only_adds_explicit_source_adoption",
+      "tests/test_command_descriptors.py::test_obsolete_child_contract_only_adds_pinned_disposition",
+      "tests/test_cli_integration.py::test_redrive_child_obsolete_disposition_forwards_pinned_proof",
+      "tests/test_integration_train_sources.py::test_train_surfaces_obsolete_child_without_claiming_delivery"
     ]
   },
   "integration_redrive_root": {
@@ -2402,8 +2405,9 @@
         "return": "{'outcome': 'not_found', 'project_id': project_id} if status is None else {'outcome': 'status', **status}"
       }
     ],
+    "review_notes": " Active-only Git-first status retains project resource gates and the delegated status projection; no return-protocol change.",
     "schema_quality": "typed",
-    "source_digest": "sha256:3d76dac9bdda5ce17b1e63f98829ae2329e0b09f85869a10891642858ab164b0",
+    "source_digest": "sha256:5e06fa9110057c03e949b508abd79e39dbb8727b2698e4645a95090801498338",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

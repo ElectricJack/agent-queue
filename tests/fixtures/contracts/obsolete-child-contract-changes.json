@@ -1,0 +1,665 @@
+{
+  "source_base": "feeb89e65e4bb5e2a4a2033fa32f967d1f66fce9",
+  "source_commit": "c6564ad51c006c5f759ac1c9cdd7d74bd2677945",
+  "reason": "fair-flare-67: integration_redrive_child adds the supervisor-authorized obsolete-child disposition (dispose_obsolete with required superseded_by proof and expected_parent_head_sha on apply) and reports parent_head_sha, merge_head_sha and superseded_by. The disposition performs a fenced unchanged-tree merge of the child head into its parent; existing redrive and source adoption arguments, defaults and results are unchanged.",
+  "previous_cli_catalogue_sha256": "172b38a673fd00c0143350f8c7bf78e8d8659cd70a430dcf3bbf6c626d1f0228",
+  "cli_catalogue_sha256": "a2e6844bcb901914e801346c68ce40e4f2f071b507039f23b026180ff3b1cbf5",
+  "contracts": {
+    "integration_redrive_child": {
+      "previous_fingerprint": "sha256:d1c67fe0f8a46e453b371a36a853e61cb5d9349de568dca0d21450a4af3558b1",
+      "fingerprint": "sha256:65ab81877da060e112d892d2453972e3efba423537f01b55bc5423124fc7fb2c",
+      "execution": {
+        "schema_generation": 1,
+        "name": "integration_redrive_child",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "adopt_source": {
+              "default": false,
+              "type": "boolean"
+            },
+            "dispose_obsolete": {
+              "default": false,
+              "type": "boolean"
+            },
+            "superseded_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "expected_parent_head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "dry_run": {
+              "default": true,
+              "type": "boolean"
+            },
+            "expected_head_sha": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "parent_task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "branch": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "parent_branch": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "base_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "remote_head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "parent_head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "merge_head_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "superseded_by": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tree_sha": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "evidence_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "completion_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "collection": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "checkpoint": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "advanced",
+            "classification": "success"
+          },
+          {
+            "name": "blocked",
+            "classification": "failure"
+          },
+          {
+            "name": "changed",
+            "classification": "failure"
+          },
+          {
+            "name": "invalid",
+            "classification": "failure"
+          },
+          {
+            "name": "not_eligible",
+            "classification": "failure"
+          },
+          {
+            "name": "not_found",
+            "classification": "failure"
+          },
+          {
+            "name": "nothing_to_redrive",
+            "classification": "success"
+          },
+          {
+            "name": "would_advance",
+            "classification": "success"
+          }
+        ],
+        "capability": "integration_redrive_child",
+        "side_effect": "composite",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [
+          {
+            "subject": "integration_operation",
+            "when": {
+              "arg_present": null,
+              "arg_equals": null
+            },
+            "kind": "update",
+            "fields_arg": null
+          }
+        ],
+        "sensitive_args": [
+          "reason"
+        ],
+        "sensitive_result_fields": [],
+        "receipt_projection": [
+          "task_id",
+          "project_id",
+          "parent_task_id",
+          "branch",
+          "parent_branch",
+          "head_sha",
+          "base_sha",
+          "remote_head_sha",
+          "parent_head_sha",
+          "merge_head_sha",
+          "superseded_by",
+          "tree_sha",
+          "evidence_id",
+          "completion_id",
+          "collection",
+          "checkpoint",
+          "reason"
+        ],
+        "supports_preview": false
+      }
+    }
+  },
+  "transport_definitions": {
+    "integration_redrive_child": {
+      "previous_sha256": "2e33e879b276d95a4018ab05d0307ff739fef47e3a5f78a865cb9ee14b506854",
+      "sha256": "a29576259028ccec25c4e98acedefda594dc80da65798811c3d4fea75280ca14"
+    }
+  },
+  "catalogue_sections": {
+    "fallback": {
+      "list": false,
+      "previous_order": [
+        "advance_workflow_stage",
+        "create_workflow",
+        "cron_delivery_begin",
+        "cron_delivery_finish",
+        "delivery_receipts",
+        "doctor_catalog",
+        "doctor_run",
+        "explain_task",
+        "gate_create",
+        "gate_list",
+        "gate_resolve",
+        "gate_show",
+        "get_workflow",
+        "integration_abort_batch",
+        "integration_app_verify",
+        "integration_authorize_root",
+        "integration_backmerge_source",
+        "integration_checkpoint_parent",
+        "integration_ci_evidence",
+        "integration_cleanup",
+        "integration_clear_retained_recovery",
+        "integration_close_delivered_pr",
+        "integration_complete_parent",
+        "integration_cutover",
+        "integration_cutover_containment",
+        "integration_cutover_plan",
+        "integration_delegate_publication",
+        "integration_delivery_readiness",
+        "integration_eject",
+        "integration_engine_transfer",
+        "integration_fast_forward_pr",
+        "integration_file_children",
+        "integration_migrate_provenance_refs",
+        "integration_mutate_hierarchy",
+        "integration_off",
+        "integration_parent_verify",
+        "integration_pause_batch",
+        "integration_promotion_notes_input",
+        "integration_promotion_policy_input",
+        "integration_promotion_publish",
+        "integration_quiesce",
+        "integration_reconcile_expired_mutation",
+        "integration_reconcile_git_truth",
+        "integration_record_delivered",
+        "integration_record_noop",
+        "integration_record_repair",
+        "integration_record_root_noop",
+        "integration_recover_completed_container",
+        "integration_redrive_child",
+        "integration_redrive_root",
+        "integration_reevaluate_repair",
+        "integration_refresh_epic",
+        "integration_release",
+        "integration_release_held_gate",
+        "integration_release_owner",
+        "integration_release_stale_owners",
+        "integration_release_withheld_source",
+        "integration_reopen_collection",
+        "integration_repair_close_current",
+        "integration_repair_dispatch",
+        "integration_repair_start",
+        "integration_repair_target",
+        "integration_repair_timeout",
+        "integration_rerequest_check",
+        "integration_reserve_owner",
+        "integration_restore_task_origin",
+        "integration_resume_batch",
+        "integration_retire_legacy_park",
+        "integration_retire_origin",
+        "integration_reverify_epic",
+        "integration_revoke_publication",
+        "integration_seal_now",
+        "integration_settle_batch",
+        "integration_status",
+        "integration_supersede_completion",
+        "integration_train_tick",
+        "integration_transfer_owner",
+        "integration_trust_manifest",
+        "job_reconcile",
+        "knowledge_import",
+        "list_workflows",
+        "load_tools",
+        "migrate_profiles",
+        "object_checkpoint_read",
+        "object_loop_inputs",
+        "object_loop_reconcile",
+        "object_loop_start",
+        "object_score_record",
+        "observation_snapshot_cleanup",
+        "observe_integration_source_ci",
+        "playbook_state_delete",
+        "playbook_state_get",
+        "playbook_state_inspect",
+        "playbook_state_list",
+        "playbook_state_notify",
+        "playbook_state_reset",
+        "playbook_state_set",
+        "plugin_config",
+        "plugin_disable",
+        "plugin_enable",
+        "plugin_info",
+        "plugin_install",
+        "plugin_list",
+        "plugin_prompts",
+        "plugin_reload",
+        "plugin_remove",
+        "plugin_reset_prompts",
+        "plugin_update",
+        "prime",
+        "promote_approve",
+        "promote_cancel",
+        "promote_hotfix",
+        "promote_list",
+        "promote_prepare",
+        "promote_repair",
+        "promote_request",
+        "promote_rulesets",
+        "promote_schema",
+        "promote_status",
+        "promote_validate",
+        "provider_availability_notify",
+        "reconcile_agent_cron",
+        "reconcile_agent_waits",
+        "reconcile_collaborations",
+        "scheduler_wait_sync",
+        "session_attach",
+        "session_drain_ack",
+        "session_kill",
+        "session_list",
+        "session_logs",
+        "session_nudge",
+        "session_peek",
+        "session_show",
+        "session_sleep",
+        "session_token",
+        "session_wake",
+        "task_batch_review_record",
+        "task_failure_triage_notify",
+        "task_recovery_notify",
+        "task_route_apply",
+        "task_route_plan",
+        "task_split",
+        "vault_rebuild_index",
+        "wait_deadline_fire",
+        "wait_evict",
+        "wait_legacy_bridge",
+        "wait_resume_dispatch",
+        "wait_sleep_decide",
+        "wait_source_commit",
+        "workflow_pipeline_view"
+      ],
+      "entries": {
+        "integration_redrive_child": {
+          "previous": {
+            "name": "integration_redrive_child",
+            "description": "Authenticated hierarchical integration operational control.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "task_id": {
+                  "minLength": 1,
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "adopt_source": {
+                  "default": false,
+                  "title": "Adopt Source",
+                  "type": "boolean"
+                },
+                "dry_run": {
+                  "default": true,
+                  "title": "Dry Run",
+                  "type": "boolean"
+                },
+                "expected_head_sha": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Head Sha"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Reason"
+                }
+              },
+              "required": [
+                "task_id"
+              ],
+              "title": "IntegrationRedriveChildArgs",
+              "type": "object"
+            }
+          },
+          "current": {
+            "name": "integration_redrive_child",
+            "description": "Authenticated hierarchical integration operational control.",
+            "input_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "task_id": {
+                  "minLength": 1,
+                  "title": "Task Id",
+                  "type": "string"
+                },
+                "adopt_source": {
+                  "default": false,
+                  "title": "Adopt Source",
+                  "type": "boolean"
+                },
+                "dispose_obsolete": {
+                  "default": false,
+                  "title": "Dispose Obsolete",
+                  "type": "boolean"
+                },
+                "superseded_by": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Superseded By"
+                },
+                "expected_parent_head_sha": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Parent Head Sha"
+                },
+                "dry_run": {
+                  "default": true,
+                  "title": "Dry Run",
+                  "type": "boolean"
+                },
+                "expected_head_sha": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Expected Head Sha"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "title": "Reason"
+                }
+              },
+              "required": [
+                "task_id"
+              ],
+              "title": "IntegrationRedriveChildArgs",
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  }
+}
