@@ -86,6 +86,12 @@
         "tests/test_worker_git_scope.py"
       ]
     },
+    "bazel-metrics": {
+      "description": "Verification obligation inventory and exact-identity delivery metric accounting.",
+      "modules": [
+        "tests/test_bazel_metrics.py"
+      ]
+    },
     "capabilities": {
       "description": "Command capabilities: the capability policy, server-derived execution principals, authorization at the dispatch boundary, no widening through delegation or task inheritance, and operator migration surfaces.",
       "modules": [
@@ -3296,6 +3302,18 @@
         "parametrize"
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
+    "tests/test_bazel_metrics.py": {
+      "areas": [
+        "bazel-metrics"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c267969578d4ccb9e7fd080acc1b37aecf24beff7a4b83b021b48589b7c411f4",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Inventory boundary and delivery-accounting regressions on synthetic evidence."
     },
     "tests/test_blocked_state.py": {
       "areas": [
