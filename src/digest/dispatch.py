@@ -70,7 +70,12 @@ from src.digest.supervisor import (
 from src.escalations.plan import MAX_ATTEMPTS
 from src.escalations.transport import EscalationTransport
 from src.remote_links import DashboardLinkSource
-from src.reports.hourly import author_skip_reason, build_hourly_brief, local_day_bounds
+from src.reports.hourly import (
+    NO_REPORT_TEXT,
+    author_skip_reason,
+    build_hourly_brief,
+    local_day_bounds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +343,14 @@ class DigestScheduleService:
         )
         report_candidate = None
         if payload is not None:
+            if (
+                self._reports.hourly.enabled
+                and self._reports.hourly.full_fleet_visibility
+                and not schedule.project_ids
+            ):
+                # Facts are author input only. Reserve a minimal notice even
+                # when no author slot is available (cap, quiet hours, etc.).
+                payload["text"] = NO_REPORT_TEXT
             skip_reason = author_skip_reason(
                 self._reports,
                 schedule,
@@ -371,7 +384,7 @@ class DigestScheduleService:
                     "visibility": {"full_fleet": True, "project_ids": []},
                     "brief": brief,
                     "brief_hash": brief_hash,
-                    "fallback_text": result.text,
+                    "fallback_text": payload["text"],
                     "author_session_id": "supervisor-global",
                     "deadline": deadline,
                     "daily_cap": self._reports.hourly.max_requests_per_day,
@@ -386,7 +399,11 @@ class DigestScheduleService:
                 "window_end": window.until,
                 "fact_count": len(result.reported_keys),
             },
-            output_hash=result.output_hash if result.send else None,
+            output_hash=(
+                hashlib.sha256(payload["text"].encode("utf-8")).hexdigest()
+                if payload is not None
+                else None
+            ),
             payload=payload,
             suppression_reason=None if result.send else (result.reason or "no_activity"),
             report_candidate=report_candidate,

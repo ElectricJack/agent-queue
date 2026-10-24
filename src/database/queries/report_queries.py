@@ -167,8 +167,24 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
                 else:
                     subject = "Hourly report request"
                     body = (
-                        f"Hourly report {request_id} is ready. Read the brief with "
-                        f"`aq report brief {request_id}` and submit before the deadline."
+                        f"Hourly report {request_id} is ready. Read the frozen evidence with "
+                        f"`aq report brief {request_id}` and any needed fact pages. "
+                        "The brief is INPUT ONLY; never relay it or concatenate its facts. "
+                        "Write a short first-person developer-style progress update for Jack "
+                        "in plain English: Since the last update: ... Highlights: ... "
+                        "Blocked/needs you: ... Next: ... . Use these as a guide, not a "
+                        "required template. Prioritize what changed and what needs Jack, "
+                        "combine related work and deduplicate noise. Ground progress and "
+                        "next steps in the evidence; say when they are unknown. Distinguish "
+                        "completed work from delivery to main; shipment claims need delivery "
+                        "refs. Do not start coding or testing. Submit UTF-8 prose with "
+                        f"`aq report submit {request_id} --file FILE --brief-hash HASH "
+                        "--expected-version VERSION --evidence-ref REF` using the hash, "
+                        "version and refs you read. The server inserts links and the marker; "
+                        "do not put URLs in prose. Keep the whole report within 600 "
+                        f"characters including those additions. Submit before {row['deadline']:.0f} "
+                        "(UTC epoch seconds). If you miss the deadline, the daemon sends "
+                        "only a one-line no-report notice, never the brief."
                     )
                 await insert_message_with_source_event(conn,
                     pg_insert(messages)
