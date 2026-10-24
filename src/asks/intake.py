@@ -249,7 +249,7 @@ async def bound_ask(db, item, *, conn):
 
 
 async def bound_conversation(item, *, conn):
-    """Resolve a reply receipt only within the observed destination and audience."""
+    """Resolve a reply receipt within its channel or bound thread and audience."""
     rows = (await conn.execute(
         select(supervisor_conversations)
         .join(outbound_deliveries, outbound_deliveries.c.owner_id == supervisor_conversations.c.id)
@@ -264,7 +264,11 @@ async def bound_conversation(item, *, conn):
             supervisor_conversations.c.transport == item["transport"],
             supervisor_conversations.c.guild_id == item["guild_id"],
             supervisor_conversations.c.channel_id == item["channel_id"],
-            supervisor_conversations.c.external_thread_id == item["external_thread_id"],
+            # A receipt also identifies the conversation when the human replies
+            # in its parent channel. Only an observed thread needs a binding;
+            # a historical thread on the conversation must not exclude channel replies.
+            supervisor_conversations.c.external_thread_id == item["external_thread_id"]
+            if item["external_thread_id"] else True,
         )
         .with_for_update(of=supervisor_conversations)
     )).mappings().all()
