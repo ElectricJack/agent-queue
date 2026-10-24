@@ -3798,9 +3798,151 @@
       "title": "ToolUsePolicy",
       "type": "object"
     },
+    "TrainBisectionPolicy": {
+      "additionalProperties": false,
+      "description": "Opt-in failure isolation; probe revisions cannot authorize publication.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_probes": {
+          "default": 3,
+          "maximum": 3,
+          "minimum": 1,
+          "title": "Max Probes",
+          "type": "integer"
+        }
+      },
+      "title": "TrainBisectionPolicy",
+      "type": "object"
+    },
+    "TrainPackingPolicy": {
+      "additionalProperties": false,
+      "description": "Versioned, deterministic selection inputs; never a CI permission.\n\nThe activated artifact digest is the policy revision in signature/cache\nidentities. These versions describe the wire contract, not tuned weights.",
+      "properties": {
+        "age_per_hour": {
+          "default": 1.0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Age Per Hour",
+          "type": "number"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "green_weight": {
+          "default": 100,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Green Weight",
+          "type": "integer"
+        },
+        "hotness_window_batches": {
+          "default": 50,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Hotness Window Batches",
+          "type": "integer"
+        },
+        "max_age_score": {
+          "default": 80,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Max Age Score",
+          "type": "integer"
+        },
+        "max_members": {
+          "default": 4,
+          "maximum": 8,
+          "minimum": 1,
+          "title": "Max Members",
+          "type": "integer"
+        },
+        "merge_clean_weight": {
+          "default": 40,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Merge Clean Weight",
+          "type": "integer"
+        },
+        "nonhot_weight": {
+          "default": 10,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Nonhot Weight",
+          "type": "integer"
+        },
+        "oldest_slot_after_seconds": {
+          "default": 7200,
+          "exclusiveMinimum": 0,
+          "maximum": 7200,
+          "title": "Oldest Slot After Seconds",
+          "type": "integer"
+        },
+        "pass_rate_min_checks": {
+          "default": 20,
+          "maximum": 10000,
+          "minimum": 20,
+          "title": "Pass Rate Min Checks",
+          "type": "integer"
+        },
+        "pass_rate_neutral": {
+          "default": 5,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Pass Rate Neutral",
+          "type": "integer"
+        },
+        "pass_rate_weight": {
+          "default": 10,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Pass Rate Weight",
+          "type": "integer"
+        },
+        "policy_version": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 1,
+          "title": "Policy Version",
+          "type": "integer"
+        },
+        "signature_size_weight": {
+          "default": 10,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Signature Size Weight",
+          "type": "integer"
+        },
+        "signature_version": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 1,
+          "title": "Signature Version",
+          "type": "integer"
+        }
+      },
+      "title": "TrainPackingPolicy",
+      "type": "object"
+    },
     "TrainPolicy": {
       "additionalProperties": false,
       "properties": {
+        "bisection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrainBisectionPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "conflict": {
           "default": "repair",
           "enum": [
@@ -3818,6 +3960,22 @@
           ],
           "title": "Idle",
           "type": "string"
+        },
+        "packing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrainPackingPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parallel_disjoint": {
+          "default": false,
+          "title": "Parallel Disjoint",
+          "type": "boolean"
         },
         "red": {
           "default": "repair",
