@@ -17276,6 +17276,42 @@
       "tests/test_collaboration_lifecycle.py"
     ]
   },
+  "reconcile_project_schedules": {
+    "argument_reads_diagnostic_only": [
+      "now"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_reconcile_project_schedules",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'fired': fired}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(ScheduleError('out_of_scope', 'daemon service only'))"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e57e27ddbeb69061153e1c7e362f88e06740937e87f7272ecf8e8613960e257c",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
   "record_capabilities": {
     "argument_reads_diagnostic_only": [],
     "denial_reason": null,
@@ -19547,6 +19583,146 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "schedule_cancel": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_cancel",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:2ba91b8d04442ee0f6d46d8e6ca0d00b46322a8266cb43b86763e577742344ce",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "schedule_get": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_get",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:c56dc8407e4e4fbccd7f64043c10ca68ef5e3fab53ab06709d3c2600e1c5bf2c",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "schedule_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedules': [visible_schedule(row) for row in rows], 'count': len(rows)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:08615b0db0cf498d9c5068b095bbeeb2ab4290cc6d66997649b1d0afcc06a5fd",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "schedule_register": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_register",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:5bac3f6afeb72167383b94d43ad5c54dc3397613bfd3b03ccbcde26081b4f031",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "scheduler_wait_sync": {
