@@ -766,3 +766,45 @@ async def test_ordinary_gateway_input_wakes_addressed_stopped_supervisor_after_c
     assert replay["success"] and not replay["created"]
     assert replay["input_id"] == accepted["input_id"]
     assert wakes == [f"msg-{accepted['input_id']}"] * 2
+
+
+@pytest.mark.parametrize("reply_reference", [False, True], ids=["new-message", "discord-reply"])
+async def test_answer_to_initiated_supervisor_post_returns_to_conversation(
+    env, monkeypatch, reply_reference,
+):
+    handler, db = env
+    await enable(handler, monkeypatch)
+    handler.config.messages.enabled = handler.config.sessions.enabled = True
+    handler.orchestrator._discord_bot = SimpleNamespace(
+        _cutover_report=SimpleNamespace(status="complete"),
+    )
+    profile = await db.get_profile("supervisor")
+    await db.update_profile("supervisor", aq_commands=[*profile.aq_commands, "supervisor_inbox_say"])
+    conversation_id, _ = await conversation_reply_receipt(handler, db)
+    first = await db.list_conversation_inputs(conversation_id)
+    assert len(first) == 1 and first[0]["state"] == "answered"
+    sent = await _scoped(handler, "supervisor_inbox_say", {
+        "conversation_id": conversation_id, "text": "Question two: what comes next?",
+        "idempotency_key": "interview-question-two",
+    }, session_id="supervisor")
+    assert sent["success"], sent
+    reference = str(int(MESSAGE) + 101)
+    async with db.immediate() as conn:
+        await conn.execute(update(outbound_deliveries).where(
+            outbound_deliveries.c.id == sent["delivery_id"]
+        ).values(state="sent", external_receipt_id=reference, receipt_confirmed_at=1001))
+    incoming = message(
+        id=int(MESSAGE) + 2, mention=False, content="My second interview answer",
+        **({"reference": SimpleNamespace(message_id=int(reference))} if reply_reference else {}),
+    )
+    inbound, _, _ = router(handler, config=handler.config)
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID) == "posted:created"
+    async with db.immediate() as conn:
+        item = (await conn.execute(select(conversation_inputs).where(
+            conversation_inputs.c.external_message_id == str(incoming.id)
+        ))).mappings().one()
+        assert item["routing_state"] == "conversation" and item["ask_id"] is None
+        assert item["conversation_id"] == conversation_id
+        assert item["reference_message_id"] == (reference if reply_reference else None)
+        notice = await db.get_message(item["supervisor_message_id"])
+        assert notice.to_id == "supervisor-p" and notice.project_id == "p"

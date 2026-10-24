@@ -324,6 +324,13 @@ async def _reply_conversation_project(db, conversation_id: str, args: dict) -> O
     return True, project_id
 
 
+async def _say_conversation_project(db, conversation_id: str, args: dict) -> Ownership:
+    if await db.get_conversation(conversation_id) is None:
+        return False, None
+    recipient = await db.get_conversation_recipient(conversation_id)
+    return True, recipient["project_id"] if recipient else None
+
+
 # Tagged objects need both arguments; their IDs never gain an untyped resolver.
 def _context_resolver(resolver: Resolver) -> ContextResolver:
     """Limit a row resolver to commands that use this argument's identity."""
@@ -336,6 +343,7 @@ def _context_resolver(resolver: Resolver) -> ContextResolver:
 
 # Tagged objects need both arguments; shared argument names stay command-scoped.
 CONTEXT_TARGET_RESOLVERS: Final[dict[tuple[str, str], ContextResolver]] = {
+    ("supervisor_inbox_say", "conversation_id"): _say_conversation_project,
     ("supervisor_inbox_reply", "conversation_id"): _reply_conversation_project,
     ("supervisor_inbox_reply", "input_id"): _context_resolver(_foreign_resolver(
         conversation_inputs, conversation_inputs.c.supervisor_message_id, "reply_to_id"

@@ -1257,6 +1257,7 @@
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
         "tests/test_supervisor_inbox_commands.py",
+        "tests/test_supervisor_inbox_say.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py",
         "tests/test_supervisor_stall_sweep_script.py",
@@ -18105,6 +18106,27 @@
         "parametrize"
       ],
       "summary": "Verified internal intake, durable quotas and replay-safe conversation notifications."
+    },
+    "tests/test_supervisor_inbox_say.py": {
+      "areas": [
+        "supervisor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:96ec048074c9f4f2f058d45f604385856b56d3d01dc0c1d04f3c0e8e51cc1c5c",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.principal",
+        "src.conversations.intake",
+        "src.database.queries.conversation_queries",
+        "src.escalations.transport",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Initiated supervisor posts use the conversation outbox without consuming input."
     },
     "tests/test_supervisor_recovery.py": {
       "areas": [
