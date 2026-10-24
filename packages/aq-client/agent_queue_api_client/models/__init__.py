@@ -1946,6 +1946,7 @@ from .task_batch_commit_response_skipped_operations_item import TaskBatchCommitR
 from .task_batch_discard_request import TaskBatchDiscardRequest
 from .task_batch_discard_response_422 import TaskBatchDiscardResponse422
 from .task_batch_propose_request import TaskBatchProposeRequest
+from .task_batch_propose_request_no_op_type_0 import TaskBatchProposeRequestNoOpType0
 from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
 from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
@@ -4220,6 +4221,7 @@ __all__ = (
     "TaskBatchDiscardRequest",
     "TaskBatchDiscardResponse422",
     "TaskBatchProposeRequest",
+    "TaskBatchProposeRequestNoOpType0",
     "TaskBatchProposeResponse",
     "TaskBatchProposeResponse422",
     "TaskBatchProposeResponseDiffType0",

@@ -6,8 +6,10 @@ def _project_schedule_changes():
     )
 
 
-def _before_project_schedules_catalogue():
-    return _revert_catalogue(json.loads(render_command_catalogue()), _project_schedule_changes())
+def _before_project_schedules_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = json.loads(render_command_catalogue())
+    return _revert_catalogue(catalogue, _project_schedule_changes())
 
 
 def test_project_schedules_only_add_scoped_notification_commands():
@@ -25,5 +27,7 @@ def test_project_schedules_only_add_scoped_notification_commands():
         contract = CONTRACTS.require(name).contract
         assert contract.fingerprint() == approved["fingerprint"]
         assert canonical_execution_document(contract.execution) == approved["execution"]
-    previous = json.dumps(_before_project_schedules_catalogue(), indent=2) + "\n"
+    # The independent delivered-design delta is absent from this task's recording.
+    catalogue = _before_project_schedules_catalogue(_before_delivered_design_catalogue())
+    previous = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
