@@ -7071,7 +7071,12 @@ async def test_development_unknown_git_allows_dependent_preparation(
     sid, _ = await pool_session(db, tmp_path)
     result = await settled_claim(scoped(handler, sid), {"next": True})
     assert result["result"] == "claimed", result
-    assert result["task"]["id"] == "dependent"
+    # Independent work may take the fast path first; unknown Git must still
+    # allow the dependent through ordinary preparation on the next claim.
+    sid2, _ = await pool_session(db, tmp_path, "unknown-peer", "unknown-agent")
+    peer = await settled_claim(scoped(handler, sid2), {"next": True})
+    assert peer["result"] == "claimed", peer
+    assert {result["task"]["id"], peer["task"]["id"]} == {"dependent", "independent"}
 
 
 async def test_development_parallel_claims_can_skip_locked_peer(
