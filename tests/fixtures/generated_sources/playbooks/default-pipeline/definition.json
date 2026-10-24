@@ -9,10 +9,10 @@
     },
     "profiles": {
       "fidelity-reviewer": "sha256:31e4c102bf55663ccca85974060148218d7b809c70e326b176f1bfc557436384",
-      "spec-ingest": "sha256:91f7f5d120ae6e13e2889b421849baac37ac3221afc0d48115e01e37ac4b7bb4"
+      "spec-ingest": "sha256:4ec7f016f50a0135c25c9a8524093f6f35b5794da0ff6e78462d30f76cf9c5dc"
     }
   },
-  "compiled_at": "2026-10-24T02:25:09.068129Z",
+  "compiled_at": "2026-10-24T06:02:09.041005Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "default-pipeline",
   "purpose": "routine",

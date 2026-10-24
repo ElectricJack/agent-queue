@@ -31,6 +31,24 @@ def test_legacy_playbook_fixtures_are_unchanged():
     held_pipeline = _held_ingestion_pipeline_transport_changes()["playbook_fixtures"]
     pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
     assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    wait_evidence = json.loads((
+        ROOT / "tests/fixtures/contracts/default-pipeline-wait-grants-changes.json"
+    ).read_text())
+    wait_grants = wait_evidence["playbook_fixtures"]
+    assert set(wait_grants) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
+    wait_change = wait_grants["tests/fixtures/playbooks/v2/default-pipeline/artifact.json"]
+    assert wait_change["previous_sha256"] == pipeline[
+        "tests/fixtures/playbooks/v2/default-pipeline/artifact.json"
+    ]["sha256"]
+    for name, digest in [
+        (wait_change["preserved_previous_path"], wait_change["previous_sha256"]),
+        ("tests/fixtures/playbooks/scenarios/default-pipeline/wait-grants.artifact.json",
+         wait_change["sha256"]),
+    ]:
+        assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == digest
+    composition = json.loads((
+        ROOT / "tests/fixtures/contracts/default-pipeline-wait-grants-composition.json"
+    ).read_text())["playbook_fixtures"]
     failover = json.loads(FAILOVER_CHANGES.read_text())["playbook_fixtures"]
     assert set(failover) == {"tests/fixtures/playbooks/v2/provider-failover/artifact.json"}
     triage = json.loads(TRIAGE_CHANGES.read_text())["playbook_fixtures"]
@@ -131,6 +149,13 @@ def test_legacy_playbook_fixtures_are_unchanged():
             digest = pipeline[path]["sha256"]
         if path in held_pipeline:
             change = held_pipeline[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
+        if path in composition:
+            change = composition[path]
             assert change["previous_sha256"] == digest
             historical = ROOT / change["preserved_previous_path"]
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest

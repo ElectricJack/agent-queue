@@ -1,6 +1,6 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:cfd04738c2b35830d4f7ee9c751cafb29dbce8726ed4b86cf426d357f7af4d41
+artifact_sha256: sha256:010e99575e6c37e9705e0e803adc282ae46073750bc3866bca937093e431c513
 source_sha256: sha256:a76721da12bb0f554af7a6ca6e0ea10192d0240d4223ed3983df94583fb091c1
 contract_fingerprint: sha256:3098cb7e8701d5ff63d7727d9ae32d1f817dac5fe499236c2c451104e1ff437d
 questions_resolved: 0
@@ -79,3 +79,12 @@ ends `completed` without release, the batch waiting on its scope ask; every
 other release refusal reaches the `failed` terminal. The spec-ingest,
 proposal-gate and commit rules and their transitions are unchanged apart from
 the spec-ingest step text; ordinary proposals keep the human gate.
+
+Updated for frozen batch `train-31a98356ec721e765b3d7375a315a8b4`:
+compose the durable wait grants from `swift-willow-88` with the retained
+held-ingestion policy from `bright-quest-30`. Only the spec-ingest capability
+fingerprint and compilation timestamp change from the held-policy artifact;
+all five rules, steps, command contracts and the fidelity-reviewer fingerprint
+remain identical. Both independent artifact histories and the exact combined
+transition are pinned in the wait-grant contract evidence and equivalence tests.
+This recording does not install or activate the playbook.

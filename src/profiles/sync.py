@@ -548,7 +548,7 @@ async def on_profile_changed(
     retains the last-known config until explicitly removed via command.
 
     When *data_dir* is given, a created or modified vault copy of a synced
-    system profile (the supervisor by default) first receives any shipped
+    system profile (unless it opts out) first receives any shipped
     ``## Capabilities`` grant it lacks
     (:mod:`src.profiles.capability_sync`), before the DB sync.
 
@@ -604,7 +604,7 @@ async def on_profile_changed(
             )
             continue
 
-        # A synced system profile (the supervisor, unless it opts out) first
+        # A shipped system profile (unless it opts out) first
         # gains any shipped grant its vault copy lacks, so the DB sync below
         # reads the merged text.
         if data_dir and path_id:
