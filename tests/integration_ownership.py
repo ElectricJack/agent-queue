@@ -933,12 +933,27 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2008,
+ 'authorized_owned_delta': 2031,
  'expires_at': 's4_modules',
  'initial_inventory': '/tmp/smart-nexus-83-live-inventory.json',
  'inventory_sha256': '87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416',
- 'measured_engine_lines': 82420,
- 'measured_owned_total': 157507,
+ 'large_session_prompt_composition': {'authorized_engine_delta': 23,
+                                     'authorized_owned_delta': 23,
+                                     'authorized_table_delta': 0,
+                                     'charged_file': 'src/integration/fixer_runtime.py',
+                                     'decision_message_id': 'msg-06bb3b1643ef4298a715c0e55fa317b9',
+                                     'previous_measured_engine_lines': 82420,
+                                     'previous_measured_owned_total': 157507,
+                                     'previous_source_revision': '1048b9aff3350df8e72361252fbb61be4ea62e60',
+                                     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1919',
+                                     'reason': 'Compose the previously approved exact +23 owned/engine lines on '
+                                               'current dev after the supervisor-directed merge. Preserve all '
+                                               'historical grants, ownership classifications and zero remaining '
+                                               'headroom; no new tables or storage category.',
+                                     'source_revision': '5e33516f93715b484eb15c2525d050ac303d5ee4',
+                                     'task_id': 'swift-lantern-21'},
+ 'measured_engine_lines': 82443,
+ 'measured_owned_total': 157530,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
