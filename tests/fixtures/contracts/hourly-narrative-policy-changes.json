@@ -1,0 +1,12 @@
+{
+  "source_base": "b0bb1645a81b14b594192d6a75e80f6c4fdd3b4f",
+  "source_head": "91b01d6d29d29107053deb7f5a2461b4433dcfd5",
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/supervisor-hourly-report/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/reports/hourly/before-developer-narrative.artifact.json",
+      "previous_sha256": "f4ceb5bfb2e4ffc3f5b7610c6e46977e3a268931e6b967121f9cdd38ef599207",
+      "sha256": "346be6b68d84fc1c13e46ec25dcee2429f61ff40c9a814bd778d9cb27bbb5093"
+    }
+  },
+  "reason": "Record the hourly developer-narrative policy successor without replacing the legacy baseline or the preceding Discord report budget recording. The source now requires an input-only brief, first-person progress and next steps, and a one-line unavailable fallback. Only source hash, source locations and compilation timestamp change; the executable graph, command contracts and grants remain identical. The predecessor is preserved byte-for-byte and the compatibility tests verify the complete hash chain and graph equivalence."
+}
