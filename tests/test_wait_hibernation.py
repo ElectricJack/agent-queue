@@ -768,6 +768,121 @@ async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried
         await service.lifecycle.stop()
 
 
+async def test_resume_graph_busy_streak_is_scoped_reset_and_retired(env, caplog):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    service = runtime(env, registry=build_registry())
+    busy = {'success': False, 'error_code': 'wait.graph_busy'}
+    service.command = AsyncMock(side_effect=[busy, busy,
+        {'success': False, 'error_code': 'wait.unavailable'}, busy, {'success': True}, busy])
+    try:
+        for expected in (1, 2, 0, 1, 0, 1):
+            await service.lifecycle.resume_pending()
+            await asyncio.gather(*service.lifecycle._resume_tasks.values())
+            assert service.lifecycle._resume_graph_busy.get(('c', 1), 0) == expected
+        records = [r.message for r in caplog.records if 'wait.resume_graph_busy:' in r.message]
+        assert len(records) == 4
+        assert all('continuation_id=c generation=1' in r for r in records)
+        assert 'consecutive_refusals=2' in records[1]
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(suspension_generation=2))
+        service.command.side_effect = None
+        service.command.return_value = busy
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        assert service.lifecycle._resume_graph_busy == {('c', 2): 1}
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(resume_state='held'))
+        await service.lifecycle.resume_pending()
+        assert not service.lifecycle._resume_graph_busy
+    finally:
+        await service.lifecycle.stop()
+
+
+async def test_listener_batches_cannot_starve_queued_resume_dispatch(env, monkeypatch):
+    from sqlalchemy import text
+    from src.integration import delivery_observer
+    from src.models import AgentProfile
+    from tests.test_wait_dispatch import runtime
+
+    await env.db.create_profile(AgentProfile(id='worker-codex', name='Worker'))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker-codex', route_source='override'))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    service = runtime(env, registry=build_registry())
+    service.orch._task_control_lock = lambda _: asyncio.Lock()
+    service.scheduler.reader = SimpleNamespace(observe_task=AsyncMock(return_value=SimpleNamespace(
+        constraints={}, binding={'scope': {}},
+    )))
+    monkeypatch.setattr(delivery_observer, 'hierarchy_frontier_modes', AsyncMock())
+    service.lifecycle.resume.fresh_workspace = AsyncMock(return_value='/tmp/fresh')
+    service.orch._launch_session_for_task_locked = AsyncMock()
+    service.command = AsyncMock(wraps=service.command)
+    # A backlog of single-event transactions repeatedly tries to reclaim the
+    # actual PostgreSQL graph lock, with the first batch held until resume queues.
+    service.listener.batch_size = 1
+    for n in range(12):
+        await env.db.wait_source_commit(source_key='test:backlog', generation=0,
+            revision=str(n), outcome_ref=f'test:{n}', payload={})
+    holding, release = asyncio.Event(), asyncio.Event()
+    batches = []
+    reservation_batches = []
+
+    async def observe(*args, **kwargs):
+        reservation_batches.append(len(batches))
+        return SimpleNamespace(constraints={}, binding={'scope': {}})
+
+    service.scheduler.reader.observe_task.side_effect = observe
+
+    async def dispatch(conn, event):
+        batches.append(event['seq'])
+        if len(batches) == 1:
+            holding.set()
+            await release.wait()
+
+    service.listener._dispatch = dispatch
+    listener = asyncio.create_task(service.listener.tick())
+    try:
+        async with asyncio.timeout(10):
+            await holding.wait()
+            await service.lifecycle.resume_pending()
+            async with env.db._engine.connect() as conn:
+                while not await conn.scalar(text("""
+                    SELECT EXISTS (SELECT 1 FROM pg_locks
+                    WHERE locktype = 'advisory' AND NOT granted
+                    AND database = (SELECT oid FROM pg_database
+                                    WHERE datname = current_database()))
+                """)):
+                    await asyncio.sleep(0.01)
+            release.set()
+            await asyncio.gather(*service.lifecycle._resume_tasks.values())
+            await listener
+        service.command.assert_awaited_once_with('wait_resume_dispatch', {
+            'continuation_id': 'c', 'generation': 1,
+        })
+        service.orch._launch_session_for_task_locked.assert_awaited_once()
+        assert reservation_batches == [1]  # Resume wins immediately after the held batch.
+        assert (await intent(env))['resume_state'] == 'reserved'
+        assert not service.lifecycle._resume_graph_busy
+        # If resume caused a nonblocking drain refusal, the cursor replays the
+        # rest of the backlog safely on the listener's next tick.
+        await service.listener.tick()
+        assert len(batches) >= 12
+        assert len(batches) == len(set(batches))
+    finally:
+        release.set()
+        listener.cancel()
+        await asyncio.gather(listener, return_exceptions=True)
+        await service.lifecycle.stop()
+
+
 async def test_slow_resume_does_not_block_another_parked_task_and_shutdown_joins_it(env):
     from tests.test_wait_dispatch import runtime
 
@@ -1904,6 +2019,7 @@ async def test_retire_checkout_keeps_a_folder_a_row_names_or_that_holds_work(
 
 async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env, monkeypatch):
     from src.integration import delivery_observer
+    from src.wait_runtime import resume
     from src.wait_runtime.resume import ResumeTransaction
     from src.waits.graph import lock_graph
 
@@ -1911,6 +2027,7 @@ async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env
         await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
     await park(env)
     monkeypatch.setattr(delivery_observer, 'hierarchy_frontier_modes', AsyncMock())
+    monkeypatch.setattr(resume, 'RESUME_GRAPH_LOCK_TIMEOUT', 0.05)
     orch = SimpleNamespace(db=env.db, _task_control_lock=lambda _: asyncio.Lock())
     driver = ResumeTransaction(SimpleNamespace(orch=orch))
     driver.failed = AsyncMock()
@@ -1920,7 +2037,7 @@ async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env
 
     async with env.db._engine.begin() as holder:
         await lock_graph(holder)
-        with pytest.raises(WaitError, match='within 0.25s') as refused:
+        with pytest.raises(WaitError, match='within 0.05s') as refused:
             await asyncio.wait_for(driver.dispatch(
                 {'continuation_id': 'c', 'generation': 1},
                 principal=None, scope=None, handler=None,
