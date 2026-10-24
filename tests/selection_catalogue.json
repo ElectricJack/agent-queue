@@ -19264,9 +19264,11 @@
         "tmux-terminals"
       ],
       "default_arm": false,
-      "digest": "sha256:a7373968725103303cdfe46601b0929bdaab603fb08303120620fa8ab2f33372",
+      "digest": "sha256:43483712c8c51daa7994e69121c0f51a4293344625a0093b6cfbcb9085f6c918",
       "imports": [
+        "src.sessions.harness_parser",
         "src.sessions.provider",
+        "src.sessions.spec",
         "src.sessions.tmux"
       ],
       "markers": [
