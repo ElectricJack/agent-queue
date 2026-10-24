@@ -11,10 +11,22 @@ content hash. Exceeding the bound refuses the whole operation. Apply requires th
 same snapshot hash and `transferring` or `delivery_disabled`; changes to rows,
 mode, destination or configuration require a fresh preview. Short maintenance
 table locks prevent writers from changing the snapshot during the transaction.
+The hash covers the exact selected rows, including immutable decision packets
+and operation receipts, rather than only row identities or counts. A decision
+accepted or applied after preview invalidates that preview and apply writes nothing.
+
+Asks backed by accepted decision packets block both preview and apply with
+`ask.reset_active_decision` when approved or in applying, applied or unknown
+application state. Legacy approval projections without accepted packets remain
+discardable. This deliberately refuses
+even a fresh preview after ingestion dispatch succeeds: that receipt proves a task
+was filed, while the worker may still need its approved packet. Reset cannot
+withdraw that approval or abandon accepted work. Succeeded action receipts retain
+their status, outcome, payload and lease/completion evidence unchanged.
 
 Apply discards all existing project ask projections, old aliases, previews,
 action tokens, repair cases and legacy delivery rows. It cancels legacy incidents,
-actions and shared ask deliveries, revokes old ask inputs, and retires bindings.
+unfinished actions and shared ask deliveries, revokes old ask inputs, and retires bindings.
 Immutable decision packets are left as obsolete records behind discarded asks;
 no decision is applied or replayed, no history is imported, and no per-row audit
 is copied. Normal ask reads and delivery exclude discarded projections.
