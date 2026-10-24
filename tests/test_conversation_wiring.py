@@ -499,17 +499,82 @@ async def test_a_follow_up_in_the_channel_continues_the_same_conversation(env):
         channel_gateway_message(1, "still blocked?"), bot_user_id=None
     ) == "posted:created"
 
-    # One conversation, two turns, and the second answers to the first message.
+    # One conversation, two turns, and the acknowledgement references the root.
     assert (await db.get_conversation(conversation["id"]))["updated_at"] == NOW + 10
     assert len(await db.list_conversation_inputs(conversation["id"])) == 2
     await service.pump()
     assert transport.threads == {}
-    # Every post this conversation makes replies to its first message.
+    # Intake has queued only the acknowledgement; answers are explicit.
     assert {
         message.reference_message_id
         for message in transport.messages.values()
         if message.id != "900000000000000000"
     } == {"800000000000000000"}
+
+
+@pytest.mark.parametrize("direct", [False, True], ids=["channel", "dm"])
+async def test_follow_up_answers_reference_each_input_and_preserve_conversation(env, direct):
+    handler, db = env
+    handler.config.discord.conversation.require_mention = False
+    handler.config.discord.conversation.allow_dm = direct
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    _, principal = await supervisor(db, "agent-queue")
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    router = inbound_router(handler)
+    gateway_message = dm_gateway_message if direct else channel_gateway_message
+    channel_id = DM_CHANNEL if direct else CHANNEL
+    root_id = str(gateway_message(0, "first question").id)
+    conversation_id = None
+
+    # Answer the root and two later turns in the same conversation. Replaying a
+    # follow-up answer must retain its reference and produce no duplicate post.
+    for index in range(3):
+        handler._clock = lambda: NOW + index * 10
+        incoming = gateway_message(index, f"question {index}")
+        assert await router.route(incoming, bot_user_id=None) == "posted:created"
+        conversation = await db.find_channel_conversation(
+            transport="discord", channel_id=channel_id
+        )
+        if conversation_id is None:
+            conversation_id = conversation["id"]
+        assert conversation["id"] == conversation_id
+        item = await db.find_conversation_input_by_external(
+            transport="discord", external_message_id=str(incoming.id)
+        )
+        values = reply_args(
+            {"conversation_id": conversation_id, "input_id": item["id"]},
+            text=f"Answer to question {index}",
+            idempotency_key=f"answer-{index}",
+        )
+        result = await reply(handler, values, principal)
+        assert result["success"], result
+        if index == 1:
+            replay = await reply(handler, {**values, "text": "changed on retry"}, principal)
+            assert replay["success"] and not replay["created"]
+        await service.pump()
+        answers = [
+            message for message in transport.messages.values()
+            if f"Answer to question {index}" in message.content
+        ]
+        assert len(answers) == 1
+        assert (answers[0].where, answers[0].thread_id, answers[0].reference_message_id) == (
+            channel_id, None, str(incoming.id),
+        )
+        rows = await db.list_outbound_deliveries(
+            owner_kind="conversation", owner_id=conversation_id
+        )
+        answer_row = next(
+            row for row in rows if row["dedup_key"] == result["delivery_dedup_key"]
+        )
+        assert answer_row["payload"]["reference_message_id"] == str(incoming.id)
+        assert answer_row["state"] == "sent"
+        stored = await db.get_conversation(conversation_id)
+        assert stored["external_root_message_id"] == root_id
+        assert stored["external_thread_id"] == (dm_thread_id(channel_id) if direct else None)
+    assert len(await db.list_conversation_inputs(conversation_id)) == 3
+    assert transport.threads == {}
+    assert "ensure_thread" not in transport.calls
 
 
 async def test_a_direct_message_conversation_answers_in_its_own_channel(env):
