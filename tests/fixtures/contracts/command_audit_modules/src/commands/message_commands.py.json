@@ -173,7 +173,7 @@
     "denial_reason": null,
     "effect": "destructive",
     "helper_producers": {
-      "_cmd_supervisor_inbox_reply": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+      "_cmd_supervisor_inbox_reply": "sha256:6a00315773a676d08cf8af34d8dbe78708f0478f2369cb207e9b80c8e6e17545",
       "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95",
       "_send_collaboration_message": "sha256:47207c4d2dcca9b0e53bb086936bf805ab07722ac121832c2d0cb94abd998632",
       "_system_message_scope_error": "sha256:bb8b3907d3e936931d43b2c4f37118e164281848c268d5477789213e2ed1afb7"
