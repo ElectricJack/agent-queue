@@ -149,6 +149,17 @@ single-flight lock; it does not acquire a project-wide database fence.
 
 ### Resume graph-lock fairness — 2026-10-24
 
+The source listener commits one event, its dispatch effects and its cursor in
+each graph transaction. It releases the fence between events even when the
+backlog fits in one batch and no renewal interval has elapsed. A slow individual
+event still uses the lease budget and rolls back atomically on failure.
+
+Supervisor requeue joins the advisory-lock queue before reading or writing its
+held continuation. Refusal and cancellation roll back all changes, including
+the version and audit record; suspension generation is preserved on success as
+well. Restart starts continuation maintenance alongside legacy bridge adoption,
+so a blocked startup bridge cannot suppress RESUME_PENDING retries.
+
 After external admission preparation, resume reservation joins PostgreSQL's
 advisory-lock queue before reading its wait/task/continuation transaction state.
 The listener's nonblocking acquisition cannot overtake a queued resume between
