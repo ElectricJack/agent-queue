@@ -2022,7 +2022,7 @@
   },
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2074,
+    "authorized_owned_delta": 2111,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2107,8 +2107,27 @@
       "task_id": "solid-dune-53",
       "thread_id": "solid-dune-53-size-amendment"
     },
-    "measured_engine_lines": 82467,
-    "measured_owned_total": 157573,
+    "legacy_epic_delivery_composition": {
+      "authorized_engine_delta": 37,
+      "authorized_owned_delta": 37,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/stacked_branches.py": 8,
+        "src/integration/train_sources.py": 29
+      },
+      "decision_message_id": "msg-83c55ca50e03451b85cc6040d1e3ce04",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157549,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1934",
+      "reason": "Exact supervisor-approved +37 owned/engine lines for current passing legacy epic Git delivery proof and redundant refresh suppression. Preserve original baselines, historical grants and classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
+      "task_id": "keen-harbor-84"
+    },
+    "measured_engine_lines": 82504,
+    "measured_owned_total": 157610,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
