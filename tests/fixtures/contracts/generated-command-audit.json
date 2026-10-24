@@ -19323,7 +19323,7 @@
       },
       {
         "protocol": "explicit_boolean: True",
-        "return": "{'success': True, **await service.submit(project_id=project_id, author_task_id=author_task_id, kind=kind, title=str(args.get('title') or ''), content=content, submitted_by=principal.describe(), decider=decider, single_author=bool(experiment and experiment['final_result']), playbook=playbook), **({'playbook': playbook.meta} if playbook else {})}"
+        "return": "{'success': True, **await service.submit(project_id=project_id, author_task_id=author_task_id, kind=kind, title=str(args.get('title') or ''), content=content, submitted_by=principal.describe(), decider=decider, single_author=bool(experiment and experiment['final_result']), changes_note=changes_note, playbook=playbook), **({'playbook': playbook.meta} if playbook else {})}"
       },
       {
         "protocol": "delegated_producer",
@@ -19351,15 +19351,15 @@
       },
       {
         "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
         "return": "_error('not_your_task', f'this revision task must update review {assigned_id}; use aq review submit --review-id {assigned_id} --file <draft.md> --changes \"<comment dispositions and evidence>\"')"
-      },
-      {
-        "protocol": "delegated_producer",
-        "return": "error"
-      },
-      {
-        "protocol": "delegated_producer",
-        "return": "error"
       },
       {
         "protocol": "delegated_producer",
@@ -19376,11 +19376,19 @@
       {
         "protocol": "delegated_producer",
         "return": "_error('object_result_language', error)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', 'an amendment requires the assigned predecessor to remain approved at the follow-up revision')"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Post-approval follow-up amendment audit (PR 1921): omitted review_id requires the assigned predecessor to remain approved at its assigned revision; identity lookup failures and stale predecessor refusals preserve delegated boolean errors. Amendment submit explicitly returns success and records predecessor provenance in changes_note. Revision-task assignment and explicit-id guards remain enforced.",
     "schema_quality": "declared",
-    "source_digest": "sha256:170db8480c85c42685e44df867aed0f1a13a21cc10742f5b12f1b3ea2a7dd006",
+    "source_digest": "sha256:0feab9af4a457a41fcee67669209bb29e73ac06c167b70eddae66d4cafb08b86",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -19389,7 +19397,9 @@
       "tests/test_object_loop_playbook.py",
       "tests/test_review_commands.py",
       "tests/test_task_attachments_api.py",
-      "tests/test_playbook_script.py"
+      "tests/test_playbook_script.py",
+      "tests/test_review_commands.py::test_approved_followup_submits_an_amendment_and_can_revise_its_draft",
+      "tests/test_review_commands.py::test_revision_task_cannot_create_amendment_after_approval"
     ]
   },
   "review_withdraw": {
