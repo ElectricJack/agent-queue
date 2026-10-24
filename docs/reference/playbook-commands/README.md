@@ -560,6 +560,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
 | [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
 | [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
+| [`supervisor_inbox_say`](supervisor_inbox_say.md) | Supervisor Inbox Say | Start a supervisor message in an existing conversation without answering an input. |
 | [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
 | [`supervisor_restart`](supervisor_restart.md) | Supervisor Restart | Execute the supervisor_restart command. |
 | [`task_batch_discard`](task_batch_discard.md) | Task Batch Discard | Execute the task_batch_discard command. |

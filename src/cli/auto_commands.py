@@ -493,7 +493,7 @@ def _make_auto_command(
     input_schema = tool_def.get("input_schema", {})
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
-    if cmd_name == "supervisor_inbox_reply":
+    if cmd_name in {"supervisor_inbox_reply", "supervisor_inbox_say"}:
         required.discard("text")  # The callback enforces --text XOR --file.
 
     params: list[click.Parameter] = []
@@ -538,7 +538,7 @@ def _make_auto_command(
                 help="Conversation state filter; repeat for multiple states.",
             )
         )
-    if cmd_name == "supervisor_inbox_reply":
+    if cmd_name in {"supervisor_inbox_reply", "supervisor_inbox_say"}:
         params.append(
             click.Option(
                 ["--file", "reply_file"],
@@ -565,7 +565,7 @@ def _make_auto_command(
                     if kwargs.get("states") is not None:
                         raise click.UsageError("Use either --state or --states.")
                     kwargs["states"] = list(states)
-            if name == "supervisor_inbox_reply":
+            if name in {"supervisor_inbox_reply", "supervisor_inbox_say"}:
                 from pathlib import Path
 
                 reply_file = kwargs.pop("reply_file", None)
