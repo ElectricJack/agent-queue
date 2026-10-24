@@ -933,7 +933,27 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2045,
+ 'authorized_owned_delta': 2050,
+ 'claim_marker_recovery_composition': {
+     'authorized_engine_delta': 0,
+     'authorized_owned_delta': 5,
+     'authorized_shared_owned_delta': 5,
+     'authorized_table_delta': 0,
+     'decision_message_id': 'msg-3cec5c343e89461790d7371a8ac0111c',
+     'dev_source_revision': 'b4d6931c79aa04b0e50edd50ed0be6dde1ca31e9',
+     'operator_decision': '6679052c',
+     'previous_measured_engine_lines': 82443,
+     'previous_measured_owned_total': 157544,
+     'previous_measured_table_count': 45,
+     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1929',
+     'reason': 'Exact approved +5 shared owned lines for missing claim-marker recovery. '
+               'Remeasured after merging current dev; preserve original baselines, all '
+               'historical grants and ownership classifications, with zero remaining headroom.',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'source_revision': 'a10b7d957d2fb0030e396097fee73b5a431fda05',
+     'supervisor_decision_comment_id': 'comment-ccb6fb19a24f447c97da075bc800a9a2',
+     'task_id': 'wise-crest-14',
+     'thread_id': 'wise-crest-14-ci-size'},
  'expires_at': 's4_modules',
  'held_ingestion_composition': {'authorized_engine_delta': 0,
                                 'authorized_owned_delta': 14,
@@ -991,7 +1011,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
                                       'source_revision': '5e33516f93715b484eb15c2525d050ac303d5ee4',
                                       'task_id': 'swift-lantern-21'},
  'measured_engine_lines': 82443,
- 'measured_owned_total': 157544,
+ 'measured_owned_total': 157549,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
