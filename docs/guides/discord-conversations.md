@@ -143,11 +143,11 @@ no tag, and the thread simply becomes a conversation of its own.
 A conversation that *is* a thread answers inside it. A conversation the channel
 carries — a plain top-level message, or a direct message — never creates one:
 its acknowledgement, answer, status line and notices are ordinary posts in that
-channel, each carrying a Discord reply reference to the conversation's first
-message so the thread of conversation is visible without a Discord thread. If
-that referenced message has been deleted, Discord posts the answer without the
-reference rather than refusing it. An escalation incident still owns its own
-thread (§escalations.md); nothing here changes that.
+channel. Each answer carries a Discord reply reference to the operator's message
+it answers; acknowledgements, status lines and notices reference the conversation's
+first message. If that referenced message has been deleted, Discord posts the
+answer without the reference rather than refusing it. An escalation incident
+still owns its own thread (§escalations.md); nothing here changes that.
 
 AQ persists the conversation, verified author and input before queuing any
 Discord delivery. It queues one acknowledgement on the operator's message —
