@@ -1,0 +1,14 @@
+{
+  "held_ingestion_p4_merge_measurement": {
+    "authority": "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
+    "global_decision": "907cdbb6-a78a-4d3f-9fd0-063b0cd050d6",
+    "global_grant": "msg-178ee4e85b0140598410d0cb16005443",
+    "measured_engine_lines": 84830,
+    "measured_owned_total": 160828,
+    "measured_table_count": 45,
+    "referenced_decision": "msg-f06302bed6424579bdb6b51290cbed1e",
+    "source_revision": "0dab21a95dca65432375d7ced2fa818a56c856eb",
+    "standing_rule": "size-cap-delegation-2026-10-23",
+    "task_id": "stark-grove-42"
+  }
+}

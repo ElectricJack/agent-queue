@@ -1,0 +1,142 @@
+{
+  "shared_definitions": {
+    "src/git/manager.py::GitManager._aresolve_delivery_tip": {
+      "baseline_span": [
+        3534,
+        3550
+      ],
+      "landing_span": [
+        3534,
+        3550
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager._daemon_bookkeeping_paths": {
+      "baseline_span": [
+        1554,
+        1567
+      ],
+      "landing_span": [
+        1554,
+        1567
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager._resolve_delivery_tip": {
+      "baseline_span": [
+        1217,
+        1233
+      ],
+      "landing_span": [
+        1217,
+        1233
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager.acommit_all": {
+      "baseline_span": [
+        2982,
+        3071
+      ],
+      "landing_span": [
+        2982,
+        3071
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/git/manager.py::GitManager.aprepare_child_branch": {
+      "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
+    },
+    "src/git/manager.py::GitManager.apush_expected_delivery": {
+      "baseline_span": [
+        3932,
+        3972
+      ],
+      "landing_span": [
+        3932,
+        3972
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager.apush_validated_delivery": {
+      "baseline_span": [
+        3858,
+        3931
+      ],
+      "landing_span": [
+        3858,
+        3931
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager.areserved_paths_in_diff": {
+      "baseline_span": [
+        5305,
+        5333
+      ],
+      "landing_span": [
+        5305,
+        5333
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager.areserved_paths_in_index": {
+      "baseline_span": [
+        5334,
+        5344
+      ],
+      "landing_span": [
+        5334,
+        5344
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager.areserved_paths_in_tree": {
+      "baseline_span": [
+        5345,
+        5360
+      ],
+      "landing_span": [
+        5345,
+        5360
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager.push_validated_delivery": {
+      "baseline_span": [
+        1234,
+        1265
+      ],
+      "landing_span": [
+        1234,
+        1265
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::GitManager.reserved_paths_in_diff": {
+      "baseline_span": [
+        1283,
+        1304
+      ],
+      "landing_span": [
+        1283,
+        1304
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::_delivery_source_rev": {
+      "baseline_span": [
+        407,
+        428
+      ],
+      "landing_span": [
+        407,
+        428
+      ],
+      "reason": "Integration-specific delivery and reserved-path Git wrapper; generic transport is excluded."
+    },
+    "src/git/manager.py::safe_git_detail": {
+      "reason": "Bounds and sanitizes immutable provenance publication and exact-readback diagnostics shared with the Git transport."
+    }
+  }
+}

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Project approved recordings and historical ownership inputs into generated copies.
 
-Canonical inputs under tests/fixtures/generated_sources are authored and merged
-normally. This command never compiles policy, invents an approval or measures a
-new historical baseline. Approved definition timestamps and manifest bindings
-remain exact; a changed definition needs its matching approved manifest input.
+Canonical module shards and playbook recordings are authored and merged
+normally; the old aggregate ownership paths are compatibility projections.
+This command never compiles policy, invents an approval or measures a new
+historical baseline. Approved definition timestamps and manifest bindings remain
+exact; a changed definition needs its matching approved manifest input.
 """
 
 from __future__ import annotations
@@ -19,19 +20,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 INPUTS = Path("tests/fixtures/generated_sources")
-OWNERSHIP = ("integration_ownership.json", "integration_ownership_report.json")
 BUNDLE_FILES = ("artifact.json", "artifact.sha256", "source.md", "manifest.md", "diagnostics.json")
 
 
 def outputs(root: Path) -> dict[Path, bytes]:
+    from scripts.bookkeeping_sources import bookkeeping_outputs
     from src.playbooks.definition import source_digest
 
     inputs = root / INPUTS
-    result = {}
-    for name in OWNERSHIP:
-        payload = (inputs / "ownership" / name).read_bytes()
-        json.loads(payload)
-        result[Path("tests") / name] = payload
+    result = bookkeeping_outputs(root)
     index = json.loads((inputs / "playbooks/index.json").read_text())
     for playbook_id, destinations in index.items():
         source = inputs / "playbooks" / playbook_id

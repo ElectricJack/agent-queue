@@ -759,7 +759,7 @@ chain to a release tag, and answers "is this delivered?" from git.
 - The live staging promotion is in progress; rewriting the sentinel and promotion playbooks is ready behind the playbooks refactor; the duplicate human publishers removal is ready.
 - Deleting the retired subject reconciler is stage 4 of the train spec with no open task.
 
-**Gaps today.** A default config delivers nothing (git-first defaults to shadow), delivery edges cannot be satisfied under the train, two protocols coexist at 81k lines against a 12k target, p90 latency is 6.3 hours with no watchdog, and promotion beyond staging has never run.
+**Default delivery resolved (2026-10-23).** The Git-first train is always active, and delivery edges use current Git admission. The remaining recorded gaps are legacy protocol size (81k lines against a 12k target), p90 latency of 6.3 hours with no watchdog, and promotion beyond staging not yet observed.
 
 ### 7.8 [playbooks](playbooks.md)
 
@@ -965,7 +965,7 @@ unattended agents is safe to leave alone.
 - Distributed nodes, a durable release-history record, restore rehearsals and canonical-origin admission are reviewed but unfiled.
 - A failed slot reset and a dev train deadlock are open tasks; the documentation fixes for dead doctor ids are unfiled but first in line.
 
-**Gaps today.** The legacy update path has no backup or rollback, operator docs cite six removed doctor checks, the orphan-stamp check cannot run offline, two backup implementations with no pruning, and doctor is global and overstates its honesty.
+**Gaps today.** Operator docs cite six removed doctor checks, the orphan-stamp check cannot run offline, backups have no pruning, and doctor is global and overstates its honesty.
 
 ### 7.18 [plugins-mcp-and-tools](plugins-mcp-and-tools.md)
 

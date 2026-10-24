@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/parent_adapters.py::ParentPrimitiveAdapters.clear_reopen_refusal::5ddc9362418a6772f1e8c1d284b9b85cd15f738f3ae3e9837dd8d8fc12d06a9f": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 365,
+      "owner": "ParentPrimitiveAdapters.clear_reopen_refusal",
+      "owner_fingerprint": "656846ca5f83d710c64cba6abf4e33239a24d4bf153e750d6eda45e63beb0fa6",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/parent_adapters.py::ParentPrimitiveAdapters.record_reopen_refusal::c261a03f41e84577a3a8e002afed73fc4845094d3361def361bb59bb740b6d85": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 352,
+      "owner": "ParentPrimitiveAdapters.record_reopen_refusal",
+      "owner_fingerprint": "e8a9b69ffdedecaafdcb96821945f5fd0b2fcbb738d86b8ac56f9b41cb942fcb",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

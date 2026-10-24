@@ -12,7 +12,7 @@ section](../reference/configuration.md#smart-test-selection-test_selection).
 ## What shadow records, and what it does not verify
 
 `aq test --aq-smart` (mode `shadow`) computes the selection, records it, and
-then runs exactly the modules it proposed. Two properties are worth being
+then runs exactly the targets the caller named. Two properties are worth being
 precise about:
 
 - **It records a proposal, not a verdict.** A shadow run with no explicit
@@ -25,9 +25,12 @@ precise about:
   commands are unchanged. Shadow is an observation feed; it earns nothing by
   itself.
 
-`--aq-smart=enforce` goes further: the run is limited to the selected modules
+`--aq-smart=enforce` goes further: it adds selected modules to the caller's targets
 (the daemon refuses `-k`, `-m`, `--lf` and node-id narrowing alongside it), and
-a selection that fell back to the whole suite is a refusal, not a run.
+a full-suite fallback is refused for a worker (exit 4). A local operator's
+selection is authorized to run that fallback. Enforcement needs the master and
+enforcement switches; promotion is required only for Jev to omit static-only
+modules. Unpromoted enforcement preserves the static fallback.
 
 ## The three switches
 
@@ -41,50 +44,57 @@ All live under the `test_selection` section, hot-reloadable (re-read on every
 | `enforce_enabled` | `false` | permit `--aq-smart=enforce`; off, enforce is a usage error |
 
 The key itself is never stored: `api_key_env` names the environment variable
-(default `TYPESAFE_API_KEY`) that must hold it, and an unresolvable name is a
-configuration error, not a fallback.
+(default `TYPESAFE_API_KEY`). If the variable is empty or the optional SDK is
+unavailable, selection records `jev_unconfigured` and uses the static fallback.
 
 ## Flags and exit codes
 
 | flag | meaning |
 |---|---|
-| `--aq-smart` / `--aq-smart=shadow` | compute, record and run the proposed selection |
-| `--aq-smart=enforce` | same, but the run is limited to the proposal and refusal conditions apply |
+| `--aq-smart` / `--aq-smart=shadow` | compute and record a proposal; run the caller's targets unchanged |
+| `--aq-smart=enforce` | add the selected union to explicit targets, subject to the refusal conditions above |
 | `--aq-plan-only` | print the report; start nothing (exit 0) |
-| `--aq-base <ref>` | comparison base (default: `origin/<default branch>` via `origin/HEAD`) |
+| `--aq-base <ref>` | comparison base; overrides `test_selection.default_base_ref`, else the project's `origin/<default branch>` |
 | `--aq-no-jev` | static fallback only; records Jev as disabled |
 | `--aq-project <id>` | operator run outside a worker session |
 
-All the usual `--aq-*` slot flags (`--aq-wait`, `--aq-timeout`, `--aq-workers`
-…) still apply on the non-smart path. Exit codes:
+Foreground smart runs use the usual slot controls (`--aq-no-wait`,
+`--aq-timeout`, `--aq-workers`, …). Smart selection cannot be combined with
+`--aq-detach`; `--aq-wait` requires `--aq-detach`. When the daemon is unreachable,
+`--aq-plan-only` computes an unrecorded offline static plan, using `origin/HEAD`
+or `origin/main` unless `--aq-base` was supplied. Exit codes:
 
 | code | meaning |
 |---|---|
-| 0 | ran (or `--aq-plan-only`: reported, nothing started) |
+| 0 | pytest passed (or `--aq-plan-only`: reported, nothing started) |
 | 2 | usage refusal — `--aq-smart` off or missing required config, enforce narrowing, or a shadow run with no targets |
 | 3 | daemon unreachable in enforce mode (a shadow run degrades to the explicit targets instead) |
 | 4 | `selection_stale`, `full_suite_required` or `empty_selection` |
 | 75 | the test slot never freed, as for every `aq test` run |
 
 A path-shaped argument that does not exist is refused before pytest starts
-(exit 2); a run that collected nothing exits nonzero and says so — both as
+(exit 4); a run that collected nothing exits nonzero and says so — both as
 with the ordinary runner.
 
 ## The selection formula, and the reason codes
 
-Each candidate module lands in exactly one bucket:
+The sets overlap; mandatory membership always survives composition:
 
 - **M — mandatory.** Changed test files, direct imports, scoped `conftest.py`,
   rules-named critical modules: it runs, full stop.
 - **S — static impact.** The import closure of your changed sources.
-- **J — Jev's judgment.** Per-area, from the model's affected / confidently-
-  unaffected verdicts.
-- **F — fallback.** Everything else that a red build could live in, when the
-  inputs were incomplete or Jev abstained.
+- **J — Jev's judgment.** Modules in every area except a validated,
+  confidently unaffected area. Unknown or missing area answers stay included.
+- **F — fallback.** `M ∪ S`; the whole universe when mandatory or static
+  analysis cannot establish a complete selection.
 
-The run is `M ∪ S ∪ (J affected)`; when any input is `full_required` (a global
-invalidator, an unmapped path, an unusable catalogue) the whole suite runs
-instead, and in enforce mode that is a refusal (exit 4).
+Without usable Jev answers, the proposal is F. With usable answers, shadow
+records `M ∪ J`; unpromoted enforcement records `F ∪ J`; promoted enforcement
+with complete evidence may use `M ∪ J`. Explicit catalogue-module targets are
+added to the final proposal. When `full_required` is set (for example, by a
+global invalidator, unmapped path, unusable catalogue or incomplete static
+analysis), the proposal requires the whole suite. Shadow still runs only the
+caller's targets; enforcement requires the full-suite authorization above.
 
 Every decision is stamped with a reason code (paths and areas named, never
 content), in `src/test_selection/reasons.py`:
@@ -114,7 +124,9 @@ A recorded selection carries: its `selection_id` (cite it on the task), the
 base and head SHAs, the dirty/snapshot fingerprints, the catalogue / rules /
 policy digests, the question schema version, the full bucket breakdown, every
 reason code, the proposed `argv`, elapsed time, usage and a `pending_obligations`
-list (the checks the selection itself could not run).
+list (the checks the selection itself could not run). Enforce rechecks the recorded
+snapshot immediately before launching pytest; a changed tree exits 4 with
+`selection_stale`.
 
 ## Catalogue and rules
 
@@ -148,11 +160,11 @@ first sign is `tests/test_generated_artifacts.py` failing on the candidate CI
 run. Directory runs skip the check, and so does any run with `CI` set, where
 that test is the authoritative check.
 
-## Promotion, and why it is still off
+## Promotion and replay evidence
 
 A **promotion** is the operator's statement that, for one project, Jev may
-omission-judge for real (it is what would ever stand behind
-`enforce_enabled: true`). It is identity-pinned:
+omit static-only modules during enforcement. It is separate from
+`enforce_enabled` and is identity-pinned:
 
 ```bash
 aq test-selection promote --project-id <project_id> --model jev-1.13.0 \
@@ -170,11 +182,12 @@ immediate:
 aq test-selection revoke --promotion-id <promotion_id> --reason "<why>"
 ```
 
-Nothing here promotes anything automatically. The bar (spec §7, *proposed*,
-not yet met): the replay report over recorded red builds must show at least 30
+Nothing here promotes anything automatically. The proposed bar in design §7:
+the replay report over recorded red builds must show at least 30
 usable held-out cases with at least 98 % of change-caused failing modules
 selected by `M ∪ S ∪ J` — and zero critical misses. Until a replay report says
-that, shadow stays an observation feed and enforcement stays off.
+that, omission from the static set should stay off. Shadow remains an
+observation feed; additive enforcement has its own enablement switch.
 
 ## What enforcement never replaces
 
@@ -182,7 +195,7 @@ Even fully promoted, the selection is a substitute for *breadth*, not for
 *authority*. It never replaces:
 
 - the CI arms — the selection is computed in a worktree from
-  `origin/HEAD`; CI checks, replayed red builds and the full-suite baseline
+  the configured comparison base; CI checks, replayed red builds and the full-suite baseline
   note remain the record of truth for "is main green";
 - the marker arms — `perf`, `integration`, `tmux`-gated and the
   other slow-by-nature markers stay under the same opt-in they have always
@@ -191,6 +204,6 @@ Even fully promoted, the selection is a substitute for *breadth*, not for
   the e2e swarm smoke, or whatever else the task names — they run, with their
   own exit codes, exactly as written.
 
-When a selection is stale, full-suite or empty, that is the run telling you
-its scope is the whole suite: run your task's focused and area checks and
-report the requirement, the same as today.
+A stale selection needs a fresh plan; an empty selection verifies nothing.
+For a worker's full-suite refusal, run the task's focused and area checks and
+report the broader requirement. None of these refusals is passing evidence.

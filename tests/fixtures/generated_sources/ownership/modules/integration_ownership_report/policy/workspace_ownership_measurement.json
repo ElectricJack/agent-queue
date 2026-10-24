@@ -1,0 +1,20 @@
+{
+  "workspace_ownership_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 144,
+    "decision_message_id": "msg-98d8517c56104e8fbf87e1330d2d5c1a",
+    "engine_lines": 85316,
+    "grant_baseline_owned_total": 160820,
+    "grant_maximum_delta": 172,
+    "measured_delta_from_grant_baseline": 161,
+    "measured_source_revision": "07988d776f3dd68759d34c8152dd684099ff7298",
+    "operator_decision_id": "c363ba40-0d03-4303-8667-e192e92091ad",
+    "owned_total": 160981,
+    "previous_engine_lines": 85316,
+    "previous_owned_total": 160837,
+    "reason": "Exact remaining ownership-fence footprint after sharing session predicates and reusing transaction row reads; no change to baseline, final caps or storage categories.",
+    "remaining_owned_headroom": 0,
+    "table_count": 45,
+    "task_id": "nimble-meadow-99"
+  }
+}

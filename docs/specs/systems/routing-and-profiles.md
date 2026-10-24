@@ -1,6 +1,8 @@
 # System spec: routing and profiles
 
-Status: describes the system as of 2026-10-20 (base `22cffd1b7`). This is system 4 of the
+Status: behavior audited against 2026-10-22 origin/dev `52d2efe4c`.
+The inventory/review and planned-work records below are the original 2026-10-20
+snapshot (base `22cffd1b7`), not a live task-status report. This is system 4 of the
 eighteen in the agent-queue system inventory (vault
 `projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`, review
 `rev-bright-rapids`, in review at revision 1 when this was written). It explains what the
@@ -80,7 +82,8 @@ Database pins were moved by Alembic revision `a0000000000f`.
 
 At session launch, `src/sessions/spec.py` (`_resolve_class_config`) resolves the class in
 this order: the agent's own override, then the task's class, then the profile's
-`default_class`. It takes the provider from the harness. The Codex CLI reads its `codex`
+`default_class`. It uses the harness definition's explicit provider, then
+legacy inference; an unknown provider can use a harness-id class slice. The Codex CLI reads its `codex`
 slice first. An empty model is a warning and leaves the session with no class
 configuration; nothing falls back silently. The direct LLM path (playbook LLM steps) takes
 its provider from `llm.provider` instead (`src/profiles/intelligence.py`).
@@ -121,7 +124,8 @@ The format is specified in [agent profiles](../agent-profiles.md) and
 
 - **Structured sections:** `## Config` (harness, `default_class`, lifecycle, permission
   mode, limits), `## Tools`, `## MCP Servers`.
-- **Prompt sections:** `## Role`, `## Rules`, `## Reflection`.
+- **Prompt sections:** `## Role` and `## Rules` reach `aq prime`;
+  `## Reflection` is captured for post-task reflection, not the launch prompt.
 - **Capabilities:** `## Capabilities`. Validation follows the
   [profile validation design](../../superpowers/specs/2026-04-25-profile-validation-design.md).
 
@@ -203,7 +207,8 @@ never overwrites or deletes a file. **Edit the template or the class file, never
 
 `src/agents/` covers what a running worker is, as distinct from the profile it runs:
 
-- the `agents` identity table and generated names (`src/agent_names.py`);
+- the `agents` identity table; demand-created non-pool workers use profile display
+  names with collision suffixes. `src/agent_names.py` is a separately tested library;
 - per-worker harness, model and class overrides (`configuration.py`);
 - liveness: a starting, running or draining session within the lease TTL (`liveness.py`);
 - session roles and flock rows (`sessions.py`, `service.py`);
@@ -289,8 +294,10 @@ role task. The supervisor can never be a task route (`src/profiles/task_executio
    5. **Classification.** If the answer depends on facts nobody has given, the outcome is
       `needs_classification`, with the questions and allowed answers.
    6. **Score and choose.** Score
-      `pressure = (busy + backlog + 1) / (slots × weight × usage × headroom × availability)`
-      and choose. Free reserved, preferred and hosted cells come first, and ties go to the
+      `pressure = (busy + eligible_backlog + 1) / (slots × weight × usage_factor × usage_headroom_factor × availability_factor)`.
+      Observed admission headroom affects free-capacity selection separately;
+      it is not another pressure denominator factor.
+      Free reserved, preferred and hosted cells come first, and ties go to the
       lane's preference order. Priority is never an input.
    7. **Reason.** Write a reason of at most 600 characters.
 4. **Classify.** On `needs_classification`, the playbook asks a `playbook-compiler` LLM
@@ -393,7 +400,7 @@ manifest digests (see the repository's `AGENTS.md`).
 | `routing.unmatched_selectors` | Lane selectors that match no installed harness, and OpenCode-family harnesses no narrow lane covers |
 | `profiles.system_drift` | Installed shipped profiles that differ from the shipped copy |
 | `profiles.project_overrides` | Leftover per-project profile overrides |
-| `profiles.supervisor_capability_drift` | Grants the synced profiles lack |
+| `profiles.supervisor_capability_drift` | Missing shipped supervisor grants only; worker/template drift is reported by `profiles.system_drift` |
 | `intelligence_classes.parse` | Class files that fail to parse |
 
 ## 3. Boundaries
@@ -442,70 +449,52 @@ manifest digests (see the repository's `AGENTS.md`).
 
 ## 5. Known gaps
 
-These were found while writing this spec. None is tracked by an open task as of
-2026-10-20 unless noted.
+The 2026-10-22 documentation audit corrected the earlier gaps in capability-sync
+coverage, module coverage and the routing concept/reference pages. These
+remaining implementation or policy follow-ups are observations against the
+base above, not claims about the current queue. They require separate changes.
 
-1. **Stale capability-sync documentation.**
-   - [agents and routing](../../concepts/agents-and-routing.md) still says the
-     supervisor's `## Capabilities` is the one sync exception.
-   - Comments in `src/orchestrator/core.py` and `src/profiles/sync.py` say the same.
-   - The doctor check is named `profiles.supervisor_capability_drift`.
-
-   In fact the `worker-*` templates and any `capability_sync: true` profile (the operator
-   templates) sync too.
-2. **Stale module reference.** [the routing module reference](../../reference/modules/routing.md)
-   is out of date:
-   - It omits `catalog.py`, `inheritance.py`, `class_retirement.py`, `task_execution.py`,
-     the `mcp_*` modules, the workspace-kind modules, `src/routing/context.py`,
-     `src/routing/replay.py`, `src/routing/operator_authority.py` and
-     `src/agents/sessions.py`.
-   - It counts two worker templates (there are three, plus two operator templates).
-   - It lists only `routing.bypassed` among the routing doctor checks.
-   - It describes the generic worker ladder as matched by id prefix. Today it is matched
-     by lifecycle, harness and `default_class`, and ids are explicitly not a contract.
-3. **The concept guide predates risk-aware routing.** It doesn't cover:
-   - risk floors, origins, `narrow-medium` and the OpenCode-family exclusion;
-   - bugfix escalation;
-   - the strict-preference refusal;
-   - the apply row lock, `stale` and `routing.busy`;
-   - the score formula and headroom;
-   - `routing.unmatched_selectors`, replay and live context.
-
-   It also lists gemini as a harness, though no gemini template or rung ships, and it
-   omits OpenCode.
-4. **`class_order` doesn't match the shipped classes.** The shipped policy's `class_order`
+1. **`class_order` doesn't match the shipped classes.** The shipped policy's `class_order`
    names `fast-off` and `standard-low`, which no longer ship, and omits `astra-low` and
-   `astra-high`. Astra classes are therefore unreachable through the router.
-5. **The lane-earning prose contradicts the lanes.** "Earning a wider lane" says there is
+   `astra-high`. Astra classes are therefore unreachable through the default
+   router, and `narrow-unverified-model` maps to absent `fast-off`.
+2. **The lane-earning prose contradicts the lanes.** "Earning a wider lane" says there is
    no stage 3, so medium-risk work never goes to a free hosted or local model. Yet
    `narrow-medium` sends medium-risk narrow work to local OpenCode at standard-high. One
    of them needs to change.
-6. **No track record is measured.** Promoting a hosted model between lane stages (ten
+3. **No track record is measured.** Promoting a hosted model between lane stages (ten
    clean passes in a 14-day window) is a manual reviewed policy change. The playbook says
    so ("Nothing in the router measures a track record").
-7. **A vestigial table.** `task_assignment_routes` (`src/database/tables.py`) and
+4. **A vestigial table.** `task_assignment_routes` (`src/database/tables.py`) and
    `src/database/queries/assignment_route_queries.py` have no production caller, since
    the task row became the route.
-8. **Unused profile fields.**
+5. **Unused profile fields.**
    - A profile's `## MCP Servers` reaches only a launch log line
      (`src/orchestrator/execution.py`); the registry's adapter output is used only by
      `mcp_commands`.
    - The profile `workspaces` field is validated but not persisted. Routing reads the
      task's workspace requirements instead.
-9. **The `fidelity-reviewer` role is ahead of its profile.** `fidelity-reviewer` is in
+6. **The `fidelity-reviewer` role is ahead of its profile.** `fidelity-reviewer` is in
    `ROLE_PROFILE_IDS`, the review and control sets and `src/agents/routing.py`, but no
-   shipped profile exists in this base. Its profile (nimble-lantern-37.1, completed)
-   is still on its delivery branch.
-10. **Stale code text.**
+   shipped profile exists in this base. The original snapshot named a separate
+   delivery branch; that does not establish availability in origin/dev.
+7. **Stale code text.**
     - The `src/profiles/sync.py` docstring still describes the retired
       `projects/*/agent-types` override pattern.
     - `src/vault.py` keeps a "three defaults" docstring and a twelve-class ladder comment.
     - `src/vault.py` keeps the legacy `ensure_claude_*` profile helpers.
 
-## 6. Planned work
+8. **Disabled-preference error gives a nonexistent command.**
+   `validate_route_preference` in `src/commands/routing_commands.py` suggests
+   `aq agent profile set <id> enabled true`. No such command exists, and
+   `aq agent edit-profile` has no `--enabled` flag. Operators must currently
+   edit the vault profile's `enabled` setting; the diagnostic needs repair.
 
-No routing-owned epic is open. These open items change this system or depend on it. Task
-states were re-queried on 2026-10-20 just before writing.
+## 6. Planned work (2026-10-20 snapshot)
+
+At the time of the original snapshot, no routing-owned epic was open. The
+items below were recorded as changing this system or depending on it; their
+states were queried on 2026-10-20 and have not been refreshed by this audit.
 
 | Item | State | What it changes |
 |---|---|---|

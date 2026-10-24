@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/commands/contracts/promote.py::register_promote_contracts": {
+      "reason": "Registers the promotion intent request, approval, cancellation and cached-read contracts through the integration operational contract adapter."
+    }
+  }
+}

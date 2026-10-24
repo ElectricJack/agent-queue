@@ -138,9 +138,11 @@ Ordinary recompilation, restart, and disable/re-enable preserve notification sta
    migrate the operator database or manage its daemon. Unsupported feature pins
    make only affected activations unready.
 3. Enumerate artifacts affected by intentional command/schema/source changes.
-   Rebuild only those pins, inspect semantic diffs, update bundle manifest digests
-   and copy reviewed fixtures to `src/prompts/reviewed_playbooks/<id>/`. Regenerate
-   schemas and SDKs from source; never hand-edit clients or globally refresh an
+   Run `python scripts/rebuild-reviewed-playbook-artifacts.py <id>` for each
+   affected bundle and inspect its semantic diff. The command updates fixture
+   manifests, recorded inputs and shipped copies; no manual digest or copy step is
+   needed. `scripts/generate-recorded-artifacts.py` projects approved inputs unchanged.
+   Regenerate schemas and SDKs from source; never hand-edit clients or globally refresh an
    installed playbook on startup. A recorded bundle is not acceptance evidence.
 4. Shipped profiles and skills are write-if-absent. Operator drift checks are
    `aq doctor --check profiles.system_drift` and `aq doctor --check skills.installed_drift`.
@@ -162,8 +164,9 @@ performs it. Before importing, the operator checks four things:
 
 * **Schema and code.** `aq db current` reports head and the daemon runs the code
   that shipped these bundles.
-* **Playbook flags.** `playbooks.v2_api` and `playbooks.v2_activation_writes`
-  are on. Import and activation both refuse while writes are off.
+* **Playbook switch.** `playbooks.enabled` is true. Import and activation
+  refuse while it is off. The former `v2_api` and `v2_activation_writes` flags
+  are no longer configuration fields.
 * **Private-value key.** The watch calls a generated command, so the
   `generated_commands_v1` feature needs a ready private-value key:
   * A base64-encoded 32-byte key lives in the protected daemon `.env` (mode 0600).
@@ -174,7 +177,8 @@ performs it. Before importing, the operator checks four things:
   `aq install` provisions a key for unconfigured storage. Two checks report
   readiness: `/ready` `checks.playbook_private_value_key` and
   `aq doctor --check playbooks.private_value_key`. A missing key leaves the
-  activation unready; the daemon never falls back to plaintext.
+  daemon unready for protected execution; operations refuse rather than falling
+  back to plaintext.
 * **One policy.** Choose `stuck-task-watch` (no reminder) or
   `stuck-task-watch-reminder` (repeats after 86,400 s). Import only the one you
   intend to run.

@@ -140,6 +140,25 @@ async def observe(reconciler, now=None):
     return live, now
 
 
+@pytest.mark.parametrize("desired_state", ["stopped", "running"])
+async def test_deleted_profile_retries_guarded_stop_of_a_busy_pool(
+    db, reconciler, provider, desired_state,
+):
+    sid = await held_pool_session(db)
+    await provider.start(SessionSpec(
+        session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+    ))
+    await db.update_session(sid, desired_state=desired_state)
+    await db.delete_profile("worker")
+
+    row = await db.get_session(sid)
+    await reconciler._step_drain_ack([row], time.time())
+
+    assert (await db.get_session(sid)).state == "stopped"
+    task = await db.get_task("t1")
+    assert (task.status, task.assigned_agent_id, task.profile_id) == (TaskStatus.READY, None, None)
+
+
 class TestPrepareTimeout:
     async def test_stuck_preparing_is_released(self, db, reconciler):
         sid = await held_pool_session(db, phase="preparing", phase_at=time.time() - 1000)

@@ -4,6 +4,12 @@ Filed through the AQ CLI on 2026-09-22 in project `agent-queue` for [issue #615]
 
 Design: [GitHub access specification](../../specs/github-access.md). Execution snapshot: `projects/agent-queue/specs/github-access-615.md` in the AQ vault. The snapshot remains a draft because these tasks were filed directly; approving it through spec ingest would risk creating duplicate work.
 
+**Historical filing index.** Issue #615 completed on 2026-09-23. See the
+[final acceptance/disposition](../../gates/github-access-615.md#final-app-only-acceptance-and-615-disposition-2026-09-23-utc)
+and [App-only rerun](../../gates/github-access-615-app-only-2026-09-23.md).
+The dependency and task tables below record the original filing, not pending
+work. The gate records preserve the limits of live coverage and follow-up findings.
+
 ## Dependency chain
 
 `smart-beacon → sharp-stone → brisk-horizon → clear-meadow → fair-bridge`

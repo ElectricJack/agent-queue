@@ -108,6 +108,7 @@ class PerfRegistry:
         self._query = new_hist()
         self._slow_queries = 0
         self._pool_timeouts = 0
+        self._operations: dict[str, dict[str, Any]] = {}
 
     # -- label bounding -------------------------------------------------------
 
@@ -203,6 +204,29 @@ class PerfRegistry:
 
     # -- snapshot -----------------------------------------------------------------
 
+    @_never_raises
+    def operation_started(self, label: str) -> str | None:
+        if not self.enabled:
+            return None
+        if label not in self._operations and len(self._operations) >= ROUTE_LIMIT:
+            label = OVERFLOW_LABEL
+        entry = self._operations.get(label)
+        if entry is None:
+            entry = self._operations[label] = _operation_entry()
+        entry["in_flight"] += 1
+        entry["peak_in_flight"] = max(entry["peak_in_flight"], entry["in_flight"])
+        return label
+
+    @_never_raises
+    def operation_finished(self, label: str, ms: float, outcome: str) -> None:
+        entry = self._operations.get(label)
+        if entry is None:
+            return
+        entry["in_flight"] = max(0, entry["in_flight"] - 1)
+        if self.enabled:
+            observe(entry["latency"], _ms(ms))
+            entry["outcomes"][outcome] = entry["outcomes"].get(outcome, 0) + 1
+
     def snapshot(self) -> dict[str, Any]:
         """The ``loop``/``api``/``db`` fragments since the last snapshot.
 
@@ -225,6 +249,7 @@ class PerfRegistry:
                         slow_queries=self._slow_queries, pool_timeouts=self._pool_timeouts
                     ),
                 },
+                "operations": self._operations,
             }
             self._loop = new_hist()
             self._api_all = new_hist()
@@ -236,7 +261,66 @@ class PerfRegistry:
             self._pool_wait = new_hist()
             self._query = new_hist()
             self._slow_queries = self._pool_timeouts = 0
+            self._operations = {
+                label: _operation_entry(entry["in_flight"])
+                for label, entry in self._operations.items() if entry["in_flight"]
+            }
         return out
+
+
+def _operation_entry(in_flight: int = 0) -> dict[str, Any]:
+    return {"latency": new_hist(), "outcomes": new_sum(),
+            "in_flight": in_flight, "peak_in_flight": in_flight}
+
+
+@contextlib.contextmanager
+def operation_timing(label: str):
+    """Observe a fixed operation name, never arguments, output or identifiers.
+
+    Completion is a return, not proof that a domain-specific result passed.
+    The caller still owns all cancellation and subprocess cleanup semantics.
+    """
+    registry = perf_registry()
+    key = registry.operation_started(label)
+    started = time.perf_counter()
+    outcome = "completed"
+    try:
+        yield
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    except TimeoutError:
+        outcome = "timeout"
+        raise
+    except BaseException:
+        outcome = "error"
+        raise
+    finally:
+        if key is not None:
+            elapsed = (time.perf_counter() - started) * 1000
+            registry.operation_finished(key, elapsed, outcome)
+            if registry.enabled and elapsed >= 1000:
+                try:
+                    from src.logging_config import CorrelationContext
+
+                    with CorrelationContext(
+                        operation=key, duration_ms=round(elapsed, 3), outcome=outcome,
+                    ):
+                        logger.warning("operation timing")
+                except Exception:
+                    pass  # diagnostics must preserve the operation's result
+
+
+def timed_operation(label):
+    """Time an async operation; callable labels must return bounded safe names."""
+    def decorate(function):
+        @functools.wraps(function)
+        async def wrapped(*args, **kwargs):
+            name = label(*args, **kwargs) if callable(label) else label
+            with operation_timing(name):
+                return await function(*args, **kwargs)
+        return wrapped
+    return decorate
 
 
 class LoopLagProbe:

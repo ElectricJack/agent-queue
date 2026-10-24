@@ -1,0 +1,81 @@
+{
+  "shared": {
+    "src/wait_runtime/resume.py::ResumeTransaction._reserve": {
+      "landing_span": [
+        83,
+        149
+      ],
+      "reason": "Locked resume admission and reservation extracted from the charged reserve wrapper; both remain charged within the approved footprint."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.bind_launch": {
+      "landing_span": [
+        229,
+        266
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.dispatch": {
+      "landing_span": [
+        177,
+        228
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.failed": {
+      "landing_span": [
+        267,
+        335
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.fresh_workspace": {
+      "landing_span": [
+        108,
+        176
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.recovery_event": {
+      "landing_span": [
+        336,
+        374
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.reserve": {
+      "landing_span": [
+        45,
+        107
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::import from src.database.queries.continuation_queries import wait_outcome_envelope": {
+      "landing_span": [
+        10,
+        11
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::import from src.wait_runtime.hibernate import locked_suspension": {
+      "landing_span": [
+        19,
+        19
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::import from src.waits.mail import held_messages": {
+      "landing_span": [
+        20,
+        20
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/resume.py::verify_saved_branch": {
+      "landing_span": [
+        22,
+        36
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}

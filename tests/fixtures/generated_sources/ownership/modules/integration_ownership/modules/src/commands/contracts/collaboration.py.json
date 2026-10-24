@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/collaboration.py::register_collaboration_contracts": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

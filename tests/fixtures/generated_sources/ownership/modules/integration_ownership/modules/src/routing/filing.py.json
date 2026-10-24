@@ -1,0 +1,12 @@
+{
+  "generic_dependencies": {
+    "src/routing/filing.py::GUARDED_COMMANDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/filing.py::REFUSED_ROUTING_ARGS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/filing.py::ROUTING_CHOICE_FORBIDDEN": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/filing.py::choice_forbidden": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/filing.py::graph_route_refusal": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/filing.py::refused_spec_keys": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/filing.py::routing_choice_refusal": "Generic task filing provider/profile choice policy; no integration delivery or Git authority.",
+    "src/routing/filing.py::without_inert_choices": "Generic task filing argument normalization; no integration delivery or Git authority."
+  }
+}

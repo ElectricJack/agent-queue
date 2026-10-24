@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/controls.py::IntegrationControlService.eject::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1409,
+      "owner": "IntegrationControlService.eject",
+      "owner_fingerprint": "1eb17429cf7e3b216b91bae63e040ce3354b19c38066b93b82bbef3f6ac80d76",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/controls.py::IntegrationControlService.eject::b67871c23227990c50463f1b3621700239a4eb204c61e89e1ea0d93e917cb124": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1460,
+      "owner": "IntegrationControlService.eject",
+      "owner_fingerprint": "1eb17429cf7e3b216b91bae63e040ce3354b19c38066b93b82bbef3f6ac80d76",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

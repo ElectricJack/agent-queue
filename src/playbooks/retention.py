@@ -118,7 +118,7 @@ class ArtifactRetentionSweeper:
         self._artifacts_dir = Path(compiled_root) / "artifacts"
         self._layouts_dir = Path(compiled_root) / "layouts"
 
-    async def sweep(self, now: float | None = None) -> dict[str, int]:
+    async def sweep(self, now: float | None = None, *, collect_runs=True) -> dict[str, int]:
         now = time.time() if now is None else now
         counts = dict.fromkeys(CATEGORIES, 0)
         pending_events = await self._db.purge_pending_events(
@@ -132,8 +132,9 @@ class ArtifactRetentionSweeper:
         # and giving receipts a longer life than the run they belong to would
         # be meaningless because collecting the run deletes them anyway.
         run_horizon = now - self._config.v2_receipt_retention_days * _DAY_SECONDS
-        counts["receipts"] = await self._db.purge_receipts(run_horizon)
-        counts["runs"] = await self._db.purge_runs(run_horizon)
+        if collect_runs:
+            counts["receipts"] = await self._db.purge_receipts(run_horizon)
+            counts["runs"] = await self._db.purge_runs(run_horizon)
         collected = await self._db.collect_playbook_artifacts(
             now - self._config.v2_artifact_retention_days * _DAY_SECONDS,
             min_versions=self._config.v2_artifact_min_versions,

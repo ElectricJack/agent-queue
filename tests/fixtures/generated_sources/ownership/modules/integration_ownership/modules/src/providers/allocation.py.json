@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/providers/allocation.py::INTENT_TASK_STATUSES['READY']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

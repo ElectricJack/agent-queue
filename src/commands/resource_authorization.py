@@ -10,7 +10,7 @@ from __future__ import annotations
 # These names operate on installation-wide state, even if they happen to accept
 # project_id as a display filter. A filter is not proof of scoped execution.
 SYSTEM_COMMANDS = frozenset("""
-archive_settings claude_usage create_agent create_profile delete_agent delete_profile
+operational_retention archive_settings claude_usage create_agent create_profile delete_agent delete_profile
 edit_agent edit_profile export_profile get_config get_config_schema
 get_github_auth_status get_profile get_status import_profile install_profile
 list_github_owners list_intelligence_classes list_profiles list_project_roots
@@ -23,7 +23,7 @@ plugin_disable plugin_enable plugin_info plugin_install plugin_list plugin_promp
 plugin_reload plugin_remove plugin_reset_prompts plugin_update policy_apply policy_diff
 policy_export doctor doctor_run observation_snapshot_cleanup db_preflight_hierarchy digest_facts digest_post digest_preview
 digest_status discord_purge_channel read_logs scan_stub_staleness vault_rebuild_index
-list_projects list_active_tasks_all_projects orchestrator_control pool_scale pool_rename
+list_projects list_active_tasks_all_projects orchestrator_control pool_scale pool_rename pool_delete
 pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
 provider_recheck provider_set_state provider_status provider_held_tasks
 reconcile_agent_cron reconcile_agent_waits reconcile_collaborations cron_delivery_begin
@@ -38,7 +38,8 @@ playbook_delete playbook_artifacts get_playbook_source update_playbook_source
 set_playbook_enabled playbook_graph_layout_save playbook_v2_graph playbook_graph_view
 show_playbook_graph playbook_artifact_diff
 batch_reconcile gate_reopen playbook_source_resync repair_repository_checkout
-repair_workspace_checkout spec_ingest_legacy_inventory spec_ingest_reconcile workspace_cutover
+repair_workspace_checkout spec_ingest_legacy_inventory spec_ingest_legacy_adopt
+spec_ingest_reconcile workspace_cutover
 run_command shutdown restart_daemon update_and_restart
 """.split())
 
@@ -74,7 +75,7 @@ inspect_playbook_run list_archived list_mcp_servers list_workflows list_workspac
 message_inbox message_list message_reply message_status pause_project pause_task phase_create
 phase_list playbook_activate playbook_run_overlay pool_status pr_merge project_doctor project_ready
 provide_input provider_reroute_undo question_answer question_escalate question_list release_project_constraint
-release_workspace remove_dependency remove_task remove_workspace reopen_with_feedback
+release_workspace rebind_workspace remove_dependency remove_task remove_workspace reopen_with_feedback
 reparent_task restart_task resume_playbook resume_project resume_task review_attachment_add
 review_attachment_list review_comment review_decide review_delegate review_dispatch
 review_import_edits review_list review_reopen review_show review_submit review_withdraw
@@ -154,6 +155,8 @@ AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_i
 
 
 def resource_requirements(name: str) -> tuple[str, ...]:
+    if name == "object_checkpoint_read":
+        return ("held_session_or_project_playbook_invocation",)
     if name == "playbook_script_run":
         return ("pinned_script_invocation",)
     if name in STATE_COMMANDS:
@@ -238,11 +241,11 @@ async def authorize_resources(
         "promote_approve", "operator_execute", "operator_preflight",
     }:
         return deny("unauthorized")
-    if command in SESSION_COMMANDS | HELD_COMMANDS and principal.kind is PrincipalKind.PLAYBOOK:
+    if (command in SESSION_COMMANDS | HELD_COMMANDS and command != "object_checkpoint_read"
+            and principal.kind is PrincipalKind.PLAYBOOK):
         return deny("session_required")
-    # Typed adapters already implement their domain's ownership language and
-    # outcome protocol. In particular, stale repair inputs, tagged message
-    # recipients and operator preflights must reach those independent gates.
+    # Typed adapters enforce their own ownership and outcome protocols, including stale repair
+    # inputs, tagged message recipients and operator preflights.
     if not generated:
         from src.commands.contracts import CONTRACTS
 

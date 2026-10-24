@@ -1,0 +1,40 @@
+{
+  "generic_dependencies": {
+    "src/doctor/pool_checks.py::pool_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/doctor/pool_checks.py::_find_stranded_feature_branches": {
+      "baseline_span": [
+        695,
+        786
+      ],
+      "landing_span": [
+        695,
+        786
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/doctor/pool_checks.py::_project_checkouts": {
+      "baseline_span": [
+        673,
+        694
+      ],
+      "landing_span": [
+        673,
+        694
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/doctor/pool_checks.py::_audit::64e8ba276a61333a6a1c28c7c10a1412193ed18b439653f2b97d4cb1aae74198": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 379,
+      "owner": "_audit",
+      "owner_fingerprint": "880f3a246dc8d23f832e606f27e3d5176042c9b69cd33c9d14625c3f12286032",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/wait_runtime/legacy_pass.py::receipt": "Verified-wait migration provenance and read-only source projections. Owns no integration delivery lifecycle or Git ref mutation; canonical integration sources remain independently charged."
+  }
+}

@@ -111,11 +111,11 @@
         }
       }
     },
-    "/plans/{task_id}": {
+    "/api/plans/{task_id}": {
       "get": {
-        "summary": "Plan Viewer",
-        "description": "Serve plan content as an HTML page.",
-        "operationId": "plan_viewer_plans__task_id__get",
+        "summary": "Plan Content",
+        "description": "Return plan markdown as data for the standalone dashboard viewer.",
+        "operationId": "getPlan",
         "parameters": [
           {
             "name": "task_id",
@@ -132,7 +132,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PlanContentResponse"
+                }
               }
             }
           },
@@ -11671,6 +11673,53 @@
         }
       }
     },
+    "/api/pool/delete": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+        "description": "Delete a global worker pool, stop its sessions through guarded teardown and return routed tasks to their router. Running work is interrupted. Retires the profile so install/update cannot recreate it. Backs `aq pool delete`.",
+        "operationId": "pool_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolDeleteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/pool/rename": {
       "post": {
         "tags": [
@@ -12933,6 +12982,53 @@
         }
       }
     },
+    "/api/project/rebind-workspace": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "description": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "operationId": "rebind_workspace",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RebindWorkspaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RebindWorkspaceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/release-constraint": {
       "post": {
         "tags": [
@@ -12985,8 +13081,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
-        "description": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
+        "summary": "Release a stuck workspace after checking claim, session, integration and job ownership.",
+        "description": "Release a stuck workspace after checking claim, session, integration and job ownership.",
         "operationId": "release_workspace",
         "requestBody": {
           "content": {
@@ -16385,8 +16481,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
-        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
         "operationId": "doctor",
         "requestBody": {
           "content": {
@@ -17206,6 +17302,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListPromptsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/operational-retention": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Archive and collect one bounded batch of old operational records.",
+        "description": "Archive and collect one bounded batch of old operational records.",
+        "operationId": "operational_retention",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationalRetentionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationalRetentionResponse"
                 }
               }
             }
@@ -18408,8 +18551,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
-        "description": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "summary": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "description": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
         "operationId": "update_and_restart",
         "requestBody": {
           "content": {
@@ -20365,8 +20508,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
-        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
+        "summary": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
+        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
         "operationId": "reparent_task",
         "requestBody": {
           "content": {
@@ -20412,8 +20555,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
-        "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+        "summary": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
+        "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
         "operationId": "restart_task",
         "requestBody": {
           "content": {
@@ -20620,6 +20763,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SpecApproveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/spec-ingest-legacy-adopt": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "operationId": "spec_ingest_legacy_adopt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecIngestLegacyAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecIngestLegacyAdoptResponse"
                 }
               }
             }
@@ -21744,6 +21934,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/split": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        "description": "Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        "operationId": "task_split",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSplitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSplitResponse"
                 }
               }
             }
@@ -35398,6 +35635,18 @@
             "title": "Fix",
             "description": "Apply fixes for failing fixable checks, then re-run them."
           },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": "Leave legacy spec proposals on their existing human gate."
+          },
           "checks": {
             "anyOf": [
               {
@@ -36319,7 +36568,7 @@
               }
             ],
             "title": "Hierarchical Integration Mode",
-            "description": "LOCAL-only integration mode for new reconciler subjects."
+            "description": "LOCAL-only integration delivery mode for the Git-first train."
           },
           "promotion_flow": {
             "anyOf": [
@@ -46350,7 +46599,8 @@
               "disabled",
               "observe",
               "hierarchy",
-              "train"
+              "train",
+              "development"
             ],
             "title": "Hierarchical Integration Mode"
           },
@@ -54856,6 +55106,7 @@
                 "counters": {},
                 "pool": {}
               },
+              "operations": {},
               "host": {
                 "psi": {},
                 "stale": false,
@@ -56655,6 +56906,119 @@
         ],
         "title": "OnboardingErrorInfo"
       },
+      "OperationPerf": {
+        "properties": {
+          "latency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcomes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Outcomes",
+            "default": {}
+          },
+          "in_flight": {
+            "type": "number",
+            "title": "In Flight",
+            "default": 0
+          },
+          "peak_in_flight": {
+            "type": "number",
+            "title": "Peak In Flight",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "OperationPerf",
+        "description": "Bounded operation timing; coarser tiers average concurrency gauges."
+      },
+      "OperationalRetentionRequest": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Count eligible records without archiving or deletion.",
+            "default": false
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size",
+            "description": "",
+            "default": 1000
+          }
+        },
+        "type": "object",
+        "title": "OperationalRetentionRequest"
+      },
+      "OperationalRetentionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "already_running"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "OperationalRetentionResponse",
+        "description": "A completed bounded retention pass, overlap acknowledgement, or refusal."
+      },
       "OperatorDecisionDTO": {
         "properties": {
           "step_id": {
@@ -57695,6 +58059,14 @@
               "pool": {}
             }
           },
+          "operations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OperationPerf"
+            },
+            "type": "object",
+            "title": "Operations",
+            "default": {}
+          },
           "host": {
             "$ref": "#/components/schemas/HostPerf",
             "default": {
@@ -58058,6 +58430,24 @@
           "description"
         ],
         "title": "Placeholder"
+      },
+      "PlanContentResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "content"
+        ],
+        "title": "PlanContentResponse"
       },
       "PlaybookActivateRequest": {
         "properties": {
@@ -61398,6 +61788,116 @@
           "review_id"
         ],
         "title": "PolicyReviewReceipt"
+      },
+      "PoolDeleteRequest": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Pool profile ID to delete."
+          },
+          "depth": {
+            "type": "string",
+            "title": "Depth",
+            "description": "profile removes profile.md and preserves other vault content; directory removes the entire profile directory. Both retire the pool.",
+            "default": "profile"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Optional retirement reason."
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id"
+        ],
+        "title": "PoolDeleteRequest"
+      },
+      "PoolDeleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted"
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
+          },
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PoolDeleteResponse"
       },
       "PoolGauges": {
         "properties": {
@@ -68778,6 +69278,60 @@
         "title": "ReadyTask",
         "description": "One frontier row.\n\nTwo shapes share this model: the default (``task_id``, ``title``,\n``priority``) and ``brief: true`` (``id``, ``title``, ``status``,\n``priority``, ``is_blocked``, ``profile_id``).  Both keys are optional so\neither projection validates."
       },
+      "RebindWorkspaceRequest": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id",
+            "description": "Workspace to re-bind"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task holding the active claim"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Session holding that exact claim"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id",
+          "task_id",
+          "session_id"
+        ],
+        "title": "RebindWorkspaceRequest"
+      },
+      "RebindWorkspaceResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "workspace_id",
+          "task_id",
+          "session_id"
+        ],
+        "title": "RebindWorkspaceResponse"
+      },
       "ReceiptDTO": {
         "properties": {
           "receipt_id": {
@@ -69850,6 +70404,30 @@
             "type": "string",
             "title": "Workspace Id",
             "description": "Workspace ID to release"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": "Override only the exact named task protection"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Exact protected task; required with force"
           }
         },
         "type": "object",
@@ -70746,6 +71324,30 @@
             "title": "Root",
             "description": "",
             "default": false
+          },
+          "expected_old_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Old Generation",
+            "description": "Hierarchical projects: the old parent's integration generation."
+          },
+          "expected_new_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected New Generation",
+            "description": "Hierarchical projects: the new parent's integration generation."
           }
         },
         "type": "object",
@@ -71615,6 +72217,30 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task ID to restart"
+          },
+          "override_hold": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Hold",
+            "description": "Explicitly release the recovery hold (operator/global supervisor only)"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Required reason for overriding a recovery hold"
           }
         },
         "type": "object",
@@ -76929,6 +77555,225 @@
           "snapshot_id"
         ],
         "title": "SpecApproveResponse"
+      },
+      "SpecIngestLegacyAdoptRequest": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id",
+            "description": ""
+          },
+          "packet_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packet Sha256",
+            "description": ""
+          },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "SpecIngestLegacyAdoptRequest"
+      },
+      "SpecIngestLegacyAdoptResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "structure_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Revision"
+          },
+          "structure_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Digest"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
+          },
+          "lineage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage"
+          },
+          "release_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Receipt"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
+          },
+          "left_gated": {
+            "type": "boolean",
+            "title": "Left Gated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "SpecIngestLegacyAdoptResponse",
+        "description": "Adoption replays a held batch receipt or retains the proposal's human gate."
       },
       "SpecIngestLegacyInventoryRequest": {
         "properties": {
@@ -83031,6 +83876,149 @@
         ],
         "title": "TaskShowResponse",
         "description": "``task_show`` \u2014 ``get_task`` plus the composed sections.\n\n``claimed_by`` is ``None`` when the task is unclaimed."
+      },
+      "TaskSplitRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "retained_acceptance": {
+            "items": {},
+            "type": "array",
+            "title": "Retained Acceptance",
+            "description": "Exact source criteria retained; together with moved.acceptance, an exhaustive partition."
+          },
+          "moved": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Moved",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "expected_generation": {
+            "type": "integer",
+            "title": "Expected Generation",
+            "description": "Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "retained_acceptance",
+          "moved",
+          "reason",
+          "expected_generation"
+        ],
+        "title": "TaskSplitRequest"
+      },
+      "TaskSplitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "moved_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moved Task Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "safe_continuation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safe Continuation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "TaskSplitResponse"
       },
       "TaskStatusSummary": {
         "properties": {

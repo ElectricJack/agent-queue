@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from src.claim_file import read_claim_file, remove_claim_file_if_matches
-from src.models import SessionRecord, TaskStatus
+from src.models import ProjectStatus, SessionRecord, TaskStatus
 from src.pool_claims import (
     CLAIM_FAILURE_DRAIN_REASON,
     MAX_IDENTICAL_CLAIM_FAILURES,
@@ -345,6 +345,7 @@ class SessionReconciler:
             self._step_flock_audit,
             self._step_claim_refusals,
             self._step_drain_ack,
+            self._step_stopped_idle_workspaces,
             self._step_prepare_timeout,
             self._step_exits,
             self._step_abandoned_pool_claim_loop,
@@ -359,6 +360,22 @@ class SessionReconciler:
                 await step(live, now)
             except Exception:
                 logger.exception("Session reconciler step %s failed", step.__name__)
+
+    async def _step_stopped_idle_workspaces(self, live, now: float) -> None:
+        """Recover taskless stopped pool locks, including history across restarts."""
+        if self.orchestrator is None:
+            return
+        from src.workspace_ownership import (
+            release_stopped_idle_workspace, stopped_idle_workspace_sessions,
+        )
+
+        for row in await stopped_idle_workspace_sessions(self.db):
+            if row.task_id or row.claim_phase or not row.agent_id:
+                continue
+            try:
+                await release_stopped_idle_workspace(self.orchestrator, row)
+            except Exception:
+                logger.warning("Stopped pool workspace proof unavailable: %s", row.id, exc_info=True)
 
     async def _step_flock_audit(self, live, now: float) -> None:
         """Report hidden executions at least every thirty seconds."""
@@ -546,8 +563,20 @@ class SessionReconciler:
         with the task still open is a *premature* drain and gets one nudge
         before being treated as an exit.
         """
+        profiles = {}
         for row in live:
             if row.lifecycle == "pool":
+                if row.profile_id not in profiles:
+                    profiles[row.profile_id] = await self.db.get_profile(row.profile_id)
+                if profiles[row.profile_id] is None:
+                    # A launch already in progress may publish its row after
+                    # deletion's fleet snapshot. It has no profile authority
+                    # to close a claim; retry a guarded stop regardless of intent.
+                    if self.orchestrator is not None:
+                        await self.orchestrator._terminate_pool_session(
+                            row, reason="profile_deleted"
+                        )
+                    continue
                 # Pool sessions never send a provider-side drain ack -- an
                 # idle one marked stopped or sleeping is torn down the pool
                 # way. A task pointer left from a released claim can name a
@@ -2709,7 +2738,15 @@ class SessionReconciler:
                 or row.name != "n-supervisor--" + row.project_id):
             return False
         project = await self.db.get_project(row.project_id)
-        return project is not None and not project.supervisor_enabled
+        if project is None:
+            return False
+        # A paused project's supervisor is off for the same reasons its
+        # disabled supervisor is off: the drain step stops it gracefully and the
+        # up-convergence guard refuses to respawn it each tick. Pausing never
+        # touches ``supervisor_enabled`` so its prior state survives for resume.
+        if project.status == ProjectStatus.PAUSED:
+            return True
+        return not project.supervisor_enabled
 
     async def _step_disabled_project_supervisors(self, live, now: float) -> None:
         """Drain opt-out supervisors only after their current transcript turn."""
@@ -2761,10 +2798,14 @@ class SessionReconciler:
                 except Exception:
                     logger.warning("disabled supervisor stop failed: %s", fresh.name, exc_info=True)
                     continue
+                project = await self.db.get_project(fresh.project_id)
+                reason = ("project_paused"
+                          if project is not None and project.status == ProjectStatus.PAUSED
+                          else "project_supervisor_disabled")
                 await self.db.update_session_instance(
                     fresh.id, fresh.instance_token, require_desired_state="stopped",
                     state="stopped", desired_state="stopped",
-                    end_reason="project_supervisor_disabled", ended_at=now,
+                    end_reason=reason, ended_at=now,
                 )
 
     def _idle_stop_grace(self) -> float:

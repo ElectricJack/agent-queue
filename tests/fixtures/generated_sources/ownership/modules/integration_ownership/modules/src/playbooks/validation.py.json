@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/validation.py::ContractLookup": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/validation.py::Diagnostic": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/validation.py::EventSchemaLookup": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/validation.py::ProfileLookup": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/validation.py::validate_definition": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

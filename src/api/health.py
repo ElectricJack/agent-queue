@@ -6,7 +6,6 @@ Consolidates the functionality from the old raw TCP health server
 
 from __future__ import annotations
 
-import html as _html
 import logging
 import re as _re
 import time
@@ -14,9 +13,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from src.api import dependencies as deps
+from src.api.models.plans import PlanContentResponse
 
 logger = logging.getLogger(__name__)
 
@@ -111,73 +111,17 @@ async def ready() -> JSONResponse:
     return JSONResponse(body, status_code=200 if is_ready else 503)
 
 
-@router.get("/plans/{task_id}", response_model=None)
-async def plan_viewer(task_id: str) -> HTMLResponse | JSONResponse:
-    """Serve plan content as an HTML page."""
+@router.get("/api/plans/{task_id}", response_model=PlanContentResponse, operation_id="getPlan")
+async def plan_content(task_id: str) -> PlanContentResponse | JSONResponse:
+    """Return plan markdown as data for the standalone dashboard viewer."""
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return JSONResponse({"error": "invalid task id"}, status_code=400)
+
     if deps._plan_content_provider is None:
         return JSONResponse({"error": "plan viewer not configured"}, status_code=404)
-
-    if not _TASK_ID_RE.match(task_id):
-        return JSONResponse({"error": "invalid task id"}, status_code=400)
 
     content = await deps._plan_content_provider(task_id)
     if content is None:
         return JSONResponse({"error": "plan not found"}, status_code=404)
 
-    return HTMLResponse(_render_plan_html(task_id, content))
-
-
-def get_plan_url(task_id: str) -> str:
-    """Return the full URL to view a plan for the given task."""
-    base = deps._base_url.rstrip("/") if deps._base_url else "http://localhost:8081"
-    return f"{base}/plans/{task_id}"
-
-
-def _render_plan_html(task_id: str, markdown_content: str) -> str:
-    """Render plan markdown as a simple HTML page.
-
-    Uses a CDN-hosted markdown renderer (marked.js) for rich rendering
-    with a fallback to preformatted text if JS is disabled.
-    """
-    escaped = _html.escape(markdown_content)
-    return f"""\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Plan — {_html.escape(task_id)}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    max-width: 860px; margin: 2rem auto; padding: 0 1rem;
-    color: #e0e0e0; background: #1a1a2e;
-    line-height: 1.6;
-  }}
-  h1, h2, h3 {{ color: #f39c12; }}
-  pre {{ background: #16213e; padding: 1rem; border-radius: 6px; overflow-x: auto; }}
-  code {{ background: #16213e; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }}
-  pre code {{ background: none; padding: 0; }}
-  a {{ color: #3498db; }}
-  hr {{ border: none; border-top: 1px solid #333; }}
-  .task-id {{ font-size: 0.85em; color: #888; }}
-</style>
-</head>
-<body>
-<div class="task-id">Task: {_html.escape(task_id)}</div>
-<div id="content">
-  <noscript><pre>{escaped}</pre></noscript>
-</div>
-<script id="raw-md" type="text/plain">{escaped}</script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script>
-  try {{
-    const md = document.getElementById('raw-md').textContent;
-    document.getElementById('content').innerHTML = marked.parse(md);
-  }} catch(e) {{
-    document.getElementById('content').innerHTML = '<pre>' +
-      document.getElementById('raw-md').textContent + '</pre>';
-  }}
-</script>
-</body>
-</html>"""
+    return PlanContentResponse(task_id=task_id, content=content)

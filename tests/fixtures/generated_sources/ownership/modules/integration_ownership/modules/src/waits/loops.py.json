@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/waits/loops.py::progress": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}
