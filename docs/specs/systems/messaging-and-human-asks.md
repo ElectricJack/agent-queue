@@ -123,8 +123,9 @@ Mail for a project supervisor that is disabled is rerouted to
 - `profile:<id>` is a broadcast inbox read by `aq message inbox` or
   `aq prime`. Nobody is woken for it. `profile:supervisor` is the common
   case.
-- `user:<id>` is a human. These rows go out through the chat platform and
-  are marked `via=platform`.
+- `user:dashboard` is the human inbox, marked `via=platform`. Ordinary
+  `message_send` refuses other `user:` destinations before writing a row,
+  with `unsupported_user_destination` and the supported Discord command.
 
 ### 2.3 Waking a recipient: the delivery service
 
@@ -332,6 +333,23 @@ allowlist.
    `outbound_deliveries`. For channel and DM conversations, the Discord reply
    reference is the answered input's `external_message_id`, including follow-up
    inputs. The conversation's root and destination stay unchanged.
+5. `supervisor_inbox_say` starts a message in an existing active conversation
+   without an `input_id`, including when all earlier inputs are answered.
+   It requires the live project supervisor addressed by the latest ordinary
+   input, a live global supervisor, or the local operator. Project request
+   scope resolves the same latest notice. Conversation preconditions, the
+   configured guild/channel (or opted-in DM), and the entire current audience
+   are checked before persistence and again by the delivery adapter.
+   `(conversation_id, idempotency_key)` identifies a durable `conversation_say`
+   message; its first body and sender win on retry, including after a crash
+   before enqueue. Serialized database quotas allow 10 posts per supervisor
+   and 60 per channel per 600 seconds; replays consume no additional quota.
+   The command returns `delivery_id` and `delivery_dedup_key` for the shared
+   outbox's normal receipt/retry lifecycle. It uses the conversation `reply`
+   delivery action, so a Discord reply to its receipt routes back to the
+   conversation; a new channel message also continues that conversation.
+   Earlier inputs keep their state. Closed or delivery-blocked conversations
+   and thread conversations without a bound thread refuse initiated posts.
 
 `supervisor_conversations` tracks each conversation. On bot `READY`, a
 backfill reads up to 24 hours or 1000 missed messages
