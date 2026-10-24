@@ -405,6 +405,8 @@ _PROCESS_SITES = {
     # Authenticated acquisition, push and credential-free import share this Git-only spawn.
     ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
+    # The generated merge driver invokes only Git's low-level merge-file command.
+    ("src/integration/generated_merge_driver.py", "main", "create_subprocess_exec"): 1,
     # Bounded ccache/sccache statistics read for warm build caches; never an agent.
     ("src/build_cache.py", "cache_counters", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,
