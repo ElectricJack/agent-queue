@@ -60,6 +60,9 @@ def track_graph_lock(conn):
     frame = inspect.currentframe().f_back
     if frame.f_code.co_name == "lock_graph":
         frame = frame.f_back
+    # The metrics decorator must not hide the transaction holder in diagnostics.
+    if frame.f_code is lock_graph.__code__:
+        frame = frame.f_back
     caller = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
     del frame
     conn.info["wait_graph_transaction"] = conn.sync_connection.get_transaction()
