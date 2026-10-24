@@ -1,5 +1,68 @@
 # H08-OPS bounded preflight and operator handoff
 
+## 2026-10-24 cutover report and remaining observation
+
+Claim epoch 15 read the operator's task comment
+`comment-abbc826aec474fc9b4258214201a0f8c`, authored by supervisor-global
+`ceee42f2-699b-47b7-a02b-e3c7094e01fa` at epoch `1792858821.9440618`.
+The following are **attributed operator observations**, not a fresh worker
+inspection of production. They supersede the missing-cutover status in the
+historical October 19 packet below; they do not establish final acceptance.
+
+| Field | Reported evidence |
+|---|---|
+| Authority | Jack's instruction to switch the Discord ask channel, reported by supervisor-global |
+| Destination | `discord:1231634668135120906:1477498117430579240` |
+| Mode sequence | `shadow` generation 1 → `dashboard` 2 → `transferring` 3 → `channel` 4 |
+| Transfer controls | Operator reports legacy controls disabled and aliases redirected |
+| Reset | Applied after another preview; reported discarded counts: 98 document reviews, 284 asks, 252 escalations, 464 deliveries; this is not an exhaustive inventory |
+| Backup | Operator-reported `~/.agent-queue/backups/pre-ask-cutover-1792858740.sql.gz`; contents and recoverability not inspected |
+| Evidence hashes | Reset prefix `c0b098…`; inventory prefix `1ddc3f3b…`; full hashes and command receipts not supplied |
+| First switch | Reported epoch `1792858812`, converting to `2026-10-24T16:20:12Z` |
+| Compatibility deadline | Reported epoch `1795450812`, converting to `2026-11-23T16:20:12Z` |
+
+The two epochs differ by exactly 2,592,000 seconds (30 days). This arithmetic
+checks the reported interval only; it does not prove elapsed time or behavior.
+The same operator comment says approximately `09:20Z`, which conflicts with the
+switch epoch. Preserve that discrepancy until the operator supplies the stored
+`cutover-status` receipt. Do not silently treat local time as UTC or invent an
+earlier observation deadline.
+
+Missing evidence remains: deployed full SHA/time and schema identity, complete
+reset/transfer receipts and hashes, fresh current destination status, bounded
+canonical counts and delivery/unknown-write evidence, and the authorized live
+test-project matrix below. The fresh-start directive supersedes the historical
+per-record reconciliation plan; this packet does not request another reset or
+replay discarded history. Prior worker denials for ask list/reconcile/status and
+direct global-supervisor messaging remain recorded; they were not retried or
+bypassed in this claim. The project supervisor is the accessible coordination
+owner, and supervisor-global owns the live actions.
+
+The observation must occur at or after the verified stored deadline for every
+relevant destination. Record actual post-deadline legacy-input pointer behavior,
+no decision application through retired controls, retained historical links,
+one move notice per binding, canonical ledger/count parity, and zero unresolved
+ownership blockers or explicitly retained unknown evidence accepted by cleanup
+guards. Also finish the authorized matrix and rollback checks. Neither a timer
+notification nor the reported cutover satisfies these conditions; H08-OPS and
+its H09 prerequisite remain incomplete.
+
+Scheduling constraint: at inspected source
+`00547f24457d36d65457969c6cff9598c85fa19a`,
+`src/waits/adapters/timer.py::TimerAdapter.authorise` admits a timer only one
+second to one day ahead. A direct 30-day timer is outside that contract. Request
+an operator-owned schedule with a durable receipt for the verified deadline,
+and use one supported message wait for that owner's response. Do not replace
+this with repeated daily registrations, a shell loop, or a claimed scheduled
+observation without a registration receipt. The wait identity and actual outcome
+belong in the task's durable comments/checkpoint.
+
+Validation of this addendum: Python UTC conversion and interval arithmetic,
+source inspection of the timer bound, and `git diff --check`. No code changed;
+no automated regression suite or live acceptance scenario was run.
+
+## Historical October 19 packet
+
 Task: `vivid-pinnacle-60`, claim epoch 4. Evidence captured on 2026-10-19;
 source verification completed at `2026-10-19T19:39:47Z`.
 
