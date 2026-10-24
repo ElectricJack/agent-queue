@@ -1314,8 +1314,12 @@ class SessionCommandsMixin:
 
         if outcome == "pass":
             response = await self.db.get_task_meta(task.id, "review_response")
-            if response and not await self.db.has_review_response_submission(
-                task.id, response["review_id"], response["revision"]
+            if (
+                response
+                and response.get("task_kind") != "followup"
+                and not await self.db.has_review_response_submission(
+                    task.id, response["review_id"], response["revision"]
+                )
             ):
                 return {
                     "success": False,
