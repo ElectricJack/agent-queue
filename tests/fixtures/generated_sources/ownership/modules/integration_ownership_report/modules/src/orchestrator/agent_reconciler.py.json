@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/orchestrator/agent_reconciler.py::project_live_session_counts": {
+      "fingerprint": "07a9a23df1824acfba900de7ee27a4851b557a28ed655ac445af6c5623a4785e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

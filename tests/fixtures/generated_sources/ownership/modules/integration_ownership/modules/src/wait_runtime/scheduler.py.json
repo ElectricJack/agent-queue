@@ -100,9 +100,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 281,
+      "line": 391,
       "owner": "SchedulerWaitService.deadline_locked",
-      "owner_fingerprint": "a84054d6348ba805dae249dbbaa80e19046888fa8704921427010ca312fe6e41",
+      "owner_fingerprint": "867ec467bcfec5cfbdec320789066ee6eb6fa0374b71a7f417ccdddda49aa0aa",
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     }
   }

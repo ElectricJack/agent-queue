@@ -1,4 +1,14 @@
 {
+  "reconciliation_definitions": {
+    "src/database/queries/claim_queries.py::pool_primary_kind": {
+      "fingerprint": "5a961220c0e28cde688b981edb12c85afa0646b4b47478845e299250c5e43677",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/claim_queries.py::retire_owner_attachments": {
+      "fingerprint": "b8bd18cfb00f392bbd7b72b713bbe82a39af4b01d88a0db0c4ef58ee083215af",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/database/queries/claim_queries.py::CLAIMED_BY_SESSION_KEY": {
       "reason": "The task's own claim record, the only surviving holder proof after a real pool stop clears sessions.task_id (fleet-delta-97)."

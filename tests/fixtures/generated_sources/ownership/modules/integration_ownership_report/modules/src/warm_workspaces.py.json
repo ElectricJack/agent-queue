@@ -1,0 +1,16 @@
+{
+  "reconciliation_definitions": {
+    "src/warm_workspaces.py::WarmWorkspacePool.acquire": {
+      "fingerprint": "594da60d2768d139ef27fa6e042562f05c961585421b7023183132718d5210d4",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/warm_workspaces.py::import from src.jobs.artifacts import atomic_json, read_json": {
+      "fingerprint": "568b9a05cdb236f57597ac641dc97b7af95e411cd4b70bbdb8aa1011cc806e1f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/warm_workspaces.py::primary_store": {
+      "fingerprint": "cfc4b630f6c68addd9edcb923416ab74e5400a1791cdc763ab2c1ced74cfbf6c",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

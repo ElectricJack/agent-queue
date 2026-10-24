@@ -1,5 +1,25 @@
 {
   "generic_dependencies": {
     "src/database/queries/metrics_queries.py::MetricsQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 559,
+      "owner": "MetricsQueryMixin.bump_daemon_start_count",
+      "owner_fingerprint": "eb8308a7b227640b5578cb2cc5f4241cbfef71afb15a061ec0fa4f266e32e352",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b": {
+      "call": "update",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 565,
+      "owner": "MetricsQueryMixin.bump_daemon_start_count",
+      "owner_fingerprint": "eb8308a7b227640b5578cb2cc5f4241cbfef71afb15a061ec0fa4f266e32e352",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    }
   }
 }

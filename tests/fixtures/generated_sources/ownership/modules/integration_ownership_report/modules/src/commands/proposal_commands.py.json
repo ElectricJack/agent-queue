@@ -1,4 +1,18 @@
 {
+  "reconciliation_definitions": {
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._batch_repair_impact": {
+      "fingerprint": "6a648e60becd393b12193c596afe4430d607fa57e70fdc072763f50f6087cd4e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_release": {
+      "fingerprint": "c85df4c409996bc79c064aa77348f708e5645ebd978e7d1b4ff0031f7430e3cf",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/proposal_commands.py::import from src.integration.outbox import enqueue_batch_event, enqueue_integration_event": {
+      "fingerprint": "4b95f33252a51d11d1de0b95fd0e087736f52a4b5cd444ca4b18fc9dc1d2129e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit": {
       "baseline_span": [
