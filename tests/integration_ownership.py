@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2212,
+ 'authorized_owned_delta': 2215,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -991,6 +991,33 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
                                                     'headroom and no new storage category.',
                                           'referenced_decision': 'size-cap-delegation-2026-10-23',
                                           'task_id': 'bright-quest-30'},
+ 'inherited_resume_fairness_composition': {'authorized_engine_delta': 0,
+                                           'authorized_owned_delta': 3,
+                                           'authorized_shared_owned_delta': 3,
+                                           'authorized_table_delta': 0,
+                                           'candidate_revision': '437ff4071ee95be831be7c6206644a29865c26e3',
+                                           'charged_definition': 'src/wait_runtime/resume.py::ResumeTransaction._reserve',
+                                           'decision_message_id': 'msg-54831c3f4f354537bc67b8636b1c522b',
+                                           'operator_decision': '6679052c',
+                                           'previous_measured_engine_lines': 82504,
+                                           'previous_measured_owned_total': 157711,
+                                           'previous_measured_table_count': 45,
+                                           'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1955',
+                                           'reason': 'Exact supervisor-approved +3 inherited '
+                                                     'shared owned lines for the queued resume '
+                                                     'graph-lock acquisition and its two-line '
+                                                     'explanation, hand-landed without '
+                                                     're-recording. Attributed to fleet-zenith-14 '
+                                                     '/ PR 1955, not bright-grove-21.15. PR 1921 '
+                                                     'records the same inherited +3 alongside its '
+                                                     'own +4; count the inherited delta once when '
+                                                     'composing. Preserve original baselines, '
+                                                     'historical grants and ownership '
+                                                     'classifications, with zero remaining '
+                                                     'headroom and no new storage category.',
+                                           'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                           'source_revision': 'ab14a935bc4ca9402fdbd519b651b1847943584d',
+                                           'task_id': 'fleet-zenith-14'},
  'initial_inventory': '/tmp/smart-nexus-83-live-inventory.json',
  'inventory_sha256': '87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416',
  'large_session_prompt_composition': {'authorized_engine_delta': 23,
@@ -1049,7 +1076,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82504,
- 'measured_owned_total': 157711,
+ 'measured_owned_total': 157714,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
