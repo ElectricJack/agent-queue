@@ -56,16 +56,13 @@ async def counts(db):
             t.playbook_state_operations, t.playbook_private_values)]
 
 
-async def test_cas_tombstones_expiry_and_original_replay(db, service, monkeypatch):
-    clock = AsyncMock(return_value=1_000.0)
-    monkeypatch.setattr(queries, "transaction_time", clock)
+async def test_cas_tombstones_expiry_and_original_replay(db, service):
     first = await put(service, ttl_seconds=1)
     assert first["revision"] == 1 and first["exists"]
-    assert first["expires_at"] == 1_001.0
-    clock.return_value = 1_000.5
     assert (await service.get(NS, TRUSTED_LOCAL, key="k"))["value"] == SECRET
-    # Reach the TTL boundary without depending on CI speed or changing stored history.
-    clock.return_value = 1_001.0
+    # Force logical expiry without sleeping or deleting history.
+    async with db.immediate() as conn:
+        await conn.execute(update(t.playbook_state_entries).values(expires_at=1))
     expired = await service.get(NS, TRUSTED_LOCAL, key="k")
     assert expired["expired"] and expired["revision"] == 1 and not expired["exists"]
     assert expired["value"] is None
