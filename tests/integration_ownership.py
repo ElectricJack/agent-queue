@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2222,
+ 'authorized_owned_delta': 2228,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1049,7 +1049,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82504,
- 'measured_owned_total': 157721,
+ 'measured_owned_total': 157727,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1099,6 +1099,27 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9f4d979c54865bdaf06d85c036796f64b803991c',
      'task_id': 'amber-journey-18'},
+ 'wait_scheduler_health_composition': {
+     'authorized_engine_delta': 0,
+     'authorized_owned_delta': 6,
+     'authorized_shared_owned_delta': 6,
+     'authorized_table_delta': 0,
+     'charged_files': {'src/wait_runtime/scheduler.py': 6},
+     'decision_message_id': 'msg-31f797f2167b48bd8230af56f5baaa1e',
+     'dev_source_revision': '286269b134d961c1a13c921ae82aa4db8e580f47',
+     'operator_decision': '6679052c',
+     'previous_measured_engine_lines': 82504,
+     'previous_measured_owned_total': 157721,
+     'previous_measured_table_count': 45,
+     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1963',
+     'reason': 'Exact supervisor-approved +6 shared owned lines for scheduler sync health '
+               'tracking and removal of stale project failure counters. Preserve original '
+               'baselines, historical grants and ownership classifications, with zero '
+               'remaining headroom and no new storage category.',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'source_revision': '8a7897370c06707e4920856754c47fe9ed2846b9',
+     'task_id': 'brisk-impact-45',
+     'thread_id': 'brisk-impact-45-ci-size'},
  'wait_listener_fence_inherited_composition': {'authorized_engine_delta': 0,
       'authorized_owned_delta': 3,
       'authorized_shared_owned_delta': 3,
