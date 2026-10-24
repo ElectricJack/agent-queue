@@ -1919,6 +1919,8 @@ from .supervisor_inbox_history_request_states_type_0_item import SupervisorInbox
 from .supervisor_inbox_history_response import SupervisorInboxHistoryResponse
 from .supervisor_inbox_reply_request import SupervisorInboxReplyRequest
 from .supervisor_inbox_reply_response import SupervisorInboxReplyResponse
+from .supervisor_inbox_say_request import SupervisorInboxSayRequest
+from .supervisor_inbox_say_response import SupervisorInboxSayResponse
 from .supervisor_inbox_status_request import SupervisorInboxStatusRequest
 from .supervisor_inbox_status_response import SupervisorInboxStatusResponse
 from .supervisor_restart_request import SupervisorRestartRequest
@@ -4196,6 +4198,8 @@ __all__ = (
     "SupervisorInboxHistoryResponse",
     "SupervisorInboxReplyRequest",
     "SupervisorInboxReplyResponse",
+    "SupervisorInboxSayRequest",
+    "SupervisorInboxSayResponse",
     "SupervisorInboxStatusRequest",
     "SupervisorInboxStatusResponse",
     "SupervisorRestartRequest",
