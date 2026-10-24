@@ -2312,7 +2312,7 @@
       "src/integration/failure_groups.py": 254,
       "src/integration/finished_owners.py": 443,
       "src/integration/fixer_batches.py": 242,
-      "src/integration/fixer_runtime.py": 529,
+      "src/integration/fixer_runtime.py": 552,
       "src/integration/fixers.py": 520,
       "src/integration/gates.py": 369,
       "src/integration/generated_merge_driver.py": 59,
@@ -2540,7 +2540,7 @@
     },
     "groups": {
       "companions": 10308,
-      "engine": 82420,
+      "engine": 82443,
       "guards": 633,
       "policy": 493,
       "policy_sources": 1021,
@@ -2774,13 +2774,13 @@
         3350
       ]
     },
-    "total": 157507,
+    "total": 157530,
     "unknown": [],
     "unknown_sinks": []
   },
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2022,
+    "authorized_owned_delta": 2045,
     "expires_at": "s4_modules",
     "held_ingestion_composition": {
       "authorized_engine_delta": 0,
@@ -2797,10 +2797,39 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "task_id": "bright-quest-30"
     },
+    "held_ingestion_dev_merge_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "6cb338192d569c4df75539e5848fd32be05ac980",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157530,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "67341d693cd448e6eca98392a3a4b9104bf2e449",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with current dev and its approved large-session prompt amendment, preapproved in bright-quest-30. Preserve both original composition records, all historical evidence and original caps; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
     "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
     "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
-    "measured_engine_lines": 82420,
-    "measured_owned_total": 157521,
+    "large_session_prompt_composition": {
+      "authorized_engine_delta": 23,
+      "authorized_owned_delta": 23,
+      "authorized_table_delta": 0,
+      "charged_file": "src/integration/fixer_runtime.py",
+      "decision_message_id": "msg-06bb3b1643ef4298a715c0e55fa317b9",
+      "previous_measured_engine_lines": 82420,
+      "previous_measured_owned_total": 157507,
+      "previous_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1919",
+      "reason": "Compose the previously approved exact +23 owned/engine lines on current dev after the supervisor-directed merge. Preserve all historical grants, ownership classifications and zero remaining headroom; no new tables or storage category.",
+      "source_revision": "5e33516f93715b484eb15c2525d050ac303d5ee4",
+      "task_id": "swift-lantern-21"
+    },
+    "measured_engine_lines": 82443,
+    "measured_owned_total": 157544,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -4781,6 +4810,23 @@
     "remaining_owned_allowance": 17431
   },
   "landing_revision": "8e73e088fa5050621a165b9d13f90ef88334572d",
+  "large_session_prompt_measurement": {
+    "authorized_engine_delta": 23,
+    "authorized_owned_delta": 23,
+    "authorized_table_delta": 0,
+    "charged_file": "src/integration/fixer_runtime.py",
+    "decision_message_id": "msg-06bb3b1643ef4298a715c0e55fa317b9",
+    "measured_engine_lines": 82384,
+    "measured_owned_total": 157466,
+    "measured_source_revision": "3a346fe90f36ce8776a1f86fc125babfb97c5578",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "previous_source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1919",
+    "reason": "Retain complete frozen fixer input in a local evidence file and bound the startup preview. Record only this task's exact 23-line amendment under the project supervisor's delegated approval. The inherited dev-wide overage is owned by smart-nexus-83 and is excluded from this grant; this record does not reinstate the retired batch exception or grant additional headroom.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "swift-lantern-21"
+  },
   "legacy_bookkeeping_guard_measurement": {
     "authorization": "Supervisor reopen instructions, 2026-10-23: record the exact measured amendment without asking.",
     "authorized_engine_delta": 352,
@@ -16066,12 +16112,12 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 82420,
+    "engine_cap": 82443,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2022,
+      "authorized_owned_delta": 2045,
       "expires_at": "s4_modules",
       "held_ingestion_composition": {
         "authorized_engine_delta": 0,
@@ -16088,10 +16134,39 @@
         "referenced_decision": "size-cap-delegation-2026-10-23",
         "task_id": "bright-quest-30"
       },
+      "held_ingestion_dev_merge_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 14,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "6cb338192d569c4df75539e5848fd32be05ac980",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82443,
+        "previous_measured_owned_total": 157530,
+        "previous_measured_table_count": 45,
+        "published_source_revision": "67341d693cd448e6eca98392a3a4b9104bf2e449",
+        "pull_request": 1918,
+        "reason": "Exact ancestry-preserving composition of the held-ingestion children with current dev and its approved large-session prompt amendment, preapproved in bright-quest-30. Preserve both original composition records, all historical evidence and original caps; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bright-quest-30"
+      },
       "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
       "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
-      "measured_engine_lines": 82420,
-      "measured_owned_total": 157521,
+      "large_session_prompt_composition": {
+        "authorized_engine_delta": 23,
+        "authorized_owned_delta": 23,
+        "authorized_table_delta": 0,
+        "charged_file": "src/integration/fixer_runtime.py",
+        "decision_message_id": "msg-06bb3b1643ef4298a715c0e55fa317b9",
+        "previous_measured_engine_lines": 82420,
+        "previous_measured_owned_total": 157507,
+        "previous_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1919",
+        "reason": "Compose the previously approved exact +23 owned/engine lines on current dev after the supervisor-directed merge. Preserve all historical grants, ownership classifications and zero remaining headroom; no new tables or storage category.",
+        "source_revision": "5e33516f93715b484eb15c2525d050ac303d5ee4",
+        "task_id": "swift-lantern-21"
+      },
+      "measured_engine_lines": 82443,
+      "measured_owned_total": 157544,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16115,7 +16190,7 @@
       "task_id": "smart-nexus-83"
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157521,
+    "owned_total_cap": 157544,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
