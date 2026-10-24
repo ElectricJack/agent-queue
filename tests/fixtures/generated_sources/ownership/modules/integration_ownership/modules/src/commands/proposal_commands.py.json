@@ -45,6 +45,24 @@
       "owner_fingerprint": "83f124c699b3c32b8df9fdaf309056efe54d4b577dfa082088404b75048408a8",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PROPOSAL_ID_META"
     },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_release::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1001,
+      "owner": "TaskProposalCommandsMixin._cmd_task_batch_release",
+      "owner_fingerprint": "c85df4c409996bc79c064aa77348f708e5645ebd978e7d1b4ff0031f7430e3cf",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_retire::a15ec41a8864968732616e0041c79d5ca7d56b1fea1dd66dc57783baa3aea54e": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1057,
+      "owner": "TaskProposalCommandsMixin._cmd_task_batch_retire",
+      "owner_fingerprint": "3ae83eea62da77ed9e034ac3aa46d4dff74bd4f3543d29d1cc1a443d10b3da02",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._create_ingest_batch::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
       "disposition": "ordinary",
@@ -58,9 +76,9 @@
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 875,
+      "line": 1367,
       "owner": "TaskProposalCommandsMixin._materialize_proposal",
-      "owner_fingerprint": "cc66c63ab890409480c744f0fe6228cfd421fddff6b2bd41e4fa3364e92e6e71",
+      "owner_fingerprint": "6dfcddd98bc07489205b1d0fd9731355016c886f7c23095536a8c3fc82ecb982",
       "reason": "Appends task.change_set_committed after applying the reviewed proposal, retaining actor, diff and receipt for audit rather than replaying Git publication."
     },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._update_held_batch::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {

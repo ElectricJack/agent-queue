@@ -171,18 +171,18 @@
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 1489,
+      "line": 1553,
       "owner": "Orchestrator._checkpoint_paused_workspace",
-      "owner_fingerprint": "61f98f89da22661ea1d2555b7d43ca9817be4a3d3d38a6a376bcc21399a5e002",
+      "owner_fingerprint": "c00929cffd9d2ff3b1e09bc3022684eec03a6773aac95acc184d51a628973ba9",
       "reason": "Stores pause-checkpoint retry attempts, next retry time and reason; this backoff telemetry cannot prove a handoff or move a ref."
     },
     "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::cda00a809de8dac8c704f9da910433579b679b64df6e34c7ec8b86d4e6dc3882": {
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 1532,
+      "line": 1596,
       "owner": "Orchestrator._checkpoint_paused_workspace",
-      "owner_fingerprint": "61f98f89da22661ea1d2555b7d43ca9817be4a3d3d38a6a376bcc21399a5e002",
+      "owner_fingerprint": "c00929cffd9d2ff3b1e09bc3022684eec03a6773aac95acc184d51a628973ba9",
       "reason": "Stores exhausted pause-checkpoint attempts and reason for diagnosis; the failure record leaves actual retained branch ownership intact."
     },
     "src/orchestrator/core.py::Orchestrator._finish_manual_pause::42aa00e8ced31b193cf50efcb0d356bb67a4fdf96c0380cd95c85329ab1acf31": {
@@ -198,9 +198,9 @@
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 1300,
+      "line": 1353,
       "owner": "Orchestrator._finish_manual_pause_resources",
-      "owner_fingerprint": "8bcd8daa4388c2884d1edf5177b32b03e4c864bed661caa4dce4fcc9eaa45ead",
+      "owner_fingerprint": "bfbd974733fdcd936eec7a363dfcef4e6354a80d6e378a6aacdc2d7a75409c98",
       "reason": "Stores session_resume_key for resuming the paused agent conversation after resource cleanup; it is session continuity metadata, not integration ownership."
     },
     "src/orchestrator/core.py::Orchestrator._resolve_gate_and_emit::22993b2ffb9b93f695c534c4676a41301fe3a6bd73276abc291182210469a9ee": {

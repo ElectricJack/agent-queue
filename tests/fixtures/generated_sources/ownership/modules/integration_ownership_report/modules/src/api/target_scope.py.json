@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/api/target_scope.py::_publication_delegation_project": {
+      "fingerprint": "d67ed86f95d0052bee7598b6b9544abef510b27031ba858aaf7531ea243185f9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."

@@ -2,5 +2,16 @@
   "generic_dependencies": {
     "src/asks/delivery.py::config_fingerprint": "Generic notification-destination configuration hashing; no integration state or ref authority.",
     "src/asks/delivery.py::destination": "Generic notification channel identity for all human asks; no integration branch or delivery lifecycle."
+  },
+  "storage_sinks": {
+    "src/asks/delivery.py::fence_config_modes::71e404c9258ff6031e83ca705bb1737ab820adab28d43b8a1d4cdd1064021268": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 103,
+      "owner": "fence_config_modes",
+      "owner_fingerprint": "912f5d13007ea4231121a5919a0f26a8ad62aa9fbf7a885545a37c6e8c564947",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    }
   }
 }
