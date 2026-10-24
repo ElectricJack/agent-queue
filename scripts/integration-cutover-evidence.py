@@ -45,11 +45,13 @@ def ownership() -> dict:
         "unreviewed_writers": report["unknown_sinks"],
         "legacy_sinks_pending_stage4": report["legacy_sinks"],
         "budget_errors": io.budget_errors(report, manifest),
-        "engine_cap_in_phase": (io.BASELINE_ENGINE_LINES + io.REPLACEMENT_ALLOWANCE
+        "engine_cap_in_phase": (io.transition_engine_cap(manifest)
                                 if transition else io.FINAL_ENGINE_CAP),
         "owned_cap_in_phase": (io.transition_owned_cap(manifest)
                                if transition else io.FINAL_TOTAL_CAP),
         "transition_exception": manifest.get("transition_exception") if transition else None,
+        "hand_integration_reconciliation": (
+            manifest.get("hand_integration_reconciliation") if transition else None),
         "final_caps": {
             "engine": io.FINAL_ENGINE_CAP, "owned_total": io.FINAL_TOTAL_CAP,
             "tables": io.FINAL_TABLE_CAP, "target_tables": io.TARGET_TABLES,
@@ -161,6 +163,7 @@ def render(ledger: dict) -> str:
          f"{len(own['legacy_sinks_pending_stage4'])}"),
         f"- budget errors: {own['budget_errors'] or 'none'}",
         f"- one-time batch exception: {own.get('transition_exception') or 'none'}",
+        f"- hand-integration reconciliation: {own.get('hand_integration_reconciliation') or 'none'}",
         "",
         "## Replay",
         "",

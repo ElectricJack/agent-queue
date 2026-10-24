@@ -7,6 +7,14 @@ import type { Task } from "../../api/hooks";
 const task = { id: "t1", project_id: "p1", title: "ｗ".repeat(200), status: "READY", priority: 3, assigned_agent: "worker-a" } as Task;
 
 describe("TaskCard", () => {
+  it("shows canonical ingestion hold on compact cards before lifecycle or activity", () => {
+    render(<TaskCard task={{ ...task, status: "IN_PROGRESS", display_state: "active", held_batch: {
+      batch_id: "batch", state: "held", structure_revision: 1,
+      source: "spec:approved", lineage: { lineage_kind: "none" },
+    } }} />);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+  });
+
   it("as a link: carries the row marker, wraps long titles and names the project", () => {
     render(<MemoryRouter><TaskCard task={task} projectName="First project" to="/focus/tasks/t1" /></MemoryRouter>);
     const link = screen.getByRole("link");

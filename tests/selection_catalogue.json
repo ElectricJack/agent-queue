@@ -646,6 +646,7 @@
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_delivery_watchdog.py",
+        "tests/test_integration_delivery_watchdog_regressions.py",
         "tests/test_integration_dispatch_waits.py",
         "tests/test_integration_failure_groups.py",
         "tests/test_integration_fixers.py",
@@ -1174,6 +1175,7 @@
       "modules": [
         "tests/test_project_constraint_enforcement.py",
         "tests/test_project_constraints.py",
+        "tests/test_project_schedules.py",
         "tests/test_schedule.py",
         "tests/test_scheduler.py",
         "tests/test_timer_service.py",
@@ -1288,6 +1290,7 @@
     "task-dependencies": {
       "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release.",
       "modules": [
+        "tests/test_cli_batch.py",
         "tests/test_cli_task_change_sets.py",
         "tests/test_dependency_queries.py",
         "tests/test_fidelity_review.py",
@@ -2526,7 +2529,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:4aabc306a1caa4bc0074f5b169aaa59364ffbbfc42fe918b8a625a10406166c5",
+      "digest": "sha256:a626fbb6f7f5177255aac79bc7a93fd641b27236f380a1f23dc7de83bed69233",
       "imports": [
         "src.agent_waits",
         "src.api.auth",
@@ -2551,7 +2554,8 @@
         "src.profiles.parser",
         "src.sessions",
         "src.sessions.fake",
-        "src.sessions.provider"
+        "src.sessions.provider",
+        "src.wait_runtime.cycle"
       ],
       "markers": [
         "parametrize"
@@ -2623,7 +2627,7 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:7100fea96bd16a00066b5d4a6b338264c27718d32cf158b8ad2c4504be60029a",
+      "digest": "sha256:03439b0786e11a9eab1d0befe2601b6550f25db0fbed57629709a34909e10c85",
       "imports": [
         "src.api",
         "src.api.app",
@@ -2635,6 +2639,9 @@
         "src.commands.contracts.builtin",
         "src.config",
         "src.database",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
+        "src.database.queries.proposal_queries",
         "src.event_bus",
         "src.mcp_registration",
         "src.models",
@@ -2642,7 +2649,9 @@
         "src.plugins.internal",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Live API ↔ generated-client conformance guards (api-cli plan 1-3, API-2)."
     },
     "tests/test_api_codegen_input_models.py": {
@@ -3101,12 +3110,14 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:335d2cc74562e83b4fc4d81f74fdcf94bbe07236c63d3e0df923268e3408f486",
+      "digest": "sha256:b9cd025686d96f8949d986fcf72e2de315e6ba71a54c85ac270f91628d8ff032",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.asks.delivery",
+        "src.asks.ingestion",
         "src.asks.intake",
+        "src.asks.operations",
         "src.asks.reconcile",
         "src.asks.reset_policy",
         "src.database",
@@ -3674,7 +3685,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c557a8d168474c61cb973a7135eca2fed3d872c9ea7c05bae123689da84ab6a1",
+      "digest": "sha256:a20d9a92dd9368bb4d7485b39c32559442f4ea3d26bea22e78a931ee0f146585",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3721,6 +3732,8 @@
         "src.preparation_failure",
         "src.scheduler",
         "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.provider",
         "src.sessions.reconciler",
         "src.workspace_disable"
       ],
@@ -3816,6 +3829,21 @@
         "parametrize"
       ],
       "summary": "CLI tests for ``aq prime``, ``aq handoff``, ``aq inbox`` (Phase S1)."
+    },
+    "tests/test_cli_batch.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "digest": "sha256:567f2d778114ad616ab235108f8e289713fe122887ac18185be279da865363e6",
+      "imports": [
+        "src.cli.app",
+        "src.cli.exceptions",
+        "src.commands.contracts.builtin",
+        "src.tools"
+      ],
+      "markers": [],
+      "summary": "``aq batch`` — held spec-ingestion batch CLI and its MCP tools (held batches L6.3)."
     },
     "tests/test_cli_claim_restart.py": {
       "areas": [
@@ -5161,7 +5189,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:a4c9624f198e44ca6fbfd34871ae6f5fe434b387f07d1368c528662b7e840178",
+      "digest": "sha256:0fff545125d8bdcb2c0d32eb99f002c0ea1b26687115ca50be050048242d1f57",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -5173,8 +5201,10 @@
         "src.discord.intake_diagnostics",
         "src.discord.rate_guard",
         "src.escalations.transport",
+        "src.event_bus",
         "src.main",
         "src.messages.delivery",
+        "src.messages.service",
         "src.messages.session_lens",
         "src.models",
         "src.profiles.capabilities"
@@ -5589,7 +5619,7 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:c6e314968fa56cfa5afca411b633576783141507f8c18899f61aded3a4a45eeb",
+      "digest": "sha256:b88bba7864b6ddffd78f5b1d76f857fa9dc1d8901a929db63433e4963e45ac9b",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -5597,7 +5627,8 @@
         "src.commands.principal",
         "src.playbooks.definition",
         "src.playbooks.engine",
-        "src.playbooks.executors.base"
+        "src.playbooks.executors.base",
+        "src.playbooks.profiles"
       ],
       "markers": [
         "parametrize"
@@ -9101,6 +9132,26 @@
         "parametrize"
       ],
       "summary": "Threshold and producer progress evidence for the delivery watchdog."
+    },
+    "tests/test_integration_delivery_watchdog_regressions.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f31c567858161c3ebfe292eb8ffe3d7d254d5bfe70f94d5f46460e68df2d3a7d",
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration",
+        "src.integration.delivery_branches",
+        "src.integration.delivery_truth",
+        "src.integration.delivery_watchdog",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Watchdog observations for hand landing, project pauses and supervisor withdrawal."
     },
     "tests/test_integration_dispatch_waits.py": {
       "areas": [
@@ -14395,9 +14446,9 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:4293a9075a63f1ec0f95f142285221ac39d24c857388ea61fae2c41c46d4ca50",
+      "digest": "sha256:9d5401310666ad691b3f912f2f6b37fee297fc1d071f51ea97462c4f44b41886",
       "imports": [
-        "src.commands.claim_commands",
+        "src.claim_file",
         "src.config",
         "src.database.queries.claim_queries",
         "src.database.tables",
@@ -15084,6 +15135,33 @@
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
     },
+    "tests/test_project_schedules.py": {
+      "areas": [
+        "scheduling"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6b0c5c38d6a00ed1f5303787ca97b29207299252dbaa8d25923f9f4083bf87d8",
+      "imports": [
+        "src.api.codegen",
+        "src.cli.app",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.models",
+        "src.project_schedules",
+        "src.waits.adapters.base",
+        "src.waits.adapters.timer",
+        "src.waits.conditions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Long-horizon notices: durable receipts, cancellation races and scoped commands."
+    },
     "tests/test_project_supervisors.py": {
       "areas": [
         "projects"
@@ -15404,14 +15482,23 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:876b6eb2c058cfd96ac1959d21c68143c4c17be161d8f9092c11a0ce7c3d6805",
+      "digest": "sha256:b65fe87c286735ac80e68069b526fb46fe654f3887f993d188816b2a4f08883e",
       "imports": [
+        "src.api.auth",
+        "src.api.graph",
+        "src.api.graph_layout",
+        "src.api.models.task",
         "src.api.routers.proposals",
         "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
-        "src.models"
+        "src.database.tables",
+        "src.models",
+        "src.task_graph.layout.driver"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "GET /api/proposals/{id} — dashboard ghost-overlay read."
     },
     "tests/test_proposal_status_event.py": {
@@ -16193,7 +16280,7 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:1644948f36327a2e3e72de6668fab8121357b80f16645e202222f12cc9dac66b",
+      "digest": "sha256:eab6a92f936275b758dcd41d01afda7515f01acd8e2208e1163fba7529f26e9e",
       "imports": [
         "src.commands.principal",
         "src.commands.report_commands",
@@ -16213,7 +16300,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Durable hourly author requests, CAS submission and deterministic fallback."
+      "summary": "Durable hourly author requests, CAS submission and minimal no-report fallback."
     },
     "tests/test_repository_checkout_repair.py": {
       "areas": [
@@ -17897,7 +17984,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:7b4a32a6989e0f5bff2b6f9a019a2d7f6a37a9c71222cd5116693d158eb25b23",
+      "digest": "sha256:b590faf27b3ba17d0dfe956a8392f9e6b7da08d38a1419ff1707c2e1f0b528eb",
       "imports": [
         "src.config",
         "src.doctor",
@@ -17915,7 +18002,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Additive sync of shipped capabilities into the vault supervisor profile."
+      "summary": "Additive sync of shipped capabilities into vault system profiles."
     },
     "tests/test_supervisor_failure_triage.py": {
       "areas": [
@@ -17997,9 +18084,11 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:3557adf497a6c785a96b58cda8e3aa470d87427dcaddf03bb9050425367a4493",
+      "digest": "sha256:9bde0ee23070c86f16be39f38a07bfeef4b3a2daa46be0b62b66c04abecad5e6",
       "imports": [
+        "src.api.auth",
         "src.api.models.supervisor_inbox",
+        "src.api.scope",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
@@ -19264,9 +19353,11 @@
         "tmux-terminals"
       ],
       "default_arm": false,
-      "digest": "sha256:a7373968725103303cdfe46601b0929bdaab603fb08303120620fa8ab2f33372",
+      "digest": "sha256:43483712c8c51daa7994e69121c0f51a4293344625a0093b6cfbcb9085f6c918",
       "imports": [
+        "src.sessions.harness_parser",
         "src.sessions.provider",
+        "src.sessions.spec",
         "src.sessions.tmux"
       ],
       "markers": [

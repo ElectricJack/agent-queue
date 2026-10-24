@@ -2352,6 +2352,54 @@
         }
       }
     },
+    "/api/projects/{project_id}/batches/{batch_id}": {
+      "get": {
+        "summary": "Get Ingest Batch",
+        "operationId": "get_ingest_batch",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestBatchDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/reviews/pull-requests/summary": {
       "get": {
         "summary": "Get Pull Request Project Summaries",
@@ -16146,6 +16194,194 @@
         }
       }
     },
+    "/api/schedule/cancel": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Cancel a pending project notification schedule.",
+        "description": "Cancel a pending project notification schedule.",
+        "operationId": "schedule_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulePointerArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/get": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Read a project schedule and its firing/cancellation receipt.",
+        "description": "Read a project schedule and its firing/cancellation receipt.",
+        "operationId": "schedule_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulePointerArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/list": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List project-owned one-shot notifications and due times.",
+        "description": "List project-owned one-shot notifications and due times.",
+        "operationId": "schedule_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/register": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+        "description": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+        "operationId": "schedule_register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleRegisterArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/supervisor/restart": {
       "post": {
         "tags": [
@@ -21072,8 +21308,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
-        "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
+        "summary": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. For an already delivered design, explicit no_op records delivered evidence without creating work; only its live ingester may settle an empty change set. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
+        "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. For an already delivered design, explicit no_op records delivered evidence without creating work; only its live ingester may settle an empty change set. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
         "operationId": "task_batch_propose",
         "requestBody": {
           "content": {
@@ -21092,6 +21328,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskBatchProposeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-release": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+        "description": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+        "operationId": "task_batch_release",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchReleaseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-retire": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+        "description": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+        "operationId": "task_batch_retire",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchRetireRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchRetireResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-review-record": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+        "description": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+        "operationId": "task_batch_review_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchReviewRecordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchReviewRecordResponse"
                 }
               }
             }
@@ -43079,6 +43456,28 @@
               }
             ]
           },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
+          },
           "route_source": {
             "anyOf": [
               {
@@ -45583,6 +45982,16 @@
               }
             ],
             "title": "Parent Task Id"
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -45730,6 +46139,59 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HeldBatchSummary": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "held",
+              "reviewing",
+              "needs_scope",
+              "released",
+              "retired"
+            ],
+            "title": "State"
+          },
+          "structure_revision": {
+            "type": "integer",
+            "title": "Structure Revision"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "lineage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Lineage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "structure_revision",
+          "source",
+          "lineage"
+        ],
+        "title": "HeldBatchSummary",
+        "description": "Ingestion membership survives release; ``state`` says whether it still holds work."
       },
       "HierarchyRefusalResponse": {
         "properties": {
@@ -46186,6 +46648,229 @@
           "project_id"
         ],
         "title": "ImportRequest"
+      },
+      "IngestBatchDetail": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "held",
+              "reviewing",
+              "needs_scope",
+              "released",
+              "retired"
+            ],
+            "title": "State"
+          },
+          "structure_revision": {
+            "type": "integer",
+            "title": "Structure Revision"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "lineage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Lineage"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "structure_digest": {
+            "type": "string",
+            "title": "Structure Digest"
+          },
+          "source_review_id": {
+            "type": "string",
+            "title": "Source Review Id"
+          },
+          "source_revision": {
+            "type": "integer",
+            "title": "Source Revision"
+          },
+          "source_content_sha256": {
+            "type": "string",
+            "title": "Source Content Sha256"
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id"
+          },
+          "members": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Members"
+          },
+          "membership": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Membership"
+          },
+          "check_results": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Results"
+          },
+          "section_verdicts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Section Verdicts"
+          },
+          "reverse_coverage_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverse Coverage Verdict"
+          },
+          "walkthrough_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Walkthrough Verdict"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Structural Findings"
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
+          },
+          "receipts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Receipts"
+          },
+          "release_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Receipt"
+          },
+          "release_actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Actor"
+          },
+          "release_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Revision"
+          },
+          "release_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Digest"
+          },
+          "released_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Released At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "structure_revision",
+          "source",
+          "lineage",
+          "project_id",
+          "structure_digest",
+          "source_review_id",
+          "source_revision",
+          "source_content_sha256",
+          "decision_id",
+          "members",
+          "membership"
+        ],
+        "title": "IngestBatchDetail",
+        "description": "Durable review evidence, including receipts superseded by a graph edit."
       },
       "InspectPlaybookRunRequest": {
         "properties": {
@@ -50949,6 +51634,16 @@
               }
             ],
             "title": "Parent Task Id"
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "x": {
             "type": "number",
@@ -74332,6 +75027,203 @@
         "type": "object",
         "title": "ScanStubStalenessResponse"
       },
+      "ScheduleListArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "fired",
+                  "cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ScheduleListArgs"
+      },
+      "ScheduleListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Schedules",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "title": "ScheduleListResponse"
+      },
+      "SchedulePointerArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "schedule_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Schedule Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "schedule_id"
+        ],
+        "title": "SchedulePointerArgs"
+      },
+      "ScheduleRegisterArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body"
+          },
+          "due_at": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Due At"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "body",
+          "due_at",
+          "idempotency_key"
+        ],
+        "title": "ScheduleRegisterArgs"
+      },
+      "ScheduleResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "title": "ScheduleResponse"
+      },
       "ScopedConftest": {
         "properties": {
           "path": {
@@ -79847,6 +80739,19 @@
             "title": "Dry Run",
             "description": "Validate and return the diff without storing a proposal."
           },
+          "no_op": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Op",
+            "description": "Design-ingest settlement when every approved goal is already delivered; requires no change operations."
+          },
           "edits": {
             "anyOf": [
               {
@@ -79977,11 +80882,391 @@
               }
             ],
             "title": "Diff"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "ready",
+                  "held",
+                  "reviewing",
+                  "needs_scope",
+                  "released",
+                  "retired",
+                  "committed",
+                  "discarded"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "structure_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Revision"
+          },
+          "structure_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Digest"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          },
+          "lineage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage"
+          },
+          "release_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Receipt"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
           }
         },
         "type": "object",
         "title": "TaskBatchProposeResponse",
-        "description": "A proposal is created, not applied \u2014 unless ingestion applies it live.\n\nA batch carrying a live spec-ingest role's approved-document authority is\napplied in the same call: ``committed`` is then true and ``task_ids`` is\nthat batch's receipt, exactly as a commit's would be. Every other proposal\nstages in ``ready`` and waits for approval."
+        "description": "Ordinary proposals stage for approval; ingestion materializes held work.\n\nDesign-kind ingestion returns a released batch with a server receipt.\nImplementation ingestion returns held members pending fidelity review."
+      },
+      "TaskBatchReleaseRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "expected_digest": {
+            "type": "string",
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest"
+        ],
+        "title": "TaskBatchReleaseRequest"
+      },
+      "TaskBatchReleaseResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "already_released": {
+            "type": "boolean",
+            "title": "Already Released"
+          },
+          "release_receipt": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Release Receipt"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "already_released",
+          "release_receipt"
+        ],
+        "title": "TaskBatchReleaseResponse",
+        "description": "The original atomic release receipt is returned on every successful replay."
+      },
+      "TaskBatchRetireRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "reason"
+        ],
+        "title": "TaskBatchRetireRequest"
+      },
+      "TaskBatchRetireResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "const": "retired",
+            "title": "State"
+          },
+          "already_retired": {
+            "type": "boolean",
+            "title": "Already Retired"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "already_retired"
+        ],
+        "title": "TaskBatchRetireResponse"
+      },
+      "TaskBatchReviewRecordRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "expected_digest": {
+            "type": "string",
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "section_verdicts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Section Verdicts",
+            "description": ""
+          },
+          "reverse_coverage_verdict": {
+            "type": "string",
+            "title": "Reverse Coverage Verdict",
+            "description": ""
+          },
+          "walkthrough_verdict": {
+            "type": "string",
+            "title": "Walkthrough Verdict",
+            "description": ""
+          },
+          "structural_findings": {
+            "items": {},
+            "type": "array",
+            "title": "Structural Findings",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordRequest"
+      },
+      "TaskBatchReviewRecordResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "reviewing",
+              "needs_scope"
+            ],
+            "title": "State"
+          },
+          "passing": {
+            "type": "boolean",
+            "title": "Passing"
+          },
+          "receipt": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Receipt"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed"
+          },
+          "ask_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "passing",
+          "receipt",
+          "replayed"
+        ],
+        "title": "TaskBatchReviewRecordResponse",
+        "description": "The durable fidelity receipt, including a scope ask when one was raised."
       },
       "TaskBatchUpdateRequest": {
         "properties": {
@@ -81517,6 +82802,28 @@
                 "type": "null"
               }
             ]
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
           },
           "route_source": {
             "anyOf": [
@@ -83193,6 +84500,28 @@
               }
             ]
           },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
+          },
           "route_source": {
             "anyOf": [
               {
@@ -83740,6 +85069,28 @@
                 "type": "null"
               }
             ]
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
           },
           "route_source": {
             "anyOf": [

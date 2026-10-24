@@ -1,0 +1,19 @@
+{
+  "large_session_prompt_measurement": {
+    "authorized_engine_delta": 23,
+    "authorized_owned_delta": 23,
+    "authorized_table_delta": 0,
+    "charged_file": "src/integration/fixer_runtime.py",
+    "decision_message_id": "msg-06bb3b1643ef4298a715c0e55fa317b9",
+    "measured_engine_lines": 82384,
+    "measured_owned_total": 157466,
+    "measured_source_revision": "3a346fe90f36ce8776a1f86fc125babfb97c5578",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "previous_source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1919",
+    "reason": "Retain complete frozen fixer input in a local evidence file and bound the startup preview. Record only this task's exact 23-line amendment under the project supervisor's delegated approval. The inherited dev-wide overage is owned by smart-nexus-83 and is excluded from this grant; this record does not reinstate the retired batch exception or grant additional headroom.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "swift-lantern-21"
+  }
+}

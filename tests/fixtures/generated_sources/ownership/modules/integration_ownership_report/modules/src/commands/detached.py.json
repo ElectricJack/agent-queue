@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/detached.py::detached_operations": {
+      "fingerprint": "fde99dce5198e0a2bc09ac39c0fad472565d033fe5f193e1e42da012728994db",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

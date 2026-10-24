@@ -6955,6 +6955,8 @@ _ALL_TOOL_DEFINITIONS = [
             "for fidelity review and returns batch_id, revision, digest and members. "
             "task_batch_commit refuses held batches; authorized release is separate. "
             "Design approval creates an already released epic and authoring leaf. "
+            "For an already delivered design, explicit no_op records delivered evidence "
+            "without creating work; only its live ingester may settle an empty change set. "
             "Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance."
         ),
         "input_schema": {
@@ -6975,6 +6977,20 @@ _ALL_TOOL_DEFINITIONS = [
                 "dry_run": {
                     "type": "boolean",
                     "description": "Validate and return the diff without storing a proposal.",
+                },
+                "no_op": {
+                    "type": "object",
+                    "description": "Design-ingest settlement when every approved goal is already delivered; requires no change operations.",
+                    "properties": {
+                        "reason": {"type": "string", "minLength": 1},
+                        "delivered_evidence": {
+                            "type": "array", "minItems": 1,
+                            "items": {"type": "string", "minLength": 1},
+                            "description": "Merged PR or commit citations checked by the ingester.",
+                        },
+                    },
+                    "required": ["reason", "delivered_evidence"],
+                    "additionalProperties": False,
                 },
                 "edits": {
                     "type": "array",
@@ -9519,6 +9535,11 @@ from src.commands.contracts.builtin import (  # noqa: E402
     EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
 )
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchReleaseArgs as _TaskBatchReleaseArgs,
+    TaskBatchRetireArgs as _TaskBatchRetireArgs,
+    TaskBatchReviewRecordArgs as _TaskBatchReviewRecordArgs,
+)
 
 for _definition in _ALL_TOOL_DEFINITIONS:
     if _definition["name"] == "task_batch_update":
@@ -9528,9 +9549,22 @@ _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
     "batch_reconcile": "task", "ensure_fidelity_review": "task",
-    "spec_ingest_legacy_adopt": "task",
+    "spec_ingest_legacy_adopt": "task", "task_batch_review_record": "task",
+    "task_batch_release": "task", "task_batch_retire": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
+    {"name": "task_batch_review_record",
+     "description": "Attest every mapped section and whole-batch intent on the exact held graph; "
+                    "only the live assigned fidelity reviewer.",
+     "input_schema": _TaskBatchReviewRecordArgs.model_json_schema()},
+    {"name": "task_batch_release",
+     "description": "Verify source approval, the live graph and its fidelity receipt, then "
+                    "release a held batch; service, project supervisor or operator only.",
+     "input_schema": _TaskBatchReleaseArgs.model_json_schema()},
+    {"name": "task_batch_retire",
+     "description": "Retire a held batch whose members and reviewer are already retired, "
+                    "retaining its receipts; service, project supervisor or operator only.",
+     "input_schema": _TaskBatchRetireArgs.model_json_schema()},
     {"name": "ensure_spec_ingest",
      "description": "Ensure one role task per applied approval decision, including archived receipts.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
@@ -9584,3 +9618,26 @@ _ALL_TOOL_DEFINITIONS.append({
         "properties": {"operation_id": {"type": "string"}},
     },
 })
+
+
+# Public one-shot schedules use the same schemas as their typed contracts.
+from src.commands.contracts.schedule import (  # noqa: E402
+    ScheduleRegisterArgs, SchedulePointerArgs, ScheduleListArgs,
+)
+
+for _name, _args, _description in (
+    ("schedule_register", ScheduleRegisterArgs,
+     "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker."),
+    ("schedule_get", SchedulePointerArgs, "Read a project schedule and its firing/cancellation receipt."),
+    ("schedule_list", ScheduleListArgs, "List project-owned one-shot notifications and due times."),
+    ("schedule_cancel", SchedulePointerArgs, "Cancel a pending project notification schedule."),
+):
+    _TOOL_CATEGORIES[_name] = "schedule"
+    _ALL_TOOL_DEFINITIONS.append({
+        "name": _name, "description": _description, "input_schema": _args.model_json_schema(),
+    })
+
+_FALLBACK_INPUT_SCHEMAS["reconcile_project_schedules"] = {
+    "type": "object", "properties": {"now": {"type": "number"}},
+    "required": ["now"], "additionalProperties": False,
+}

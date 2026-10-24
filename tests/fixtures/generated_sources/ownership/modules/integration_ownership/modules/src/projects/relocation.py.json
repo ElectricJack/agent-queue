@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/projects/relocation.py::ProjectRelocation.apply::b0443b1cbdcbd2be1c20e315c1e018f45472e7e6804310ecf08bf7c6abc4dd35": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 483,
+      "owner": "ProjectRelocation.apply",
+      "owner_fingerprint": "2bc6761df7123ba1e40d1776a139d157aae04b31823b5e404c83f76e80c376ae",
+      "reason": "Reviewed hand-integration reconciliation smart-nexus-83, size-cap-delegation-2026-10-23: charged integration adapter, source authority, policy or storage observation; no new storage category."
+    }
+  }
+}

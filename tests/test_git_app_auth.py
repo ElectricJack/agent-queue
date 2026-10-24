@@ -666,11 +666,17 @@ async def test_isolated_origin_fetch_borrows_checkout_objects_read_only(tmp_path
         return output
 
     monkeypatch.setattr(manager, "_arun_authenticated_git", watched_fetch)
-    await manager._afetch_origin_with_auth_to_url(
+    transfer = await manager._afetch_origin_with_auth_to_url(
         str(destination), source_url=source.as_uri(), token="local-test-token"
     )
 
     assert observed["alternates"] == f"{objects.resolve()}\n"
+    assert transfer.prepare_seconds > 0
+    assert transfer.network_seconds > 0
+    assert transfer.import_seconds > 0
+    assert transfer.elapsed_seconds == pytest.approx(
+        transfer.prepare_seconds + transfer.network_seconds + transfer.import_seconds, abs=0.01,
+    )
     assert observed["seeded"] == ["refs/aq/have/0"]
     # The credentialed process writes only into its own repository, and never
     # runs for-each-ref against the checkout to discover its tips.
@@ -696,6 +702,8 @@ async def test_isolated_origin_fetch_keeps_token_out_of_checkout_and_logs(tmp_pa
         )
 
     assert "origin_fetch=incremental, seeded_tips=1" in caplog.text
+    for phase in ("prepare=", "network=", "import="):
+        assert phase in caplog.text
     assert token not in caplog.text
     for path in (destination / ".git").rglob("*"):
         if path.is_file():

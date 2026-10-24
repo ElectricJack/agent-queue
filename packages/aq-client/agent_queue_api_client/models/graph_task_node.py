@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from ..models.claim_readiness import ClaimReadiness
     from ..models.graph_task_node_child_state_counts_type_0 import GraphTaskNodeChildStateCountsType0
     from ..models.graph_task_node_descendant_state_counts_type_0 import GraphTaskNodeDescendantStateCountsType0
+    from ..models.held_batch_summary import HeldBatchSummary
 
 
 T = TypeVar("T", bound="GraphTaskNode")
@@ -39,6 +40,7 @@ class GraphTaskNode:
         pr_url (None | str | Unset):
         playbook_run_id (None | str | Unset):
         parent_task_id (None | str | Unset):
+        held_batch (HeldBatchSummary | None | Unset):
     """
 
     id: str
@@ -58,12 +60,14 @@ class GraphTaskNode:
     pr_url: None | str | Unset = UNSET
     playbook_run_id: None | str | Unset = UNSET
     parent_task_id: None | str | Unset = UNSET
+    held_batch: HeldBatchSummary | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.claim_readiness import ClaimReadiness
         from ..models.graph_task_node_child_state_counts_type_0 import GraphTaskNodeChildStateCountsType0
         from ..models.graph_task_node_descendant_state_counts_type_0 import GraphTaskNodeDescendantStateCountsType0
+        from ..models.held_batch_summary import HeldBatchSummary
 
         id = self.id
 
@@ -155,6 +159,14 @@ class GraphTaskNode:
         else:
             parent_task_id = self.parent_task_id
 
+        held_batch: dict[str, Any] | None | Unset
+        if isinstance(self.held_batch, Unset):
+            held_batch = UNSET
+        elif isinstance(self.held_batch, HeldBatchSummary):
+            held_batch = self.held_batch.to_dict()
+        else:
+            held_batch = self.held_batch
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -192,6 +204,8 @@ class GraphTaskNode:
             field_dict["playbook_run_id"] = playbook_run_id
         if parent_task_id is not UNSET:
             field_dict["parent_task_id"] = parent_task_id
+        if held_batch is not UNSET:
+            field_dict["held_batch"] = held_batch
 
         return field_dict
 
@@ -200,6 +214,7 @@ class GraphTaskNode:
         from ..models.claim_readiness import ClaimReadiness
         from ..models.graph_task_node_child_state_counts_type_0 import GraphTaskNodeChildStateCountsType0
         from ..models.graph_task_node_descendant_state_counts_type_0 import GraphTaskNodeDescendantStateCountsType0
+        from ..models.held_batch_summary import HeldBatchSummary
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -352,6 +367,23 @@ class GraphTaskNode:
 
         parent_task_id = _parse_parent_task_id(d.pop("parent_task_id", UNSET))
 
+        def _parse_held_batch(data: object) -> HeldBatchSummary | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                held_batch_type_0 = HeldBatchSummary.from_dict(data)
+
+                return held_batch_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(HeldBatchSummary | None | Unset, data)
+
+        held_batch = _parse_held_batch(d.pop("held_batch", UNSET))
+
         graph_task_node = cls(
             id=id,
             title=title,
@@ -370,6 +402,7 @@ class GraphTaskNode:
             pr_url=pr_url,
             playbook_run_id=playbook_run_id,
             parent_task_id=parent_task_id,
+            held_batch=held_batch,
         )
 
         graph_task_node.additional_properties = d

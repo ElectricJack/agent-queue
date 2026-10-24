@@ -479,6 +479,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`reconcile_agent_cron`](reconcile_agent_cron.md) | Reconcile Agent Cron | Execute the reconcile_agent_cron command. |
 | [`reconcile_agent_waits`](reconcile_agent_waits.md) | Reconcile Agent Waits | Execute the reconcile_agent_waits command. |
 | [`reconcile_collaborations`](reconcile_collaborations.md) | Reconcile Collaborations | Execute the reconcile_collaborations command. |
+| [`reconcile_project_schedules`](reconcile_project_schedules.md) | Reconcile Project Schedules | Execute the reconcile_project_schedules command. |
 | [`record_capabilities`](record_capabilities.md) | Record Capabilities | Describe what this caller may do with records. |
 | [`record_file_inspection`](record_file_inspection.md) | Record File Inspection | Execute the record_file_inspection command. |
 | [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
@@ -520,6 +521,10 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`review_withdraw`](review_withdraw.md) | Review Withdraw | Execute the review_withdraw command. |
 | [`run_playbook`](run_playbook.md) | Run Playbook | Execute the run_playbook command. |
 | [`scan_stub_staleness`](scan_stub_staleness.md) | Scan Stub Staleness | Scan vault reference stubs for staleness by comparing source_hash. |
+| [`schedule_cancel`](schedule_cancel.md) | Schedule Cancel | Cancel a pending project schedule; a fired notice cannot be recalled. |
+| [`schedule_get`](schedule_get.md) | Schedule Get | Read a project schedule and its durable firing or cancellation receipt. |
+| [`schedule_list`](schedule_list.md) | Schedule List | List project schedules, including long-horizon pending notices. |
+| [`schedule_register`](schedule_register.md) | Schedule Register | Schedule one supervisor notification at an absolute UTC instant, without holding a worker. |
 | [`scheduler_wait_sync`](scheduler_wait_sync.md) | Scheduler Wait Sync | Scheduler wait sync through verified wait state. |
 | [`search_files`](search_files.md) | Search Files | Execute the search_files command. |
 | [`search_github_repositories`](search_github_repositories.md) | Search Github Repositories | Search GitHub repositories visible to the daemon host's gh session. |

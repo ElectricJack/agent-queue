@@ -375,6 +375,31 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
         ).with_for_update())).mappings().one()
         inputs = dict(row["decision_inputs"] or {})
 
+        # Supervisor withdrawal is scoped to this exact generation. Re-read
+        # the durable incident even when the pending snapshot omitted this row,
+        # so a later scan or daemon restart cannot reopen the false alarm.
+        if incident_id := inputs.get("incident_id"):
+            from src.database.tables import escalations
+
+            cancelled = await conn.scalar(select(escalations.c.id).where(
+                escalations.c.id == incident_id, escalations.c.project_id == project_id,
+                escalations.c.source_kind == INCIDENT_SOURCE_KIND,
+                escalations.c.source_identity == key, escalations.c.state == "cancelled",
+            ))
+            if cancelled:
+                inputs.update(delivery_state="cleared", delivery_reason="supervisor_cancelled",
+                              stuck_scans=0)
+                if row["outcome"] != "cancelled":
+                    await conn.execute(update(wait_records).where(
+                        wait_records.c.id == wait_id,
+                    ).values(outcome="cancelled", resolved_at=now, cleared_at=now,
+                             decision_reason="supervisor_cancelled", decision_inputs=inputs,
+                             version=wait_records.c.version + 1))
+                return {"task_id": task_id, "generation": generation, "state": "cleared",
+                        "reason": "supervisor_cancelled", "age_seconds": inputs.get("age_seconds"),
+                        "stuck_scans": 0, "redrive": inputs.get("redrive"),
+                        "incident_id": incident_id}
+
         first = inputs.get("first_completed_at") or completed_at or now
         age = max(0.0, now - first)
         if state == "progressing" and age >= threshold.stuck_after_seconds:
@@ -439,7 +464,8 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
         from src.integration.delivery_branches import observe_completed_branches as observe
     async with db._engine.connect() as conn:
         targets = [dict(row) for row in (await conn.execute(
-            select(projects.c.id, projects.c.hierarchical_integration_mode.label("mode"),
+            select(projects.c.id, projects.c.status,
+                   projects.c.hierarchical_integration_mode.label("mode"),
                    projects.c.hierarchical_integration_policy.label("policy"),
                    repos.c.id.label("repository_id"), repos.c.default_branch)
             .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
@@ -449,7 +475,7 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
     ordered = ([t for t in targets if cursor is None or t["id"] > cursor]
                + [t for t in targets if cursor is not None and t["id"] <= cursor])
     report: dict[str, Any] = {"projects": [], "deliveries": [], "unavailable": [],
-                              "train_disabled": [], "errors": []}
+                              "train_disabled": [], "project_inactive": [], "errors": []}
     seen = 0
     for target in ordered:
         if seen >= page_size:
@@ -458,6 +484,13 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
         report["projects"].append(project_id)
         async with db.immediate() as conn:
             pending = {row["owner_id"]: row for row in await _pending_rows_on(conn, project_id)}
+            if target["status"] != "ACTIVE":
+                report["project_inactive"].append(project_id)
+                await _mark_rows_on(conn, pending.values(),
+                                    reason="project_" + target["status"].lower(),
+                                    verification="verified", now=now)
+                await _config_put(conn, CURSOR_KEY, project_id)
+                continue
             if target["mode"] not in DELIVERING_MODES:
                 report["train_disabled"].append(project_id)
                 await _mark_rows_on(conn, pending.values(), reason="train_disabled",

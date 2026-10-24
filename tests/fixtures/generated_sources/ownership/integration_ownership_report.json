@@ -2092,6 +2092,895 @@
     "referenced_decision": "size-cap-delegation-2026-10-23",
     "task_id": "noble-flare-12"
   },
+  "hand_integration_measurement": {
+    "files": {
+      "dashboard/src/components/CreateTaskModal.tsx": 116,
+      "dashboard/src/components/EpicDelivery.tsx": 175,
+      "dashboard/src/components/TaskFieldsEditor.tsx": 307,
+      "dashboard/src/components/epicDeliveryFormat.ts": 87,
+      "dashboard/src/pages/TaskDetail.tsx": 163,
+      "dashboard/src/pages/command-center/TaskNode.tsx": 136,
+      "dashboard/src/pages/command-center/layout-v2/ContainerNode.tsx": 127,
+      "dashboard/src/pages/command-center/statusPillModel.ts": 12,
+      "dashboard/src/pages/command-center/taskReason.ts": 37,
+      "dashboard/src/pages/command-center/types.ts": 27,
+      "dashboard/src/pages/focus/FocusBatch.tsx": 36,
+      "dashboard/src/pages/focus/focusFormat.ts": 23,
+      "dashboard/src/pages/project/PolicyProfiles.tsx": 152,
+      "dashboard/src/panes/task-detail/TaskDetailBody.tsx": 523,
+      "migrations/integration_guards.py": 633,
+      "src/agent_waits.py": 13,
+      "src/api/codegen.py": 130,
+      "src/api/execute.py": 81,
+      "src/api/graph.py": 101,
+      "src/api/graph_layout.py": 849,
+      "src/api/messages.py": 129,
+      "src/api/models/__init__.py": 87,
+      "src/api/models/graph_layout.py": 3,
+      "src/api/models/integration.py": 19,
+      "src/api/models/review.py": 1,
+      "src/api/models/task.py": 61,
+      "src/api/providers.py": 47,
+      "src/api/pull_requests.py": 125,
+      "src/api/review_attachments.py": 40,
+      "src/api/scope.py": 447,
+      "src/api/sessions.py": 176,
+      "src/api/target_scope.py": 139,
+      "src/asks/operations.py": 2,
+      "src/asks/sources.py": 190,
+      "src/asks/standalone.py": 3,
+      "src/assignment_routing.py": 31,
+      "src/build_cache.py": 18,
+      "src/cli/app.py": 1,
+      "src/cli/auto_commands.py": 25,
+      "src/cli/client.py": 38,
+      "src/cli/daemon.py": 86,
+      "src/cli/db.py": 6,
+      "src/cli/envelope.py": 60,
+      "src/cli/formatter_registry.py": 431,
+      "src/cli/formatters.py": 143,
+      "src/cli/integration.py": 1465,
+      "src/cli/jobs.py": 30,
+      "src/cli/menus.py": 109,
+      "src/cli/projects.py": 168,
+      "src/cli/system_config.py": 134,
+      "src/cli/tasks.py": 461,
+      "src/cli/test_runner.py": 514,
+      "src/cli/vault.py": 15,
+      "src/commands/ask_commands.py": 12,
+      "src/commands/ci_commands.py": 679,
+      "src/commands/claim_commands.py": 1545,
+      "src/commands/contracts/__init__.py": 7,
+      "src/commands/contracts/builtin.py": 507,
+      "src/commands/contracts/decisions.py": 29,
+      "src/commands/contracts/integration.py": 2482,
+      "src/commands/contracts/models.py": 1,
+      "src/commands/contracts/promote.py": 54,
+      "src/commands/contracts/records.py": 23,
+      "src/commands/contracts/registry.py": 29,
+      "src/commands/contracts/wait.py": 1,
+      "src/commands/decision_commands.py": 5,
+      "src/commands/detached.py": 8,
+      "src/commands/fidelity_review_commands.py": 111,
+      "src/commands/gate_commands.py": 93,
+      "src/commands/git_commands.py": 316,
+      "src/commands/handler.py": 425,
+      "src/commands/helpers.py": 302,
+      "src/commands/integration_commands.py": 3230,
+      "src/commands/job_commands.py": 150,
+      "src/commands/object_loop_commands.py": 47,
+      "src/commands/operator_commands.py": 69,
+      "src/commands/playbook_commands.py": 284,
+      "src/commands/playbook_v2_commands.py": 212,
+      "src/commands/policy_commands.py": 445,
+      "src/commands/principal.py": 30,
+      "src/commands/project_commands.py": 366,
+      "src/commands/project_onboarding_commands.py": 27,
+      "src/commands/project_relocation_commands.py": 52,
+      "src/commands/promote_commands.py": 1456,
+      "src/commands/proposal_commands.py": 545,
+      "src/commands/resource_authorization.py": 257,
+      "src/commands/review_commands.py": 217,
+      "src/commands/routing_commands.py": 64,
+      "src/commands/session_commands.py": 1297,
+      "src/commands/spec_ingest_commands.py": 67,
+      "src/commands/supervisor_authority.py": 24,
+      "src/commands/surface_commands.py": 335,
+      "src/commands/system_commands.py": 197,
+      "src/commands/task_changes.py": 506,
+      "src/commands/task_commands.py": 4440,
+      "src/commands/task_split_commands.py": 349,
+      "src/commands/workspace_checkout_repair.py": 123,
+      "src/commands/workspace_cutover.py": 91,
+      "src/commands/worktree_commands.py": 10,
+      "src/config.py": 1330,
+      "src/config_tuning.py": 579,
+      "src/database/adapters/postgresql.py": 85,
+      "src/database/additive_migrations.py": 17,
+      "src/database/base.py": 50,
+      "src/database/legacy_sqlite_import.py": 336,
+      "src/database/queries/archive_queries.py": 792,
+      "src/database/queries/blocked_state.py": 81,
+      "src/database/queries/claim_queries.py": 1725,
+      "src/database/queries/continuation_queries.py": 72,
+      "src/database/queries/dependency_queries.py": 23,
+      "src/database/queries/escalation_queries.py": 38,
+      "src/database/queries/gate_queries.py": 5,
+      "src/database/queries/hierarchy_queries.py": 1565,
+      "src/database/queries/integration_control_queries.py": 117,
+      "src/database/queries/integration_delivery_queries.py": 202,
+      "src/database/queries/integration_reconciliation_queries.py": 69,
+      "src/database/queries/integration_schedule_queries.py": 59,
+      "src/database/queries/integration_state_queries.py": 612,
+      "src/database/queries/integration_subject_queries.py": 284,
+      "src/database/queries/integration_train_queries.py": 249,
+      "src/database/queries/job_queries.py": 144,
+      "src/database/queries/onboarding_queries.py": 63,
+      "src/database/queries/playbook_artifact_queries.py": 262,
+      "src/database/queries/playbook_run_queries.py": 148,
+      "src/database/queries/project_queries.py": 364,
+      "src/database/queries/pull_request_queries.py": 79,
+      "src/database/queries/result_queries.py": 36,
+      "src/database/queries/retained_workspace_queries.py": 126,
+      "src/database/queries/routing_queries.py": 22,
+      "src/database/queries/session_queries.py": 129,
+      "src/database/queries/stall_watch_queries.py": 1,
+      "src/database/queries/task_queries.py": 1580,
+      "src/database/queries/task_recovery_queries.py": 974,
+      "src/database/queries/task_references.py": 114,
+      "src/database/queries/task_reroute_queries.py": 56,
+      "src/database/queries/task_session_queries.py": 82,
+      "src/database/queries/wait_queries.py": 268,
+      "src/database/queries/workspace_queries.py": 326,
+      "src/database/tables.py": 2384,
+      "src/discord/task_delete.py": 29,
+      "src/doctor/__init__.py": 70,
+      "src/doctor/builtin.py": 54,
+      "src/doctor/git_checks.py": 51,
+      "src/doctor/ingestion_checks.py": 8,
+      "src/doctor/integration_checks.py": 790,
+      "src/doctor/pool_checks.py": 114,
+      "src/doctor/resource_checks.py": 53,
+      "src/doctor/stall_checks.py": 881,
+      "src/doctor/task_checks.py": 204,
+      "src/doctor/wait_checks.py": 8,
+      "src/embedded_mcp.py": 188,
+      "src/escalations/facts.py": 8,
+      "src/escalations/plan.py": 2,
+      "src/escalations/sources.py": 90,
+      "src/event_schemas.py": 352,
+      "src/git/github_activity.py": 18,
+      "src/git/github_contracts.py": 12,
+      "src/git/manager.py": 460,
+      "src/install/deploy.py": 19,
+      "src/install/onboarding.py": 294,
+      "src/install/update.py": 21,
+      "src/integration/__init__.py": 19,
+      "src/integration/accepted_repair.py": 570,
+      "src/integration/admission.py": 879,
+      "src/integration/app_mode.py": 728,
+      "src/integration/attestation.py": 1354,
+      "src/integration/batch_repair_publication.py": 200,
+      "src/integration/batches.py": 1161,
+      "src/integration/bookkeeping_guard.py": 272,
+      "src/integration/branch_backup.py": 79,
+      "src/integration/branch_discard.py": 447,
+      "src/integration/branch_materialization.py": 159,
+      "src/integration/branch_retirement.py": 660,
+      "src/integration/branch_sweep.py": 403,
+      "src/integration/cancelled_collection_recovery.py": 999,
+      "src/integration/candidate_baseline.py": 455,
+      "src/integration/canonical_reservation.py": 160,
+      "src/integration/check_reconciliation.py": 198,
+      "src/integration/checks.py": 670,
+      "src/integration/child_delivery.py": 897,
+      "src/integration/ci.py": 1845,
+      "src/integration/ci_producers.py": 475,
+      "src/integration/cleanup.py": 1977,
+      "src/integration/close_checks.py": 89,
+      "src/integration/close_handoff.py": 36,
+      "src/integration/close_merge.py": 225,
+      "src/integration/close_runtime.py": 237,
+      "src/integration/collecting_parent_recovery.py": 272,
+      "src/integration/collection.py": 284,
+      "src/integration/completed_container_recovery.py": 441,
+      "src/integration/completion_ci.py": 286,
+      "src/integration/completion_recovery.py": 342,
+      "src/integration/containment_audit.py": 155,
+      "src/integration/containment_cutover.py": 262,
+      "src/integration/containment_git.py": 98,
+      "src/integration/containment_inventory.py": 133,
+      "src/integration/cutover.py": 670,
+      "src/integration/delegate_release.py": 609,
+      "src/integration/delivered_close.py": 408,
+      "src/integration/delivery_branches.py": 1335,
+      "src/integration/delivery_engine.py": 70,
+      "src/integration/delivery_observer.py": 1087,
+      "src/integration/delivery_path.py": 91,
+      "src/integration/delivery_truth.py": 1190,
+      "src/integration/delivery_watchdog.py": 547,
+      "src/integration/development.py": 789,
+      "src/integration/development_policy.py": 127,
+      "src/integration/development_policy_template.md": 101,
+      "src/integration/dispatch_waits.py": 168,
+      "src/integration/drain_owners.py": 190,
+      "src/integration/engine.py": 533,
+      "src/integration/epic_branch.py": 63,
+      "src/integration/epic_delivery.py": 1590,
+      "src/integration/epics.py": 574,
+      "src/integration/failed_verification_recovery.py": 646,
+      "src/integration/failure_groups.py": 254,
+      "src/integration/finished_owners.py": 443,
+      "src/integration/fixer_batches.py": 242,
+      "src/integration/fixer_runtime.py": 552,
+      "src/integration/fixers.py": 520,
+      "src/integration/gates.py": 369,
+      "src/integration/generated_merge_driver.py": 59,
+      "src/integration/git_truth.py": 877,
+      "src/integration/github_review_poll.py": 774,
+      "src/integration/gitops.py": 704,
+      "src/integration/green_continuation.py": 87,
+      "src/integration/hierarchy.py": 2135,
+      "src/integration/hosted_attestation.py": 518,
+      "src/integration/legacy_backfill.py": 562,
+      "src/integration/legacy_park_retirement.py": 162,
+      "src/integration/live_operations.py": 3,
+      "src/integration/lock.py": 509,
+      "src/integration/manual_control.py": 150,
+      "src/integration/migration_heads.py": 54,
+      "src/integration/models.py": 587,
+      "src/integration/mutation_recovery.py": 223,
+      "src/integration/noop_repair.py": 392,
+      "src/integration/observe.py": 1685,
+      "src/integration/obsolete_child_disposal.py": 262,
+      "src/integration/obsolete_children.py": 62,
+      "src/integration/operation_ownership.py": 35,
+      "src/integration/outbox.py": 410,
+      "src/integration/owner_guards.py": 341,
+      "src/integration/owner_recovery.py": 1485,
+      "src/integration/ownership.py": 605,
+      "src/integration/parent_adapters.py": 51,
+      "src/integration/parent_repair_heads.py": 1710,
+      "src/integration/parent_source.py": 326,
+      "src/integration/parent_subjects.py": 284,
+      "src/integration/pr_admission.py": 485,
+      "src/integration/pr_cleanup.py": 517,
+      "src/integration/pr_delivery.py": 356,
+      "src/integration/pr_repair_publication.py": 180,
+      "src/integration/preflight.py": 246,
+      "src/integration/preparation_handoff.py": 154,
+      "src/integration/promotion_contracts.py": 72,
+      "src/integration/promotion_migrations.py": 69,
+      "src/integration/promotion_notes.py": 362,
+      "src/integration/promotion_routing.py": 46,
+      "src/integration/promotion_steps.py": 1860,
+      "src/integration/protection.py": 765,
+      "src/integration/provenance.py": 649,
+      "src/integration/provenance_migration.py": 169,
+      "src/integration/publication_delegations.py": 268,
+      "src/integration/publishable_artifact.py": 39,
+      "src/integration/published_repair_handoff.py": 400,
+      "src/integration/quiesce.py": 375,
+      "src/integration/reconciler_repair_close.py": 697,
+      "src/integration/records.py": 1358,
+      "src/integration/regeneration.py": 442,
+      "src/integration/release.py": 918,
+      "src/integration/removal_guard.py": 310,
+      "src/integration/repair.py": 6317,
+      "src/integration/repair_lineage.py": 29,
+      "src/integration/repair_progress.py": 134,
+      "src/integration/repository_git.py": 191,
+      "src/integration/repository_incidents.py": 174,
+      "src/integration/repository_recovery.py": 467,
+      "src/integration/retained_workspace.py": 86,
+      "src/integration/reviews.py": 1125,
+      "src/integration/root_authorization.py": 371,
+      "src/integration/root_pr_recovery.py": 177,
+      "src/integration/root_pr_refresh.py": 252,
+      "src/integration/root_pull_requests.py": 711,
+      "src/integration/row_query.py": 13,
+      "src/integration/runtime_contracts.py": 1165,
+      "src/integration/selection_metrics.py": 59,
+      "src/integration/service.py": 324,
+      "src/integration/source_ancestry.py": 195,
+      "src/integration/source_ci.py": 236,
+      "src/integration/source_delivery.py": 17,
+      "src/integration/source_repairs.py": 512,
+      "src/integration/source_trailer.py": 139,
+      "src/integration/stacked_branches.py": 1871,
+      "src/integration/stale_owners.py": 642,
+      "src/integration/stall_alerts.py": 48,
+      "src/integration/status.py": 657,
+      "src/integration/stranded_children.py": 534,
+      "src/integration/superseded_completion.py": 512,
+      "src/integration/suspended_parent_recovery.py": 341,
+      "src/integration/task_deletion.py": 746,
+      "src/integration/task_removal.py": 108,
+      "src/integration/train.py": 1327,
+      "src/integration/train_controls.py": 1135,
+      "src/integration/train_policy.py": 137,
+      "src/integration/train_sources.py": 3736,
+      "src/integration/trust_manifest.py": 420,
+      "src/integration/truth_reconciler.py": 666,
+      "src/integration/truth_retention.py": 116,
+      "src/integration/verifier_subject.py": 113,
+      "src/integration/writers.py": 317,
+      "src/jobs/artifacts.py": 31,
+      "src/jobs/editor_pin.py": 91,
+      "src/jobs/identity.py": 54,
+      "src/jobs/matter.py": 174,
+      "src/jobs/pytest_output.py": 349,
+      "src/jobs/runner.py": 30,
+      "src/jobs/service.py": 614,
+      "src/jobs/workspace.py": 76,
+      "src/main.py": 362,
+      "src/mcp_interfaces.py": 31,
+      "src/mcp_registration.py": 159,
+      "src/metrics/delivery_latency.py": 31,
+      "src/metrics/host.py": 25,
+      "src/metrics/perf.py": 12,
+      "src/models.py": 98,
+      "src/notifications/builder.py": 29,
+      "src/object_loop/artifacts.py": 183,
+      "src/object_loop/evidence.py": 91,
+      "src/operator_decisions.py": 164,
+      "src/orchestrator/agent_reconciler.py": 9,
+      "src/orchestrator/core.py": 2912,
+      "src/orchestrator/events.py": 44,
+      "src/orchestrator/execution.py": 2208,
+      "src/orchestrator/git_ops.py": 1413,
+      "src/orchestrator/lifecycle.py": 49,
+      "src/orchestrator/monitoring.py": 125,
+      "src/orchestrator/pools.py": 320,
+      "src/orchestrator/provider_failover.py": 121,
+      "src/orchestrator/retained_workspace.py": 121,
+      "src/orchestrator/stranded_work.py": 34,
+      "src/orchestrator/task_checkpoint.py": 109,
+      "src/orchestrator/workspace.py": 2120,
+      "src/orchestrator/workspace_attachments.py": 956,
+      "src/orchestrator/workspace_binding_audit.py": 31,
+      "src/orchestrator/workspace_claim_recovery.py": 4,
+      "src/orchestrator/worktree_manager.py": 456,
+      "src/playbooks/artifact_diff.py": 77,
+      "src/playbooks/definition.py": 2,
+      "src/playbooks/integration_policy.py": 493,
+      "src/playbooks/pipeline_lowering.py": 59,
+      "src/playbooks/private_values.py": 19,
+      "src/playbooks/proposal.py": 141,
+      "src/playbooks/routing.py": 52,
+      "src/playbooks/runtime.py": 611,
+      "src/playbooks/semantic_diff.py": 111,
+      "src/playbooks/services.py": 267,
+      "src/playbooks/state.py": 1,
+      "src/playbooks/train_policy.py": 3,
+      "src/plugins/internal/git.py": 230,
+      "src/plugins/services.py": 8,
+      "src/policy_profiles/integration.py": 109,
+      "src/policy_profiles/models.py": 36,
+      "src/policy_profiles/service.py": 355,
+      "src/portable_config.py": 71,
+      "src/portable_setup.py": 20,
+      "src/preparation_failure.py": 40,
+      "src/prime/renderer.py": 208,
+      "src/prime/sections.py": 148,
+      "src/profiles/capabilities.py": 10,
+      "src/profiles/task_execution.py": 13,
+      "src/projects/onboarding.py": 20,
+      "src/projects/relocation.py": 155,
+      "src/projects/storage_binding.py": 28,
+      "src/prompts/default_playbooks/default-assignment-routing.md": 154,
+      "src/prompts/integration_playbooks/fast-smooth-train.md": 32,
+      "src/prompts/integration_playbooks/parent-integration.md": 185,
+      "src/prompts/integration_playbooks/promotion-continuous.md": 72,
+      "src/prompts/integration_playbooks/promotion-request.md": 77,
+      "src/prompts/integration_playbooks/root-train.md": 181,
+      "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md": 183,
+      "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md": 190,
+      "src/prompts/reviewed_playbooks/default-assignment-routing/source.md": 154,
+      "src/prompts/reviewed_playbooks/fast-smooth-train/source.md": 14,
+      "src/prompts/reviewed_playbooks/promotion-continuous/source.md": 53,
+      "src/prompts/reviewed_playbooks/promotion-request/source.md": 48,
+      "src/providers/inflight.py": 72,
+      "src/reports/morning.py": 52,
+      "src/resources/__init__.py": 8,
+      "src/resources/semaphore.py": 27,
+      "src/resources/slot_report.py": 13,
+      "src/resources/test_runs.py": 208,
+      "src/routing/planner.py": 217,
+      "src/routing/sources.py": 7,
+      "src/sessions/dialogs.py": 18,
+      "src/sessions/env.py": 134,
+      "src/sessions/flock_audit.py": 21,
+      "src/sessions/obsolete.py": 752,
+      "src/sessions/proctable.py": 138,
+      "src/sessions/reconciler.py": 670,
+      "src/sessions/spec.py": 210,
+      "src/sessions/subprocess.py": 10,
+      "src/state_machine.py": 2,
+      "src/task_graph/__init__.py": 3,
+      "src/task_graph/activity.py": 30,
+      "src/task_graph/batch_checks.py": 389,
+      "src/task_graph/batch_retirement.py": 118,
+      "src/task_graph/creator.py": 357,
+      "src/task_graph/integration_dependencies.py": 87,
+      "src/task_graph/readiness.py": 162,
+      "src/task_names.py": 38,
+      "src/test_selection/report.py": 45,
+      "src/tools/definitions.py": 750,
+      "src/tools/registry.py": 4,
+      "src/wait_runtime/eviction.py": 40,
+      "src/wait_runtime/hibernate.py": 280,
+      "src/wait_runtime/legacy_parking.py": 84,
+      "src/wait_runtime/lifecycle.py": 171,
+      "src/wait_runtime/measurements.py": 45,
+      "src/wait_runtime/restart.py": 29,
+      "src/wait_runtime/resume.py": 416,
+      "src/wait_runtime/scheduler.py": 223,
+      "src/wait_runtime/service.py": 80,
+      "src/waits/adapters/base.py": 15,
+      "src/waits/adapters/batch.py": 40,
+      "src/waits/adapters/ci.py": 54,
+      "src/waits/adapters/close_merge.py": 40,
+      "src/waits/adapters/close_scope.py": 30,
+      "src/waits/adapters/job.py": 21,
+      "src/waits/admission.py": 251,
+      "src/waits/decisions.py": 54,
+      "src/waits/dispatcher.py": 115,
+      "src/waits/graph.py": 15,
+      "src/waits/holding.py": 9,
+      "src/waits/loops.py": 19,
+      "src/waits/ownership.py": 49,
+      "src/waits/recovery.py": 3,
+      "src/waits/reservations.py": 20,
+      "src/waits/source_locking.py": 44,
+      "src/waits/watchers/ci.py": 177,
+      "src/warm_workspaces.py": 93,
+      "src/workflow_pipeline_view.py": 1,
+      "src/workspace_ownership.py": 135
+    },
+    "groups": {
+      "companions": 10308,
+      "engine": 82443,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 62370,
+      "ui": 262
+    },
+    "tables": {
+      "epic_dependencies": [
+        "src/database/tables.py",
+        5018,
+        5028
+      ],
+      "integration_attestation_publications": [
+        "src/database/tables.py",
+        4659,
+        4715
+      ],
+      "integration_batch_members": [
+        "src/database/tables.py",
+        3930,
+        3973
+      ],
+      "integration_batches": [
+        "src/database/tables.py",
+        3847,
+        3928
+      ],
+      "integration_branch_owners": [
+        "src/database/tables.py",
+        3500,
+        3534
+      ],
+      "integration_candidate_member_results": [
+        "src/database/tables.py",
+        4005,
+        4047
+      ],
+      "integration_candidate_publications": [
+        "src/database/tables.py",
+        4049,
+        4088
+      ],
+      "integration_candidate_ref_mutations": [
+        "src/database/tables.py",
+        4205,
+        4272
+      ],
+      "integration_candidate_resolutions": [
+        "src/database/tables.py",
+        4090,
+        4186
+      ],
+      "integration_candidate_revisions": [
+        "src/database/tables.py",
+        3975,
+        4003
+      ],
+      "integration_check_evidence": [
+        "src/database/tables.py",
+        4593,
+        4657
+      ],
+      "integration_child_dispositions": [
+        "src/database/tables.py",
+        4449,
+        4476
+      ],
+      "integration_cleanup_items": [
+        "src/database/tables.py",
+        4717,
+        4830
+      ],
+      "integration_close_attempts": [
+        "src/database/tables.py",
+        7742,
+        7772
+      ],
+      "integration_delegate_releases": [
+        "src/database/tables.py",
+        4535,
+        4564
+      ],
+      "integration_episode_receipt_acceptances": [
+        "src/database/tables.py",
+        4931,
+        4979
+      ],
+      "integration_history_waiver_consumptions": [
+        "src/database/tables.py",
+        5175,
+        5209
+      ],
+      "integration_history_waivers": [
+        "src/database/tables.py",
+        5101,
+        5123
+      ],
+      "integration_legacy_deliveries": [
+        "src/database/tables.py",
+        5283,
+        5315
+      ],
+      "integration_legacy_suppression": [
+        "src/database/tables.py",
+        5211,
+        5229
+      ],
+      "integration_operation_artifact_pins": [
+        "src/database/tables.py",
+        4999,
+        5016
+      ],
+      "integration_outbox": [
+        "src/database/tables.py",
+        5231,
+        5254
+      ],
+      "integration_outbox_artifact_pins": [
+        "src/database/tables.py",
+        5256,
+        5272
+      ],
+      "integration_owner_recoveries": [
+        "src/database/tables.py",
+        4573,
+        4591
+      ],
+      "integration_parent_episodes": [
+        "src/database/tables.py",
+        4430,
+        4447
+      ],
+      "integration_parent_operation_completions": [
+        "src/database/tables.py",
+        4897,
+        4929
+      ],
+      "integration_parent_verification_evidence": [
+        "src/database/tables.py",
+        4981,
+        4997
+      ],
+      "integration_parent_verifications": [
+        "src/database/tables.py",
+        4857,
+        4895
+      ],
+      "integration_promotion_intents": [
+        "src/database/tables.py",
+        3616,
+        3751
+      ],
+      "integration_release_results": [
+        "src/database/tables.py",
+        5081,
+        5095
+      ],
+      "integration_repair_operations": [
+        "src/database/tables.py",
+        4364,
+        4428
+      ],
+      "integration_repair_stage_evidence": [
+        "src/database/tables.py",
+        4832,
+        4855
+      ],
+      "integration_repair_stages": [
+        "src/database/tables.py",
+        4478,
+        4519
+      ],
+      "integration_review_evidence": [
+        "src/database/tables.py",
+        3536,
+        3577
+      ],
+      "integration_rollout_transitions": [
+        "src/database/tables.py",
+        5125,
+        5173
+      ],
+      "integration_root_authorizations": [
+        "src/database/tables.py",
+        3582,
+        3614
+      ],
+      "integration_root_intent_members": [
+        "src/database/tables.py",
+        4274,
+        4362
+      ],
+      "integration_source_ci": [
+        "src/database/tables.py",
+        726,
+        758
+      ],
+      "integration_subject_journal": [
+        "src/database/tables.py",
+        5557,
+        5624
+      ],
+      "integration_subjects": [
+        "src/database/tables.py",
+        5373,
+        5550
+      ],
+      "project_integration_leases": [
+        "src/database/tables.py",
+        5067,
+        5079
+      ],
+      "project_integration_schedules": [
+        "src/database/tables.py",
+        5030,
+        5065
+      ],
+      "task_branch_origins": [
+        "src/database/tables.py",
+        3379,
+        3441
+      ],
+      "task_delivery_receipts": [
+        "src/database/tables.py",
+        3753,
+        3845
+      ],
+      "task_integration_checkpoints": [
+        "src/database/tables.py",
+        3284,
+        3350
+      ]
+    },
+    "total": 157530,
+    "unknown": [],
+    "unknown_sinks": []
+  },
+  "hand_integration_reconciliation": {
+    "authority": "size-cap-delegation-2026-10-23",
+    "authorized_owned_delta": 2212,
+    "claim_marker_recovery_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 5,
+      "authorized_shared_owned_delta": 5,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-3cec5c343e89461790d7371a8ac0111c",
+      "dev_source_revision": "b4d6931c79aa04b0e50edd50ed0be6dde1ca31e9",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157544,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1929",
+      "reason": "Exact approved +5 shared owned lines for missing claim-marker recovery. Remeasured after merging current dev; preserve original baselines, all historical grants and ownership classifications, with zero remaining headroom.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "a10b7d957d2fb0030e396097fee73b5a431fda05",
+      "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
+      "task_id": "wise-crest-14",
+      "thread_id": "wise-crest-14-ci-size"
+    },
+    "expires_at": "s4_modules",
+    "held_ingestion_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82420,
+      "previous_measured_owned_total": 157507,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "8e4496f7763808591ec8db0c79b4591b263829d0",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with repaired dev, explicitly preapproved in bright-quest-30 under operator decision 6679052c. Preserve all historical evidence and original caps; no new headroom or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
+    "held_ingestion_dev_merge_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "6cb338192d569c4df75539e5848fd32be05ac980",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157530,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "67341d693cd448e6eca98392a3a4b9104bf2e449",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with current dev and its approved large-session prompt amendment, preapproved in bright-quest-30. Preserve both original composition records, all historical evidence and original caps; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
+    "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
+    "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
+    "large_session_prompt_composition": {
+      "authorized_engine_delta": 23,
+      "authorized_owned_delta": 23,
+      "authorized_table_delta": 0,
+      "charged_file": "src/integration/fixer_runtime.py",
+      "decision_message_id": "msg-06bb3b1643ef4298a715c0e55fa317b9",
+      "previous_measured_engine_lines": 82420,
+      "previous_measured_owned_total": 157507,
+      "previous_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1919",
+      "reason": "Compose the previously approved exact +23 owned/engine lines on current dev after the supervisor-directed merge. Preserve all historical grants, ownership classifications and zero remaining headroom; no new tables or storage category.",
+      "source_revision": "5e33516f93715b484eb15c2525d050ac303d5ee4",
+      "task_id": "swift-lantern-21"
+    },
+    "legacy_bookkeeping_refresh_composition": {
+      "authorized_engine_delta": 24,
+      "authorized_owned_delta": 24,
+      "authorized_table_delta": 0,
+      "charged_file": "src/integration/bookkeeping_guard.py",
+      "decision_message_id": "msg-9de2c6e7e51249babbc2e680b41d185d",
+      "dev_source_revision": "2378cda7eda6ba241bae7a9ab43c70111607199b",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157549,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1935",
+      "reason": "Exact approved +24 owned and engine lines for inherited legacy bookkeeping evidence. Includes the already landed wise-crest-14 grant; preserves original baselines, historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "8ecfb8e7e384db46a6b203141165c033e58c02e0",
+      "task_id": "solid-dune-53",
+      "thread_id": "solid-dune-53-size-amendment"
+    },
+    "legacy_epic_delivery_composition": {
+      "authorized_engine_delta": 37,
+      "authorized_owned_delta": 37,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/stacked_branches.py": 8,
+        "src/integration/train_sources.py": 29
+      },
+      "decision_message_id": "msg-83c55ca50e03451b85cc6040d1e3ce04",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157549,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1934",
+      "reason": "Exact supervisor-approved +37 owned/engine lines for current passing legacy epic Git delivery proof and redundant refresh suppression. Preserve original baselines, historical grants and classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
+      "task_id": "keen-harbor-84"
+    },
+    "measured_engine_lines": 82504,
+    "measured_owned_total": 157711,
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "original_owned_total_cap": 155499,
+    "project_schedule_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 101,
+      "authorized_shared_owned_delta": 101,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-3f67bea5611149e99abb6ae53a48aae7",
+      "dev_source_revision": "b0bb1645a81b14b594192d6a75e80f6c4fdd3b4f",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82504,
+      "previous_measured_owned_total": 157610,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1945",
+      "reason": "Exact supervisor-approved +101 counted shared owned lines for project schedules and their legacy-import exclusion. Count register_schedule_contracts without a new ownership exclusion; preserve original baselines, historical grants and classifications, with zero remaining headroom.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "e906bfe0b601a4cd7c78ac9bd079bb7f5b43ef39",
+      "supersedes_decision_message_id": "msg-8a308cadb20142e38c2692c762734e85",
+      "task_id": "swift-forge-67",
+      "thread_id": "swift-forge-67-ci-size"
+    },
+    "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
+    "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
+    "remaining_headroom": 0,
+    "source_ci_repair_composition": {
+      "authorized_engine_delta": 46,
+      "authorized_owned_delta": 46,
+      "merged_pull_request": 1917,
+      "merged_source_revision": "ccd4d9a095bbe5f433bdec5af2192786f0640096",
+      "merged_task_id": "nimble-willow-51",
+      "previous_measured_engine_lines": 82374,
+      "previous_measured_owned_total": 157461,
+      "reason": "Exact combined-tree remeasurement under the existing size-cap delegation after the supervisor-authorized ancestry-preserving merge of PR 1917. No new headroom or storage category.",
+      "source_revision": "66f21e348",
+      "supervisor_decision_message_id": "msg-09ca31f5246b46af8c7d4bcd1602faec"
+    },
+    "source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+    "supervisor_decision_message_id": "msg-2077aa41ec2c4f8685869fa59596627b",
+    "task_id": "smart-nexus-83"
+  },
+  "held_ingestion_children_landing_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 14,
+    "authorized_table_delta": 0,
+    "dev_source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+    "measured_engine_lines": 82361,
+    "measured_groups": {
+      "companions": 10308,
+      "engine": 82361,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 62379,
+      "ui": 262
+    },
+    "measured_owned_total": 157457,
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 82361,
+    "previous_owned_total": 157443,
+    "previous_table_count": 45,
+    "reason": "Exact combined-tree ownership amendment for landing held-ingestion children. Preapproved by operator decision 6679052c on sharp-cascade-53 under size-cap-delegation-2026-10-23, as directed in bright-quest-30. Preserve historical measurements, existing classifications and original caps; no added headroom. Dev already exceeds the original transition owned cap (157443 versus 155499); this landing adds 14 owned shared lines, no engine lines or tables.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "repaired_dev_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+      "measured_engine_lines": 82420,
+      "measured_groups": {
+        "companions": 10308,
+        "engine": 82420,
+        "guards": 633,
+        "policy": 493,
+        "policy_sources": 1021,
+        "shared": 62384,
+        "ui": 262
+      },
+      "measured_owned_total": 157521,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82420,
+      "previous_measured_owned_total": 157507,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "8e4496f7763808591ec8db0c79b4591b263829d0",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with repaired dev, explicitly preapproved in bright-quest-30 under operator decision 6679052c. Preserve all historical evidence and original caps; no new headroom or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
+    "source_revision": "65a3009e776b490bd2665a44512d2813a4125675",
+    "task_id": "bright-quest-30"
+  },
   "held_ingestion_p4_merge_measurement": {
     "authority": "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
     "global_decision": "907cdbb6-a78a-4d3f-9fd0-063b0cd050d6",
@@ -3996,6 +4885,23 @@
     "remaining_owned_allowance": 17431
   },
   "landing_revision": "8e73e088fa5050621a165b9d13f90ef88334572d",
+  "large_session_prompt_measurement": {
+    "authorized_engine_delta": 23,
+    "authorized_owned_delta": 23,
+    "authorized_table_delta": 0,
+    "charged_file": "src/integration/fixer_runtime.py",
+    "decision_message_id": "msg-06bb3b1643ef4298a715c0e55fa317b9",
+    "measured_engine_lines": 82384,
+    "measured_owned_total": 157466,
+    "measured_source_revision": "3a346fe90f36ce8776a1f86fc125babfb97c5578",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "previous_source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1919",
+    "reason": "Retain complete frozen fixer input in a local evidence file and bound the startup preview. Record only this task's exact 23-line amendment under the project supervisor's delegated approval. The inherited dev-wide overage is owned by smart-nexus-83 and is excluded from this grant; this record does not reinstate the retired batch exception or grant additional headroom.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "swift-lantern-21"
+  },
   "legacy_bookkeeping_guard_measurement": {
     "authorization": "Supervisor reopen instructions, 2026-10-23: record the exact measured amendment without asking.",
     "authorized_engine_delta": 352,
@@ -4325,6 +5231,688 @@
     "referenced_decision": "size-cap-delegation-2026-10-23",
     "required_pr_head": "14183dc9d82cdc4cb32610827e228b49b6e488d2",
     "task_id": "swift-nexus-38"
+  },
+  "reconciliation_definitions": {
+    "src/api/graph.py::build_graph_router": {
+      "fingerprint": "e15bb1b9c0d1cf79b5f4d9d1f4da2a8264fdb5a44749812f1e72ce07516007b5",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/graph.py::import from src.task_graph.readiness import load_readiness": {
+      "fingerprint": "35aaceece5d461f27373841ea8dd05cc2d4c1a5b4b75f2b3cb8ee8bf7d983eec",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/__init__.py::_category_modules": {
+      "fingerprint": "1c13b874452aebd7e0084504edcc5aa358933e48fa2a26147adc0691b432d8b9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/integration.py::IntegrationBatchFixResponse": {
+      "fingerprint": "978f8547b8afc8f80da766484aee7a1eaa3ddb3f436d295e1be1be42a6fe647f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/integration.py::IntegrationContinueCloseResponse": {
+      "fingerprint": "85e499a5a3b11b36fe66c8d9acd9bd1332f092bb0bbb91d70bb0081573746af6",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/integration.py::RESPONSE_MODELS['integration_batch_fix']": {
+      "fingerprint": "9f5c608333b6be98df460225a5317573c7a381d05eee6500c59f468a99ab1f86",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/models/integration.py::RESPONSE_MODELS['integration_continue_close']": {
+      "fingerprint": "dd0762347fc35f62737319c95cb3ea80ae1b03a679143ebdf136a561956f276b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/pull_requests.py::PendingPullRequestInbox._refresh": {
+      "fingerprint": "9b0dcbd1b6d9057b30b43f8e130eb21ac25e357399b7e26632039f15140d17ad",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/pull_requests.py::PendingPullRequestInbox._refresh_row": {
+      "fingerprint": "deb72d543d809cd73ac4dc6985a158fe2e40288baa9cc091ca2f624f18c370eb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/pull_requests.py::import from src.git.github_activity import github_component": {
+      "fingerprint": "8174576041f4c1bdc245c4c5f31887a67b73a41f3a9f39718d7513bc77ec5219",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/scope.py::_check_worker_git_scope": {
+      "fingerprint": "e21df5b4e47f2b7cd5880b07dad45d319fb30aabd97977c75f3b002cfdee1019",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/api/target_scope.py::_publication_delegation_project": {
+      "fingerprint": "d67ed86f95d0052bee7598b6b9544abef510b27031ba858aaf7531ea243185f9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/assignment_routing.py::claimable_routes": {
+      "fingerprint": "6c0113bedc6beaf820549a6afa19d0d0fa6bca0fa3bfda52bb2c45a1f9417d6b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/build_cache.py::cache_environment": {
+      "fingerprint": "5d53947d0850fa729a260660803b234fda0c5ca04c00cdacd8afde864bc640e1",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/build_cache.py::resolved_cache_settings": {
+      "fingerprint": "f5cd38cb10f14f133bd383720f8f86105d9f248dc0ea707c124816bcd5757202",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_delegate_publication']": {
+      "fingerprint": "715f3bd6b29a490eae520d5f9d22235a4050f4d8b65fb86b480d1d141cba2c6b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_fast_forward_pr']": {
+      "fingerprint": "c94cef8f65bf1208508fae7ff7eb814325f1c449dfcfed2b9daef31a94477b25",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_restore_task_origin']": {
+      "fingerprint": "eabb0e552d82f663948fbafa77af9c7e57b39bf2e96d84810a8fc851b0dea440",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_revoke_publication']": {
+      "fingerprint": "efb4ae357bdd1737a1b513e2cc943c4f6a60a95aac874ac98195003ba838998f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_fast_forward_pr']": {
+      "fingerprint": "7a9cde85605326e89215cfbd2f4cfd00b9ae40c0e0b5a1d6354f5c764969ad47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_redrive_root']": {
+      "fingerprint": "7a9cde85605326e89215cfbd2f4cfd00b9ae40c0e0b5a1d6354f5c764969ad47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_withheld_source']": {
+      "fingerprint": "e450d6faf7a2c317ac076a863ae0d4b3f5df44e3e96f7b1722b02c736d84cb2b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_restore_task_origin']": {
+      "fingerprint": "7a9cde85605326e89215cfbd2f4cfd00b9ae40c0e0b5a1d6354f5c764969ad47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._observation_budget": {
+      "fingerprint": "b54332f5b5a5d149c0a6c183b382e55486ebe154e467adc179f30956e35957c8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/contracts/wait.py::WaitCancelArgs.owner_kind": {
+      "fingerprint": "bb039279ba77e89d31eca6edca1130dccc1041bc7b4e573c5c03759b66f84734",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/detached.py::detached_operations": {
+      "fingerprint": "fde99dce5198e0a2bc09ac39c0fad472565d033fe5f193e1e42da012728994db",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::_collect_tree_tasks": {
+      "fingerprint": "da0416adaf00a6ced6f11eba88de06fd1150df22fbc7d23490662c94375cc883",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::_count_subtree": {
+      "fingerprint": "c227f899e89e61fbe5e3bff649ef46fe518056bbf6d454c0633c936730319ff7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::_count_subtree_by_status": {
+      "fingerprint": "ff6e8a33cad4cedcdb0805447401399ca97b5b5196f2fd7d2b92fe0c590f940b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::_format_task_tree": {
+      "fingerprint": "2244390bb5614739cdde30950b9845a1b1836f993a3db09d2d03ab68fedd9aee",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::format_dependency_list": {
+      "fingerprint": "f3d1132b0f0d8668daf2661dd8b161979e3ba05ce4cb9960a3e1dae460b60257",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::progress_bar": {
+      "fingerprint": "a6d3fb347dd2c5453edc276d07c7a547037fde2c2b26e97964b70972c61e87f6",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/principal.py::batch_release_actor": {
+      "fingerprint": "0152b4bdd98bdd6d02d31fb88b76a349e81416d31d3e0731534e43fe450ef569",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/project_relocation_commands.py::ProjectRelocationCommandsMixin._cmd_project_relocate": {
+      "fingerprint": "2962f2de4e1f3900cbf1bba94862f51a6923340c0c14f598ce0b1bbd4034d0f1",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/project_relocation_commands.py::import from src.integration.checks import ChecksState, ExactChecks, RequiredChecks": {
+      "fingerprint": "4cce2ec42c147531332cd0a8b460907b13fb85e5e23090e7c41a17c6d35a6aeb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/project_relocation_commands.py::import from src.integration.development_policy import project_development_pin": {
+      "fingerprint": "e06ea2c9fd0cb0862fa7aea718340ee855dd8a9165d5bc5a8550cbbeb98f226f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/project_relocation_commands.py::import from src.integration.runtime_contracts import HeadIdentity": {
+      "fingerprint": "22e8da93f245e510ec49dd0446faec6f710ed0bc77e49acbe67ebdcc867f794b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, fail_stranded_promotion_tasks_on, promotion_ref, promotion_task_defect": {
+      "fingerprint": "ad6d4a0a391ae6f4258668944b00a83526e1fcc8755fe8b2dab231553ba41ced",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._batch_repair_impact": {
+      "fingerprint": "6a648e60becd393b12193c596afe4430d607fa57e70fdc072763f50f6087cd4e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_release": {
+      "fingerprint": "c85df4c409996bc79c064aa77348f708e5645ebd978e7d1b4ff0031f7430e3cf",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/proposal_commands.py::import from src.integration.outbox import enqueue_batch_event, enqueue_integration_event": {
+      "fingerprint": "4b95f33252a51d11d1de0b95fd0e087736f52a4b5cd444ca4b18fc9dc1d2129e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_heartbeat": {
+      "fingerprint": "b4a2ea5386c320fc58123882b97e219a59c0451746bfe746eff28b5e2ac6e1e7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_get_task_tree": {
+      "fingerprint": "8ba3cea58a8d0c448ddc972cd89b4aa276d2a5a6f970815a2caf369607eaf208",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_children": {
+      "fingerprint": "0bbedd76b2b58af0aae3af05d01f42f605e627d1f6e60532d06458b4efec0a75",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_flat": {
+      "fingerprint": "1045e505ab785105d1eaf889931e6bdd0b4cee82677dce1625ac904626fa9d55",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_hierarchical": {
+      "fingerprint": "b0139244a28564991f5175717b88352f897e3758a76e268a9e0c14a9147195d1",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._restart_task": {
+      "fingerprint": "3dc35bbe935c70dc37e9f814eb6e043fec428df6099524a22bc018ed000d5140",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_split_commands.py::TaskSplitCommandsMixin._cmd_task_split": {
+      "fingerprint": "94b254c77f44e877ac43b7f953fd00b327eb94df0391c799c6d1ddd21c458adb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_split_commands.py::TaskSplitCommandsMixin._split_task_on": {
+      "fingerprint": "109406a7f87e4bfb5c6b1b315c1aca49a9abfa9c89e419b24bd97a0b0385d89e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_split_commands.py::import from src.database.tables import ingest_batches, projects, task_criteria, task_integration_checkpoints, task_metadata, tasks": {
+      "fingerprint": "5a93a33d6ca2da3b8fe25f44d06a264bb8421d5329f2ca297bda1827988eea47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_repair_workspace_checkout": {
+      "fingerprint": "4461797f531af83aaa0958457cd9cf83ec6a9fadb4ef5bd949dc586139315ce9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/blocked_state.py::import from src.database.tables import events, gates, task_completion_records, task_delivery_receipts, task_dependencies, task_gates, task_labels, task_metadata, tasks": {
+      "fingerprint": "29f097536f9ddccfcb0bc91831874b8e022925dcf2c12ce0e82879275d2849be",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/claim_queries.py::pool_primary_kind": {
+      "fingerprint": "5a961220c0e28cde688b981edb12c85afa0646b4b47478845e299250c5e43677",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/claim_queries.py::retire_owner_attachments": {
+      "fingerprint": "b8bd18cfb00f392bbd7b72b713bbe82a39af4b01d88a0db0c4ef58ee083215af",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/continuation_queries.py::retire_task_waits": {
+      "fingerprint": "510021c2214216898adab6b36f10ad3c51c60679aa48aed4afa9d3148c133973",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/escalation_queries.py::EscalationQueriesMixin._enqueue_initial_escalation_on": {
+      "fingerprint": "3838d351a68b0579c5b3d1110b635824c240e45f558f6638ae3924ef7ea3d95d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::_configured_cross_parent_delivery": {
+      "fingerprint": "1987e8fc360c6cd9592b95393846a16f91f53a8ac1e44d0d7c0b1b421397d1ef",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::_delivered_same_parent_prerequisites": {
+      "fingerprint": "91715e5712d7296d22e9e45785f490ad4c9e3af093a7385ea5aa6ed74b62bba1",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::_materialized_origin_when_hierarchical": {
+      "fingerprint": "ac4114174ae2b6cc274b15b3339c2c1585933efebb5ebb74ea37ca9788032525",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::_train_disabled_for_binding": {
+      "fingerprint": "9ff69a3ef02aba96d7ed40d0e0aed5fbcd0949f0af24b5a4a23c71b64340817d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_context, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "fingerprint": "8db461ca6476869f0fb1a076504d232ba3e9301514486ac496f6f3755cf9eefb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/playbook_artifact_queries.py::PlaybookArtifactQueryMixin.set_playbook_activation": {
+      "fingerprint": "dcf0a9f24cd9663ff55ba010117bb1b9c161ccdbb26c87078471232ee49d9b1f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs, projects, sessions, subagent_events, task_branch_origins, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "fingerprint": "350f42297ec49afa01935202a592f91ca2df08be7e4aef40c504df7dc995a9d7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/task_reroute_queries.py::import from src.database.queries.claim_queries import _frontier_predicates, pool_primary_kind, route_claimable_in": {
+      "fingerprint": "37b68547ef12452f4c71df04a75b299b02a84849dcc27daff67de21ac53152bd",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_branch_origins, task_dependencies, task_session_attempts, tasks": {
+      "fingerprint": "455c28d55acee925165d18e6c76c13978a42ebff92c767bdd1f9fa1adbab8dfd",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/database/queries/wait_queries.py::wait_explain": {
+      "fingerprint": "1485a87b1b977b2183c2448d2efa6e6664cde69d37ec3b841e4190756d1951d5",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/doctor/ingestion_checks.py::ingestion_checks": {
+      "fingerprint": "69186aa5f6d30989dccd5076741cf05b3397293ca2cb67d372392df590e62341",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/doctor/stall_checks.py::_delivery_stuck_findings": {
+      "fingerprint": "9456a38c5a679cd2d2a265f076b9aa328666c4ade0a2641e47409b895fcb3dc7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/doctor/stall_checks.py::_stranded_promotion_findings": {
+      "fingerprint": "b7e2eb40653a85fcb1ebc479533338eff89afd0f12f4a27f3050cfa3ab31500d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/doctor/wait_checks.py::wait_checks": {
+      "fingerprint": "c20902183f20184a569f288bde050a6ee07ac43c9b829a81a413cb896025ec8b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/escalations/facts.py::EscalationFacts.wants_human_delivery": {
+      "fingerprint": "d6d51c9afba1785b263a62b48bb30a09660f1fb88ccbe319286733330f8a2d55",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/escalations/sources.py::OPERATIONAL_SOURCES": {
+      "fingerprint": "5aeb12d9610719c21cc25a95d62e8d74931fe87a7ebe2a4c4333476d2fd060b9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/escalations/sources.py::operational_source": {
+      "fingerprint": "4a67bc5aa9bf5b61fdb2d01771a40862356f60db73f0970d1bb2c41fda1f1c65",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.publication_verified']": {
+      "fingerprint": "f678cb8a2927073604b7d5b2556468f7aa87bb6275d22138d3eb6256ec03ff54",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/event_schemas.py::_INTEGRATION_SCHEMAS['integration.readiness_changed']": {
+      "fingerprint": "48462459748b9d385291bcdd0fc6b195009dd8b5964c0b52e3a83bd7a68a6679",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/git/manager.py::bounded_git_reads": {
+      "fingerprint": "b5f4e5aa2a1cb58fe46630ada4fc4ffc8db3b1fce81d17c93bbdd52b9f365669",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/git/manager.py::detached_commit_context": {
+      "fingerprint": "cbaa86c9c3444afd19be6d3c0426578457c53bdf717e2167102176863cc11744",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/git/manager.py::within_git_read_budget": {
+      "fingerprint": "c53818c760b8f1cbf5d4a11ebdbfe34e530c63ef56a1e054a4540831ba0c0253",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/install/deploy.py::read_record": {
+      "fingerprint": "14e34003314ce4666b58a21859912f205e984e2c3d2dac1de632c5f08a0e55aa",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/jobs/runner.py::import from src.resources.semaphore import SlotSemaphore, SlotTimeout, full_suite_lock_dir": {
+      "fingerprint": "6f7cdd8bc111e943af6312f06a2331bea326a37ee34a7eadd4ffcd191f739a7d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/jobs/workspace.py::candidate_workspace": {
+      "fingerprint": "e31e98e366e8d849337be99228b5f8c22adc9861cbc9c6d566dd1f6013bfa40d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/metrics/delivery_latency.py::_wait_view": {
+      "fingerprint": "a0a72eef1fb26362b07ab69346ba8cd165cfec35a3f98d403ae2b308ca20e872",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/metrics/delivery_latency.py::generation_of": {
+      "fingerprint": "ed978ec120f1468b39a5c797520f18f7ac962c479177ae1700f9fbce14cea178",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/metrics/perf.py::timed_operation": {
+      "fingerprint": "0e620d82e8ab372109397fcbdf7152f99b708f45c631374d71043cc9e3ce8d8b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/operator_decisions.py::WITHHELD_RELEASE_SOURCE": {
+      "fingerprint": "4c689932914e07d72d9fcdbb96e21d8d77f0affe50828581553e8bbbd72068ac",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/operator_decisions.py::note_on": {
+      "fingerprint": "6c907f5c0da104047821f60fdc9ab0949820556a4b737054cb71152b8e2211d4",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/operator_decisions.py::withheld_release": {
+      "fingerprint": "ae0331d7efac742564fc8a37c783e100a50dbd8ffa2e689faa2d5f77508fac2f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/operator_decisions.py::withheld_release_ref": {
+      "fingerprint": "2586be8e9686cf0c268e701fbe3464375b2745566009ce6713a8d6ff294e4e60",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/orchestrator/agent_reconciler.py::project_live_session_counts": {
+      "fingerprint": "07a9a23df1824acfba900de7ee27a4851b557a28ed655ac445af6c5623a4785e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/orchestrator/core.py::Orchestrator._schedule": {
+      "fingerprint": "1d6f0a28ad2c3bfb7c359d796be54f26d97561e698f4dc5548aded93fb6c868c",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/orchestrator/git_ops.py::import from src.models import INTEGRATION_MODE_PULL_REQUEST, PhaseResult, PipelineContext, Task, TaskStatus": {
+      "fingerprint": "37cdf1819944371363e69339ed2dce01c37f8574420d8325ca2122d577be31eb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_task_slot": {
+      "fingerprint": "1d07dba0eb8b092b6e8cb81fec26a6716042368db97b92d08aa8138808bb37e0",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, jobs, sessions": {
+      "fingerprint": "8aa93526fcb1866a453755d3a440a0655f95c10e2e057ea1c579cded7d2efff6",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._checkpoint_row": {
+      "fingerprint": "908fc672e39461ab5972f17ac37c0ab20a7064bccfd3808a7ac28af5abd55496",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/playbooks/private_values.py::private_value_key_health": {
+      "fingerprint": "522dc6e1b744399c79e301987747b6a1cfd12b3553e9fefbe7128737394e193b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/playbooks/routing.py::_loaded_activations": {
+      "fingerprint": "6d193906ad83b99293647600a18af366abdc7020267a564978cf90709a448d5a",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._on_event": {
+      "fingerprint": "f5cd9afff4d32f3a89946d84ca262ff2a13426f0e7be214cd6540a7a7d74ea66",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/playbooks/train_policy.py::TrainPolicy.required_checks": {
+      "fingerprint": "133418b315ab49e783146bed4013f418ce9cb8fd760b335f96b18d65753d6b92",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/playbooks/train_policy.py::import from src.integration.models import RequiredCheckSet": {
+      "fingerprint": "6e02686c6d0f21153a1c3d736427fc5326393b74c22a1913bba87656fa0bab33",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/plugins/internal/git.py::GitPlugin._push_delegated": {
+      "fingerprint": "74322cbe14a7c0ff186c6edf7cb210155e10e8f1339c563028a9a824cbebbf68",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/plugins/internal/git.py::GitPlugin._worker_publication": {
+      "fingerprint": "cfffb4f336d4bdd4ce6be340db388f049fd1805b6d3a5ea2de54e6dc4a0c664f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/plugins/services.py::ConfigService.integration_git_first": {
+      "fingerprint": "acd18e95c2bb4048e999ee03cb2f5162be5fd85256d39cddb45c21d84e60ef1c",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/plugins/services.py::ConfigServiceImpl.integration_git_first": {
+      "fingerprint": "f60d647e80c43fbdb93b12cd2a90701fdaf89b5b7f6a2c4bc79bb9194ebe32c8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/profiles/task_execution.py::is_supervisor_profile": {
+      "fingerprint": "551e11de0ac0a4c061ec4c41ae39d358b07ab31d7a1e17134cc3cede95418303",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/relocation.py::ProjectRelocation._fences": {
+      "fingerprint": "2f12c2f012d049c1bde4f2a8d2b07ac504fc60b94b0a9bb755751f81a692222b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/relocation.py::ProjectRelocation.apply": {
+      "fingerprint": "2bc6761df7123ba1e40d1776a139d157aae04b31823b5e404c83f76e80c376ae",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/relocation.py::import from src.database.tables import integration_branch_owners, jobs, job_workspace_pins, project_integration_leases, projects, repos, sessions, tasks, workspaces": {
+      "fingerprint": "3956e0bfb8bae13e8ec3a724a481ed2355ca35c3f7dbe442c65f332784afe336",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/relocation.py::import from src.jobs.artifacts import atomic_json, read_json": {
+      "fingerprint": "568b9a05cdb236f57597ac641dc97b7af95e411cd4b70bbdb8aa1011cc806e1f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/storage_binding.py::bound_path": {
+      "fingerprint": "db842c810250424952ff9e902420e44cd2bc25851725694337fcaf6058a2b5de",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/storage_binding.py::read_binding": {
+      "fingerprint": "c48fff2cbda2d031eaec01dd605684963ea2d024153f1c601a9433e77a2f1a14",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/storage_binding.py::repository_path": {
+      "fingerprint": "fa442cf4b92d6e2b61d37d4a80cc5abfad71f2eca59e2dff167dab5d1fe8a11a",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/prompts/reviewed_playbooks/fast-smooth-train/source.md::## Rule: observe-policy": {
+      "fingerprint": "1da37619b7f96c3cba76b93ce7d2f43ac8cd2ef55263977f093404621abd2619",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/prompts/reviewed_playbooks/fast-smooth-train/source.md::<header>": {
+      "fingerprint": "302088a828c81b026a4487fc2625ee236fd444077fa69cadc40b21760f859c81",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::# Promotion continuous": {
+      "fingerprint": "e79839c6894489ebd3163f6d2ee98a8bed1dcda5384b08994fe50b93ff05e2bc",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::<header>": {
+      "fingerprint": "6b1ebbfe65b125027ccf7948f671a09e93b9710c9b2e5dcceee97f211e3d63c0",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::<header>": {
+      "fingerprint": "03d66beb422830dc3419a0e0c7e48ddb291150da6d1db485f68a2852a433ac48",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/routing/planner.py::plan_route": {
+      "fingerprint": "40efe4051648e7a744115e39f961b6b89ffc73350d7b359164de532e6c5408ad",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/routing/sources.py::route_is_claimable": {
+      "fingerprint": "90c6b36b586c8dd855b5951e5a83f1a03700bb5f4703a73b55cdbd22b601cd9f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/sessions/dialogs.py::first_match": {
+      "fingerprint": "edf6e7281ae9800d741e0022b248b30e4f80d0a0f354dea006948c2d8e4df340",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/sessions/env.py::session_db_isolation": {
+      "fingerprint": "f3e4cda89a1a6df12d91e626fb8cbd27d31c8b1915f0e5cc51f5e59f47b413fc",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/sessions/obsolete.py::prepare_retirement_on": {
+      "fingerprint": "170ef9bd5b6fc26112fbb9ca7b45ebcc7cc67cc0ebadf05481a76ff292f37dae",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/activity.py::attach_activity": {
+      "fingerprint": "1ef7f3073d7ddedaa3cc31dd6b830848e2c4a3fef166b07a190b9379ced6c693",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/activity.py::load_activity": {
+      "fingerprint": "848b8244b579e43443b96a77cdb9ea63679d38c4fcdd5f4fe65543852a2cfa80",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/batch_retirement.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "fingerprint": "a476ba45a067d489b903d9c04addaca4151deb85521ba70e980708b56f375976",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/batch_retirement.py::import from src.database.tables import agents, archived_tasks, ingest_batch_receipts, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, sessions, task_comments, task_dependencies, task_metadata, tasks, workspaces": {
+      "fingerprint": "2cded14cd2cc957090db116619de022d5884895aed7d75c09a0169a3b579e2e9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/batch_retirement.py::prove_retired_on": {
+      "fingerprint": "cd18d62aa94f6e2c48fb1f2b155c4448a5ddb1adca8b62fc4432613b44b9a429",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/tools/definitions.py::_TOOL_CATEGORIES['integration_batch_fix']": {
+      "fingerprint": "c8da975ebc4570e403c47ce3728ea47115998bb2f0fd3143bef551df5a2f6e93",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/tools/definitions.py::statement:9dbb3d96e20fc1cb": {
+      "fingerprint": "9dbb3d96e20fc1cbf2da9089e4cb9e4bb0fdf453f06477f6a142b00315d066d8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/tools/registry.py::CATEGORIES['integration']": {
+      "fingerprint": "fdaf7648c63b033eb1813910bdbdf1dcdec78926a94499af2426ed1aa6eda489",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/hibernate.py::STOP_PROOF_MAX_ATTEMPTS": {
+      "fingerprint": "ee498b6c81555e6f7f6d2249a0b3211b3ab4ae450eab328566ae93334c541108",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.register_in_transaction": {
+      "fingerprint": "130acc2381e0a07feb2c3e9f1f3685d0f0b636d0b3180392f0e01fbd93ed9708",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/lifecycle.py::import from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS, HibernationTransaction, begin_suspension": {
+      "fingerprint": "b42e28da72745e04a4a74aac271e0998c86c2bb58aeb7d53c6e264fbd7bf5a66",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/restart.py::readmit": {
+      "fingerprint": "36c35d9b563f3ac858d01e25ed8f06cc029fc172cb0a5333317433793d5c31fd",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/restart.py::release_continuations": {
+      "fingerprint": "e70d2a60b9b8d8b22ace97b1b0a4fbb1acd3956bd5d38220dd07e265dced59e8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/restart.py::restart_lock": {
+      "fingerprint": "6664c73c0b5b3481e7de76a19545338ffd20d9e24d1bfdad776358c52a774ca0",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.requeue": {
+      "fingerprint": "785accff5b08eddd30f89fe135c9ff1dbe62d6cb730226a4ef5fbd4d575f7f68",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.workspace_retry": {
+      "fingerprint": "8b5969dbb025f613f5925eef6b1430c0f8da696e1ea1035d854fe12a013d1697",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/resume.py::import from src.wait_runtime.legacy_parking import parked": {
+      "fingerprint": "5e07e31f569e550fdcf8ca882ff3291f60c0d2866d9b0f2badb21b7f83d9ad68",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService._changed": {
+      "fingerprint": "11b033e3e0614bdcf6ef8aab79658d8206a0da4eb918acf850141a0bbbad6645",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.admission import AdmissionReader, admission_pass, branch_holders": {
+      "fingerprint": "f576f14d071a4ebe09145f436951ef823df44e174b80360a30f716617a687197",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/adapters/base.py::fields": {
+      "fingerprint": "f7b56f319fde43b844893f65881eed6bccb7178de27d094ccb1248f8725ee77d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/adapters/base.py::string": {
+      "fingerprint": "40121e68125f379002c8c18d02e129ea26a5bbb2a385ce712f86add95d01bbfc",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/admission.py::AdmissionReader.prepared": {
+      "fingerprint": "979594f8b9b7e5ee0c1e1d4f0556a7bc40253c6b427e93656beae656432a280d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/admission.py::admission_pass": {
+      "fingerprint": "5d64f167699b59b411f53338b5c0b06dae09b82e505563023ae3eaec8c643b39",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger, wait_records, workspaces": {
+      "fingerprint": "0035a527537bb1f9c0ba5fc1955f8211f37fffd094cc14d39ed67b0a0d5b0bc8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/dispatcher.py::WakeDispatcher.finish": {
+      "fingerprint": "72250fa356fd585f1ff3ace2752f5b66ef46ff299c317cb7b429c6edad297347",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/dispatcher.py::import from src.wait_runtime.legacy_parking import legacy_parked": {
+      "fingerprint": "d17fd7e44a3789eee16d2431375a60574724f88b4deb4e755922c961b6d7c080",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/graph.py::background_graph_work": {
+      "fingerprint": "92380561ae8bf4ca390e9700035b2bfc07ce70185c8a23877fcf0783ca7f1fa7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/graph.py::graph_locked": {
+      "fingerprint": "3b247a14466cfbe630a3371672c0f15bc2b5e41fcd1d6cf600fb9825a7c747ce",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/holding.py::active_wait_for": {
+      "fingerprint": "9b7ee03548bf6aa05c0696875c97797ef487fa57476cc3646c86151c2b92c8f6",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/loops.py::prepare_progress": {
+      "fingerprint": "9ebfdfc3f91fd354485fca22ee05380631e41c9d551ea39593d743191862fed9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/ownership.py::fence_owner": {
+      "fingerprint": "229c150376f23c48525301185920db9ccaae966d8445cf34984cd2da0b102020",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher._ci": {
+      "fingerprint": "e5897082d82fe42ec7e1d439616c011d0fed719753c39d5926cbb929b87822c8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.head": {
+      "fingerprint": "a0ce0529a4e3b0524ab2d8ec7b02e59e93975a2b1f563aeaca490c7bba6a3304",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.lock_source": {
+      "fingerprint": "1133c09b2699b4412ebb71f652ca7a4ef1ba9652a1704f63744bde3905a11d81",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.read": {
+      "fingerprint": "4597ec7c2f03e3e87beb417143b70a8c2fdfe52d14a9e52cf7113d316b43fe92",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.tick": {
+      "fingerprint": "1c06b3258558732fcc803099bf8399a0468fbe60328ad9367ee4b28dbd22032e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::TERMINAL": {
+      "fingerprint": "65c4f565e0fb2611cdb857956bd8bf6f59702529ac371ead59557e8d5248e7e4",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.database.tables import integration_check_evidence, repos, wait_records": {
+      "fingerprint": "fd5e88c5e33b2415f6462bf38be0bb4ee8277ec2f83eaeb215aa0266c061177b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.git.github_contracts import GitHubAccessError, rate_limit_cause": {
+      "fingerprint": "70cef043d2c891c35e59b98ffb16d65f4ad981059cb94296b621b2b7c8fb5d52",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.integration.checks import Conclusion, evaluate": {
+      "fingerprint": "6645f103edd952aacbe39942ccd3f4f75b619b18f6f607a5ea2bd2fb57ddd508",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.integration.runtime_contracts import HeadIdentity": {
+      "fingerprint": "22e8da93f245e510ec49dd0446faec6f710ed0bc77e49acbe67ebdcc867f794b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/warm_workspaces.py::WarmWorkspacePool.acquire": {
+      "fingerprint": "594da60d2768d139ef27fa6e042562f05c961585421b7023183132718d5210d4",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/warm_workspaces.py::import from src.jobs.artifacts import atomic_json, read_json": {
+      "fingerprint": "568b9a05cdb236f57597ac641dc97b7af95e411cd4b70bbdb8aa1011cc806e1f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/warm_workspaces.py::primary_store": {
+      "fingerprint": "cfc4b630f6c68addd9edcb923416ab74e5400a1791cdc763ab2c1ced74cfbf6c",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::claim_blocks_acquisition": {
+      "fingerprint": "5403d6b6692a8950bcff4e37498c89515b5ccabe6d73f57e984dcab2d43ba1e9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::import from src.database.tables import agents, integration_branch_owners as owners, sessions, task_metadata, tasks, workspaces": {
+      "fingerprint": "b300cefb99e5b1d8db3e441dc8440b248170c712a30c57d1a6782ec2bf57e585",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::import from src.integration.row_query import select_row": {
+      "fingerprint": "7422fbc976e826b945f127797df1eceeacc40ab61a08b69c45b419fba7c352a3",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::ownership_blockers": {
+      "fingerprint": "61c9456267d20c2c835888175607d62ba7dbceca933990c607b0545c66409bfb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/workspace_ownership.py::unattached_workspace": {
+      "fingerprint": "2fb636e59a30f83515f4d46461874496f5e00e94b658f70cd21d5a25bf76c474",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
   },
   "remote_pr_base_measurement": {
     "authorized_engine_delta": 8,
@@ -4854,6 +6442,9 @@
       ],
       "reason": "Imports or references an explicitly owned integration primitive."
     },
+    "src/api/graph.py::build_graph_router": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    },
     "src/api/graph_layout.py::build_graph_layout_router": {
       "baseline_span": [
         212,
@@ -4876,6 +6467,7 @@
       ],
       "reason": "Imports or references an explicitly owned integration primitive."
     },
+    "src/api/graph_layout.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/api/messages.py::get_session_messages": {
       "baseline_span": [
         195,
@@ -7152,6 +8744,9 @@
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_set_task_status": {
       "reason": "Refuse administrative completion of a branched Git root in train modes without explicit completion provenance."
     },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_children": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_recover": {
       "baseline_span": [
         4273,
@@ -7187,6 +8782,12 @@
     },
     "src/commands/task_commands.py::TaskCommandsMixin._keep_for_delivery": {
       "reason": "The archive command's deliver disposition: keeps the task, names its undelivered holders and the root delivery answer from the existing authorize-root read, and records an ordinary comment and audit. Archives nothing and moves no ref."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_flat": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._list_tasks_hierarchical": {
+      "reason": "Held-ingestion composition in bright-quest-30: preserve the already charged graph/task read adapter after adding held-batch summary projection; no mutation, storage sink or publication authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._materialized_branches_under": {
       "baseline_span": [
@@ -7290,6 +8891,7 @@
     "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
       "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
+    "src/commands/task_commands.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/commands/workspace_checkout_repair.py::import from src.commands.supervisor_authority import operator_or_global_supervisor": {
       "reason": "Imports the authority guard used by the integration-aware base-checkout repair; conservatively charges the adapter's imported authorization seam."
     },
@@ -14572,7 +16174,175 @@
   },
   "transition": {
     "automatic_baseline_increase": false,
-    "batch_exception": {
+    "batch_exception": null,
+    "batch_exception_retirement": {
+      "base_revision": "feeb89e65",
+      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
+      "measured_engine_lines_after": 81861,
+      "measured_owned_total_after": 155342,
+      "measured_owned_total_before": 160874,
+      "measured_table_count_after": 45,
+      "reason": "Retired duplicated, replaced and uncalled integration code with the tests that only exercised it; removed the manifest opt-in. Fixed baseline, replacement allowance, final caps, history and retries unchanged.",
+      "reclaimed_owned_lines": 5532,
+      "restore_task": "azure-ridge-72",
+      "restored_owned_total_cap": 155499
+    },
+    "engine_cap": 82504,
+    "expires_at": "s4_modules",
+    "fixed_replacement_allowance": 15000,
+    "hand_integration_reconciliation": {
+      "authority": "size-cap-delegation-2026-10-23",
+      "authorized_owned_delta": 2212,
+      "claim_marker_recovery_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 5,
+        "authorized_shared_owned_delta": 5,
+        "authorized_table_delta": 0,
+        "decision_message_id": "msg-3cec5c343e89461790d7371a8ac0111c",
+        "dev_source_revision": "b4d6931c79aa04b0e50edd50ed0be6dde1ca31e9",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82443,
+        "previous_measured_owned_total": 157544,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1929",
+        "reason": "Exact approved +5 shared owned lines for missing claim-marker recovery. Remeasured after merging current dev; preserve original baselines, all historical grants and ownership classifications, with zero remaining headroom.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "a10b7d957d2fb0030e396097fee73b5a431fda05",
+        "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
+        "task_id": "wise-crest-14",
+        "thread_id": "wise-crest-14-ci-size"
+      },
+      "expires_at": "s4_modules",
+      "held_ingestion_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 14,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82420,
+        "previous_measured_owned_total": 157507,
+        "previous_measured_table_count": 45,
+        "published_source_revision": "8e4496f7763808591ec8db0c79b4591b263829d0",
+        "pull_request": 1918,
+        "reason": "Exact ancestry-preserving composition of the held-ingestion children with repaired dev, explicitly preapproved in bright-quest-30 under operator decision 6679052c. Preserve all historical evidence and original caps; no new headroom or storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bright-quest-30"
+      },
+      "held_ingestion_dev_merge_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 14,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "6cb338192d569c4df75539e5848fd32be05ac980",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82443,
+        "previous_measured_owned_total": 157530,
+        "previous_measured_table_count": 45,
+        "published_source_revision": "67341d693cd448e6eca98392a3a4b9104bf2e449",
+        "pull_request": 1918,
+        "reason": "Exact ancestry-preserving composition of the held-ingestion children with current dev and its approved large-session prompt amendment, preapproved in bright-quest-30. Preserve both original composition records, all historical evidence and original caps; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bright-quest-30"
+      },
+      "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
+      "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
+      "large_session_prompt_composition": {
+        "authorized_engine_delta": 23,
+        "authorized_owned_delta": 23,
+        "authorized_table_delta": 0,
+        "charged_file": "src/integration/fixer_runtime.py",
+        "decision_message_id": "msg-06bb3b1643ef4298a715c0e55fa317b9",
+        "previous_measured_engine_lines": 82420,
+        "previous_measured_owned_total": 157507,
+        "previous_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1919",
+        "reason": "Compose the previously approved exact +23 owned/engine lines on current dev after the supervisor-directed merge. Preserve all historical grants, ownership classifications and zero remaining headroom; no new tables or storage category.",
+        "source_revision": "5e33516f93715b484eb15c2525d050ac303d5ee4",
+        "task_id": "swift-lantern-21"
+      },
+      "legacy_bookkeeping_refresh_composition": {
+        "authorized_engine_delta": 24,
+        "authorized_owned_delta": 24,
+        "authorized_table_delta": 0,
+        "charged_file": "src/integration/bookkeeping_guard.py",
+        "decision_message_id": "msg-9de2c6e7e51249babbc2e680b41d185d",
+        "dev_source_revision": "2378cda7eda6ba241bae7a9ab43c70111607199b",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82443,
+        "previous_measured_owned_total": 157549,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1935",
+        "reason": "Exact approved +24 owned and engine lines for inherited legacy bookkeeping evidence. Includes the already landed wise-crest-14 grant; preserves original baselines, historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "8ecfb8e7e384db46a6b203141165c033e58c02e0",
+        "task_id": "solid-dune-53",
+        "thread_id": "solid-dune-53-size-amendment"
+      },
+      "legacy_epic_delivery_composition": {
+        "authorized_engine_delta": 37,
+        "authorized_owned_delta": 37,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/integration/stacked_branches.py": 8,
+          "src/integration/train_sources.py": 29
+        },
+        "decision_message_id": "msg-83c55ca50e03451b85cc6040d1e3ce04",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82443,
+        "previous_measured_owned_total": 157549,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1934",
+        "reason": "Exact supervisor-approved +37 owned/engine lines for current passing legacy epic Git delivery proof and redundant refresh suppression. Preserve original baselines, historical grants and classifications; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
+        "task_id": "keen-harbor-84"
+      },
+      "measured_engine_lines": 82504,
+      "measured_owned_total": 157711,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "original_owned_total_cap": 155499,
+      "project_schedule_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 101,
+        "authorized_shared_owned_delta": 101,
+        "authorized_table_delta": 0,
+        "decision_message_id": "msg-3f67bea5611149e99abb6ae53a48aae7",
+        "dev_source_revision": "b0bb1645a81b14b594192d6a75e80f6c4fdd3b4f",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82504,
+        "previous_measured_owned_total": 157610,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1945",
+        "reason": "Exact supervisor-approved +101 counted shared owned lines for project schedules and their legacy-import exclusion. Count register_schedule_contracts without a new ownership exclusion; preserve original baselines, historical grants and classifications, with zero remaining headroom.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "e906bfe0b601a4cd7c78ac9bd079bb7f5b43ef39",
+        "supersedes_decision_message_id": "msg-8a308cadb20142e38c2692c762734e85",
+        "task_id": "swift-forge-67",
+        "thread_id": "swift-forge-67-ci-size"
+      },
+      "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
+      "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
+      "remaining_headroom": 0,
+      "source_ci_repair_composition": {
+        "authorized_engine_delta": 46,
+        "authorized_owned_delta": 46,
+        "merged_pull_request": 1917,
+        "merged_source_revision": "ccd4d9a095bbe5f433bdec5af2192786f0640096",
+        "merged_task_id": "nimble-willow-51",
+        "previous_measured_engine_lines": 82374,
+        "previous_measured_owned_total": 157461,
+        "reason": "Exact combined-tree remeasurement under the existing size-cap delegation after the supervisor-authorized ancestry-preserving merge of PR 1917. No new headroom or storage category.",
+        "source_revision": "66f21e348",
+        "supervisor_decision_message_id": "msg-09ca31f5246b46af8c7d4bcd1602faec"
+      },
+      "source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+      "supervisor_decision_message_id": "msg-2077aa41ec2c4f8685869fa59596627b",
+      "task_id": "smart-nexus-83"
+    },
+    "original_owned_total_cap": 155499,
+    "owned_total_cap": 157711,
+    "phase": "transition",
+    "pre_reconciliation_batch_exception": {
       "amendments": [
         {
           "authorized_engine_delta": 15,
@@ -15477,24 +17247,6 @@
       ],
       "verification_task": "stark-willow-95.18"
     },
-    "batch_exception_retirement": {
-      "base_revision": "feeb89e65",
-      "decision_record": "record:2720bdbe-7521-427e-8e72-1f40a3ff9818",
-      "measured_engine_lines_after": 81861,
-      "measured_owned_total_after": 155342,
-      "measured_owned_total_before": 160874,
-      "measured_table_count_after": 45,
-      "reason": "Retired duplicated, replaced and uncalled integration code with the tests that only exercised it; removed the manifest opt-in. Fixed baseline, replacement allowance, final caps, history and retries unchanged.",
-      "reclaimed_owned_lines": 5532,
-      "restore_task": "azure-ridge-72",
-      "restored_owned_total_cap": 155499
-    },
-    "engine_cap": 97627,
-    "expires_at": "s4_modules",
-    "fixed_replacement_allowance": 15000,
-    "original_owned_total_cap": 155499,
-    "owned_total_cap": 161647,
-    "phase": "transition",
     "retired_batch_exception": {
       "batch_id": "train-745592300af5cef0338dec80ebabb465",
       "batch_measured_delta": 1916,

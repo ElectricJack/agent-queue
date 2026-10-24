@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/database/queries/blocked_state.py::import from src.database.tables import events, gates, task_completion_records, task_delivery_receipts, task_dependencies, task_gates, task_labels, task_metadata, tasks": {
+      "fingerprint": "29f097536f9ddccfcb0bc91831874b8e022925dcf2c12ce0e82879275d2849be",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/database/queries/blocked_state.py::BlockedStateMixin.delivery_failures": {
       "reason": "Reads current failed root delivery receipts and their resolution evidence to explain landing failures after the latest completion."

@@ -41,12 +41,18 @@ session exists.
 
 The implemented 2026-10-03 chat extension adds project routing. Set
 `discord.project_id` to the project served by this channel. AQ infers it when
-there is exactly one project. Inputs go to that project's live named
-supervisor, then to the live global supervisor. With several projects and no
+there is exactly one project. Inputs go to that project's enabled named
+supervisor, falling back to an existing global supervisor when the project
+supervisor is missing or disabled. Stopped and sleeping supervisors keep their
+address: after intake commits, an event wakes the independent delivery service
+and starts the addressed named session as needed. This does not wait for an
+orchestrator cycle or the routine delivery interval. With several projects and no
 `discord.project_id`, a shared channel belongs to none of them in particular,
 so the global supervisor answers for it rather than the input being queued for
-nobody. When no supervisor is running at all, the input remains queued and the
-channel says so; conversation intake does not cold-start a session.
+nobody. When no eligible supervisor exists at all, the input remains queued and
+the channel says so. Notification retries and gateway replays retain the original
+input and notice IDs. Other supervisors can inspect an input but cannot consume
+it through inbox injection or mark it read.
 
 ## Enable the route
 
@@ -143,11 +149,11 @@ no tag, and the thread simply becomes a conversation of its own.
 A conversation that *is* a thread answers inside it. A conversation the channel
 carries — a plain top-level message, or a direct message — never creates one:
 its acknowledgement, answer, status line and notices are ordinary posts in that
-channel, each carrying a Discord reply reference to the conversation's first
-message so the thread of conversation is visible without a Discord thread. If
-that referenced message has been deleted, Discord posts the answer without the
-reference rather than refusing it. An escalation incident still owns its own
-thread (§escalations.md); nothing here changes that.
+channel. Each answer carries a Discord reply reference to the operator's message
+it answers; acknowledgements, status lines and notices reference the conversation's
+first message. If that referenced message has been deleted, Discord posts the
+answer without the reference rather than refusing it. An escalation incident
+still owns its own thread (§escalations.md); nothing here changes that.
 
 AQ persists the conversation, verified author and input before queuing any
 Discord delivery. It queues one acknowledgement on the operator's message —
@@ -177,9 +183,9 @@ acknowledgement or delay notice is not completion. Removing an author from the
 allowlist revokes future intake and pending replies that would expose content
 to the newly restricted audience.
 
-## When no supervisor is live
+## When no supervisor exists
 
-A turn whose supervisor is offline stays durable and queued, and the channel says
+A turn with no eligible supervisor stays durable and queued, and the channel says
 so out loud rather than letting the message disappear into a queue: one status
 line per conversation, edited in place as the count grows —
 `⏸ Supervisor is offline. 2 messages queued; I'll answer when it starts.` — and

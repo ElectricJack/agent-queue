@@ -94,7 +94,7 @@ LIST_PAGE = 200
 
 #: Round trips one steady-state tiles request is allowed, as
 #: ``(statements, pooled transactions)``.  They are equal because every DB
-#: call on this path takes its own connection: twelve of them always run --
+#: call on this path takes its own connection: thirteen of them always run --
 #: ``get_project``, ``get_layout_meta``, the collapsed containers' paths,
 #: the edges touching them, ``list_agents``, ``list_gates``, the visible
 #: rows with their tasks, one ``count_task_subtasks`` lookup, one
@@ -102,9 +102,11 @@ LIST_PAGE = 200
 #: ids, one ``list_review_waits_for_tasks`` lookup (the reviews a card
 #: waits on, linked from it) over the same ids, one epic delivery read
 #: (``src/integration/epic_delivery.py``) over the visible nodes that have
-#: children and one activity read (``src/task_graph/activity.py``: a single
+#: children, one activity read (``src/task_graph/activity.py``: a single
 #: recursive statement over those same containers' subtrees, however many
-#: are visible) -- and two more
+#: are visible) and one held-batch membership read
+#: (``src/task_graph/ingestion.py``: ``task_batch_summaries`` over the visible
+#: ids, so a card held for fidelity review shows its batch) -- and two more
 #: (``load_layout_rows`` plus ``load_rows_with_tasks`` for the stub titles)
 #: only when an edge has an endpoint the request is not returning.
 #:
@@ -114,13 +116,13 @@ LIST_PAGE = 200
 #: of visible epics, plus collection readiness for epics whose children are
 #: all done -- ``tests/test_api_graph_layout.py`` holds the batching).
 #:
-#: Measured on ``pg_small`` at 14/14 for both focus shapes and 12/12 for the
+#: Measured on ``pg_small`` at 15/15 for both focus shapes and 13/13 for the
 #: rect one, whose cross-epic edge lands on a container that is itself
 #: inside the window, so it never reaches the stub queries.  A rect shape
 #: that starts paying them is a real change in what the request does, not
 #: noise: read the endpoint before raising this.
-TILES_ROUND_TRIPS_WITH_STUBS = (14, 14)
-TILES_ROUND_TRIPS_NO_STUBS = (12, 12)
+TILES_ROUND_TRIPS_WITH_STUBS = (15, 15)
+TILES_ROUND_TRIPS_NO_STUBS = (13, 13)
 
 #: Latency budgets, as a multiple of the reference request measured on the
 #: same box in the same process (see the module docstring).
@@ -303,7 +305,7 @@ async def _client(db):
 
 
 @contextmanager
-def _count_round_trips(db):
+def _count_round_trips(db, *, trace=None):
     """Statements *and* pooled transactions for the enclosed requests.
 
     Statements come from ``before_cursor_execute`` (what
@@ -319,6 +321,8 @@ def _count_round_trips(db):
 
     def _statement(conn, cursor, statement, parameters, context, executemany):
         counts["statements"] += 1
+        if trace is not None:
+            trace.append((statement, dict(context.compiled_parameters[0])))
 
     def _checkout(dbapi_connection, record, proxy):
         counts["transactions"] += 1
@@ -1022,7 +1026,7 @@ async def active_tiles_measurement(any_db, tmp_path, monkeypatch):
     observer._store = AsyncMock(side_effect=AssertionError("tiles initiated network Git"))
     db.set_delivery_observer(observer)
     service = DevelopmentPrimitives(db, git=GitManager(), data_dir=tmp_path)
-    db._admission_reader = partial(observe_admission, db, service=service)
+    db._admission_reader = AsyncMock(wraps=partial(observe_admission, db, service=service))
     authorize = AsyncMock(wraps=stacked_branches._unauthorized_sources)
     monkeypatch.setattr(stacked_branches, "_unauthorized_sources", authorize)
     body = {"variant": "active", "rect": {"x0": -8, "y0": -8, "x1": 16, "y1": 16},
@@ -1049,7 +1053,12 @@ async def active_tiles_measurement(any_db, tmp_path, monkeypatch):
     observer._store.assert_not_awaited()
     # The eight independent cards have no prerequisite sources. No historical
     # task may enter the recursive authorization walk, regardless of SQL count.
-    assert authorize.await_count
+    # Branchless independent cards now short-circuit authorization. Verify the
+    # admission boundary still receives only visible active tasks; if any source
+    # walk is needed, its prerequisite set must remain empty.
+    assert db._admission_reader.await_count
+    assert all(set(call.args[0]) == {f"live{n}" for n in range(8)}
+               for call in db._admission_reader.await_args_list)
     assert all(not call.args[1] for call in authorize.await_args_list)
     return samples
 
@@ -1135,7 +1144,8 @@ async def test_active_tiles_profile_and_query_budget(any_db, tmp_path, monkeypat
             assert response.status_code == 200, response.text
             assert len(response.json()["nodes"]) == 8
         profiler = cProfile.Profile()
-        with profiler, _count_round_trips(db) as counts:
+        trace = []
+        with profiler, _count_round_trips(db, trace=trace) as counts:
             assert (await ac.post(TILES, json=payload)).status_code == 200
         for call in db._admission_reader.await_args_list:
             assert set(call.args[0]) == {f"task-{n}" for n in range(8)}
@@ -1143,9 +1153,28 @@ async def test_active_tiles_profile_and_query_budget(any_db, tmp_path, monkeypat
     print(f"\n[active tiles {mode}] cold={samples[0] * 1000:.1f}ms; "
           f"warm p50={statistics.median(samples[1:]) * 1000:.1f}ms")
     # Includes real cached admission; no cost for the other 992 finished cards.
+    # 143d1b41d / 04b3d44f6 fence source rows, completions and metadata in
+    # _frontier_inputs before and after observation: 2 x 3 batched SELECTs.
+    # The unknown-evidence changes also remove two hierarchy display reads
+    # (net +4 there). SQL tracing confirms IN-scoped reads, never per-card I/O;
+    # scoped required_projects read also adds one hierarchy checkout.
+    # No-network assertions still guard provider I/O.
+    # Held-batch badges add one membership SELECT and checkout, including for
+    # released members whose task hold has cleared. Pin that read to the eight
+    # visible ids so it cannot grow into per-card or project-wide enrichment.
+    membership_reads = [
+        (sql, params) for sql, params in trace
+        if "FROM ingest_batches JOIN ingest_batch_members" in sql
+    ]
+    assert len(membership_reads) == 1
+    sql, params = membership_reads[0]
+    assert "WHERE ingest_batch_members.task_id IN (" in sql
+    assert {value for key, value in params.items() if key.startswith("task_id_")} == {
+        f"task-{n}" for n in range(8)
+    }
     statements, transactions = {
-        "disabled": (60, 18), "development": (64, 19),
-        "hierarchy": (87, 27), "train": (87, 27),
+        "disabled": (67, 19), "development": (71, 20),
+        "hierarchy": (92, 29), "train": (92, 29),
     }[mode]
     assert counts["statements"] <= statements
     assert counts["transactions"] <= transactions

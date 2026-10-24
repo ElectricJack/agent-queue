@@ -275,18 +275,18 @@
       "call": "delete",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1514,
+      "line": 1645,
       "owner": "ClaimQueryMixin.activate_claim",
-      "owner_fingerprint": "758ebc219a1f48a9b0daad7d9ed1bf1a9ae4a12a5e0a5a11e4970ebbc32a7340",
+      "owner_fingerprint": "455a8188c4eb48517f4ba8e811067cd71057f14e3c763425090ccb31be48683f",
       "reason": "Deletes stale preparation/attention markers and the exact claimed_by_session binding under claim activation fences; this is claim lifecycle cleanup, not ref replay."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation::9db730027a1de7e70c139ab21146787d9948bcc16f5a6fec39ca36519907ee96": {
       "call": "log_event",
       "disposition": "ordinary",
-      "integration_signal": true,
-      "line": 1125,
+      "integration_signal": false,
+      "line": 1269,
       "owner": "ClaimQueryMixin.park_task_for_continuation",
-      "owner_fingerprint": "21abdb7096408de95dde1329941055b5228d0d661d59671eb637416576ea9a47",
+      "owner_fingerprint": "359d350ab85d609adb511f91c8975dbe5fb46ec8708bc106c47e4342e9089059",
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.release_historical_pool_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {

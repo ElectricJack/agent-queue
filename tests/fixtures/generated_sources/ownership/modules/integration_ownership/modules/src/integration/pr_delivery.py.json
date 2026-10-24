@@ -4,9 +4,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 103,
+      "line": 106,
       "owner": "DeliveredPullRequestClosure.run",
-      "owner_fingerprint": "5102e4c798e992f108484ef8812b1d555806366d0def9a1d87cd265806e03e69",
+      "owner_fingerprint": "941f4247ee75c6f0cfa1720f7119cc27e552a84458e4c5bd0a99ae24d12acc6c",
       "reason": "Diagnostic audit of a Git-proven PR closure, written after project/task locks reject unfinished tasks and attached writers. Records the existing proof and operator reason only; never replays refs, mutates tasks or authorizes delivery."
     }
   }

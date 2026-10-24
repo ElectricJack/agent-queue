@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/orchestrator/git_ops.py::import from src.models import INTEGRATION_MODE_PULL_REQUEST, PhaseResult, PipelineContext, Task, TaskStatus": {
+      "fingerprint": "37cdf1819944371363e69339ed2dce01c37f8574420d8325ca2122d577be31eb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/orchestrator/git_ops.py::GitOpsMixin._create_pr_for_task": {
       "baseline_span": [

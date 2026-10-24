@@ -6313,7 +6313,7 @@
     },
     {
       "name": "task_batch_propose",
-      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
+      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. For an already delivered design, explicit no_op records delivered evidence without creating work; only its live ingester may settle an empty change set. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -6328,6 +6328,30 @@
           "dry_run": {
             "type": "boolean",
             "description": "Validate and return the diff without storing a proposal."
+          },
+          "no_op": {
+            "type": "object",
+            "description": "Design-ingest settlement when every approved goal is already delivered; requires no change operations.",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivered_evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Merged PR or commit citations checked by the ingester."
+              }
+            },
+            "required": [
+              "reason",
+              "delivered_evidence"
+            ],
+            "additionalProperties": false
           },
           "edits": {
             "type": "array",
@@ -12781,6 +12805,177 @@
       }
     },
     {
+      "name": "task_batch_review_record",
+      "description": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "section_verdicts": {
+            "additionalProperties": {
+              "enum": [
+                "faithful",
+                "fixed",
+                "scope_question"
+              ],
+              "type": "string"
+            },
+            "title": "Section Verdicts",
+            "type": "object"
+          },
+          "reverse_coverage_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Reverse Coverage Verdict",
+            "type": "string"
+          },
+          "walkthrough_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Walkthrough Verdict",
+            "type": "string"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_release",
+      "description": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest"
+        ],
+        "title": "TaskBatchReleaseArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_retire",
+      "description": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "reason"
+        ],
+        "title": "TaskBatchRetireArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "ensure_spec_ingest",
       "description": "Ensure one role task per applied approval decision, including archived receipts.",
       "input_schema": {
@@ -13743,6 +13938,151 @@
             "type": "string"
           }
         }
+      }
+    },
+    {
+      "name": "schedule_register",
+      "description": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "body": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "due_at": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Due At",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "body",
+          "due_at",
+          "idempotency_key"
+        ],
+        "title": "ScheduleRegisterArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schedule_get",
+      "description": "Read a project schedule and its firing/cancellation receipt.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schedule_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "schedule_id"
+        ],
+        "title": "SchedulePointerArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schedule_list",
+      "description": "List project-owned one-shot notifications and due times.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "fired",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "ScheduleListArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schedule_cancel",
+      "description": "Cancel a pending project notification schedule.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schedule_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "schedule_id"
+        ],
+        "title": "SchedulePointerArgs",
+        "type": "object"
       }
     }
   ],
@@ -19975,6 +20315,22 @@
         "additionalProperties": false
       }
     },
+    "reconcile_project_schedules": {
+      "name": "reconcile_project_schedules",
+      "description": "Execute the reconcile_project_schedules command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "now"
+        ],
+        "additionalProperties": false
+      }
+    },
     "scheduler_wait_sync": {
       "name": "scheduler_wait_sync",
       "description": "Scheduler wait sync through verified wait state.",
@@ -20344,177 +20700,6 @@
             "description": "Resolve session from this task id"
           }
         }
-      }
-    },
-    "task_batch_release": {
-      "name": "task_batch_release",
-      "description": "Verify source approval, the live graph and its fidelity receipt before release.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "expected_digest": {
-            "minLength": 1,
-            "title": "Expected Digest",
-            "type": "string"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "expected_digest"
-        ],
-        "title": "TaskBatchReleaseArgs",
-        "type": "object"
-      }
-    },
-    "task_batch_retire": {
-      "name": "task_batch_retire",
-      "description": "Require prior supported retirement of every member and reviewer; retain evidence.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "reason"
-        ],
-        "title": "TaskBatchRetireArgs",
-        "type": "object"
-      }
-    },
-    "task_batch_review_record": {
-      "name": "task_batch_review_record",
-      "description": "Attest every mapped section and whole-batch intent on the exact held graph.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "expected_digest": {
-            "minLength": 1,
-            "title": "Expected Digest",
-            "type": "string"
-          },
-          "section_verdicts": {
-            "additionalProperties": {
-              "enum": [
-                "faithful",
-                "fixed",
-                "scope_question"
-              ],
-              "type": "string"
-            },
-            "title": "Section Verdicts",
-            "type": "object"
-          },
-          "reverse_coverage_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Reverse Coverage Verdict",
-            "type": "string"
-          },
-          "walkthrough_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Walkthrough Verdict",
-            "type": "string"
-          },
-          "structural_findings": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Structural Findings",
-            "type": "array"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "expected_digest",
-          "section_verdicts",
-          "reverse_coverage_verdict",
-          "walkthrough_verdict",
-          "structural_findings"
-        ],
-        "title": "TaskBatchReviewRecordArgs",
-        "type": "object"
       }
     },
     "task_failure_triage_notify": {
@@ -21019,6 +21204,7 @@
   "categories": {
     "operator": "Scoped operator setup and preflight",
     "policy": "Portable project policy profiles: export, diff and selective import",
+    "schedule": "Project-owned one-shot supervisor notifications at absolute UTC instants.",
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "ci": "Required CI evidence and completed task audits",
@@ -21450,6 +21636,9 @@
     "batch_reconcile": "task",
     "ensure_fidelity_review": "task",
     "spec_ingest_legacy_adopt": "task",
+    "task_batch_review_record": "task",
+    "task_batch_release": "task",
+    "task_batch_retire": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",
@@ -21463,7 +21652,11 @@
     "ask_cutover_status": "review",
     "ask_repair_delivery": "review",
     "ask_intake": "review",
-    "ask_button": "review"
+    "ask_button": "review",
+    "schedule_register": "schedule",
+    "schedule_get": "schedule",
+    "schedule_list": "schedule",
+    "schedule_cancel": "schedule"
   },
   "cli_category_overrides": {
     "ask_list": "ask",

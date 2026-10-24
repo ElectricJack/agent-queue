@@ -53,9 +53,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 576,
+      "line": 637,
       "owner": "PoolsMixin._check_pool_progress",
-      "owner_fingerprint": "7c5e454a03686c889ef9e27c96ba852c703e42829c7ad847fd720c9b9066982a",
+      "owner_fingerprint": "20adb22eaaf2d13b5bde464567e2ec796b42260ab2f55c1dab72a97e57ae244f",
       "reason": "Audits pool.scaler_stalled with progress diagnostics; the event does not alter admission, reservations or delivery state."
     },
     "src/orchestrator/pools.py::PoolsMixin._emit_placement_starved::f2bc83f54522a114c6e29938e4315b96f4b29bdf4e269cbbbe2af02824951adb": {

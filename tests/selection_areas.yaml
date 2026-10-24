@@ -59,6 +59,7 @@ areas:
       - tests/test_get_stuck_tasks_command.py
       - tests/test_task_batch_commands.py
       - tests/test_cli_task_change_sets.py
+      - tests/test_cli_batch.py
       - tests/test_ingest_batch_queries.py
       - tests/test_fidelity_review.py
   - id: work-graph
@@ -408,6 +409,7 @@ areas:
       - tests/test_integration_service.py
       - tests/test_integration_stall_recovery.py
       - tests/test_integration_delivery_watchdog.py
+      - tests/test_integration_delivery_watchdog_regressions.py
       - tests/test_integration_schedule.py
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
@@ -795,6 +797,7 @@ areas:
       - tests/test_scheduler.py
       - tests/test_project_constraint*.py
       - tests/test_schedule.py
+      - tests/test_project_schedules.py
       - tests/test_timer_service*.py
   - id: metrics
     description: "Metrics: per-second sampling, roll-ups and retention, series API and WebSocket, chat-analyzer outcomes, fixed histograms, perf registry and loop lag, host attribution, PSI and test slots, relay deltas, route latency, pool waits, query timing and the dashboard-perf kit."

@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::<header>": {
+      "fingerprint": "03d66beb422830dc3419a0e0c7e48ddb291150da6d1db485f68a2852a433ac48",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: advance-source": {
       "reason": "Reviewed promotion policy reacts to durable source settlement using daemon-derived source and backmerge debt; continuous steps cancel only unpublished stale intents before requesting the newer exact source."

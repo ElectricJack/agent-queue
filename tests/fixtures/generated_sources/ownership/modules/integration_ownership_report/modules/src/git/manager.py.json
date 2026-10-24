@@ -1,4 +1,18 @@
 {
+  "reconciliation_definitions": {
+    "src/git/manager.py::bounded_git_reads": {
+      "fingerprint": "b5f4e5aa2a1cb58fe46630ada4fc4ffc8db3b1fce81d17c93bbdd52b9f365669",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/git/manager.py::detached_commit_context": {
+      "fingerprint": "cbaa86c9c3444afd19be6d3c0426578457c53bdf717e2167102176863cc11744",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/git/manager.py::within_git_read_budget": {
+      "fingerprint": "c53818c760b8f1cbf5d4a11ebdbfe34e530c63ef56a1e054a4540831ba0c0253",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/git/manager.py::GitManager._aresolve_delivery_tip": {
       "baseline_span": [

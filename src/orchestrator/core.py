@@ -2809,8 +2809,8 @@ class Orchestrator(
             logger.warning("Worker rung derivation failed", exc_info=True)
 
         # Seeding never overwrites a vault profile, so a control a release
-        # grants the supervisor would stay denied.  Merge the shipped grants
-        # its vault copy lacks (additive, ``.bak`` kept; ``capability_sync:
+        # grants a system profile would stay denied. Merge the shipped grants
+        # each vault copy lacks (additive, ``.bak`` kept; ``capability_sync:
         # false`` in its frontmatter opts out) before the DB sync below.
         from src.profiles.capability_sync import (
             publish_sync_result,
