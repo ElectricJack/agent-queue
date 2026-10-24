@@ -184,6 +184,11 @@ async def tree_files(git: GitManager, store: Path, ref: str) -> dict[str, bytes]
 
 
 async def check_merge(git: GitManager, store: Path, base: str, *sides: str) -> None:
+    """Validate new evidence without counting already shared history twice.
+
+    The source merge may deliberately use an older explicit base. Its common
+    history is still inherited evidence, not a fresh aggregate-only edit.
+    """
     snapshots = [await tree_files(git, store, ref) for ref in (base, *sides)]
     if not any(any(name.startswith(prefix) for name in files)
                for files in snapshots for prefix, _ in LEGACY_SOURCES.values()):
@@ -191,6 +196,20 @@ async def check_merge(git: GitManager, store: Path, base: str, *sides: str) -> N
     before, *branches = snapshots
     introductions = set()
     cache = dict(zip((base, *sides), snapshots, strict=True))
+    if len(sides) == 2:
+        shared = await git.arun_git_result(
+            ["merge-base", "--all", *sides], cwd=str(store),
+        )
+        if shared.returncode not in {0, 1}:
+            raise GitError(shared.stderr or "cannot inspect shared bookkeeping ancestry")
+        ancestors = shared.stdout.split()
+        # Do not choose arbitrarily between criss-cross merge bases. The
+        # original baseline remains conservative when shared history is ambiguous.
+        if len(ancestors) == 1:
+            ancestor = ancestors[0]
+            if ancestor not in cache:
+                cache[ancestor] = await tree_files(git, store, ancestor)
+            before = cache[ancestor]
     for ref, files in zip(sides, branches, strict=True):
         prefixes = {prefix for prefix, _ in LEGACY_SOURCES.values()
                     if any(name.startswith(prefix) for name in files)
@@ -213,7 +232,12 @@ async def check_merge(git: GitManager, store: Path, base: str, *sides: str) -> N
         if (ref, prefix) in introductions:
             return not represented(path, files.get(path), files)
         return (not same_evidence(path, files.get(path), before.get(path))
-                and not represented_delta(path, before.get(path), files.get(path), files))
+                and not represented_delta(path, before.get(path), files.get(path), files)
+                and not any(
+                    represented(path, other.get(path), other)
+                    and represented_delta(path, before.get(path), files.get(path), other)
+                    for other in branches if other is not files
+                ))
 
     refused = {path for ref, files in zip(sides, branches, strict=True)
                for path in LEGACY_SOURCES if unsafe(ref, files, path)}
