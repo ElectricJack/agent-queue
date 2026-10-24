@@ -54,7 +54,7 @@
     "return_branches": [
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'task_id is required (no task in scope — pass task_id explicitly or run inside a task session)'}"
+        "return": "{'success': False, 'error': 'task_id is required (no task in scope \u2014 pass task_id explicitly or run inside a task session)'}"
       },
       {
         "protocol": "delegated_producer",
@@ -159,7 +159,7 @@
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'task_id is required (no task in scope — pass task_id explicitly or run inside a task session)'}"
+        "return": "{'success': False, 'error': 'task_id is required (no task in scope \u2014 pass task_id explicitly or run inside a task session)'}"
       },
       {
         "protocol": "delegated_producer",
@@ -210,7 +210,7 @@
       "_assert_session_owns": "sha256:71e593f004f04a082031f118625f21eceebed926b1718d3c8e89d6fdc0825ec3",
       "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7",
       "_claimed_by": "sha256:2b3129637bb1d831569d97095d0483321b7b76b83a3dd993f23bc8999e15ed6c",
-      "_cmd_get_task": "sha256:bb849b9c148cc656451157130ff3db781ce39bf5e25b87b560810a244b02d9c8",
+      "_cmd_get_task": "sha256:94b80ee7ce74b1ffcbef7483fdad1bf2e3c8739255b980df46248610eee8c693",
       "_cmd_task_show": "sha256:ae32bb9c891f90a006bb0bd038e5d2413d488ef21aac767c515346450f80a4f9",
       "_task_findings_conflict": "sha256:586ac3ec4d99fdd453a487f0a93d4dde359c9f2a9e0312060b3ff8f4a4d729b9",
       "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6",
@@ -302,11 +302,15 @@
       {
         "protocol": "delegated_producer",
         "return": "self._task_findings_conflict(error)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{'success': False, 'error': 'root_pr_conflict_refresh is reserved for daemon-owned bot merges.'}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed. Epic c170840ea only emits a task.updated graph change when the description is unchanged, waking the integration lane for closed work; return branches and resource gates are unchanged. Held-ingestion p6 reconciliation (epic refresh onto a73e55ae16605561e6ce371bab9685455cc1f34e): reviewed the delegated _cmd_get_task held_batch read as recorded on get_task. The task_show envelope gains a read-only field; producer exits and authority are unchanged; only the reviewed helper digest is refreshed. Held-ingestion repair (train-ce31d539bfbf16e0a0b43f350a7eb99e, member 3aba31a4c): reviewed the delegated _cmd_get_task delivery_condition read as recorded on get_task. The envelope gains a read-only field; producer exits and authority are unchanged; only the reviewed helper digest is refreshed.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Dev reconciliation (4e9a17b8c0adae80acc6cf1195b339b974b69270): reviewed delegated _cmd_get_task dependency batching as recorded on get_task. This wrapper and its producer exits are unchanged; existing held_session authority remains required. Only the reviewed helper digest is refreshed. Epic c170840ea only emits a task.updated graph change when the description is unchanged, waking the integration lane for closed work; return branches and resource gates are unchanged. Held-ingestion p6 reconciliation (epic refresh onto a73e55ae16605561e6ce371bab9685455cc1f34e): reviewed the delegated _cmd_get_task held_batch read as recorded on get_task. The task_show envelope gains a read-only field; producer exits and authority are unchanged; only the reviewed helper digest is refreshed. Held-ingestion repair (train-ce31d539bfbf16e0a0b43f350a7eb99e, member 3aba31a4c): reviewed the delegated _cmd_get_task delivery_condition read as recorded on get_task. The envelope gains a read-only field; producer exits and authority are unchanged; only the reviewed helper digest is refreshed. Hand-integration reconciliation: reviewed 3d13126ed root_pr_conflict_refresh metadata reservation. The new pre-mutation refusal explicitly returns success false and follows the existing explicit false return protocol; daemon admission mapping cannot be rewritten through task metadata. Existing claim/findings fences and show-result delegation remain unchanged.",
     "schema_quality": "declared",
-    "source_digest": "sha256:92888940066cf3e10d1f70a35119810d9f80af8c18f40fcf8b35c557889bf5b9",
+    "source_digest": "sha256:af51a454b20152f3dfabab0a3e03ad2867e5b5264f1e757d4ace1c4c9b9e496f",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

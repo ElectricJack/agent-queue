@@ -1,5 +1,7 @@
 def _before_obsolete_child_catalogue():
-    return _revert_catalogue(_before_held_ingestion_pipeline_catalogue(), _obsolete_child_changes())
+    # Its frozen fallback order predates the parallel wait/restart changes.
+    # Undo reviewed sibling values while retaining that exact ordering.
+    return _before_parallel_catalogue()
 
 
 

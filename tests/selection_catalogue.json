@@ -646,6 +646,7 @@
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_delivery_watchdog.py",
+        "tests/test_integration_delivery_watchdog_regressions.py",
         "tests/test_integration_dispatch_waits.py",
         "tests/test_integration_failure_groups.py",
         "tests/test_integration_fixers.py",
@@ -2527,7 +2528,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:4aabc306a1caa4bc0074f5b169aaa59364ffbbfc42fe918b8a625a10406166c5",
+      "digest": "sha256:a626fbb6f7f5177255aac79bc7a93fd641b27236f380a1f23dc7de83bed69233",
       "imports": [
         "src.agent_waits",
         "src.api.auth",
@@ -2552,7 +2553,8 @@
         "src.profiles.parser",
         "src.sessions",
         "src.sessions.fake",
-        "src.sessions.provider"
+        "src.sessions.provider",
+        "src.wait_runtime.cycle"
       ],
       "markers": [
         "parametrize"
@@ -9122,6 +9124,26 @@
         "parametrize"
       ],
       "summary": "Threshold and producer progress evidence for the delivery watchdog."
+    },
+    "tests/test_integration_delivery_watchdog_regressions.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f31c567858161c3ebfe292eb8ffe3d7d254d5bfe70f94d5f46460e68df2d3a7d",
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration",
+        "src.integration.delivery_branches",
+        "src.integration.delivery_truth",
+        "src.integration.delivery_watchdog",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Watchdog observations for hand landing, project pauses and supervisor withdrawal."
     },
     "tests/test_integration_dispatch_waits.py": {
       "areas": [

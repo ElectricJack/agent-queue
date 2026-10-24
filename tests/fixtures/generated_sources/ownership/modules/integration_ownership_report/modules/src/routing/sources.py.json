@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/routing/sources.py::route_is_claimable": {
+      "fingerprint": "90c6b36b586c8dd855b5951e5a83f1a03700bb5f4703a73b55cdbd22b601cd9f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

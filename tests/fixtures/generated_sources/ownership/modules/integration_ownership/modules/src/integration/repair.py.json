@@ -4,9 +4,9 @@
       "call": "delete",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 4225,
+      "line": 4137,
       "owner": "RepairService._refile_stage",
-      "owner_fingerprint": "086817816b6a9340805fd9cefb88fccbbb3286e6ef44a6508b03dbf5950f46fd",
+      "owner_fingerprint": "c1fc348baf4772bc4a479663a8ba5653100653be2b4d2d21a51482993840b6fa",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     }
   }

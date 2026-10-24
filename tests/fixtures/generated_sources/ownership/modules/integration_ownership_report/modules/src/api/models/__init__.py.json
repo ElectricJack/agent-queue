@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/api/models/__init__.py::_category_modules": {
+      "fingerprint": "1c13b874452aebd7e0084504edcc5aa358933e48fa2a26147adc0691b432d8b9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

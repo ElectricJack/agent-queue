@@ -23,6 +23,33 @@
     "previous_table_count": 45,
     "reason": "Exact combined-tree ownership amendment for landing held-ingestion children. Preapproved by operator decision 6679052c on sharp-cascade-53 under size-cap-delegation-2026-10-23, as directed in bright-quest-30. Preserve historical measurements, existing classifications and original caps; no added headroom. Dev already exceeds the original transition owned cap (157443 versus 155499); this landing adds 14 owned shared lines, no engine lines or tables.",
     "referenced_decision": "size-cap-delegation-2026-10-23",
+    "repaired_dev_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 14,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "1048b9aff3350df8e72361252fbb61be4ea62e60",
+      "measured_engine_lines": 82420,
+      "measured_groups": {
+        "companions": 10308,
+        "engine": 82420,
+        "guards": 633,
+        "policy": 493,
+        "policy_sources": 1021,
+        "shared": 62384,
+        "ui": 262
+      },
+      "measured_owned_total": 157521,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82420,
+      "previous_measured_owned_total": 157507,
+      "previous_measured_table_count": 45,
+      "published_source_revision": "8e4496f7763808591ec8db0c79b4591b263829d0",
+      "pull_request": 1918,
+      "reason": "Exact ancestry-preserving composition of the held-ingestion children with repaired dev, explicitly preapproved in bright-quest-30 under operator decision 6679052c. Preserve all historical evidence and original caps; no new headroom or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-quest-30"
+    },
     "source_revision": "65a3009e776b490bd2665a44512d2813a4125675",
     "task_id": "bright-quest-30"
   }

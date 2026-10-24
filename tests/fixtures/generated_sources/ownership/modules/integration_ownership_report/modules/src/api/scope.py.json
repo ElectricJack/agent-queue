@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/api/scope.py::_check_worker_git_scope": {
+      "fingerprint": "e21df5b4e47f2b7cd5880b07dad45d319fb30aabd97977c75f3b002cfdee1019",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/api/scope.py::AGENT_COMMAND_SET": {
       "baseline_span": [

@@ -153,9 +153,9 @@
       "call": "delete",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 1293,
+      "line": 1367,
       "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
-      "owner_fingerprint": "19d83c3345c0430d48ae14400652bf93a3c4cd88a8f372530b36c47733650972",
+      "owner_fingerprint": "425757cf9958bf6a3e1a769a2e63f8ad063767c48a5910976c5a3e92024cf530",
       "reason": "Removes claimed_by_session or needs_attention only during a fenced recovery decision; incident identity, task state and recovery budget authorize retry."
     },
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.recover_missing_session_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
