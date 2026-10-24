@@ -1965,13 +1965,8 @@ class ClaimCommandsMixin:
                         "claimed_at": time.time(),
                     },
                 )
-                # The reset is what created and checked out the branch, so
-                # its return value is the only authority on what this task's
-                # branch actually is.  It is recorded in the activation
-                # transaction: either the claim goes active with the branch
-                # named on the task row, or neither happens.  Discarding it
-                # here is what left development-mode pool tasks with a NULL
-                # ``branch_name`` and an unclosable completion pipeline.
+                # Reset's returned branch is authoritative. Persist with activation
+                # so development claims have the branch required for completion.
                 if hierarchy_enabled:
                     from src.integration.stacked_branches import verify_preparation
 
@@ -2040,14 +2035,9 @@ class ClaimCommandsMixin:
                 if owner_role == "repair":
                     from src.integration.lock import REPAIR_START_SECONDS
 
-                    # A repair stage's clock runs from its activation, so a
-                    # delegate the pool could not staff in time is claimed with
-                    # its budget already spent -- and its close is then refused
-                    # for a repair attempt that never began. Queue time is not a
-                    # repair attempt, so the claim starts the budget. It runs in
-                    # its own transaction here (before any ownership exclusion,
-                    # on the canonical repair lock order) so the pool claim never
-                    # holds a row lock ahead of the repair rows it re-arms.
+                    # Queue time spends no repair budget. Start it on claim in
+                    # its own transaction before ownership exclusion, preserving
+                    # canonical repair lock order and avoiding premature expiry.
                     stage = "repair_start"
                     await RepairService(self.db).start_claimed_stage_budget(task.id)
                     async with self.db.immediate() as repair_conn:
@@ -2065,9 +2055,11 @@ class ClaimCommandsMixin:
                                 slot.workspace_path, origin, fence,
                                 repository_url=project.repo_url or "",
                             )
-                # Private stack commits may not exist on origin. Import them
-                # first so immutable inputs do not trigger a redundant network
-                # refresh, then recheck their provenance under exclusion below.
+                preparation_args = dict(
+                    base_branch=base_sha, target_branch=fence.target.branch,
+                    preserve_branch=bool(owner_role == "worker" and origin.get("prerequisite_head")),
+                )
+                # Import private commits before refresh; recheck provenance under exclusion.
                 stage = "stack_fetch"
                 if origin.get("stack_store"):
                     await self.orchestrator.git._arun(
@@ -2082,8 +2074,7 @@ class ClaimCommandsMixin:
                     )
                 stage = "slot_prefetch"
                 await self.orchestrator._worktree_slots().prefetch_slot_for_task(
-                    slot, base_branch=base_sha,
-                    preserve_branch=bool(owner_role == "worker" and origin.get("prerequisite_head")),
+                    slot, base_branch=base_sha, preserve_branch=preparation_args["preserve_branch"],
                 )
                 stage = "integration_attach"
                 if not hierarchy_attached:
@@ -2109,21 +2100,14 @@ class ClaimCommandsMixin:
                                 conn, fence, state="attached", expected_role=owner_role
                             ):
                                 fresh = await prepare_and_activate(
-                                    conn=conn, base_branch=base_sha,
-                                    target_branch=fence.target.branch,
-                                    preserve_branch=bool(
-                                        owner_role == "worker" and origin.get("prerequisite_head")
-                                    ),
+                                    conn=conn, **preparation_args,
                                 )
                 else:
                     async with ownership.mutation_exclusion(
                         fence, state="attached", expected_role=owner_role
                     ) as conn:
                         fresh = await prepare_and_activate(
-                            conn=conn, base_branch=base_sha, target_branch=fence.target.branch,
-                            preserve_branch=bool(
-                                owner_role == "worker" and origin.get("prerequisite_head")
-                            ),
+                            conn=conn, **preparation_args,
                         )
             else:
                 stacked = (
