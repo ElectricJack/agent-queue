@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: bazel-metrics
+    description: "Verification obligation inventory and exact-identity delivery metric accounting."
+    match: [tests/test_bazel_metrics.py]
   - id: operator-workers
     description: "Scoped operator worker authority, human decisions, auditing and setup preflight."
     match: [tests/test_operator_workers.py]
@@ -452,6 +455,7 @@ areas:
       - tests/test_integration_close_merge.py
       - tests/test_integration_gitops.py
       - tests/test_integration_git_truth.py
+      - tests/test_integration_signatures.py
       - tests/test_integration_truth_reconciler.py
       - tests/test_integration_replay.py
       - tests/test_integration_reconciler.py

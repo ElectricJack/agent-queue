@@ -86,6 +86,12 @@
         "tests/test_worker_git_scope.py"
       ]
     },
+    "bazel-metrics": {
+      "description": "Verification obligation inventory and exact-identity delivery metric accounting.",
+      "modules": [
+        "tests/test_bazel_metrics.py"
+      ]
+    },
     "capabilities": {
       "description": "Command capabilities: the capability policy, server-derived execution principals, authorization at the dispatch boundary, no widening through delegation or task inheritance, and operator migration surfaces.",
       "modules": [
@@ -666,6 +672,7 @@
         "tests/test_integration_root_noop.py",
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
+        "tests/test_integration_signatures.py",
         "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stacked_branches.py",
@@ -3300,6 +3307,18 @@
         "parametrize"
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
+    "tests/test_bazel_metrics.py": {
+      "areas": [
+        "bazel-metrics"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c267969578d4ccb9e7fd080acc1b37aecf24beff7a4b83b021b48589b7c411f4",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Inventory boundary and delivery-accounting regressions on synthetic evidence."
     },
     "tests/test_blocked_state.py": {
       "areas": [
@@ -10113,6 +10132,23 @@
       ],
       "summary": "Bounded durable integration reconciliation service."
     },
+    "tests/test_integration_signatures.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d945183bd44d541beb08d4798e2a1561307ffd4beb5dfa9010685523890b2705",
+      "imports": [
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.signatures"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Conservative exact-head signatures and immutable train JSON contracts."
+    },
     "tests/test_integration_size.py": {
       "areas": [
         "integration-trains"
@@ -10397,7 +10433,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a3c63dda0647babb731b09d07e93dc29878b57e3efb193037b843a9adf0ff612",
+      "digest": "sha256:b559e0d93324f696ab0dd952676f67d8478c74c4dde462e59cc6d51396df1110",
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
@@ -10447,16 +10483,21 @@
         "src.integration.runtime_contracts",
         "src.integration.selection_metrics",
         "src.integration.service",
+        "src.integration.signatures",
         "src.integration.source_repairs",
         "src.integration.stacked_branches",
         "src.integration.status",
         "src.integration.train",
         "src.integration.train_controls",
+        "src.integration.train_packing",
+        "src.integration.train_packing_sources",
+        "src.integration.train_policy",
         "src.integration.train_sources",
         "src.models",
         "src.operator_decisions",
         "src.orchestrator.core",
         "src.orchestrator.workspace",
+        "src.playbooks.train_policy",
         "src.profiles.capabilities",
         "src.test_selection",
         "src.test_selection.catalogue"

@@ -60,6 +60,7 @@ async def scans(targets, members, proof_delay):
     results = []
     with patch.object(train_sources, "_pending_tasks", pending), \
             patch.object(train_sources, "delivery_targets", routed), \
+            patch.object(train_sources, "load_delivery_requests", AsyncMock(return_value={})), \
             patch.object(train_sources, "superseded_source_repairs_on", AsyncMock(return_value={})):
         for layout in ("previous_scan_order", "visit_local_window"):
             counts.update(scans=0, proof_items=0)
@@ -108,6 +109,9 @@ async def admission(targets, visit_delay):
     train = Train(targets=SimpleNamespace(targets=AsyncMock(side_effect=lambda now: discovered)),
                   batches=None, lane_for=None, repair=None, clock=lambda: clock[0])
     db = SimpleNamespace(
+        expire_finished_task_notices=AsyncMock(),
+        redirect_disabled_supervisor_messages=AsyncMock(),
+        alert_global_supervisor_backlog=AsyncMock(return_value=None),
         get_pending_recipients=AsyncMock(return_value=[("user", "dashboard", "benchmark")]),
         get_pending_messages=AsyncMock(return_value=[Message(
             "inbox", "benchmark", "system", "model", "user", "dashboard", "probe")]),

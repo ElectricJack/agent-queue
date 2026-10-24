@@ -49,6 +49,7 @@ from src.integration.batches import (
     BatchObservation,
     BatchService,
     BatchStore,
+    SelectionIdentityChanged,
     SupersedeMemberUnavailable,
     candidate_ref,
     pair_conflict_sources_query,
@@ -91,7 +92,7 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND, generated_paths
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.runtime_contracts import Subject
-from src.integration.selection_metrics import selection_count, selection_stage
+from src.integration.selection_metrics import selection_count, selection_outcome, selection_stage
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -814,6 +815,7 @@ class DatabaseBatches:
         self.db, self.limit, self.clock = db, limit, clock
         self._stack_scan = {}
         self.pr_gate = pr_gate
+        self.packing_green = lambda target, member, target_sha: False
         self.repaired_source_gate = getattr(pr_gate, "admit_repaired_source", None)
         self.cleanup = cleanup
         self.refresh_conflict = refresh_conflict
@@ -1041,7 +1043,7 @@ class DatabaseBatches:
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
-        seal_now: bool = False,
+        seal_now: bool = False, _packing_deadline=None, _packing_restarted=False,
     ) -> BatchSelection:
         with selection_stage("reconcile_aborted"):
             await service.store.reconcile_aborted(target=target)
@@ -1146,6 +1148,9 @@ class DatabaseBatches:
                 )
         pending = None
         evaluated_ids: set[str] = set()
+        selection_deadline = (_packing_deadline if _packing_deadline is not None else
+                              self._selection_clock() + SELECTION_WORK_SECONDS)
+        selection_budget = {"deadline": selection_deadline}
         if not snapshot.error and snapshot.target_oid:
             if candidates:
                 pending = await self.pending(target, snapshot, blockers=blockers,
@@ -1153,8 +1158,10 @@ class DatabaseBatches:
                                              include_ids={member.task_id for member in frozen_members},
                                              candidate_ids=candidates, delivered_ids=delivered_ids,
                                              evaluated_ids=evaluated_ids,
-                                             selection_deadline=(self._selection_clock() + SELECTION_WORK_SECONDS
+                                             selection_budget=selection_budget,
+                                             selection_deadline=(selection_deadline
                                                                  if current is None else None))
+                selection_deadline = selection_budget["deadline"]
             if current is None:
                 await _finish_on_cancel(self._refresh_conflicting_prs(
                     target, snapshot, blockers, service))
@@ -1234,6 +1241,47 @@ class DatabaseBatches:
             return BatchSelection(detail={"reason": view.reason or "train_policy_wait",
                 "retry_at": self.clock() + (view.policy.wait_seconds if view.policy else 30)})
         members, requests, dependencies = pending
+
+        async def restart_packing():
+            if not _packing_restarted and self._selection_clock() < selection_deadline:
+                observed = snapshot.observation
+                fresh = await snapshot.truth.snapshot(
+                    observed.store, project_id=target.project_id,
+                    repository_id=target.repository_id, repository_url=observed.repository_url,
+                    target_ref=target.target_ref,
+                )
+                return await self.open_batch(target, fresh, service, seal_now=seal_now,
+                                             _packing_deadline=selection_deadline,
+                                             _packing_restarted=True)
+            return BatchSelection(blockers=(*blockers, {
+                "code": "packing_stale", "ref": target.target_ref,
+                "detail": "Packing inputs moved; retry within a fresh visit budget",
+            }))
+
+        packing_snapshot, packing_recheck = None, None
+        if view.policy and view.policy.packing and view.policy.packing.enabled:
+            from src.integration.train_packing_sources import select_packed
+
+            for blocker in blockers:
+                selection_outcome({"stage": "admission", "outcome": blocker["code"],
+                                   "task_ids": [blocker["task_id"]]
+                                   if blocker.get("task_id") else []})
+            try:
+                pending, packing_snapshot, packing_recheck = await select_packed(
+                    self, target, snapshot, service, view, pending,
+                    deadline=selection_deadline,
+                )
+            except SelectionIdentityChanged:
+                return await restart_packing()
+            except (GitError, OSError, ValueError):
+                selection_count("packing_unavailable")
+                return BatchSelection(blockers=(*blockers, {
+                    "code": "packing_unavailable", "ref": target.target_ref,
+                    "detail": "Packing inputs could not be observed; retry with fresh identities",
+                }))
+            members, requests, dependencies = pending
+            if not members:
+                return BatchSelection(blockers=tuple(blockers), detail={"reason": "packing_empty"})
         now = self.clock()
         # A live batch above owns the lane until settlement. With no live batch,
         # freeze the ready frontier immediately. Old timing hints and policy
@@ -1244,8 +1292,14 @@ class DatabaseBatches:
                       repository_id=target.repository_id, target_ref=target.target_ref,
                       repair_attempt_count=carried, created_at=now)
         with selection_stage("freeze", items=len(members)):
-            frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
-                                          dependencies=dependencies)
+            try:
+                frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
+                                              dependencies=dependencies,
+                                              **({"selection_snapshot": packing_snapshot,
+                                                  "selection_recheck": packing_recheck}
+                                                 if packing_snapshot is not None else {}))
+            except SelectionIdentityChanged:
+                return await restart_packing()
         if target.kind == "root":
             await self._clear_admissions(target)
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
@@ -1677,6 +1731,7 @@ class DatabaseBatches:
         candidate_ids: list[str] | None = None,
         delivered_ids: set[str] | None = None, selection_deadline: float | None = None,
         evaluated_ids: set[str] | None = None,
+        selection_budget: dict | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
         from src.integration.github_review_poll import root_pr_target_scope
@@ -1743,12 +1798,20 @@ class DatabaseBatches:
             )).all():
                 bases[task_id] = base
             edges: dict[str, set[str]] = {}
-            for task_id, needs in (await conn.execute(
-                select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
-                .join(tasks, tasks.c.id == task_dependencies.c.task_id)
+            # Traverse only ancestors of this visit's window. UNION (not ALL)
+            # terminates cycles without loading the unrelated project graph.
+            reachable = select(tasks.c.id).where(
+                tasks.c.id.in_(ids), tasks.c.project_id == target.project_id,
+            ).cte("packing_prerequisites", recursive=True)
+            reachable = reachable.union(select(task_dependencies.c.depends_on_task_id)
+                .join(reachable, reachable.c.id == task_dependencies.c.task_id)
+                .join(tasks, tasks.c.id == task_dependencies.c.depends_on_task_id)
                 .where(tasks.c.project_id == target.project_id,
-                       task_dependencies.c.dep_type == "blocks")
-            )).all():
+                       task_dependencies.c.dep_type == "blocks"))
+            for task_id, needs in (await conn.execute(select(
+                task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+            ).where(task_dependencies.c.task_id.in_(select(reachable.c.id)),
+                    task_dependencies.c.dep_type == "blocks"))).all():
                 edges.setdefault(task_id, set()).add(needs)
             repair_bindings = await _source_ci_prerequisites_on(
                 conn, ids, bases, repository_id=target.repository_id,
@@ -1930,6 +1993,8 @@ class DatabaseBatches:
                 if refusal:
                     if selection_deadline is not None and refusal["code"] in _REFUNDED_PR_REFUSALS:
                         selection_deadline += self._selection_clock() - candidate_started
+                        if selection_budget is not None:
+                            selection_budget["deadline"] = selection_deadline
                     if refusal["code"] == "pr_checks_red":
                         refused_sources[task_id] = (member, refusal)
                     if blockers is not None:
@@ -2828,6 +2893,14 @@ class DaemonLanes:
 
             self.batches.pr_gate = pr_gate
             self.batches.repaired_source_gate = hosted_pr_gate.admit_repaired_source
+            def packing_green(target, member, target_sha):
+                entry = hosted_pr_gate._admitted.get((target.key, member.task_id))
+                return bool(entry and entry[1] > hosted_pr_gate.clock()
+                            and entry[0][2] == member.source_sha
+                            and entry[0][-3] == member.base_sha
+                            and entry[0][-1] == target_sha)
+
+            self.batches.packing_green = packing_green
         #: batch id -> (key, expires_at, trust, client); see _promotion_trust.
         self._promotion_trust_cache: dict[str, tuple[str, float, Any, Any]] = {}
 

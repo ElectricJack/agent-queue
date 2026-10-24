@@ -15,13 +15,15 @@ class SelectionMetrics:
         self.counts: Counter[str] = Counter()
         self.stages: dict[str, dict] = {}
         self.active: dict[object, tuple[str, float]] = {}
+        self.outcomes: list[dict] = []
 
     def as_dict(self) -> dict:
         stages = {name: dict(stage) for name, stage in self.stages.items()}
         now = time.monotonic()
         for name, started in self.active.values():
             stages[name]["seconds"] += now - started
-        return {"counts": dict(self.counts), "stages": stages}
+        return {"counts": dict(self.counts), "stages": stages,
+                "outcomes": list(self.outcomes)}
 
 
 _METRICS: ContextVar[SelectionMetrics | None] = ContextVar("train_selection_metrics", default=None)
@@ -39,6 +41,15 @@ def selection_metrics_scope(metrics: SelectionMetrics):
 def selection_count(name: str, count: int = 1) -> None:
     if (metrics := _METRICS.get()) is not None:
         metrics.counts[name] += count
+
+
+def selection_outcome(value: dict) -> None:
+    """Bound diagnostic retention independently of a busy repository's frontier."""
+    if (metrics := _METRICS.get()) is not None:
+        if len(metrics.outcomes) < 2048:
+            metrics.outcomes.append(value)
+        else:
+            metrics.counts["outcomes_dropped"] += 1
 
 
 @contextmanager
