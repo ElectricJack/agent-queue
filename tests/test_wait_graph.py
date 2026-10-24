@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from src.database import Database
 from src.database.queries.wait_queries import (
@@ -486,12 +486,31 @@ async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(
         assert "test_graph_watchdog_names_idle_holder" in caplog.text
         await getattr(transaction, end)()
         assert not graph.graph_locked(conn)
-        assert "wait_graph_timer" not in conn.info
+        assert conn.sync_connection not in graph._graph_holders
         # A quick subsequent transaction must not inherit the holder's timer.
         async with conn.begin():
             await graph.lock_graph(conn)
         await asyncio.sleep(0.03)
         assert len(caplog.records) == 1
+
+
+async def test_cancelled_query_rolls_back_graph_watchdog_without_reconnecting(env):
+    from src.waits import graph
+
+    timer = None
+    with pytest.raises(TimeoutError):
+        async with env.db._engine.begin() as conn:
+            await graph.lock_graph(conn)
+            timer = graph._graph_holders[conn.sync_connection]["timer"]
+            await conn.execute(update(tasks).where(tasks.c.id == "a").values(title="aborted"))
+            async with asyncio.timeout(0.2):
+                await conn.execute(select(func.pg_sleep(60)))
+
+    assert timer.cancelled()
+    assert conn.sync_connection not in graph._graph_holders
+    async with env.db._engine.begin() as conn:
+        await graph.lock_graph(conn, timeout=1)
+        assert await conn.scalar(select(tasks.c.title).where(tasks.c.id == "a")) == "a"
 
 
 async def test_queued_graph_timeout_preserves_transaction_and_lock_setting(env):
