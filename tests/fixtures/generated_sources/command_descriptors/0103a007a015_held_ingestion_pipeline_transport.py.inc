@@ -17,3 +17,9 @@ def test_held_ingestion_pipeline_only_promotes_three_reviewed_transports():
         assert set(evidence["catalogue_sections"][section]["entries"]) == names
     previous = json.dumps(_before_held_ingestion_pipeline_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    for path, change in evidence["playbook_fixtures"].items():
+        baseline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"][path]
+        assert change["previous_sha256"] == baseline["sha256"]
+        previous = (ROOT / change["preserved_previous_path"]).read_bytes()
+        assert hashlib.sha256(previous).hexdigest() == change["previous_sha256"]
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == change["sha256"]
