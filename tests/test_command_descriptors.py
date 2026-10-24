@@ -544,6 +544,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = _structure_changes()["transport_definitions"][name]
             assert _digest(approved["previous"]) == digest
             digest = _digest(approved["current"])
+        if name == "task_batch_propose":
+            settlement = _delivered_design_changes()
+            assert _digest(settlement["previous_definition"]) == digest
+            digest = _digest(settlement["definition"])
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
     actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
@@ -1626,6 +1630,36 @@ def test_retention_original_catalogue_evidence():
                                     if name in categories}
     original = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(original.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+def _delivered_design_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/delivered-design-settlement-contract-changes.json").read_text()
+    )
+
+
+def _before_delivered_design_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    evidence = _delivered_design_changes()
+    [definition] = [row for row in catalogue["explicit"] if row["name"] == "task_batch_propose"]
+    assert definition == evidence["definition"]
+    definition.clear()
+    definition.update(evidence["previous_definition"])
+    return catalogue
+
+
+def test_delivered_design_catalogue_only_adds_explicit_settlement():
+    evidence = _delivered_design_changes()
+    previous = json.dumps(_before_delivered_design_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    current = render_command_catalogue()
+    assert hashlib.sha256(current.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    definition = json.loads(json.dumps(evidence["definition"]))
+    settlement = definition["input_schema"]["properties"].pop("no_op")
+    assert settlement["required"] == ["reason", "delivered_evidence"]
+    assert settlement["properties"]["delivered_evidence"]["minItems"] == 1
+    definition["description"] = evidence["previous_definition"]["description"]
+    assert definition == evidence["previous_definition"]
+
+
 def _held_ingestion_pipeline_transport_changes():
     return json.loads(
         (ROOT / "tests/fixtures/contracts/held-ingestion-pipeline-transport-changes.json").read_text()
@@ -1634,7 +1668,7 @@ def _held_ingestion_pipeline_transport_changes():
 
 def _before_held_ingestion_pipeline_catalogue():
     return _revert_catalogue(
-        json.loads(render_command_catalogue()), _held_ingestion_pipeline_transport_changes(),
+        _before_delivered_design_catalogue(), _held_ingestion_pipeline_transport_changes(),
     )
 
 
