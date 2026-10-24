@@ -1,5 +1,65 @@
 # H08-OPS bounded preflight and operator handoff
 
+## 2026-10-24 operator receipt supplement
+
+Claim epoch 16 received task comment
+`comment-a1588e1d0d694eb6b85277345954ec81`, authored by supervisor-global
+`ceee42f2-699b-47b7-a02b-e3c7094e01fa` at epoch `1792861246.923215`, through
+injected message `msg-ac6347ede5f746f4806a20b9ef69419e`. These are attributed
+operator receipts; this worker did not inspect or mutate production. This
+supplement resolves some missing fields in the earlier report below.
+
+| Field | Operator receipt |
+|---|---|
+| Status command | `aq ask cutover-status --project-id agent-queue --json` |
+| Destination | `discord:1231634668135120906:1477498117430579240` |
+| Stored status | `channel`, generation 4, migrated true |
+| First switch UTC | `2026-10-24T16:20:12.568569Z` |
+| Immutable deadline UTC | `2026-11-23T16:20:12.568569Z` |
+| Deployment | Reported checkout `7fd445537`, fast-forwarded October 23 at 23:32 PDT and daemon restarted on it; exact restart UTC not supplied |
+| Schema | Reported Alembic head `a00000000122`, with no migration changes between `7fd445537` and `8ab28ca5f` |
+| Backup | Reported `pg_dump` at 16:19Z to `~/.agent-queue/backups/pre-ask-cutover-1792858740.sql.gz`; recoverability not independently checked |
+| Preview hash | `c0b09824007c56cdd1fb225cbeb28b23fc6859a1b327d30c1485d46087f86fd4` |
+| Applied reset hash | **Not captured**; operator states apply used a fresh preview immediately beforehand. The earlier preview hash is not the apply hash. |
+| Transfer inventory hash | `1ddc3f3bb0fbdd258fa53597e98455ff2e842f0c431eb3b0fad1f562f5367b04`; operator reports only the generation 3 transfer row |
+| Transition times | Dashboard generation 2 at 16:19:35Z; transferring generation 3 at 16:19:39Z; channel generation 4 at 16:20:12Z, with legacy controls disabled and aliases redirected |
+
+The stored timestamps resolve the earlier `09:20Z` discrepancy and retain
+microsecond precision. Their difference is exactly 30 days; that calculation
+does not establish observed behavior. Local Git resolves the reported deployment
+prefix to `7fd4455371aee3bfdf3b0f2aa5e0f456f1d845cc`; this is local object
+resolution, not independent deployment verification.
+
+Reported apply counts (`complete=true`): 98 document reviews, 284 human asks,
+252 escalations, 39 escalation messages, 36 escalation actions, 464 escalation
+deliveries, 6 conversation inputs, 626 source aliases, 19 reconciliation cases,
+and 5 decision previews. Counts describe the reset receipt, not current canonical
+parity or a complete operational acceptance sample.
+
+The operator also reports a post-cutover incident: the reset quarantined
+`ask-a8fb5c94` for `rev-agile-meadow` revision 3, approved at 16:19:35Z, and
+cancelled six receipts. The operator reports restoring it from backup; existing
+task `sharp-vault-63` owns the bug. No full ask identity, restoration command
+receipt, or verified resolution is supplied here. This worker did not access or
+change that task. A Discord reply was separately reported working after
+`fresh-impact-70` deployed, reference `msg-conv-reply-b5631974`; that observation
+does not replace the live acceptance matrix.
+
+The operator explicitly states the test-project matrix has **not run** and needs
+Jack's actions. The operator tracks November 23 at 16:20Z in memory and intends
+to reopen H08 then; no durable schedule registration receipt was provided.
+Observe the exact stored deadline above, including seconds and microseconds,
+before evaluating exit behavior. The owner still needs to supply the authorized
+matrix, current parity/unknown-write and incident disposition evidence, and an
+actual observation at or after each destination's deadline. H08 acceptance and
+the H09 prerequisite remain open. No new wait or live operation was registered
+by this worker.
+
+Validation: both supplied SHA-256 strings have 64 hexadecimal characters;
+Python parsed the exact UTC timestamps and verified a 2,592,000-second interval;
+local Git resolved the deployment prefix; `git diff --check` passed. No code
+changed; no regression tests or live scenarios were run in this claim.
+
 ## 2026-10-24 cutover report and remaining observation
 
 Claim epoch 15 read the operator's task comment
