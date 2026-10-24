@@ -16194,6 +16194,194 @@
         }
       }
     },
+    "/api/schedule/cancel": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Cancel a pending project notification schedule.",
+        "description": "Cancel a pending project notification schedule.",
+        "operationId": "schedule_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulePointerArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/get": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Read a project schedule and its firing/cancellation receipt.",
+        "description": "Read a project schedule and its firing/cancellation receipt.",
+        "operationId": "schedule_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulePointerArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/list": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List project-owned one-shot notifications and due times.",
+        "description": "List project-owned one-shot notifications and due times.",
+        "operationId": "schedule_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/schedule/register": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+        "description": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+        "operationId": "schedule_register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleRegisterArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/supervisor/restart": {
       "post": {
         "tags": [
@@ -74838,6 +75026,203 @@
         },
         "type": "object",
         "title": "ScanStubStalenessResponse"
+      },
+      "ScheduleListArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "fired",
+                  "cancelled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ScheduleListArgs"
+      },
+      "ScheduleListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Schedules",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "title": "ScheduleListResponse"
+      },
+      "SchedulePointerArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "schedule_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Schedule Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "schedule_id"
+        ],
+        "title": "SchedulePointerArgs"
+      },
+      "ScheduleRegisterArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body"
+          },
+          "due_at": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Due At"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "body",
+          "due_at",
+          "idempotency_key"
+        ],
+        "title": "ScheduleRegisterArgs"
+      },
+      "ScheduleResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "title": "ScheduleResponse"
       },
       "ScopedConftest": {
         "properties": {

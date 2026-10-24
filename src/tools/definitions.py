@@ -9618,3 +9618,26 @@ _ALL_TOOL_DEFINITIONS.append({
         "properties": {"operation_id": {"type": "string"}},
     },
 })
+
+
+# Public one-shot schedules use the same schemas as their typed contracts.
+from src.commands.contracts.schedule import (  # noqa: E402
+    ScheduleRegisterArgs, SchedulePointerArgs, ScheduleListArgs,
+)
+
+for _name, _args, _description in (
+    ("schedule_register", ScheduleRegisterArgs,
+     "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker."),
+    ("schedule_get", SchedulePointerArgs, "Read a project schedule and its firing/cancellation receipt."),
+    ("schedule_list", ScheduleListArgs, "List project-owned one-shot notifications and due times."),
+    ("schedule_cancel", SchedulePointerArgs, "Cancel a pending project notification schedule."),
+):
+    _TOOL_CATEGORIES[_name] = "schedule"
+    _ALL_TOOL_DEFINITIONS.append({
+        "name": _name, "description": _description, "input_schema": _args.model_json_schema(),
+    })
+
+_FALLBACK_INPUT_SCHEMAS["reconcile_project_schedules"] = {
+    "type": "object", "properties": {"now": {"type": "number"}},
+    "required": ["now"], "additionalProperties": False,
+}

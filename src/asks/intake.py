@@ -159,6 +159,8 @@ async def admit_gateway(handler, envelope, *, source):
                 "input_id": item["id"],
                 "receipt": {"input_id": item["id"], "state": "queued"},
             }
+    if not created:
+        await handler._wake_conversation_input(item)
     return {
         "success": True,
         "created": created,
@@ -257,6 +259,12 @@ async def clarify(handler, item, text, *, conn):
 
 
 async def route(handler, item):
+    routed = await _route(handler, item)
+    await handler._wake_conversation_input(routed)
+    return routed
+
+
+async def _route(handler, item):
     db = handler.db
     # Resolve identity without locking the input; source is always locked first.
     async with db.immediate() as conn:
@@ -411,7 +419,9 @@ async def route(handler, item):
         # but must not become a decision on a guessed target.
         item = await discussion.attach_channel(handler, item, conn=conn)
         project = item["project_id"]
-        recipient, supervisor_project = await db.resolve_conversation_supervisor(project)
+        recipient, supervisor_project = await db.resolve_conversation_supervisor(
+            project or "", conn=conn
+        )
         packet = {
             "input_id": item["id"],
             "conversation_id": item["conversation_id"],
