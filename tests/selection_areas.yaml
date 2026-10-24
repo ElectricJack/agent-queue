@@ -11,6 +11,18 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: bazel-parity
+    description: "Exact candidate JUnit, canonical pytest outcomes, shards and dashboard artifact parity."
+    match: [tests/test_bazel_parity.py]
+  - id: bazel-runtime
+    description: "Bazel pytest node sharding, phase budgets, target lifecycle deadlines and flake evidence."
+    match: [tests/test_bazel_runtime.py]
+  - id: bazel-environment
+    description: "Credential-free child environments, namespace isolation and bounded process cleanup."
+    match: [tests/test_bazel_environment.py]
+  - id: bazel-toolchains
+    description: "Pinned toolchain, dependency lock and Linux ABI integrity boundaries."
+    match: [tests/test_bazel_manifest.py]
   - id: bazel-metrics
     description: "Verification obligation inventory and exact-identity delivery metric accounting."
     match: [tests/test_bazel_metrics.py]

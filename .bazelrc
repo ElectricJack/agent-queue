@@ -1,0 +1,21 @@
+# Keep build outputs outside the checkout; no convenience symlinks.
+startup --output_user_root=~/.cache/aq/bazel/v1
+common --enable_bzlmod
+common --lockfile_mode=error
+build --symlink_prefix=/
+build --incompatible_strict_action_env
+build --@aspect_rules_js//js:use_hermetic_launcher
+build --action_env=PATH=
+build --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+build --jobs=1
+build --@rules_python//python/config_settings:bootstrap_impl=script
+test --test_output=errors
+# H2 tests declare no-sandbox and create their own mandatory namespaces. Other
+# tests retain Bazel's sandbox; the execution policy must admit both explicitly.
+test --strategy=TestRunner=sandboxed,standalone
+
+build:local --spawn_strategy=sandboxed
+build:shadow --spawn_strategy=sandboxed
+build:ci --spawn_strategy=sandboxed
+# Keep XML generation in the test action with its declared shell utilities.
+test --experimental_split_xml_generation=false

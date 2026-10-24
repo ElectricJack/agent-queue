@@ -1,5 +1,13 @@
 # Wait outcome integration contract
 
+## Dedicated listener connection arguments — 2026-10-24
+
+The listener opens a dedicated asyncpg connection using the SQLAlchemy engine
+URL. It omits unset URL fields and merges query parameters into one argument
+dictionary, with query values taking precedence. Unix-socket query hosts and
+ports must reach asyncpg without duplicate keyword arguments; ordinary TCP
+fields and other query parameters pass through unchanged.
+
 ## Cancelled transaction recovery — 2026-10-24
 
 Graph-lock watchdog cleanup uses local connection-lifetime state, without
