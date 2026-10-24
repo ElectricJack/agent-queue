@@ -576,10 +576,13 @@ async def test_startup_bridge_runs_once_and_restart_honours_durable_marker(env):
     service.command.assert_not_awaited()
 
 
-async def test_startup_bridge_backs_off_a_held_project_instead_of_rerunning_every_tick(env):
+async def test_startup_bridge_backs_off_a_held_project_instead_of_rerunning_every_tick(
+    env, monkeypatch,
+):
     from src.wait_runtime.service import WaitService
 
     clock = NOW
+    monkeypatch.setattr("src.wait_runtime.service.time", SimpleNamespace(monotonic=lambda: clock))
     service = WaitService(env.o, clock=lambda: clock)
     service.command = AsyncMock(return_value={
         'success': True, 'result': {'projects': {'p': {'state': 'held'}}},
@@ -653,7 +656,7 @@ async def test_scheduler_dirty_projects_and_recovery_scan(env, monkeypatch):
 
 async def test_prepared_admission_does_not_admit_changed_project(env):
     reader = env.service.reader
-    async with reader.prepared("p"):
+    async with reader.prepared(project_id="p"):
         async with env.db._engine.begin() as conn:
             await conn.execute(update(projects).where(projects.c.id == "p").values(
                 hierarchical_integration_generation=projects.c.hierarchical_integration_generation + 1,
