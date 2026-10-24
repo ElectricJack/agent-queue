@@ -21185,7 +21185,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchReleaseResponse"
+                }
               }
             }
           },
@@ -21230,7 +21232,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchRetireResponse"
+                }
               }
             }
           },
@@ -21275,7 +21279,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchReviewRecordResponse"
+                }
               }
             }
           },
@@ -80648,6 +80654,36 @@
         ],
         "title": "TaskBatchReleaseRequest"
       },
+      "TaskBatchReleaseResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "already_released": {
+            "type": "boolean",
+            "title": "Already Released"
+          },
+          "release_receipt": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Release Receipt"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "already_released",
+          "release_receipt"
+        ],
+        "title": "TaskBatchReleaseResponse",
+        "description": "The original atomic release receipt is returned on every successful replay."
+      },
       "TaskBatchRetireRequest": {
         "properties": {
           "batch_id": {
@@ -80685,6 +80721,35 @@
           "reason"
         ],
         "title": "TaskBatchRetireRequest"
+      },
+      "TaskBatchRetireResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "const": "retired",
+            "title": "State"
+          },
+          "already_retired": {
+            "type": "boolean",
+            "title": "Already Retired"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "already_retired"
+        ],
+        "title": "TaskBatchRetireResponse"
       },
       "TaskBatchReviewRecordRequest": {
         "properties": {
@@ -80749,6 +80814,61 @@
           "structural_findings"
         ],
         "title": "TaskBatchReviewRecordRequest"
+      },
+      "TaskBatchReviewRecordResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "reviewing",
+              "needs_scope"
+            ],
+            "title": "State"
+          },
+          "passing": {
+            "type": "boolean",
+            "title": "Passing"
+          },
+          "receipt": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Receipt"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed"
+          },
+          "ask_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "passing",
+          "receipt",
+          "replayed"
+        ],
+        "title": "TaskBatchReviewRecordResponse",
+        "description": "The durable fidelity receipt, including a scope ask when one was raised."
       },
       "TaskBatchUpdateRequest": {
         "properties": {

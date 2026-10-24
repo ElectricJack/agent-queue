@@ -1187,6 +1187,34 @@ class TaskBatchValidateResponse(BaseModel):
     gaps: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TaskBatchReviewRecordResponse(BaseModel):
+    """The durable fidelity receipt, including a scope ask when one was raised."""
+
+    success: bool = True
+    batch_id: str
+    state: Literal["reviewing", "needs_scope"]
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
+
+
+class TaskBatchReleaseResponse(BaseModel):
+    """The original atomic release receipt is returned on every successful replay."""
+
+    success: bool = True
+    batch_id: str
+    already_released: bool
+    release_receipt: dict[str, Any]
+
+
+class TaskBatchRetireResponse(BaseModel):
+    success: bool = True
+    batch_id: str
+    state: Literal["retired"]
+    already_retired: bool
+
+
 class SpecIngestLegacyAdoptResponse(TaskBatchAckResponse):
     """Adoption replays a held batch receipt or retains the proposal's human gate."""
 
@@ -1577,6 +1605,9 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
     "task_batch_validate": TaskBatchValidateResponse,
+    "task_batch_review_record": TaskBatchReviewRecordResponse,
+    "task_batch_release": TaskBatchReleaseResponse,
+    "task_batch_retire": TaskBatchRetireResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
