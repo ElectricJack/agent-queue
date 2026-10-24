@@ -347,19 +347,27 @@ class RequiredPlaybookReconciler:
         # older verdict.
         self._lock = asyncio.Lock()
 
-    async def reconcile(self, *, repair: bool = False) -> dict[str, Any]:
+    async def reconcile(
+        self, *, repair: bool = False, refresh_bundles: dict[str, str | None] | None = None
+    ) -> dict[str, Any]:
         """Observe existing policy; install only once or on explicit repair.
 
         A missing activation is not evidence of a new installation. The external
         installation receipt authorizes the one initial attempt, consumed before
         writes so a crash cannot turn later restarts into automatic repairs.
+
+        Explicit bundle refresh supplies installed ids and their previous bundle
+        hashes. Import those recordings, repairing enabled system defaults too.
+        The previous hash permits advancing a healthy shipped default while
+        preserving a compatible operator artifact with a different hash.
         """
         async with self._lock:
             initial = await asyncio.to_thread(_consume_initial_activation, self._config.data_dir)
-            if not initial and not repair:
+            if not initial and not repair and refresh_bundles is None:
                 return await self._refresh_status_locked()
             required: dict[str, dict[str, Any]] = {}
             import_errors: dict[str, str] = {}
+            bundle_imports: dict[str, dict[str, Any]] = {}
             for playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS:
                 activation, import_error, repointed_from = await self._install_shipped(
                     playbook_id, enable_disabled=repair
@@ -369,20 +377,58 @@ class RequiredPlaybookReconciler:
                 required[playbook_id] = _required_state(playbook_id, activation, import_error)
                 if repointed_from is not None:
                     required[playbook_id]["repointed_from"] = repointed_from
+                if refresh_bundles is not None and playbook_id in refresh_bundles:
+                    bundle_imports[playbook_id] = {"ok": import_error is None}
+                    if import_error is not None:
+                        bundle_imports[playbook_id]["error"] = import_error
 
             # Optional defaults are installed once, never resurrected by a
             # required-policy repair. Their deliberate import remains available.
             defaults = await self._activate_defaults() if initial else {}
+            if refresh_bundles is not None:
+                bundle_imports.update(await self._refresh_installed_bundles(refresh_bundles))
             self._import_errors = import_errors
             self.status = {
                 "ok": all(item["ok"] for item in required.values()),
                 "required": required,
                 "defaults": defaults,
+                "bundle_imports": bundle_imports,
             }
             for item in required.values():
                 if not item["ok"]:
                     logger.error("%s", item["diagnostic"])
             return self.status
+
+    async def _refresh_installed_bundles(
+        self, previous_hashes: dict[str, str | None]
+    ) -> dict[str, dict[str, Any]]:
+        """Import installed optional bundles without creating optional activations."""
+        results: dict[str, dict[str, Any]] = {}
+        for playbook_id, previous_sha in previous_hashes.items():
+            if playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS:
+                continue  # reconcile already imported and repaired these
+            existing = None
+            if playbook_id in DEFAULT_SYSTEM_PLAYBOOK_IDS:
+                records, _contracts, _profiles = await self._handler._v2_health_records()
+                existing = _system_activation(records, playbook_id)
+            if existing is not None and existing.enabled:
+                activation, error, repointed = await self._install_shipped(
+                    playbook_id,
+                    replace_ready=existing.active_artifact_sha256 == previous_sha,
+                )
+                results[playbook_id] = {"ok": error is None and _is_ready(activation)}
+                if error is not None:
+                    results[playbook_id]["error"] = error
+                if repointed is not None:
+                    results[playbook_id]["repointed_from"] = repointed
+            else:
+                imported = await self._handler._cmd_playbook_v2_import(
+                    {"path": f"reviewed-playbooks/{playbook_id}"}
+                )
+                results[playbook_id] = {"ok": bool(imported.get("success"))}
+                if not imported.get("success"):
+                    results[playbook_id]["error"] = _import_error(imported)
+        return results
 
     async def refresh_status(self) -> dict[str, Any]:
         """Recompute readiness from the activations as they are right now.
@@ -431,7 +477,7 @@ class RequiredPlaybookReconciler:
         return self.status
 
     async def _install_shipped(
-        self, playbook_id: str, *, enable_disabled: bool = False
+        self, playbook_id: str, *, enable_disabled: bool = False, replace_ready: bool = False
     ) -> tuple[Any, str | None, str | None]:
         """Import the shipped bundle and point the system activation at it if needed.
 
@@ -439,7 +485,8 @@ class RequiredPlaybookReconciler:
         is written only when it is missing, or when it is enabled, the shipped
         artifact is a different hash, and it is either not ready or its
         artifact lacks the command :data:`REQUIRED_GRANTS` names for it;
-        otherwise the durable row is left exactly as it is.
+        ``replace_ready`` also advances a known shipped predecessor during
+        explicit upgrade repair. Otherwise the durable row is left as it is.
         """
         imported = await self._handler._cmd_playbook_v2_import(
             {"path": f"reviewed-playbooks/{playbook_id}"}
@@ -461,9 +508,12 @@ class RequiredPlaybookReconciler:
                 missing = await self._missing_grant(
                     playbook_id, activation.active_artifact_sha256
                 )
-                if missing is None:
+                if missing is None and not replace_ready:
                     return activation, None, None
-                why = f"ready, but its artifact does not grant {missing}"
+                why = (
+                    f"ready, but its artifact does not grant {missing}"
+                    if missing else "shipped upgrade"
+                )
             repointed_from = activation.active_artifact_sha256
             logger.warning(
                 "Re-pointing the %s system activation from %s (%s) to the shipped reviewed "

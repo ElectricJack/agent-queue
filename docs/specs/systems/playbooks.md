@@ -336,7 +336,7 @@ used by the rebuild script, tests and docs.
 
 | List | Ids | Meaning |
 |---|---|---|
-| `REQUIRED_SYSTEM_PLAYBOOK_IDS` | default-assignment-routing, provider-usage-probe, provider-failover | Gate `/health` and `/ready`; the only ids doctor repairs. |
+| `REQUIRED_SYSTEM_PLAYBOOK_IDS` | default-assignment-routing, provider-usage-probe, provider-failover | Gate `/health` and `/ready`; required-policy repair can restore and re-enable them. |
 | `DEFAULT_SYSTEM_PLAYBOOK_IDS` | supervisor-failure-triage, default-pipeline | Activated once, on first install only. |
 | `INITIAL_SYSTEM_PLAYBOOK_IDS` | the five activated ids above plus morning-report | Copied into an empty vault (morning-report stays inactive). |
 
@@ -353,7 +353,12 @@ the bundles and activates the required and default ids.
 reactivates. Repair is explicit: `aq doctor --check playbooks.required --fix` restores
 and re-enables the three required ids, and `aq doctor --check playbooks.reviewed_bundles
 --fix` refreshes drifted copies of bundles that are already installed (the old copy moves
-to `<id>.bak-<epoch>`). Everything else is a manual `aq playbook import … --activate`.
+to `<id>.bak-<epoch>`) and imports their reviewed artifacts. This explicit upgrade repair
+also repairs enabled system defaults, even if a previous attempt already refreshed the
+bundle files. A healthy default advances when its active hash matches the superseded
+installed bundle; a different compatible operator artifact remains active. Missing or
+disabled optional activations and all project activations remain unchanged. Import
+failures fail the repair. Everything else is a manual `aq playbook import … --activate`.
 The [isolated acceptance kit](../../guides/e2e-swarm.md) exercises these boundaries.
 
 **Projects.** Project create offers a policy: `default`, `exported` or `none`

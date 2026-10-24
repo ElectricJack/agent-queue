@@ -16294,7 +16294,7 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:59dbe212acee6a0e89be88f22d68a09b4ca2ff81df7997390e769833407be01a",
+      "digest": "sha256:3a676d3e146da440b54240f812828e3148051cb2f6807955c002d9e1552f67d4",
       "imports": [
         "src.api.models.playbook_v2",
         "src.commands.playbook_v2_commands",
@@ -16305,6 +16305,7 @@
         "src.doctor",
         "src.doctor.models",
         "src.doctor.playbook_v2_checks",
+        "src.doctor.runner",
         "src.main",
         "src.orchestrator.core",
         "src.playbooks.activation",

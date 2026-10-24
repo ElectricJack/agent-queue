@@ -533,6 +533,19 @@ def test_integration_only_bundle_is_the_reviewed_fixture() -> None:
 
 
 @pytest.mark.parametrize("playbook_id", shipped_reviewed_playbook_ids())
+def test_daemon_shipped_artifact_validates_against_shipped_registries(playbook_id: str) -> None:
+    """A profile grant edit must ship a recompiled importable recording with it."""
+    definition = load_definition_json(
+        (DAEMON_REVIEWED_BUNDLES / playbook_id / "artifact.json").read_text(encoding="utf-8")
+    )
+    diagnostics = validate_definition(
+        definition, contracts=RegistryContractLookup(), profiles=shipped_profile_lookup(),
+        events=RegisteredEventLookup(),
+    )
+    assert not [d for d in diagnostics if d.severity in {"error", "question"}], diagnostics
+
+
+@pytest.mark.parametrize("playbook_id", shipped_reviewed_playbook_ids())
 def test_daemon_shipped_bundle_is_the_reviewed_fixture(playbook_id: str) -> None:
     """A shipped bundle is seeded verbatim, so it may not drift from the recording.
 

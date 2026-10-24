@@ -29,9 +29,10 @@ telling an operator exactly which playbook and which hash went bad.
 Its explicit fix restores the required reviewed bundles and activations.
 
 ``playbooks.reviewed_bundles`` compares installed reviewed bundles with their
-shipped recordings. Its explicit fix refreshes installed copies, preserving
-superseded bytes, and repairs required activations. Uninstalled optional
-bundles are neither reported nor restored.
+shipped recordings and observes enabled system defaults' health. Its explicit
+fix refreshes and imports installed copies, preserving superseded bytes, and
+repairs required activations and enabled system defaults. Uninstalled optional
+bundles and missing or disabled optional activations are not restored.
 
 Mirrors ``src/doctor/formula_checks.py``'s shape: a private ``_check_*``
 function plus a factory returning the :class:`DoctorCheck` list.
@@ -536,7 +537,7 @@ async def _check_pending_event_replay_policy(ctx: DoctorContext) -> CheckResult:
 
 
 async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
-    """Shipped reviewed bundles against their vault copies.  Read-only."""
+    """Observe installed recordings and the system activations repair can heal."""
     playbooks = getattr(ctx.config, "playbooks", None)
     if playbooks is None or not getattr(playbooks, "enabled", False):
         return CheckResult(
@@ -554,7 +555,21 @@ async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
 
     shipped = _installed_bundle_ids(data_dir)
     drift = reviewed_bundle_drift(data_dir, ids=shipped)
-    if not drift:
+    unhealthy: list[dict[str, str]] = []
+    health_records = getattr(ctx.handler, "_v2_health_records", None)
+    if inspect.iscoroutinefunction(health_records):
+        from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_PLAYBOOK_IDS
+
+        records, _contracts, _profiles = await health_records()
+        repairable = set(DEFAULT_SYSTEM_PLAYBOOK_IDS) | set(REQUIRED_SYSTEM_PLAYBOOK_IDS)
+        unhealthy = [
+            {"playbook_id": record.playbook_id, "health": record.health.value}
+            for record in records
+            if record.playbook_id in shipped and record.playbook_id in repairable
+            and record.scope == "system" and record.scope_identifier == ""
+            and record.enabled and record.health.value != "ready"
+        ]
+    if not drift and not unhealthy:
         return CheckResult(
             id=REVIEWED_BUNDLES_CHECK_ID,
             severity=Severity.OK,
@@ -565,36 +580,51 @@ async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
         id=REVIEWED_BUNDLES_CHECK_ID,
         severity=Severity.WARN,
         detail=(
-            f"{len(drift)} shipped reviewed bundle(s) differ from their vault copies "
-            f"({', '.join(row['playbook_id'] for row in drift)}); an import reads the vault "
-            "copy, so a stale one can leave its activation at stale_contract. Run "
-            "aq doctor --check playbooks.reviewed_bundles --fix to refresh installed copies"
+            f"{len(drift)} shipped reviewed bundle(s) differ from their vault copies; "
+            f"{len(unhealthy)} installed system activation(s) need repair "
+            f"({', '.join(sorted({row['playbook_id'] for row in [*drift, *unhealthy]}))}). Run "
+            "aq doctor --check playbooks.reviewed_bundles --fix to refresh and import installed copies"
         ),
-        data={"checked": len(shipped), "count": len(drift), "drift": drift},
+        data={"checked": len(shipped), "count": len(drift), "drift": drift,
+              "unhealthy": unhealthy},
     )
 
 
 async def _fix_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
     """Refresh the vault copies, then reconcile inside a running daemon."""
-    from src.playbooks.required import ensure_reviewed_playbook_bundles
+    from src.playbooks.required import (
+        _recorded_sha, ensure_reviewed_playbook_bundles, reviewed_bundle_drift,
+    )
 
     data_dir = getattr(ctx.config, "data_dir", "") or ""
-    written = ensure_reviewed_playbook_bundles(
-        data_dir, ids=_installed_bundle_ids(data_dir)
-    ) if data_dir else []
-    data: dict[str, object] = {"written": written}
     orchestrator = getattr(ctx.handler, "orchestrator", None)
     reconcile = getattr(orchestrator, "reconcile_required_playbooks", None)
-    if written and inspect.iscoroutinefunction(reconcile):
-        status = await reconcile(repair=True)
-        data["required_playbooks"] = status
+    if not data_dir or not inspect.iscoroutinefunction(reconcile):
+        raise RuntimeError(
+            "Reviewed bundle repair needs a data directory and running daemon command handler"
+        )
+    installed = _installed_bundle_ids(data_dir)
+    root = Path(data_dir) / "vault" / "reviewed-playbooks"
+    previous_hashes = {identifier: _recorded_sha(root / identifier) for identifier in installed}
+    written = await asyncio.to_thread(ensure_reviewed_playbook_bundles, data_dir, ids=installed)
+    # Always import: a previous refresh may have copied files successfully but
+    # failed before updating the compiled store or the active default pipeline.
+    status = await reconcile(repair=True, refresh_bundles=previous_hashes)
+    drift = reviewed_bundle_drift(data_dir, ids=installed)
+    ok = status["ok"] and not drift and all(
+        result["ok"] for result in status.get("bundle_imports", {}).values()
+    )
+    if not ok:
+        # Doctor's runner rechecks after a successful fix and discards its
+        # return value. Raise so a failed import cannot become a filesystem OK.
+        raise RuntimeError(f"Reviewed bundle import/repair failed: {status}; remaining drift: {drift}")
     return CheckResult(
         id=REVIEWED_BUNDLES_CHECK_ID,
         severity=Severity.OK,
-        detail=f"refreshed {len(written)} reviewed bundle(s) in the vault",
+        detail=f"refreshed {len(written)} reviewed bundle(s); imported installed recordings",
         fixable=True,
         fix_applied=True,
-        data=data,
+        data={"written": written, "required_playbooks": status, "drift": drift},
     )
 
 

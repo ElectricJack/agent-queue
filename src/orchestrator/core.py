@@ -2930,7 +2930,9 @@ class Orchestrator(
                 )
         return status
 
-    async def reconcile_required_playbooks(self, *, repair: bool = False) -> dict[str, Any]:
+    async def reconcile_required_playbooks(
+        self, *, repair: bool = False, refresh_bundles: dict[str, str | None] | None = None
+    ) -> dict[str, Any]:
         """Refresh policy readiness, or explicitly repair required activations.
 
         Doctor fixes pass ``repair=True`` after refreshing the requested vault
@@ -2939,8 +2941,14 @@ class Orchestrator(
         reconciler = getattr(self, "required_playbook_reconciler", None)
         if reconciler is None:
             return self.required_playbook_status
-        self.required_playbook_status = await reconciler.reconcile(repair=repair)
+        self.required_playbook_status = await reconciler.reconcile(
+            repair=repair, refresh_bundles=refresh_bundles
+        )
         if self.playbook_manager is not None:
+            if repair or refresh_bundles is not None:
+                # The reconciler writes activations directly. Refresh the live
+                # trigger and integration destination catalog before replay.
+                await self.playbook_manager.refresh()
             await self.playbook_manager.apply_required_playbook_status(
                 self.required_playbook_status
             )

@@ -1210,6 +1210,37 @@ async def test_the_orchestrator_publishes_a_refreshed_status_to_the_runtime():
     assert await Orchestrator.refresh_required_playbook_status(orch) is fresh
 
 
+async def test_explicit_bundle_repair_refreshes_runtime_before_replay():
+    from src.orchestrator.core import Orchestrator
+
+    calls = []
+    fresh = {"ok": True, "required": {}}
+
+    async def refresh():
+        calls.append("refresh")
+
+    async def publish(status):
+        assert status is fresh
+        calls.append("publish")
+
+    async def replay():
+        assert calls == ["refresh", "publish"]
+        return {}
+
+    reconciler = SimpleNamespace(
+        reconcile=AsyncMock(return_value=fresh), replay_route_needed_events=replay,
+    )
+    orch = SimpleNamespace(
+        required_playbook_reconciler=reconciler,
+        playbook_manager=SimpleNamespace(refresh=refresh, apply_required_playbook_status=publish),
+    )
+    bundles = {"default-pipeline": "sha256:" + "a" * 64}
+    assert await Orchestrator.reconcile_required_playbooks(
+        orch, repair=True, refresh_bundles=bundles,
+    ) is fresh
+    reconciler.reconcile.assert_awaited_once_with(repair=True, refresh_bundles=bundles)
+
+
 async def test_health_reads_the_recomputed_required_status():
     from src.main import _health_checks
 
@@ -1324,6 +1355,7 @@ async def test_the_reviewed_bundles_doctor_check_warns_and_fixes(tmp_path):
 
     ensure_reviewed_playbook_bundles(str(tmp_path))
     assert (await _check_reviewed_bundles(_doctor_ctx(tmp_path))).severity is Severity.OK
+
     _age_bundle(_vault_bundle(tmp_path, "default-assignment-routing"))
 
     result = await _check_reviewed_bundles(_doctor_ctx(tmp_path))
@@ -1340,6 +1372,134 @@ async def test_the_reviewed_bundles_doctor_check_warns_and_fixes(tmp_path):
     assert fixed.data["written"] == ["default-assignment-routing"]
     reconcile.assert_awaited_once()
     assert (await _check_reviewed_bundles(_doctor_ctx(tmp_path))).severity is Severity.OK
+
+
+@pytest.mark.parametrize("stale,drifted", [(True, False), (True, True), (False, True)])
+async def test_doctor_bundle_refresh_updates_the_enabled_pipeline(tmp_path, stale, drifted):
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_reviewed_bundles, _fix_reviewed_bundles
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        playbook_id = "default-pipeline"
+
+        def previous(body):
+            body["compiled_at"] = "2026-01-01T00:00:00Z"
+            if stale:
+                _compiled_before_the_grants_moved(body)
+
+        older = _shipped_variant(playbook_id, previous)
+        older_sha = await _store_variant(db, handler, older)
+        await _activate(db, playbook_id, older_sha)
+        if drifted:
+            bundle = _vault_bundle(tmp_path, playbook_id)
+            (bundle / "artifact.sha256").write_text(older_sha + "\n")
+        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
+        ctx = _doctor_ctx(tmp_path, handler)
+        before = await _check_reviewed_bundles(ctx)
+        assert before.severity is Severity.WARN
+        fixed = await _fix_reviewed_bundles(ctx)
+        assert fixed.severity is Severity.OK
+        assert fixed.data["written"] == ([playbook_id] if drifted else [])
+        sha = (reviewed_bundle_source() / playbook_id / "artifact.sha256").read_text().strip()
+        assert (await _system_row(db, playbook_id))["active_artifact_sha256"] == sha
+        assert (await _check_reviewed_bundles(ctx)).severity is Severity.OK
+        activations = await db.list_playbook_activations(enabled_only=False)
+        await _fix_reviewed_bundles(ctx)
+        assert await db.list_playbook_activations(enabled_only=False) == activations
+        await _read_only_restart(tmp_path, db)
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("choice", ["missing", "disabled", "custom", "project"])
+async def test_doctor_bundle_refresh_preserves_optional_activation_choices(tmp_path, choice):
+    from sqlalchemy import delete
+
+    from src.database.tables import playbook_activations
+    from src.doctor.playbook_v2_checks import _fix_reviewed_bundles
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        playbook_id = "default-pipeline"
+        if choice == "custom":
+            definition = _shipped_variant(playbook_id, lambda b: b.update(version=2))
+        else:
+            definition = _shipped_variant(playbook_id, _compiled_before_the_grants_moved)
+        sha = await _store_variant(db, handler, definition)
+        async with db._engine.begin() as conn:
+            await conn.execute(delete(playbook_activations).where(
+                playbook_activations.c.playbook_id == playbook_id
+            ))
+        if choice == "project":
+            await db.set_playbook_activation(
+                playbook_id=playbook_id, scope="project", scope_identifier="example",
+                artifact_sha256=sha, enabled=True, activated_by="human:operator",
+                health="ready", reasons="[]",
+            )
+        elif choice != "missing":
+            await _activate(db, playbook_id, sha, enabled=choice != "disabled")
+        before = await db.list_playbook_activations(enabled_only=False)
+        _age_bundle(_vault_bundle(tmp_path, playbook_id))
+        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
+        await _fix_reviewed_bundles(_doctor_ctx(tmp_path, handler))
+        assert await db.list_playbook_activations(enabled_only=False) == before
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("failed_id", ["default-pipeline", "default-assignment-routing"])
+async def test_doctor_bundle_import_failure_is_not_reported_as_success(tmp_path, failed_id):
+    from src.doctor.playbook_v2_checks import REVIEWED_BUNDLES_CHECK_ID
+    from src.doctor import default_registry
+    from src.doctor.runner import apply_fix
+    from src.doctor.models import Severity
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        imported = handler._cmd_playbook_v2_import
+
+        async def fail_pipeline(params):
+            if params["path"] == f"reviewed-playbooks/{failed_id}":
+                return {"success": False, "error": "stale_contract: spec-ingest"}
+            return await imported(params)
+
+        handler._cmd_playbook_v2_import = fail_pipeline
+        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
+        check = next(c for c in default_registry().checks() if c.id == REVIEWED_BUNDLES_CHECK_ID)
+        result = await apply_fix(check, _doctor_ctx(tmp_path, handler))
+        assert result.severity is Severity.ERROR
+        assert "stale_contract: spec-ingest" in result.detail
+    finally:
+        await db.close()
+
+
+async def test_doctor_imports_only_installed_bundles_without_activating_optional_policy(tmp_path):
+    from src.doctor.playbook_v2_checks import _fix_reviewed_bundles
+
+    db = Database(lease_dsn("required-playbooks.db"))
+    await db.initialize()
+    try:
+        install_initial_playbooks(str(tmp_path))
+        handler = _Handler(tmp_path, db)
+        reconciler = RequiredPlaybookReconciler(config=handler.config, db=db, handler=handler)
+        await reconciler.reconcile()
+        before = await db.list_playbook_activations(enabled_only=False)
+        handler._cmd_playbook_v2_import = AsyncMock(wraps=handler._cmd_playbook_v2_import)
+        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
+        await _fix_reviewed_bundles(_doctor_ctx(tmp_path, handler))
+        assert {call.args[0]["path"] for call in handler._cmd_playbook_v2_import.await_args_list} == {
+            f"reviewed-playbooks/{identifier}" for identifier in INITIAL_SYSTEM_PLAYBOOK_IDS
+        }
+        assert {path.name for path in (tmp_path / "vault/reviewed-playbooks").iterdir()} == set(
+            INITIAL_SYSTEM_PLAYBOOK_IDS
+        )
+        assert await db.list_playbook_activations(enabled_only=False) == before
+    finally:
+        await db.close()
 
 
 def test_the_reviewed_bundles_check_is_registered_with_a_fix():
