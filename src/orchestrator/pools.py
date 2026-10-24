@@ -1476,7 +1476,9 @@ class PoolsMixin:
         session = current
         # Re-check the shared exemption before timeout-driven cleanup. Death,
         # operator intent and provider failover still stop a waiting session.
-        if reason in {"stalled", "stuck_timeout", "claim_loop_stalled", "prepare_timeout"}:
+        if reason in {
+            "stalled", "stuck_timeout", "claim_loop_stalled", "prepare_timeout", "claim_file_missing",
+        }:
             task = await self.db.get_task(session.task_id) if session.task_id else None
             if task and await self.db.blocking_wait_for(session, task.claim_epoch, time.time()):
                 return
@@ -1547,9 +1549,15 @@ class PoolsMixin:
                         session.id, exc_info=True,
                     )
                 return
-            from src.claim_file import remove_claim_file
+            from src.claim_file import remove_claim_file, remove_claim_file_if_matches
             try:
-                remove_claim_file(session.work_dir)
+                if reason == "claim_file_missing":
+                    remove_claim_file_if_matches(
+                        session.work_dir, session.task_id, session.last_claim_epoch,
+                        session_id=session.id,
+                    )
+                else:
+                    remove_claim_file(session.work_dir)
             except Exception:
                 logger.debug("pool session %s: claim file removal failed", session.id)
         if session.state not in ("stopped", "quarantined"):

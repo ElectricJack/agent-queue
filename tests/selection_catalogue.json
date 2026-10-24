@@ -3682,7 +3682,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c557a8d168474c61cb973a7135eca2fed3d872c9ea7c05bae123689da84ab6a1",
+      "digest": "sha256:a20d9a92dd9368bb4d7485b39c32559442f4ea3d26bea22e78a931ee0f146585",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3729,6 +3729,8 @@
         "src.preparation_failure",
         "src.scheduler",
         "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.provider",
         "src.sessions.reconciler",
         "src.workspace_disable"
       ],
@@ -14439,9 +14441,9 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:4293a9075a63f1ec0f95f142285221ac39d24c857388ea61fae2c41c46d4ca50",
+      "digest": "sha256:9d5401310666ad691b3f912f2f6b37fee297fc1d071f51ea97462c4f44b41886",
       "imports": [
-        "src.commands.claim_commands",
+        "src.claim_file",
         "src.config",
         "src.database.queries.claim_queries",
         "src.database.tables",

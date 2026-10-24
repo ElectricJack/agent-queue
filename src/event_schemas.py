@@ -1210,6 +1210,10 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id"],
         "optional": ["task_id"],
     },
+    "session.claim_file_missing": {
+        "required": ["session_id", "task_id", "claim_epoch"],
+        "optional": ["project_id"],
+    },
     # A session that had nothing left to do -- a recorded stop intent
     # (``aq task close``'s release, a drain, ``aq session kill``) or a spent
     # claim budget -- kept its harness process alive past the idle-stop grace,
