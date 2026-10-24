@@ -116,6 +116,45 @@ class TaskProposalCommandsMixin:
                                      ingest["project_id"], conn=conn,
                                      require_current=require_current)
 
+    async def _settle_delivered_design(self, conn, args, ingest, packet):
+        """Record an explicit empty settlement under the approval/graph locks."""
+        if packet["spec_kind"] != "design":
+            raise task_changes.ChangeSetError("no_op settlement requires an approved design")
+        for key in task_changes.OPERATIONS:
+            value = args.get(key, [])
+            if not isinstance(value, list) or value:
+                raise task_changes.ChangeSetError("no_op settlement requires an empty change set")
+        settlement = args["no_op"]
+        if not isinstance(settlement, dict) or set(settlement) != {"reason", "delivered_evidence"}:
+            raise task_changes.ChangeSetError("no_op requires reason and delivered_evidence")
+        reason, evidence = settlement["reason"], settlement["delivered_evidence"]
+        if not isinstance(reason, str) or not reason.strip():
+            raise task_changes.ChangeSetError("no_op reason must be a non-empty string")
+        if (not isinstance(evidence, list) or not evidence
+                or any(not isinstance(ref, str) or not ref.strip() for ref in evidence)):
+            raise task_changes.ChangeSetError("delivered_evidence must be non-empty citations")
+        feedback = await self.db.list_review_feedback_obligations(packet["decision_id"], conn=conn)
+        if any(item["required_before_release"] and item["disposition"] == "follow_up"
+               and (item["progress"] != "completed" or not item["completion_evidence"])
+               for item in feedback):
+            raise task_changes.ChangeSetError("Required follow-up lacks completion evidence")
+        receipt = {
+            "success": True, "committed": True, "status": "committed", "task_ids": [],
+            "members": {}, "release_receipt": {
+                "kind": "already_delivered", **stamp_for(packet), "actor": ingest["task_id"],
+                "reason": reason.strip(), "delivered_evidence": [ref.strip() for ref in evidence],
+                "feedback": feedback,
+            },
+        }
+        if args.get("dry_run"):
+            return {"success": True, "dry_run": True, "diff": {"no_op": receipt["release_receipt"]}}
+        decision = await self.db.get_ask_decision(ingest["decision_id"], conn=conn)
+        op = await operation(self.db, decision, "materialization", conn=conn)
+        if op["status"] != "pending":
+            raise task_changes.ChangeSetError("Decision already materialized or needs reconciliation")
+        await succeed(conn, op, receipt)
+        return receipt
+
     async def _ingest_change_set(self, conn, change_set, ingest):
         packet = await self._lock_ingest(conn, ingest)
         payload = task_changes.normalize(change_set)
@@ -552,6 +591,8 @@ class TaskProposalCommandsMixin:
         committed = notifications = None
         repair = False
         try:
+            if "no_op" in args and not ingest:
+                raise task_changes.ChangeSetError("no_op requires a live spec-ingest assignment")
             async with task_changes.boundary(
                 self.db, project_id,
                 source_lock=(lambda conn: self._lock_ingest(conn, ingest)) if ingest else None,
@@ -564,6 +605,12 @@ class TaskProposalCommandsMixin:
                     )
                     if existing_batch:
                         return await self._batch_receipt(conn, existing_batch, replayed=True)
+                    existing = await get_operation(conn, ingest["decision_id"], "materialization", lock=True)
+                    if existing and existing["status"] == "succeeded":
+                        return {"success": True, "committed": True, "already_committed": True,
+                                **existing["receipt"]}
+                    if "no_op" in args:
+                        return await self._settle_delivered_design(conn, args, ingest, packet)
                     prior_id = (await conn.execute(select(ingest_batches.c.batch_id).where(
                         ingest_batches.c.project_id == project_id,
                         or_(
@@ -585,10 +632,6 @@ class TaskProposalCommandsMixin:
                             "error": "Source changed; use an explicit incremental plan",
                             "previous_receipt": await self._batch_receipt(conn, prior, replayed=True),
                         }
-                    existing = await get_operation(conn, ingest["decision_id"], "materialization", lock=True)
-                    if existing and existing["status"] == "succeeded":
-                        return {"success": True, "committed": True, "already_committed": True,
-                                **existing["receipt"]}
                     change_set, packet = await self._ingest_change_set(conn, change_set, ingest)
                     report = await self._validate_ingest_graph(conn, change_set, project_id, source)
                 payload = await self._prepare_change_set(conn, project_id, change_set, source)
