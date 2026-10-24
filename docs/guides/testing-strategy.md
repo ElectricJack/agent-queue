@@ -1,9 +1,9 @@
 # Testing strategy
 
 Status: draft for the A2 interview and review (`bright-ridge-12.2`). Jack's
-Q1 answer is recorded; the remaining interview and strategy acceptance are
-pending. This draft records the
-existing approved obligations; it does not authorize a check removal or suite
+Q1 and Q2 answers are recorded; the remaining interview and strategy acceptance
+are pending. This draft records the existing approved obligations; it does not
+authorize a check removal or suite
 cutover. H1 BUILD authoring requires A2 acceptance.
 
 ## Authority and purpose
@@ -93,7 +93,8 @@ agent recommendation is not Jack's acceptance.
 | Exchange | Question | Evidence and disposition |
 |---|---|---|
 | Q1 — confidence | When a change is green, what do you need that green result to tell you before it lands on the frequently automatically deployed dev branch? | Jack's verified answer on 2026-10-24: “If it’s green and it’s an epic (complete feature) I want it merged, and that should be all tasks at the root level”. Discord input `cinput-6970a5ab` at 19:54Z; supervisor relay `msg-80ee66dc374447e98cca5fea1c8073ab`. Identical confirmation `cinput-6d17114e` at 20:46Z, relayed in `msg-6a5de3917fd145eeb213e87a315edff2`. Treat these as one answer. |
-| Q2 — blocking failures | Which failures must block a root epic from merging to dev, even when its focused feature tests pass? | Requested once on 2026-10-24 through supervisor in `msg-e47448e6c35341009a6062d5fb906004`, thread `bright-ridge-12.2-interview-q2`; verified answer pending. |
+| Q2 — blocking failures | Which failures must block a root epic from merging to dev, even when its focused feature tests pass? | Jack's verified answer on 2026-10-24 at 22:19:25Z: “Only failures in areas the epic touches”. Discord input `cinput-c73d3c964604480fb20caaa550afda37`, conversation `conv-7b812291-a40d-465b-9a86-21da0d9c3a7e`; supervisor relay `msg-72a475a9aa044072b5f23e7ddd89ee10` (sequence 136547), backed by task comment `comment-6b37662673c54f67aa91a59b5f839b85`. |
+| Q3 — affected-area boundary | Should "areas the epic touches" include downstream behavior that depends on changed code, even when that area’s files are unchanged? | Requested once on 2026-10-24 through supervisor in `msg-45b07a3d78db4cc5b52f352aed3849c0`, thread `bright-ridge-12.2-interview-q3`; verified answer pending. |
 
 Q1 establishes Jack's desired delivery outcome: merge a green, complete feature
 at the root level. It does not yet specify which failures must block that green
@@ -102,8 +103,14 @@ strategy. The earlier supervisor status
 `msg-8c59e8fbec3e4a83b91dd0bc0ae20d14` only confirmed relay; the verified
 human inputs above supply the answer.
 
-After Q1, continue with failures worth blocking, redundant assertions and the
-risk of frequent automatic deployment, adapting each next question to Jack's
+Q2 records Jack's preference to block on failures in areas the epic touches.
+The boundary of an affected area, including downstream behavior, remains to be
+clarified. Record that preference for strategy review while retaining the
+current required gates. This interview answer alone does not establish which
+observed failures are unrelated or supply replacement coverage evidence.
+
+Continue with the affected-area boundary, redundant assertions and the risk of
+frequent automatic deployment, adapting each next question to Jack's
 answer. Record the accepted strategy review's ID, revision, content hash and
 decision receipt here before claiming A2 acceptance. Moving protection past
 deployment needs a separate approved policy amendment even if an interview
