@@ -16281,7 +16281,7 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:1644948f36327a2e3e72de6668fab8121357b80f16645e202222f12cc9dac66b",
+      "digest": "sha256:eab6a92f936275b758dcd41d01afda7515f01acd8e2208e1163fba7529f26e9e",
       "imports": [
         "src.commands.principal",
         "src.commands.report_commands",
@@ -16301,7 +16301,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Durable hourly author requests, CAS submission and deterministic fallback."
+      "summary": "Durable hourly author requests, CAS submission and minimal no-report fallback."
     },
     "tests/test_repository_checkout_repair.py": {
       "areas": [
