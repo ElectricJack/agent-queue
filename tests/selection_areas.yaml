@@ -59,6 +59,7 @@ areas:
       - tests/test_get_stuck_tasks_command.py
       - tests/test_task_batch_commands.py
       - tests/test_cli_task_change_sets.py
+      - tests/test_cli_batch.py
       - tests/test_ingest_batch_queries.py
       - tests/test_fidelity_review.py
   - id: work-graph

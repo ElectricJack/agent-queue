@@ -132,6 +132,30 @@ beforeEach(() => {
 });
 
 describe("TaskDetailPane — screenshot attachments", () => {
+  it("shows a durable ingestion hold and opens its batch evidence with project scope", () => {
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, held_batch: {
+      batch_id: "batch", state: "needs_scope", source: "spec:approved", structure_revision: 4,
+      lineage: { lineage_kind: "none" }, reviewer_task_id: "reviewer",
+    } } });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(screen.getAllByText("Held for fidelity review")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Ingestion batch" })).toHaveTextContent("Structure revision 4");
+    fireEvent.click(screen.getByRole("button", { name: "View batch review and release evidence" }));
+    expect(mockOpen).toHaveBeenCalledWith("proposal-preview", { proposalId: "batch", batchProjectId: "demo" });
+  });
+
+  it("shows operational roots' delivery prerequisites and current owner", () => {
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, parent_task_id: null, assigned_agent: "ops-owner",
+      delivery_condition: { kind: "delivery-of", targets: ["code-source"] },
+      depends_on: [{ id: "code-source", title: "Land API", status: "COMPLETED", dep_type: "delivery-of", reason: "Wait for deployment" }] } });
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    const section = screen.getByRole("region", { name: "Operational delivery condition" });
+    expect(section).toHaveTextContent("Owner: ops-owner");
+    expect(section).toHaveTextContent("Completion alone does not satisfy delivery");
+    expect(section).toHaveTextContent("Land API (code-source)");
+    expect(section).toHaveTextContent("Recorded delivery condition");
+  });
+
   it("uploads an image pasted from the clipboard", async () => {
     const mutateAsync = vi.fn().mockResolvedValue({ success: true });
     mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });

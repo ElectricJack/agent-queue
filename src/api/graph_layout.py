@@ -58,6 +58,7 @@ from src.api.models.graph_layout import (
 from src.api.scope import check_request_scope
 from src.database.queries.hierarchy_queries import PHASE_KEY
 from src.task_graph.activity import load_activity
+from src.task_graph.ingestion import merge_ingestion
 from src.task_graph.layout.compaction import Box, compact_layout
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
@@ -71,6 +72,7 @@ from src.task_graph.layout.view import (
     remap_edges,
     resolve_visible,
 )
+from src.task_graph.readiness import load_readiness
 
 RECT_CAP = 64.0
 EXPANDED_CAP = 2000
@@ -239,13 +241,12 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         leaves ``delivery`` unset rather than failing the layout response.
         """
         ids = [row.task_id for row, _ in rows_with_tasks if (row.agg_children or 0) > 0]
-        from src.task_graph.readiness import load_readiness
-
         # Each endpoint already joined the current task row. Reuse it rather
         # than paying another task SELECT on every viewport request.
         readiness = await load_readiness(db, [
             {**task, "project_id": project_id} for _, task in rows_with_tasks
         ])
+        await merge_ingestion(db, [task for _, task in rows_with_tasks], readiness)
         if not ids:
             return _with_activity({}, readiness)
         from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from

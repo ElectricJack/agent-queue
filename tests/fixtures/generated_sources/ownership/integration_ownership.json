@@ -1150,6 +1150,8 @@
     "src/database/queries/ingest_batch_queries.py::live_digest": "Hashes the hydrated live ingestion structure through compute_structure_digest; the digest attests graph fidelity rather than Git ancestry.",
     "src/database/queries/ingest_batch_queries.py::members": "Lists optionally locked active/retired ingestion membership rows in stable member-key order; it is graph membership access.",
     "src/database/queries/ingest_batch_queries.py::passing_receipt": "Selects a passing ingestion fidelity receipt for a structure revision; this is not a task_delivery_receipts lookup or landing proof.",
+    "src/database/queries/ingest_batch_queries.py::task_batch_summaries": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/ingest_batch_queries.py::task_batch_summary": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation.",
     "src/database/queries/job_queries.py::JobQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/job_queries.py::JobQueriesMixin.reconcile_job_results": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
@@ -1881,6 +1883,9 @@
     "src/task_graph/formulas.py::load_from_vault": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/formulas.py::parse_formula": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/formulas.py::register_formula_handlers": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/ingestion.py::attach_ingestion": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/ingestion.py::load_ingestion": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/ingestion.py::merge_ingestion": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/layout/compaction.py::compact_layout": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/layout/constants.py::FINISHED_STATUSES": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/layout/constants.py::VARIANTS": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -6999,6 +7004,7 @@
       ],
       "reason": "Imports or references an explicitly owned integration primitive."
     },
+    "src/api/graph_layout.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/api/messages.py::get_session_messages": {
       "baseline_span": [
         195,
@@ -9413,6 +9419,7 @@
     "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
       "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
+    "src/commands/task_commands.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/commands/workspace_checkout_repair.py::import from src.commands.supervisor_authority import operator_or_global_supervisor": {
       "reason": "Imports the authority guard used by the integration-aware base-checkout repair; conservatively charges the adapter's imported authorization seam."
     },

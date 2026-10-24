@@ -2092,6 +2092,33 @@
     "referenced_decision": "size-cap-delegation-2026-10-23",
     "task_id": "noble-flare-12"
   },
+  "held_ingestion_children_landing_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 14,
+    "authorized_table_delta": 0,
+    "dev_source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
+    "measured_engine_lines": 82361,
+    "measured_groups": {
+      "companions": 10308,
+      "engine": 82361,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 62379,
+      "ui": 262
+    },
+    "measured_owned_total": 157457,
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 82361,
+    "previous_owned_total": 157443,
+    "previous_table_count": 45,
+    "reason": "Exact combined-tree ownership amendment for landing held-ingestion children. Preapproved by operator decision 6679052c on sharp-cascade-53 under size-cap-delegation-2026-10-23, as directed in bright-quest-30. Preserve historical measurements, existing classifications and original caps; no added headroom. Dev already exceeds the original transition owned cap (157443 versus 155499); this landing adds 14 owned shared lines, no engine lines or tables.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "source_revision": "65a3009e776b490bd2665a44512d2813a4125675",
+    "task_id": "bright-quest-30"
+  },
   "held_ingestion_p4_merge_measurement": {
     "authority": "msg-8f9cda4b9dcc460f8bcf006a22bfa2e0",
     "global_decision": "907cdbb6-a78a-4d3f-9fd0-063b0cd050d6",
