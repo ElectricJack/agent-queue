@@ -17,6 +17,7 @@ def test_original_pr_1842_legacy_playbook_fixtures_are_unchanged():
     routing = json.loads(ROUTING_CHANGES.read_text())["playbook_fixtures"]
     assert set(ingest) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     assert set(routing) == {"tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json"}
+    held_pipeline = _held_ingestion_pipeline_transport_changes()["playbook_fixtures"]
     pipeline = json.loads(PIPELINE_CHANGES.read_text())["playbook_fixtures"]
     assert set(pipeline) == {"tests/fixtures/playbooks/v2/default-pipeline/artifact.json"}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
@@ -66,6 +67,13 @@ def test_original_pr_1842_legacy_playbook_fixtures_are_unchanged():
             assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
             assert pipeline[path]["sha256"] != digest
             digest = pipeline[path]["sha256"]
+        if path in held_pipeline:
+            change = held_pipeline[path]
+            assert change["previous_sha256"] == digest
+            historical = ROOT / change["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert change["sha256"] != digest
+            digest = change["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 

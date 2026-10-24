@@ -12,7 +12,7 @@
       "spec-ingest": "sha256:91f7f5d120ae6e13e2889b421849baac37ac3221afc0d48115e01e37ac4b7bb4"
     }
   },
-  "compiled_at": "2026-10-24T02:17:40.350813Z",
+  "compiled_at": "2026-10-24T02:25:09.068129Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "default-pipeline",
   "purpose": "routine",

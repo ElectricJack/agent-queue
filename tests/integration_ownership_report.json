@@ -4903,6 +4903,7 @@
       ],
       "reason": "Imports or references an explicitly owned integration primitive."
     },
+    "src/api/graph_layout.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/api/messages.py::get_session_messages": {
       "baseline_span": [
         195,
@@ -7317,6 +7318,7 @@
     "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
       "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
+    "src/commands/task_commands.py::import from src.task_graph.readiness import load_readiness": "Read-only integration readiness projection imported for the held-ingestion surface; charged as shared integration ownership after moving the same import out of its caller.",
     "src/commands/workspace_checkout_repair.py::import from src.commands.supervisor_authority import operator_or_global_supervisor": {
       "reason": "Imports the authority guard used by the integration-aware base-checkout repair; conservatively charges the adapter's imported authorization seam."
     },
