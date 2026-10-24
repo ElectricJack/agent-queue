@@ -329,6 +329,9 @@ class ResumeTransaction:
     async def requeue(self, args, *, principal, scope, handler):
         """Supervisor repair of a resolved wait's held resume, fenced by generation."""
         async with self.db._engine.begin() as conn:
+            # Join the same fair queue as automatic resume. Acquire before any
+            # read or mutation so refusal/cancellation leaves the hold intact.
+            await lock_graph(conn, queued=True)
             task, wait, intent = await locked_suspension(conn, args['wait_id'])
             if scope.get('project_id') not in (None, task['project_id']):
                 raise WaitError('wait.out_of_scope', 'continuation is outside supervisor scope')
