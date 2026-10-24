@@ -192,6 +192,61 @@ async def test_generated_client_models_round_trip_real_typed_route(live_app):
         assert "no-such-task" in str(err.error)
 
 
+@pytest.mark.parametrize("status", ["held", "released", None])
+def test_generated_propose_response_preserves_ingestion_and_ordinary_results(status):
+    _import_repo_client()
+    from agent_queue_api_client.models.task_batch_propose_response import TaskBatchProposeResponse
+
+    payload = {"success": True, "proposal_id": "prop"}
+    if status:
+        payload.update(
+            status=status, state=status, batch_id="prop", members={"leaf": "task"},
+            structure_revision=2, structure_digest="digest", replayed=True,
+            lineage={"lineage_kind": "none"}, reviewer_task_id=None,
+            release_receipt={"kind": "design_authoring_shape"} if status == "released" else None,
+        )
+    parsed = TaskBatchProposeResponse.from_dict(payload)
+    assert parsed.to_dict() == payload
+    assert parsed.additional_properties == {}
+    if status:
+        assert parsed.status.value == status
+        assert parsed.members.to_dict() == {"leaf": "task"}
+        assert parsed.lineage.to_dict() == {"lineage_kind": "none"}
+
+
+async def test_generated_client_reads_design_batch_from_default_router(live_app):
+    _import_repo_client()
+    from agent_queue_api_client.api.default import get_ingest_batch
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.ingest_batch_detail import IngestBatchDetail
+
+    from src.database.queries import ingest_batch_queries as batches
+    from src.database.queries.proposal_queries import insert_proposal
+    from src.models import Project
+
+    app, db = live_app
+    await db.create_project(Project(id="p1", name="p1"))
+    batch_id = await insert_proposal(db, project_id="p1", source="spec:design", payload={})
+    async with db._engine.begin() as conn:
+        await batches.create_batch(
+            conn, batch_id=batch_id, project_id="p1", source_review_id="rev",
+            source_revision=1, source_content_sha256="sha", decision_id="decision",
+            lineage={"lineage_kind": "none"}, idempotency_key="key", state="released",
+            release_actor="service:design_authoring_shape",
+            release_receipt={"kind": "design_authoring_shape"},
+        )
+    client = Client(base_url="http://test")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        parsed = await get_ingest_batch.asyncio(client=client, project_id="p1", batch_id=batch_id)
+    assert isinstance(parsed, IngestBatchDetail)
+    assert parsed.batch_id == batch_id
+    assert parsed.state.value == "released"
+    assert parsed.release_receipt.to_dict() == {"kind": "design_authoring_shape"}
+
+
 async def test_generated_client_models_round_trip_graph_reflow_status(live_app):
     """``graph_reflow_status`` is operator-only and read-only.
 

@@ -8,13 +8,16 @@ survive reseed on next startup.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from src.profiles.capabilities import CapabilityPolicy
 from src.profiles.parser import parse_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
-SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
+SHIPPED_PROFILE_IDS = (
+    "supervisor", "planner", "reviewer", "final-reviewer", "fidelity-reviewer"
+)
 #: One generic worker per harness.  The tier x level x provider ladder was
 #: retired: a task's ``intelligence_class`` picks the model and reasoning level
 #: for the run, so profiles that differ only in ``default_class`` bought nothing.
@@ -409,6 +412,49 @@ def test_spec_ingest_profile_shape():
     assert "list_tasks" in tools
     assert "get_downstream_tasks" in tools
     assert "create_task" not in tools, "spec-ingest must not create tasks directly"
+
+
+def test_fidelity_reviewer_checklist(tmp_path):
+    """The agent receives approved design rev-bright-meadow r2 §5.2 verbatim."""
+    ensure_default_profiles(str(tmp_path))
+    path = _vault_profile_path(tmp_path, "fidelity-reviewer")
+    parsed = parse_profile(path.read_text(encoding="utf-8"))
+    assert parsed.is_valid, parsed.errors
+    assert parsed.warnings == []
+    assert parsed.frontmatter.id == "fidelity-reviewer"
+    assert parsed.config == {
+        "needs_workspace": True,
+        "read_only": True,
+        "default_class": "deep-high",
+        "harness": "claude",
+        "lifecycle": "task",
+    }
+    # Hash the approved section body, including its paragraph/line formatting.
+    # Source: 2026-10-13-spec-ingestion-with-task-structure-review-before-release.md.
+    assert hashlib.sha256(parsed.role.strip().encode()).hexdigest() == (
+        "c3566a221f05f55857c41c2ff0f5f0e410bfbee1f2e47223955ce71555067eea"
+    )
+    grants = set(parsed.capabilities["aq_commands"])
+    assert {
+        "approved_spec_packet", "task_batch_validate", "task_batch_update",
+        "task_batch_review_record", "task_show", "list_tasks", "get_downstream_tasks",
+        "message_send", "message_inbox", "message_status", "task_heartbeat", "task_close",
+        "wait_register", "wait_get",
+    } <= grants
+    assert grants.isdisjoint({
+        "review_show", "review_decide", "review_dispatch", "ensure_fidelity_review",
+        "task_batch_release", "task_batch_commit", "create_task", "edit_task", "pr_merge",
+    })
+    assert parsed.capabilities["plugin_tools"] == []
+
+
+def test_fidelity_reviewer_reseed_preserves_operator_choices(tmp_path):
+    ensure_default_profiles(str(tmp_path))
+    path = _vault_profile_path(tmp_path, "fidelity-reviewer")
+    custom = path.read_text(encoding="utf-8").replace('"claude"', '"codex"')
+    path.write_text(custom, encoding="utf-8")
+    assert "fidelity-reviewer" in ensure_default_profiles(str(tmp_path))["skipped"]
+    assert path.read_text(encoding="utf-8") == custom
 
 
 def test_playbook_compiler_profile_shape():

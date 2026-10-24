@@ -39,7 +39,7 @@ def _json_bytes(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def test_captured_baseline_and_executable_graph_are_unchanged():
+def test_captured_baseline_and_existing_executable_rules_are_unchanged():
     before = load_definition_json(BEFORE.read_text())
     after = load_definition_json(AFTER.read_text())
     assert "sha256:" + hashlib.sha256(BEFORE.read_bytes()).hexdigest() == (
@@ -48,11 +48,28 @@ def test_captured_baseline_and_executable_graph_are_unchanged():
     assert canonical_bytes(before) == BEFORE.read_bytes()
     assert before.source_hash == SCENARIOS["baseline_source_sha256"]
 
+    original_rules = {rule.id for rule in before.rules}
+    assert {rule.id for rule in after.rules} == original_rules | {
+        "fidelity-review-on-held", "release-on-receipt",
+    }
+    # Held-batch rules and their exact refusal handling are pinned independently
+    # by test_default_playbook_v2_artifacts and the real intake tests.
     def executable(artifact):
         body = json.loads(canonical_bytes(artifact))
         # Compilation provenance changes with the source; executable fields do not.
         for field in ("source_hash", "compiled_at", "trusted_execution"):
             body.pop(field, None)
+        body["rules"] = [rule for rule in body["rules"] if rule["id"] in original_rules]
+        body["steps"] = {
+            name: step for name, step in body["steps"].items() if step["rule"] in original_rules
+        }
+        body["compiled_against"]["commands"] = {
+            name: body["compiled_against"]["commands"][name]
+            for name in before.compiled_against.commands
+        }
+        # Role instructions now describe held batches; their fingerprints are
+        # checked against the shipped profiles by the artifact suite.
+        body["compiled_against"].pop("profiles")
         for item in [*body["rules"], *body["steps"].values()]:
             item.pop("source")
         return _json_bytes(body)
@@ -60,6 +77,7 @@ def test_captured_baseline_and_executable_graph_are_unchanged():
     assert executable(after) == executable(before)
     assert set(after.trusted_execution.required_capabilities) == {
         "ensure_spec_ingest", "gate_create", "task_batch_commit",
+        "ensure_fidelity_review", "task_batch_release",
     }
     assert not after.required_features
     assert not after.trusted_execution.scripts

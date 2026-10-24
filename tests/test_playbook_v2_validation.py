@@ -15,6 +15,7 @@ import time
 import pytest
 
 from src.playbooks.definition import (
+    AgentTaskStep,
     DuplicateJsonKey,
     PlaybookDefinition,
     load_definition_json,
@@ -87,6 +88,18 @@ def build(mutation=None) -> PlaybookDefinition:
 
 def load_invalid(code: str) -> PlaybookDefinition:
     return load_definition_json((INVALID_DIR / f"{code}.json").read_text())
+
+
+def test_agent_task_accepts_fidelity_reviewer_role():
+    step = AgentTaskStep.model_validate({
+        "rule": "review_batch",
+        "title": "Review the held batch",
+        "profile_id": "fidelity-reviewer",
+        "objective": {"type": "literal", "value": "Check source fidelity before structure"},
+        "transitions": {"done": "end", "runtime_error": "oops"},
+        "source": source(1),
+    })
+    assert step.profile_id == "fidelity-reviewer"
 
 
 class TestDiagnosticSet:

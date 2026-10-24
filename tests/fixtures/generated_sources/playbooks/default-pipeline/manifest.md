@@ -1,17 +1,20 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:04498620587d606388c43e77b5cb492ac98f131aeea594c83041b79d4ec7c1c2
-source_sha256: sha256:58b1df380eb21e7162101c4e98173ad0703ab29b12ef3eb13f9657b647042303
-contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4a5f6d52126fcd
+artifact_sha256: sha256:cfd04738c2b35830d4f7ee9c751cafb29dbce8726ed4b86cf426d357f7af4d41
+source_sha256: sha256:a76721da12bb0f554af7a6ca6e0ea10192d0240d4223ed3983df94583fb091c1
+contract_fingerprint: sha256:3098cb7e8701d5ff63d7727d9ae32d1f817dac5fe499236c2c451104e1ff437d
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
+  - ensure_fidelity_review
   - ensure_spec_ingest
   - gate_create
   - task_batch_commit
+  - task_batch_release
   harness_tools: []
   plugin_tools: []
 profiles_referenced:
+- fidelity-reviewer
 - spec-ingest
 ---
 
@@ -59,3 +62,20 @@ real handler effects, decision replay after closure/archive and supersession
 instructions. This recording does not install or activate the new policy.
 The installed drift is deliberate: the supervisor's H08-OPS cutover remains
 under a human hold. Publication of this bundle does not release that hold.
+
+Updated 2026-10-20 for `sound-flare-53`: explicitly retain the decision's
+ingestion task receipt after completion, closure as obsolete, and archive.
+Rebuilt against the current command contracts, including `gate_create`;
+the three rules and their transitions are unchanged. Approval paths remain
+display mirrors, while immutable decision receipts establish deduplication.
+
+Updated 2026-10-22 for `nimble-lantern-37.2` (spec ingestion held batches,
+L5.2): approved implementation specs are materialized held, so the pipeline
+gains two rules. `fidelity-review-on-held` answers `batch.held` with
+`ensure_fidelity_review` (role profile `fidelity-reviewer`), and
+`release-on-receipt` answers `batch.receipt_recorded` with `task_batch_release`
+for exactly the attested revision and digest. A release refused `needs_scope`
+ends `completed` without release, the batch waiting on its scope ask; every
+other release refusal reaches the `failed` terminal. The spec-ingest,
+proposal-gate and commit rules and their transitions are unchanged apart from
+the spec-ingest step text; ordinary proposals keep the human gate.
