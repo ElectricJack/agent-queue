@@ -1623,4 +1623,10 @@ def test_held_ingestion_pipeline_only_promotes_three_reviewed_transports():
         assert change["previous_sha256"] == baseline["sha256"]
         previous = (ROOT / change["preserved_previous_path"]).read_bytes()
         assert hashlib.sha256(previous).hexdigest() == change["previous_sha256"]
-        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == change["sha256"]
+        composition = json.loads((
+            ROOT / "tests/fixtures/contracts/default-pipeline-wait-grants-composition.json"
+        ).read_text())["playbook_fixtures"][path]
+        assert composition["previous_sha256"] == change["sha256"]
+        held = ROOT / composition["preserved_previous_path"]
+        assert hashlib.sha256(held.read_bytes()).hexdigest() == change["sha256"]
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == composition["sha256"]
