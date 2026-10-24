@@ -51,12 +51,14 @@ _CLAIM_OBSERVATION_GRACE_SECONDS = 60.0
 _CLAIM_REQUEST_LIMIT_SECONDS = 150.0
 
 
-def _retryable_preparation_error(exc: Exception) -> bool:
+def _retryable_preparation_error(exc: Exception, *, stage: str | None = None) -> bool:
     """Retry fenced I/O expiry and PostgreSQL transaction conflicts."""
     from src.integration.lock import BranchLockTimeout
 
     if isinstance(exc, BranchLockTimeout):
-        return True
+        # A reset that repeatedly exceeds the fence must spend the bounded
+        # preparation budget, rather than retaining an invisible retry loop.
+        return stage != "slot_reset"
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -1937,23 +1939,13 @@ class ClaimCommandsMixin:
                 slot = proof.workspace
                 if not hierarchy_enabled:
                     await check_checkout(conn=conn)
-                stage = "stack_fetch"
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
                 if preserve_branch:
                     reset_kwargs["preserve_branch"] = True
-                if hierarchy_enabled and origin.get("stack_store"):
-                    await self.orchestrator.git._arun(
-                        ["fetch", "--no-tags", str(origin["stack_store"]), base_branch],
-                        cwd=slot.workspace_path,
-                    )
-                if hierarchy_enabled and origin.get("stack_repair_inputs"):
-                    inputs = origin["stack_repair_inputs"]
-                    await self.orchestrator.git._arun(
-                        ["fetch", "--no-tags", inputs["store"], *inputs["heads"]],
-                        cwd=slot.workspace_path,
-                    )
+                if hierarchy_enabled:
+                    reset_kwargs["fetch_origin"] = False
                 stage = "slot_reset"
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
@@ -2073,6 +2065,26 @@ class ClaimCommandsMixin:
                                 slot.workspace_path, origin, fence,
                                 repository_url=project.repo_url or "",
                             )
+                # Private stack commits may not exist on origin. Import them
+                # first so immutable inputs do not trigger a redundant network
+                # refresh, then recheck their provenance under exclusion below.
+                stage = "stack_fetch"
+                if origin.get("stack_store"):
+                    await self.orchestrator.git._arun(
+                        ["fetch", "--no-tags", str(origin["stack_store"]), base_sha],
+                        cwd=slot.workspace_path,
+                    )
+                if origin.get("stack_repair_inputs"):
+                    inputs = origin["stack_repair_inputs"]
+                    await self.orchestrator.git._arun(
+                        ["fetch", "--no-tags", inputs["store"], *inputs["heads"]],
+                        cwd=slot.workspace_path,
+                    )
+                stage = "slot_prefetch"
+                await self.orchestrator._worktree_slots().prefetch_slot_for_task(
+                    slot, base_branch=base_sha,
+                    preserve_branch=bool(owner_role == "worker" and origin.get("prerequisite_head")),
+                )
                 stage = "integration_attach"
                 if not hierarchy_attached:
                     await ownership.attach(
@@ -2155,7 +2167,7 @@ class ClaimCommandsMixin:
             )
             raise
         except Exception as exc:
-            if _retryable_preparation_error(exc):
+            if _retryable_preparation_error(exc, stage=stage):
                 # Retry only after the failed transaction unwinds; never run
                 # permanent failure cleanup for transient contention/expiry.
                 raise
