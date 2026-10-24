@@ -1,0 +1,13 @@
+{
+  "ci_wait_repository_mapping_review": {
+    "authorized_owned_delta": 1,
+    "decision_message_id": "msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c",
+    "measured_engine_lines": 85316,
+    "measured_owned_total": 160880,
+    "measured_shared_lines": 62007,
+    "measured_table_count": 45,
+    "previous_owned_total": 160879,
+    "previous_shared_lines": 62006,
+    "task_id": "nimble-torrent-12"
+  }
+}

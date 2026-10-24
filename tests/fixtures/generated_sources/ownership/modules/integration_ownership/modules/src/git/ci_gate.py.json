@@ -1,0 +1,13 @@
+{
+  "exclusions": {
+    "src/git/ci_gate.py::UNKNOWN": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/git/ci_gate.py::GREEN": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/ci_gate.py::MERGE_CI_POLICIES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/ci_gate.py::PENDING": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/ci_gate.py::RED": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/ci_gate.py::UNKNOWN": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/ci_gate.py::classify_rollup": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/profiles/task_execution.py::is_supervisor_profile": {
+      "fingerprint": "551e11de0ac0a4c061ec4c41ae39d358b07ab31d7a1e17134cc3cede95418303",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

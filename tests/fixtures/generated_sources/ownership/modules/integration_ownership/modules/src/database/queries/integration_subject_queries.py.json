@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/database/queries/integration_subject_queries.py::IntegrationSubjectQueriesMixin.append_integration_subject_journal::4a70cdc4f2029c032de3a9af830f5cec3a047e7456248c8b461d161f222350ce": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 364,
+      "owner": "IntegrationSubjectQueriesMixin.append_integration_subject_journal",
+      "owner_fingerprint": "da925451c8d7e2a619ee0c266439d44fdcb3be04ccceddcce357d38a0e0a3fc5",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    },
+    "src/database/queries/integration_subject_queries.py::IntegrationSubjectQueriesMixin.append_integration_subject_journal_on::4055e0d096106088406c108319c1bb6f0c8f656a4ef494267587f2fd0e060988": {
+      "call": "pg_insert",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 324,
+      "owner": "IntegrationSubjectQueriesMixin.append_integration_subject_journal_on",
+      "owner_fingerprint": "201a99ea7afc63317db9b42b702adbf59a8817acc220fd2bac0da21b97b30cce",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

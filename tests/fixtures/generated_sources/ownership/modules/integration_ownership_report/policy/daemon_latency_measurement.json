@@ -1,0 +1,25 @@
+{
+  "daemon_latency_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 26,
+    "decision_message_id": "msg-c80bde55a6d1442791a2ba4f9597d7a0",
+    "measured_engine_lines": 85316,
+    "measured_owned_total": 160863,
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "owned_line_deltas": {
+      "src/metrics/perf.py": 12,
+      "src/orchestrator/core.py": 1,
+      "src/orchestrator/pools.py": 2,
+      "src/wait_runtime/resume.py": 1,
+      "src/waits/graph.py": 10
+    },
+    "pr_url": "https://github.com/ElectricJack/agent-queue/pull/1861",
+    "previous_engine_lines": 85316,
+    "previous_owned_total": 160837,
+    "reason": "PR #1861 latency instrumentation and bounded background graph waits; project supervisor approved the exact footprint under size-cap-delegation-2026-10-23. Retain features and count equality.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "source_revision": "4701b2e09b463d5c5e157a69620c3c08cf293227",
+    "task_id": "bright-impact-14"
+  }
+}

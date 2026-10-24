@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/doctor/wait_checks.py::wait_checks": {
+      "fingerprint": "c20902183f20184a569f288bde050a6ee07ac43c9b829a81a413cb896025ec8b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

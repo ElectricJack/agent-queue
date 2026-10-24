@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/batch_settlement.py::DeliveredBatchSettlement._run::40248be60e6db0e6c5193da5f2b51bb14a22a1be9adfacfcdf123b9e500b55c1": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 185,
+      "owner": "DeliveredBatchSettlement._run",
+      "owner_fingerprint": "c995e612ca66b59b12c40ad22ebab23447c88ff3c2d0b1230b4b326e1a28409c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

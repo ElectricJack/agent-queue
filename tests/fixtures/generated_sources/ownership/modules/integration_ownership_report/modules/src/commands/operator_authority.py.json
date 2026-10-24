@@ -1,0 +1,9 @@
+{
+  "exclusions": {
+    "src/commands/operator_authority.py::HUMAN_DECISION_COMMANDS": "Names operator-worker setup commands that require an exact recorded human decision before dispatch; the named commands keep their own charged handlers. No integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_FORBIDDEN": "Operator-worker denylist of human gate and delivery command names; it only refuses dispatch. The named commands keep their own charged handlers; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_READS": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_WRITES": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority."
+  }
+}

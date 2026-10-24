@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/waits/listener.py::WaitSourceListener.drain": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::WaitSourceListener.lease": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::WaitSourceListener.locked_lease": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::import from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::import from src.database.tables import sessions, wait_listener_cursors, wait_records, wait_source_events": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

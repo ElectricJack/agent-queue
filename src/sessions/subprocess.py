@@ -112,6 +112,8 @@ class SubprocessProvider(SessionProvider):
             )
         except OSError as exc:
             log_file.close()
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"Process creation failed: {exc}\n")
             raise SessionDiedDuringStartup(
                 spec.session_name, start_stderr_path=str(log_path), detail=str(exc)
             ) from exc

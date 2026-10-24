@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/profiles/workspace_kind_parser.py::import from src.models import WORKSPACE_KIND_MODES, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_parser.py::parse_workspace_kind_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

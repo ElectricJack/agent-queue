@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/projects/onboarding.py::ProjectOnboardingService.__init__": {
+      "baseline_span": [
+        119,
+        136
+      ],
+      "landing_span": [
+        119,
+        136
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

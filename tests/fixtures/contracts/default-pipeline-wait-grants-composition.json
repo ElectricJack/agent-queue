@@ -1,0 +1,28 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/default-pipeline/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/scenarios/default-pipeline/before-wait-grants-composition.artifact.json",
+      "previous_sha256": "cfd04738c2b35830d4f7ee9c751cafb29dbce8726ed4b86cf426d357f7af4d41",
+      "sha256": "010e99575e6c37e9705e0e803adc282ae46073750bc3866bca937093e431c513"
+    }
+  },
+  "profile_grants": {
+    "spec-ingest": {
+      "added_aq_commands": [
+        "wait_checkpoint",
+        "wait_get",
+        "wait_register"
+      ],
+      "previous_fingerprint": "sha256:91f7f5d120ae6e13e2889b421849baac37ac3221afc0d48115e01e37ac4b7bb4",
+      "fingerprint": "sha256:4ec7f016f50a0135c25c9a8524093f6f35b5794da0ff6e78462d30f76cf9c5dc"
+    }
+  },
+  "reason": "Compose swift-willow-88 wait grants with the held-ingestion pipeline retained by bright-quest-30. Relative to the preserved starting-head authored recording only compiled_at and compiled_against.profiles.spec-ingest change. Preserve every held-batch rule, step, command contract, fidelity-reviewer fingerprint, source and trusted execution field. Original wait-grant evidence and both branch artifact histories remain byte-identical. This recording does not install or activate the playbook.",
+  "starting_head": "ac93abeb022da10ff7af972384c858b6395c0fe0",
+  "member_sources": {
+    "bright-quest-30": "339770cbe9013456449e928c7930f5e68b02fbed",
+    "swift-willow-88": "554b9dfebacbe97db4cf38b338a3d49cbd24e2a8"
+  },
+  "original_wait_grants_artifact": "tests/fixtures/playbooks/scenarios/default-pipeline/wait-grants.artifact.json",
+  "original_wait_grants_evidence": "tests/fixtures/contracts/default-pipeline-wait-grants-changes.json"
+}

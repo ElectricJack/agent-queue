@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/install/command.py::CommandRunner": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/install/command.py::run_command": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -2,11 +2,9 @@
 
 ``vault.ensure_default_profiles()`` is write-if-absent, so a grant a release
 adds to a shipped profile never reaches a vault copy that already exists
-(:mod:`src.profiles.drift`).  For most profiles that is the right default: the
-grant list is the operator's to curate, and ``profiles.system_drift`` names
-the gap. The supervisor and shipped worker templates receive additive updates
-by default: otherwise ordinary newly supported verification and Git operations
-remain denied on existing installations until a human repairs every template.
+(:mod:`src.profiles.drift`). All shipped system profiles receive additive updates
+by default: otherwise newly supported commands remain denied on existing
+installations until a human repairs every profile.
 Operator-curated profiles can explicitly opt out with ``capability_sync: false``.
 
 So on daemon start, and whenever the vault watcher reloads the file, the
@@ -19,12 +17,12 @@ copied: wildcard grants stay prohibited (``src/profiles/capabilities.py``).
 
 Which profiles are synced:
 
-* ``supervisor`` and shipped worker templates by default
+* every shipped system profile by default
   (:data:`DEFAULT_SYNCED_PROFILE_IDS`);
 * any profile whose vault frontmatter says ``capability_sync: false`` is
   left alone — the opt-out for an operator who curates its grants by hand;
-* any other shipped profile whose vault frontmatter says
-  ``capability_sync: true`` opts in to the same treatment.
+* ``capability_sync: true`` explicitly enables the same treatment; custom
+  profiles and derived worker rungs are never rewritten.
 
 The doctor check ``profiles.supervisor_capability_drift``
 (:mod:`src.doctor.profile_checks`) reports what the supervisor's vault copy
@@ -53,9 +51,7 @@ logger = logging.getLogger(__name__)
 CAPABILITY_SYNC_KEY = "capability_sync"
 
 #: Shipped profiles synced unless their vault copy opts out.
-DEFAULT_SYNCED_PROFILE_IDS: frozenset[str] = frozenset(
-    {"supervisor"} | {pid for pid in system_profile_ids() if pid.startswith("worker-")}
-)
+DEFAULT_SYNCED_PROFILE_IDS: frozenset[str] = frozenset(system_profile_ids())
 
 #: Event emitted once per profile whose vault copy gained grants.
 CAPABILITIES_SYNCED_EVENT = "profile.capabilities_synced"

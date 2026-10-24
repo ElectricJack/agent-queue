@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/cli/db.py::_load_config": {
+      "baseline_span": [
+        25,
+        30
+      ],
+      "landing_span": [
+        25,
+        30
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

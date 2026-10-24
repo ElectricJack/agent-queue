@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/sessions/dialogs.py::first_match": {
+      "fingerprint": "edf6e7281ae9800d741e0022b248b30e4f80d0a0f354dea006948c2d8e4df340",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

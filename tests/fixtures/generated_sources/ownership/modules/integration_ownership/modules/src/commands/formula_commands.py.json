@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/formula_commands.py::FormulaCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

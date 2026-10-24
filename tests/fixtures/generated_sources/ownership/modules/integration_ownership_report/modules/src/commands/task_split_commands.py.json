@@ -1,0 +1,16 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/task_split_commands.py::TaskSplitCommandsMixin._cmd_task_split": {
+      "fingerprint": "94b254c77f44e877ac43b7f953fd00b327eb94df0391c799c6d1ddd21c458adb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_split_commands.py::TaskSplitCommandsMixin._split_task_on": {
+      "fingerprint": "109406a7f87e4bfb5c6b1b315c1aca49a9abfa9c89e419b24bd97a0b0385d89e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/task_split_commands.py::import from src.database.tables import ingest_batches, projects, task_criteria, task_integration_checkpoints, task_metadata, tasks": {
+      "fingerprint": "5a93a33d6ca2da3b8fe25f44d06a264bb8421d5329f2ca297bda1827988eea47",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

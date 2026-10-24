@@ -1,0 +1,21 @@
+{
+  "graph_viewport_readiness_measurement": {
+    "authorized_engine_delta": 22,
+    "authorized_owned_delta": 23,
+    "authorized_shared_delta": 1,
+    "decision_message_id": "msg-68ccb1d50ee04851a7268dd58e9d4459",
+    "measured_engine_lines": 85539,
+    "measured_owned_total": 161134,
+    "measured_source_revision": "b194122701a0130039230dea4c8caa93c70f60e1",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85517,
+    "previous_owned_total": 161111,
+    "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1892",
+    "reason": "Bound cached tile readiness to visible candidates and stack proof sources; exact project supervisor approval under size-cap-delegation-2026-10-23. Preserve scheduler shared inputs and fail-closed authorization. No new storage or automatic cap increase.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "noble-flare-12"
+  }
+}

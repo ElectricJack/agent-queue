@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/profiles/sync.py::register_profile_handlers": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/sync.py::scan_and_sync_existing_profiles": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/sync.py::sync_profile_text_to_db": "Parses markdown and delegates to the common profile synchronizer; no integration settings, refs or delivery predicates are handled here."
+  }
+}

@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from src.api.auth import RequestScope
 from src.api.scope import check_request_scope
@@ -82,6 +82,193 @@ async def _holds(handler, task_ids):
         return set((await conn.execute(select(tasks.c.held_batch_id).where(
             tasks.c.id.in_(task_ids),
         ))).scalars().all())
+
+
+async def _retire_batch_tasks(handler, batch, *, skip=None):
+    """Use supported obsolete closes and explicit dependent rewrites."""
+    from src.database.tables import task_dependencies
+    from src.sessions.obsolete import ObsoleteClose
+
+    row = await _batch_row(handler, batch["batch_id"])
+    async with handler.db.immediate() as conn:
+        members = await batches.members(conn, batch["batch_id"])
+    ordered = ([row["reviewer_task_id"]] if row["reviewer_task_id"] else [])
+    ordered += [m["task_id"] for m in members if m["role"] != "container"]
+    ordered += [m["task_id"] for m in members if m["role"] == "container"]
+    lifecycle = ObsoleteClose(handler.db, release_owner=None)
+    for task_id in ordered:
+        if task_id == skip:
+            continue
+        async with handler.db.immediate() as conn:
+            incoming = (await conn.execute(select(task_dependencies).where(
+                task_dependencies.c.depends_on_task_id == task_id,
+                task_dependencies.c.dep_type != "parent-child",
+            ))).mappings().all()
+        is_container = any(m["task_id"] == task_id and m["role"] == "container" for m in members)
+        await lifecycle.close(task_id, reason="Superseded graph", principal="human:test", **(
+            {} if is_container else {
+                "satisfied_by": "approved supersession decision:test",
+                "rewire": {"remove_edges": [
+                    {"from": e["task_id"], "to": task_id, "dep_type": e["dep_type"]}
+                    for e in incoming
+                ]},
+            }
+        ))
+
+
+async def _retire_batch(handler, batch, **overrides):
+    return await handler.execute("task_batch_retire", {
+        "batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+        "reason": "Approved graph supersession", **overrides,
+    })
+
+
+async def test_batch_retire_preserves_graph_source_receipts_and_holds(handler):
+    from src.database.tables import events, task_proposals
+
+    batch, scope, request = await _review_request(handler)
+    assert (await _record(handler, scope, request))["success"]
+    await handler.db.update_session(scope.session_id, state="stopped", desired_state="stopped")
+    reviewer = (await _batch_row(handler, batch["batch_id"]))["reviewer_task_id"]
+    await handler.db.update_task(reviewer, status=TaskStatus.FAILED, assigned_agent_id=None)
+    await _retire_batch_tasks(handler, batch)
+    before = await _batch_row(handler, batch["batch_id"])
+    async with handler.db.immediate() as conn:
+        members = await batches.members(conn, batch["batch_id"])
+        receipts = (await conn.execute(select(ingest_batch_receipts).where(
+            ingest_batch_receipts.c.batch_id == batch["batch_id"],
+        ))).mappings().all()
+    assert receipts
+    result = await _retire_batch(handler, batch)
+    assert result["success"] and not result["already_retired"], result
+    replay = await _retire_batch(handler, batch)
+    assert replay["success"] and replay["already_retired"], replay
+    after = await _batch_row(handler, batch["batch_id"])
+    assert after == {**before, "state": "retired", "updated_at": after["updated_at"]}
+    assert after["release_receipt"] is None and after["released_at"] is None
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+    async with handler.db.immediate() as conn:
+        assert await batches.members(conn, batch["batch_id"]) == members
+        assert (await conn.execute(select(ingest_batch_receipts).where(
+            ingest_batch_receipts.c.batch_id == batch["batch_id"],
+        ))).mappings().all() == receipts
+        assert await conn.scalar(select(task_proposals.c.status).where(
+            task_proposals.c.id == batch["batch_id"],
+        )) == "discarded"
+        audit = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "task.batch_retired",
+        ))).scalars().all()
+    assert len(audit) == 1
+    reconciled = await handler.execute("batch_reconcile", {})
+    assert reconciled["success"], reconciled
+    assert (await _batch_row(handler, batch["batch_id"]))["state"] == "retired"
+
+
+async def test_batch_retire_refuses_unretired_reviewer(handler):
+    batch, _ = await _held_batch(handler)
+    reviewer = (await _ensure(handler, batch))["task_id"]
+    await _retire_batch_tasks(handler, batch, skip=reviewer)
+    before = await _batch_row(handler, batch["batch_id"])
+    refused = await _retire_batch(handler, batch)
+    assert not refused["success"] and refused["error_code"] == "retirement_required", refused
+    assert await _batch_row(handler, batch["batch_id"]) == before
+
+
+@pytest.mark.parametrize("blocker", ["status_only", "no_change", "cleanup", "claim", "owner",
+                                     "dependent", "session", "hold", "revision", "project",
+                                     "reason"])
+async def test_batch_retire_refusals_preserve_batch_and_holds(handler, blocker):
+    from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+    from src.database.tables import integration_branch_owners
+
+    batch, _ = await _held_batch(handler)
+    await _retire_batch_tasks(handler, batch)
+    task_id = batch["task_ids"][0]
+    overrides = {}
+    if blocker in {"status_only", "no_change", "cleanup"}:
+        marker = await handler.db.get_task_meta(task_id, "obsolete")
+        if blocker == "status_only":
+            await handler.db.delete_task_meta(task_id, "obsolete")
+        else:
+            if blocker == "no_change":
+                marker["disposition"] = "no_change"
+            else:
+                marker["cleanup"]["state"] = "pending"
+            await handler.db.set_task_meta(task_id, "obsolete", marker)
+    elif blocker == "claim":
+        await handler.db.set_task_meta(task_id, CLAIMED_BY_SESSION_KEY, "stale-session")
+    elif blocker == "owner":
+        async with handler.db.immediate() as conn:
+            await conn.execute(integration_branch_owners.insert().values(
+                id="retire-owner", repository_id="repo", ref="refs/heads/retired",
+                owner_id=task_id, owner_role="task", fence_token=1,
+                handoff_state="reserved", created_at=time.time(), updated_at=time.time(),
+            ))
+    elif blocker == "dependent":
+        from src.models import Task
+
+        await handler.db.create_task(Task(id="still-required", project_id="p1", title="Required",
+                                          description="Required dependency"))
+        await handler.db.add_dependency("still-required", task_id, "blocks")
+    elif blocker == "session":
+        await handler.db.create_session(SessionRecord(
+            id="late-live", task_id=task_id, project_id="p1", agent_id="ingester",
+            profile_id="spec-ingest", harness="codex", provider="fake", name="late-live",
+            lifecycle="task", state="running", desired_state="running", work_dir="/tmp",
+            epoch="test", instance_token="late-instance", started_at=time.time(),
+        ))
+    elif blocker == "hold":
+        await handler.db.update_task(task_id, held_batch_id=None)
+    elif blocker == "revision":
+        overrides["expected_revision"] = batch["structure_revision"] + 1
+    elif blocker == "project":
+        overrides["project_id"] = "other"
+    else:
+        overrides["reason"] = "   "
+    before = await _batch_row(handler, batch["batch_id"])
+    refused = await _retire_batch(handler, batch, **overrides)
+    assert not refused["success"], refused
+    assert await _batch_row(handler, batch["batch_id"]) == before
+    assert await _holds(handler, batch["task_ids"]) == (
+        {None, batch["batch_id"]} if blocker == "hold" else {batch["batch_id"]}
+    )
+
+
+async def test_batch_retire_accepts_supported_archived_retirement(handler):
+    from tests.test_task_batch_commands import _editable_batch, _scoped_update
+
+    batch, _, _ = await _editable_batch(handler, receipt=False)
+    updated = await _scoped_update(handler, batch, [{
+        "kind": "retire", "task_id": "ui", "reason": "Duplicate UI obligation",
+        "satisfied_by": "approved supersession decision:test",
+    }])
+    assert updated["success"], updated
+    archived_id = batch["members"]["ui"]
+    assert await handler.db.get_task(archived_id) is None
+    batch["structure_revision"] = updated["structure_revision"]
+    await _retire_batch_tasks(handler, batch, skip=archived_id)
+    retired = await _retire_batch(handler, batch)
+    assert retired["success"], retired
+
+
+async def test_batch_retire_refuses_released_batches_and_worker_authority(handler):
+    from src.profiles.capabilities import CapabilityPolicy
+    from tests.test_task_batch_commands import _release, _release_ready
+
+    batch, scope, _ = await _release_ready(handler)
+    worker = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, project_id="p1", session_id=scope.session_id,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["task_batch_retire"]),
+    )
+    with principal_context(worker):
+        refused = await handler._cmd_task_batch_retire({
+            "batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+            "reason": "Attempted worker retirement",
+        })
+    assert not refused["success"] and refused["error_code"] == "not_authorized", refused
+    assert (await _release(handler, batch))["success"]
+    refused = await _retire_batch(handler, batch)
+    assert not refused["success"] and refused["error_code"] == "batch_not_held", refused
 
 
 async def test_ensure_creates_role_reviewer_once_and_records_assignment(handler):
@@ -317,6 +504,74 @@ async def _record(handler, scope, args):
         "kind": "session", "session_id": scope.session_id,
         "session_instance_token": "instance", "project_id": "p1",
     }})
+
+
+async def _lose_wakeup(handler, batch_id, event_type):
+    async with handler.db.immediate() as conn:
+        await conn.execute(delete(integration_outbox).where(
+            integration_outbox.c.event_type == event_type,
+            integration_outbox.c.payload["batch_id"].as_string() == batch_id,
+        ))
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == batch_id,
+        ).values(updated_at=time.time() - 120))
+
+
+async def test_reconcile_reemits_receipt(handler):
+    batch, scope, args = await _review_request(handler)
+    recorded = await _record(handler, scope, args)
+    assert recorded["passing"], recorded
+    await _lose_wakeup(handler, batch["batch_id"], "batch.receipt_recorded")
+    recovered = await handler.execute("batch_reconcile", {})
+    assert not recovered["errors"], recovered
+    assert [row["event_type"] for row in recovered["recovered"]] == ["batch.receipt_recorded"]
+    # Transport acceptance followed by a crash before release must wake policy again.
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(integration_outbox).where(
+            integration_outbox.c.id == recovered["recovered"][0]["event_id"],
+        ).values(delivered_at=time.time()))
+        await conn.execute(update(ingest_batches).where(
+            ingest_batches.c.batch_id == batch["batch_id"],
+        ).values(updated_at=time.time() - 120))
+    replay = await handler.execute("batch_reconcile", {})
+    assert replay["recovered"][0]["event_id"] != recovered["recovered"][0]["event_id"]
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+    assert (await _batch_row(handler, batch["batch_id"]))["reviewer_task_id"] == (
+        await handler.db.get_session(scope.session_id)
+    ).task_id
+
+
+async def test_reconcile_redispatches_missing_reviewer(handler):
+    batch, _ = await _held_batch(handler)
+    await _lose_wakeup(handler, batch["batch_id"], "batch.held")
+    recovered = await handler.execute("batch_reconcile", {})
+    assert not recovered["errors"], recovered
+    assert recovered["recovered"][0]["event_type"] == "batch.held"
+    first = await _ensure(handler, batch)
+    again = await _ensure(handler, batch)
+    assert first["created"] and not again["created"]
+    assert first["task_id"] == again["task_id"]
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+
+
+async def test_release_idempotent_after_crash(handler):
+    from tests.test_task_batch_commands import _release, _release_ready
+
+    batch, _, receipt = await _release_ready(handler)
+    first = await _release(handler, batch)
+    assert first["success"] and not first["already_released"], first
+    await _lose_wakeup(handler, batch["batch_id"], "batch.released")
+    recovered = await handler.execute("batch_reconcile", {})
+    assert recovered["recovered"][0]["event_type"] == "batch.released", recovered
+    again = await _release(handler, batch)
+    assert again["success"] and again["already_released"], again
+    assert again["release_receipt"] == first["release_receipt"]
+    assert await _holds(handler, batch["task_ids"]) == {None}
+    async with handler.db._engine.connect() as conn:
+        assert (await conn.execute(select(func.count()).select_from(ingest_batch_receipts).where(
+            ingest_batch_receipts.c.batch_id == batch["batch_id"],
+            ingest_batch_receipts.c.receipt_id == receipt["receipt_id"],
+        ))).scalar_one() == 1
 
 
 async def test_receipt_requires_every_section(handler):

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/tokens/budget.py::BudgetManager": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

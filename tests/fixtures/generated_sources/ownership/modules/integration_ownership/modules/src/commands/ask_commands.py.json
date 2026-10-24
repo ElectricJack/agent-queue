@@ -1,0 +1,14 @@
+{
+  "exclusions": {
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_service": "Generic registry/service assembly for reviews, specifications and all human sources. Static integration adapter registration and IntegrationAdapter are independently charged; no integration decision or domain write occurs here."
+  },
+  "shared": {
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_transaction": {
+      "landing_span": [
+        187,
+        198
+      ],
+      "reason": "Source decision transaction boundary used by the integration adapter alongside other human sources."
+    }
+  }
+}

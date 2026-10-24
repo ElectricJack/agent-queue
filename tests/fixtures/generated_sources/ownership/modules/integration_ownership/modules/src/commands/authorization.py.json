@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/commands/authorization.py::authorize_command": "Generic capability policy for every command; integration command hold enforcement is charged in CommandHandler.execute.",
+    "src/commands/authorization.py::denial_result": "Generic capability refusal payload with no integration state or authority."
+  }
+}

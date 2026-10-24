@@ -1,0 +1,10 @@
+{
+  "shared": {
+    "src/orchestrator/retained_workspace.py::import from src.orchestrator.task_checkpoint import capture_checkpoint": {
+      "reason": "Imports full-source capture for guarded retained-workspace stop; captured checkpoint is preservation evidence, not publication authority."
+    },
+    "src/orchestrator/retained_workspace.py::stop_retained_workspace": {
+      "reason": "Qualified retained stop coordinates fresh writer proof, durable checkpoint/claim retirement, nondestructive source detachment and fenced native owner release."
+    }
+  }
+}

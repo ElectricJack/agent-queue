@@ -19,7 +19,7 @@ import pytest
 
 from src.messages import Activity, SessionLens, SessionManagerProto
 from src.intelligence_classes import IntelligenceClass
-from src.models import AgentProfile, Project, SessionRecord, Task
+from src.models import AgentProfile, Project, ProjectStatus, SessionRecord, Task
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness, ResumeSpec
@@ -393,6 +393,35 @@ class TestEnsureStarted:
             )
         assert providers.create("fake").sent_nudges == []
         assert await providers.create("fake").is_running(handle)
+
+    async def test_paused_project_refuses_supervisor_start_and_wake(self, db, lens, providers):
+        """A paused project's supervisor must not be cold-started or woken.
+
+        ``ensure_started`` is the cold-start / wake path an inbound message or
+        button drives; pausing refuses it so nothing boots a second terminal.
+        (Nudging an already-running supervisor is gated separately on the
+        supervisor-enabled opt-out, and stopping the running one is the
+        reconciler's drain, covered in test_session_reconciler.)
+        """
+        await db.update_project("proj1", supervisor_enabled=True)
+        await db.update_project("proj1", status=ProjectStatus.PAUSED)
+        for target, project_id in (
+            ("supervisor-proj1", "proj1"), ("supervisor-proj1", None),
+            ("n-supervisor--proj1", "proj1"),
+        ):
+            assert not await lens.ensure_started(
+                kind="session", target_id=target, project_id=project_id,
+            )
+        assert providers.create("fake").starts == []
+        # An in-flight turn that is draining must not be re-woken either.
+        _row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        assert not await lens.ensure_started(
+            kind="session", target_id="supervisor-proj1", project_id="proj1",
+        )
+        assert await providers.create("fake").is_running(handle)
+        # The pause never changes the supervisor-enabled intent — it is
+        # recoverable on resume without operator action.
+        assert (await db.get_project("proj1")).supervisor_enabled is True
 
     async def test_default_message_starts_only_global_and_opt_in_starts_project(
         self, db, lens, providers, config,

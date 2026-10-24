@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/mcp_interfaces.py::task_to_dict": {
+      "baseline_span": [
+        29,
+        59
+      ],
+      "landing_span": [
+        29,
+        59
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

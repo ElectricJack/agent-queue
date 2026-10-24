@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/escalations/facts.py::EscalationFacts.wants_human_delivery": {
+      "fingerprint": "d6d51c9afba1785b263a62b48bb30a09660f1fb88ccbe319286733330f8a2d55",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

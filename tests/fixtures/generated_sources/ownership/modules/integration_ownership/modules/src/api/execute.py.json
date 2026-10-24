@@ -1,0 +1,26 @@
+{
+  "shared": {
+    "src/api/execute.py::api_execute": {
+      "baseline_span": [
+        36,
+        116
+      ],
+      "landing_span": [
+        36,
+        116
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/api/execute.py::import from src.api.scope import check_request_scope": {
+      "baseline_span": [
+        21,
+        21
+      ],
+      "landing_span": [
+        21,
+        21
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

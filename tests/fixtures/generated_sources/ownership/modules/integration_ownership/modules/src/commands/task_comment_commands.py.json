@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/commands/task_comment_commands.py::TaskCommentCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/commands/task_comment_commands.py::TaskCommentCommandsMixin._emit_task_findings_updated::96fbf6b1fb35e3c5f3692a4c37d984c0d621bd079bac23a72b914332d0b97501": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 119,
+      "owner": "TaskCommentCommandsMixin._emit_task_findings_updated",
+      "owner_fingerprint": "248c4f00164c9ea7d0e1aae9048c12913053b989e2fc49e58e568c5c0adc1110",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

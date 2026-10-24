@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/collaboration_lifecycle_queries.py::CollaborationLifecycleQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/collaboration_lifecycle_queries.py::CollaborationLifecycleQueriesMixin.reconcile_collaborations": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_lifecycle_queries.py::import from src.collaboration import CONTENT_RETENTION_SECONDS, TOMBSTONE_RETENTION_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_lifecycle_queries.py::import from src.database.tables import collaboration_messages as links, collaboration_threads as threads, messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:7c1b44bdf3e44ae89c749e36eaf42e237adb2b752c589b78ae45debe16fdc1b9` |
+| Contract fingerprint | `sha256:8ba67369409b08fbc38c28674470d9e6031549bb639631c4737907202dbf9c82` |
 
 ## Parameters
 
@@ -33,6 +33,8 @@
 | `new_parent_id` | `string \| null` | — |
 | `old_parent_generation` | `integer \| null` | — |
 | `new_parent_generation` | `integer \| null` | — |
+| `owner` | `object \| null` | — |
+| `safe_continuation` | `string \| null` | — |
 
 Projected into the run receipt: `task_id`, `old_parent_id`, `new_parent_id`, `old_parent_generation`, `new_parent_generation`.
 
@@ -41,9 +43,12 @@ Projected into the run receipt: `task_id`, `old_parent_id`, `new_parent_id`, `ol
 | Outcome | Classification | Meaning |
 |---|---|---|
 | `delivery_target_fixed` | failure | — |
+| `dependency_on_ancestor` | failure | — |
 | `invalid` | failure | — |
+| `needs_quiescence` | failure | — |
 | `reopen_required` | failure | — |
 | `sealed` | failure | — |
+| `stale_parent` | failure | — |
 | `updated` | success | — |
 
 ## Declared effects

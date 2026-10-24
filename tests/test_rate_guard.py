@@ -186,24 +186,62 @@ class TestDiscordHTTPLogHandler:
 
 
 class TestSingleton:
-    def test_get_tracker_returns_same_instance(self):
+    def test_get_tracker_returns_same_instance(self, monkeypatch):
         # Reset module state
         import src.discord.rate_guard as mod
 
-        mod._tracker = None
+        monkeypatch.setattr(mod, "_tracker", None)
 
         t1 = get_tracker()
         t2 = get_tracker()
         assert t1 is t2
 
-    def test_configure_tracker_replaces_singleton(self):
+    def test_configure_tracker_preserves_singleton_and_events(self, monkeypatch):
         import src.discord.rate_guard as mod
 
-        mod._tracker = None
+        monkeypatch.setattr(mod, "_tracker", None)
 
         t1 = get_tracker()
+        t1.record(429)
         t2 = configure_tracker(warn=500, critical=2000, halt=4000)
-        assert t2 is not t1
+        assert t2 is t1
+        assert t2.count == 1
         assert t2._warn == 500
         t3 = get_tracker()
         assert t3 is t2
+
+    async def test_handler_counts_429s_after_bot_configures_tracker(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import src.discord.rate_guard as mod
+        from src.config import AppConfig, DiscordConfig
+        from src.discord.bot import AgentQueueBot
+
+        monkeypatch.setattr(mod, "_tracker", None)
+        # Logging attaches its handler before the bot applies configured thresholds.
+        http_logger = logging.getLogger("discord.http")
+        monkeypatch.setattr(http_logger, "handlers", [DiscordHTTPLogHandler(get_tracker())])
+        monkeypatch.setattr(http_logger, "level", logging.WARNING)
+        monkeypatch.setattr(http_logger, "disabled", False)
+        monkeypatch.setattr(http_logger, "propagate", False)
+        http_logger.warning("GET /test responded with 429. Retrying.")
+
+        bot = AgentQueueBot(
+            AppConfig(
+                discord=DiscordConfig(rate_guard_warn=1, rate_guard_critical=2, rate_guard_halt=3)
+            ),
+            MagicMock(),
+        )
+        try:
+            assert bot._rate_tracker is get_tracker()
+            assert bot._rate_tracker.count == 1
+            assert bot._rate_tracker.state == "warn"
+            http_logger.warning("GET /test responded with 429. Retrying.")
+            assert bot._rate_tracker.count == 2
+            assert not bot._rate_tracker.should_allow(critical=False)
+            assert bot._rate_tracker.should_allow(critical=True)
+            http_logger.warning("GET /test responded with 429. Retrying.")
+            assert bot._rate_tracker.count == 3
+            assert not bot._rate_tracker.should_allow(critical=True)
+        finally:
+            await bot.close()

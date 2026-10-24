@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/doctor/worktree_checks.py::describe_shortfall": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/worktree_checks.py::find_capacity_shortfalls": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/worktree_checks.py::worktree_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

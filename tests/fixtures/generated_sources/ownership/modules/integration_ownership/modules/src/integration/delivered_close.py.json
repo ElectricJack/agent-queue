@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/delivered_close.py::DeliveredClose.record::1d2b10658739ab0587d184ca964bbeca56c51b0b984a7acb06655c1484bcb7e6": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 330,
+      "owner": "DeliveredClose.record",
+      "owner_fingerprint": "39b4957a66906b979ff4b346e0ba84fbdc55d785214fde920d3d003581eeb140",
+      "reason": "Transactional operator owner-release audit after independently proving exact source containment in the freshly reobserved designated default branch. Records principal and old/new fences; the audit cannot replay refs or substitute for delivery proof."
+    },
+    "src/integration/delivered_close.py::DeliveredClose.record::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 386,
+      "owner": "DeliveredClose.record",
+      "owner_fingerprint": "39b4957a66906b979ff4b346e0ba84fbdc55d785214fde920d3d003581eeb140",
+      "reason": "Removes the resolved needs_attention marker when the exact delivered source is recorded under task, hierarchy and branch fences. No integration lifecycle or ref replay state is stored in metadata."
+    }
+  }
+}

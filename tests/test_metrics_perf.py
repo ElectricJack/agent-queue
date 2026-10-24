@@ -292,3 +292,99 @@ def test_config_defaults_and_validation():
     assert "perf_loop_probe_ms" in {
         e.field for e in MetricsConfig(perf_loop_probe_ms=1001).validate()
     }
+
+
+async def test_operation_timing_tracks_overlap_across_ticks_and_cancellation():
+    from src.metrics.perf import timed_operation
+    from src.metrics.sampler import aggregate_samples
+
+    reg = PerfRegistry()
+    install_registry(reg)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    @timed_operation("session.tmux")
+    async def work():
+        entered.set()
+        await release.wait()
+
+    try:
+        first_task = asyncio.create_task(work())
+        await entered.wait()
+        entered.clear()
+        second_task = asyncio.create_task(work())
+        await entered.wait()
+        first = reg.snapshot()
+        assert first["operations"]["session.tmux"]["in_flight"] == 2
+        first_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_task
+        release.set()
+        await second_task
+        second = reg.snapshot()
+        operation = second["operations"]["session.tmux"]
+        assert operation["in_flight"] == 0
+        assert operation["peak_in_flight"] == 2
+        assert operation["outcomes"] == {"kind": "sum", "cancelled": 1, "completed": 1}
+        merged = aggregate_samples([first, second])["operations"]["session.tmux"]
+        assert merged["latency"]["count"] == 2
+        assert merged["outcomes"]["cancelled"] == 1
+        assert reg.snapshot()["operations"] == {}
+    finally:
+        install_registry(None)
+
+
+def test_operation_metrics_bound_labels_and_disable_without_leaking_gauges():
+    reg = PerfRegistry()
+    keys = [reg.operation_started(f"test.{n}") for n in range(ROUTE_LIMIT + 4)]
+    assert len(reg.snapshot()["operations"]) == ROUTE_LIMIT + 1
+    reg.enabled = False
+    assert reg.operation_started("disabled") is None
+    for key in keys:
+        reg.operation_finished(key, 2, "completed")
+    ended = reg.snapshot()["operations"]
+    assert all(entry["in_flight"] == 0 for entry in ended.values())
+    assert all(entry["latency"]["count"] == 0 for entry in ended.values())
+    assert reg.snapshot()["operations"] == {}
+
+
+@pytest.mark.parametrize("failure,outcome", [(TimeoutError, "timeout"), (ValueError, "error")])
+def test_operation_failures_propagate_and_are_observed(failure, outcome):
+    from src.metrics.perf import operation_timing
+
+    reg = PerfRegistry()
+    install_registry(reg)
+    try:
+        with pytest.raises(failure):
+            with operation_timing("db.wait_graph_lock"):
+                raise failure("original failure")
+        entry = reg.snapshot()["operations"]["db.wait_graph_lock"]
+        assert entry["latency"]["count"] == 1
+        assert entry["outcomes"][outcome] == 1
+    finally:
+        install_registry(None)
+
+
+def test_slow_operation_logs_structured_fields_and_restores_context(monkeypatch):
+    from src.metrics import perf
+    from src.logging_config import CorrelationContext, get_correlation_context
+
+    reg = PerfRegistry()
+    install_registry(reg)
+    stamps = iter((10.0, 11.5))
+    monkeypatch.setattr(perf.time, "perf_counter", lambda: next(stamps))
+    logged = []
+    monkeypatch.setattr(perf.logger, "warning", lambda message: logged.append(
+        (message, get_correlation_context()),
+    ))
+    try:
+        with CorrelationContext(command="test_command", operation="outer"):
+            with perf.operation_timing("git.fetch"):
+                pass
+            assert get_correlation_context()["operation"] == "outer"
+        assert logged == [("operation timing", {
+            "command": "test_command", "operation": "git.fetch", "duration_ms": 1500.0,
+            "outcome": "completed",
+        })]
+    finally:
+        install_registry(None)

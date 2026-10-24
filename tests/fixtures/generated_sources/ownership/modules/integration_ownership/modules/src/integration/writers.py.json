@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/writers.py::WriterPrimitives._journal_on::d6fd9757273da627a3f0f7f83b6e42a4964f4c99601f882c41267dd01981a676": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 408,
+      "owner": "WriterPrimitives._journal_on",
+      "owner_fingerprint": "2d016e6d1af0bae6110afe4b2f6b0db6c643d1d2885ef2adf6c1e869134355ad",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

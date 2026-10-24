@@ -44,7 +44,6 @@ ACTIVE_MODULES = (
     "src/integration/train.py",
     "src/integration/train_sources.py",
     "src/integration/source_trailer.py",
-    "src/integration/shadow.py",
 )
 
 #: The stage-2 revisions, in chain order from the pre-cutover head.
@@ -175,15 +174,8 @@ def test_green_continuation_lives_only_in_the_legacy_repair_path():
     assert callers == ["src/integration/repair.py"]
 
 
-def test_the_selector_installs_no_diagnostics_in_active_mode():
-    """``active`` builds no shadow comparison; shadow never becomes a policy input."""
-    from src.integration.shadow import diagnostics_for
-
-    active = SimpleNamespace(git_first="active")
-    assert diagnostics_for(active, object(), object()) is None
-    assert diagnostics_for(SimpleNamespace(git_first="shadow"), object(), object()) is not None
-
-
+def test_trial_diagnostics_are_removed():
+    assert not (ROOT / "src/integration/shadow.py").exists()
 
 
 # -- Compatible schema --------------------------------------------------------

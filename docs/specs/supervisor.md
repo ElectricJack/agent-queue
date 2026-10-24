@@ -26,6 +26,11 @@ tags: [spec, supervisor, llm, core]
 > reference for what the old in-process entity did; nothing on this page
 > describes current code.
 
+For current lifecycle, authority, policy profiles and operator decisions, read
+[Supervisors and policy](systems/supervisors-and-policy.md). For failure
+recovery, unanswered questions and conversation rotation, read
+[Supervisor turn health](supervisor-turn-health.md).
+
 See [design/playbooks](design/playbooks.md) for how playbook execution extends the Supervisor model (historical).
 
 ## Class: Supervisor (src/supervisor.py) — deleted, historical reference

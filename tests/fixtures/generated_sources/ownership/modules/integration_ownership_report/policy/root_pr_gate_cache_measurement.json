@@ -1,0 +1,23 @@
+{
+  "root_pr_gate_cache_measurement": {
+    "authorized_engine_delta": 55,
+    "authorized_owned_delta": 55,
+    "authorized_shared_delta": 0,
+    "authorized_table_delta": 0,
+    "decision_message_id": "msg-c45ccf8341f946819758858c7bff488d",
+    "measured_engine_lines": 85599,
+    "measured_owned_total": 161268,
+    "measured_source_revision": "ddf86c8595adb25c7361740bf680b2273f88c90a",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85544,
+    "previous_owned_total": 161213,
+    "previous_source_revision": "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1907",
+    "reason": "Cache exact-head root PR admission against the fetched target and report selection coverage; exact supervisor approval under size-cap-delegation-2026-10-23. Preserve historical grants; no headroom or new storage.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "smart-forge-49"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/commands/provider_allocation_commands.py::ProviderAllocationCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/commands/provider_allocation_commands.py::ProviderAllocationCommandsMixin._apply_allocation::ea0d071f930fa728666254c5297a9ceee323a6017d576af4cac54ca9695ae8dd": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 432,
+      "owner": "ProviderAllocationCommandsMixin._apply_allocation",
+      "owner_fingerprint": "9f1fa2524ebf5c0a44e6b71b92805e6cf0e3b5c7b1fce273b5439d4237d5a750",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

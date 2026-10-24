@@ -52,26 +52,17 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 <!-- aq:generated:end -->
 
-## Purpose
+## Current V2 behavior
 
-TODO: what this command is for, in the reader's terms.
+This compatibility verb delegates to `playbook_v2_graph` in
+[the handler](../../../src/commands/playbook_commands.py). It returns a structured
+semantic graph; the legacy `format` parameter does not produce ASCII or Mermaid.
+Use `aq playbook v2-graph --playbook-id <id>` for the current CLI surface.
 
-## When a playbook uses it
-
-TODO: the situations a playbook step reaches for it.
-
-## How it works internally
-
-TODO: step by step through the executor and handler, with file references.
-
-## Side effects and persistence
-
-TODO: what it writes, which tables or files hold it, and what survives a restart.
-
-## Failure modes and diagnostics
-
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
-
-## Example step
-
-TODO: a realistic playbook step that calls this command.
+The graph defaults to the active artifact. The V2 surface can select an exact
+artifact hash, filter rules by event and include typed Advanced details. Run
+inspection must use the artifact the run actually executed. Projection reads
+stored bytes and current command metadata without executing policy. Missing or
+unavailable artifacts and disabled V2 APIs return errors. See
+[graph projection](../../../src/playbooks/graph_projection.py) and
+[run overlays](../../../src/playbooks/run_overlay.py).

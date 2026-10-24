@@ -3,17 +3,23 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProposalPreviewPane from "../index";
 import type { ProposalDetail } from "../hooks";
+import type { IngestBatchDetail } from "../../../api/client";
 
 const mockUseProposal = vi.fn();
 const mockUseProposalGate = vi.fn();
 const mockUsePrepareProposalDecision = vi.fn();
 const mockUseApplyProposalDecision = vi.fn();
+const mockUseIngestBatch = vi.fn();
+const mockUseTask = vi.fn();
+
+vi.mock("../../../api/hooks", () => ({ useTask: (...args: unknown[]) => mockUseTask(...args) }));
 
 vi.mock("../hooks", async () => {
   const actual = await vi.importActual<typeof import("../hooks")>("../hooks");
   return {
     ...actual,
     useProposal: (...args: unknown[]) => mockUseProposal(...args),
+    useIngestBatch: (...args: unknown[]) => mockUseIngestBatch(...args),
     useProposalGate: (...args: unknown[]) => mockUseProposalGate(...args),
     usePrepareProposalDecision: (...args: unknown[]) => mockUsePrepareProposalDecision(...args),
     useApplyProposalDecision: (...args: unknown[]) => mockUseApplyProposalDecision(...args),
@@ -67,6 +73,9 @@ function renderPane(overrides: Partial<Parameters<typeof ProposalPreviewPane>[0]
 }
 
 beforeEach(() => {
+  mockUseTask.mockReset();
+  mockUseIngestBatch.mockReset();
+  mockUseIngestBatch.mockReturnValue({ data: undefined, isPending: false, isError: false, refetch: vi.fn() });
   mockUseProposal.mockReset();
   mockUseProposalGate.mockReset();
   mockUsePrepareProposalDecision.mockReset();
@@ -75,6 +84,92 @@ beforeEach(() => {
   mockUsePrepareProposalDecision.mockReturnValue({ mutateAsync: vi.fn().mockImplementation(async (args) => ({ args, preview_id: "preview", idempotency_key: "key", effect: "Confirm the exact proposed effect." })), isPending: false });
   mockUseApplyProposalDecision.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
   mockUseProposalGate.mockReturnValue({ data: [], gate: undefined });
+});
+
+const batch: IngestBatchDetail = {
+  batch_id: "prop-abc123", project_id: "demo", state: "reviewing", structure_revision: 2,
+  structure_digest: "graph-sha", source: "spec:approved.md", source_review_id: "rev-source",
+  source_revision: 3, source_content_sha256: "source-sha", decision_id: "decision",
+  lineage: { lineage_kind: "resolved", design_review_id: "rev-design", design_revision: 1 },
+  reviewer_task_id: "reviewer", members: { api: "real-api" },
+  membership: [{ task_id: "real-api", role: "leaf", state: "active", section_anchor: "Scope", primary_outcome: "Preserve constraint" }],
+  section_verdicts: { Scope: { verdict: "fixed", rationale: "Restored constraint" } },
+  reverse_coverage_verdict: "faithful", walkthrough_verdict: "faithful",
+  structural_findings: [{ code: "size", disposition: "fixed" }], diff: { edited: ["real-api"] },
+  receipts: [{ structure_revision: 1, passing: true }],
+};
+
+describe("ProposalPreviewPane — ingestion batch", () => {
+  it("shows an operational root's recorded condition, real delivery edges and unassigned owner", () => {
+    mockUseProposal.mockReturnValue({ data: { ...fixtureProposal, status: "held" } });
+    mockUseIngestBatch.mockReturnValue({ data: { ...batch, members: { ops: "ops" }, membership: [
+      { task_id: "ops", role: "operational_root", state: "active", primary_outcome: "Cut over" },
+    ] } });
+    mockUseTask.mockReturnValue({ data: { assigned_agent: null,
+      delivery_condition: { kind: "delivery-of", targets: ["source"] },
+      depends_on: [{ id: "source", title: "Land source", dep_type: "delivery-of" }],
+    } });
+    renderPane();
+    expect(screen.getByText("Owner: Unassigned")).toBeInTheDocument();
+    expect(screen.getByText("Recorded delivery condition")).toBeInTheDocument();
+    expect(screen.getByText(/Requires landed delivery of/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Land source (source)" }));
+    expect(mockOpen).toHaveBeenCalledWith("task-detail", { taskId: "source" });
+  });
+
+  it("shows revision-bound review evidence and real members without proposal actions or shortcuts", () => {
+    mockUseProposal.mockReturnValue({ data: { ...fixtureProposal, status: "held" }, isPending: false });
+    mockUseIngestBatch.mockReturnValue({ data: batch });
+    const setShortcuts = vi.fn();
+    const setArgs = vi.fn();
+    renderPane({ setShortcuts, setArgs });
+    expect(setArgs).toHaveBeenCalledWith({ proposalId: "prop-abc123", batchProjectId: "demo" });
+    expect(screen.getByRole("heading", { name: "Held for fidelity review" })).toBeInTheDocument();
+    expect(screen.getByText(/Review rev-source revision 3/)).toBeInTheDocument();
+    expect(screen.getByText(/rev-design/)).toBeInTheDocument();
+    expect(screen.getByText(/Restored constraint/)).toBeInTheDocument();
+    expect(screen.getByText(/"disposition": "fixed"/)).toBeInTheDocument();
+    expect(screen.getByText(/"edited"/)).toBeInTheDocument();
+    expect(screen.getByText("No release receipt recorded.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve|discard/i })).not.toBeInTheDocument();
+    expect(setShortcuts.mock.lastCall?.[0].map((s: { key: string }) => s.key)).toEqual(["r", "s"]);
+    fireEvent.click(screen.getByRole("button", { name: "real-api" }));
+    expect(mockOpen).toHaveBeenCalledWith("task-detail", { taskId: "real-api" });
+    fireEvent.click(screen.getByRole("button", { name: "reviewer" }));
+    expect(mockOpen).toHaveBeenCalledWith("task-detail", { taskId: "reviewer" });
+    expect(screen.queryByTestId("proposal-graph")).not.toBeInTheDocument();
+  });
+
+  it("keeps superseded receipts separate from empty current verdicts and shows no design lineage", () => {
+    mockUseProposal.mockReturnValue({ data: { ...fixtureProposal, status: "held" } });
+    mockUseIngestBatch.mockReturnValue({ data: { ...batch, state: "needs_scope", lineage: { lineage_kind: "none" }, section_verdicts: {} } });
+    renderPane();
+    expect(screen.getByText("Design lineage: none")).toBeInTheDocument();
+    expect(screen.getByText("No current verdicts recorded.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("batch remains held");
+    expect(screen.getByText(/"passing": true/)).toBeInTheDocument();
+  });
+
+  it("opens released evidence from task membership without requiring a proposal read", () => {
+    mockUseProposal.mockReturnValue({ isError: true });
+    mockUseIngestBatch.mockReturnValue({ data: { ...batch, state: "released", release_actor: "supervisor", release_revision: 2, release_digest: "graph-sha", release_receipt: { task_ids: ["real-api"] } } });
+    renderPane({ args: { proposalId: batch.batch_id, batchProjectId: "demo" } });
+    expect(screen.getByText("Batch released")).toBeInTheDocument();
+    expect(screen.getByText(/Actor: supervisor/)).toBeInTheDocument();
+    expect(screen.getByText("Release proof")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve|discard/i })).not.toBeInTheDocument();
+  });
+
+  it("fails visibly when batch evidence cannot load, without falling back to staged tasks", () => {
+    const refetch = vi.fn();
+    mockUseProposal.mockReturnValue({ data: { ...fixtureProposal, status: "held" } });
+    mockUseIngestBatch.mockReturnValue({ isError: true, refetch });
+    renderPane();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("proposal-task-list")).not.toBeInTheDocument();
+  });
 });
 
 describe("ProposalPreviewPane — header + graph + list", () => {

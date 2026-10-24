@@ -19,7 +19,8 @@ feedback and clears the assignment while retaining the existing PR and retry
 counters. Feedback, recovery accounting and the transition commit together.
 
 Each leaf can reopen automatically once for a given source SHA and up to
-`root.repair.primary_attempts` times (three when absent). Accounting persists
+`root.repair.primary_attempts` times (three when absent). Zero disables that attempt
+limit. The unchanged-head guard still applies. Accounting persists
 across daemon restarts and completion generations. `on_exhausted: continue`
 permits further changed heads, but never an unchanged head. Exhaustion or an
 unchanged head produces one supervisor notification per exact completion and
@@ -48,8 +49,10 @@ return its pending state immediately. Admission blockers double their retry
 delay up to ten minutes. Unknown mergeability gets one short 15-second retry
 for GitHub's initial computation, then uses that same exponential backoff.
 
-When source-CI recovery is authorized, the one-repair source budget also applies
-to root PR recovery, including under `on_exhausted: continue`. Feedback from the
-source observer and the root admission gate counts across both paths. Historical
-source-CI delegates cannot be reopened by this alternate path. Exhaustion sends
-one notification per task across changed heads and restarts.
+Source-CI recovery can reopen successive changed heads on the original branch
+without a lineage attempt cap, including historical source-CI delegates. Root PR
+recovery uses the configured root primary attempt limit (zero means unlimited).
+Both paths refuse to reopen an exact head already repaired by either path, and
+preserve an existing bound repair writer. Containers still require their owner
+because a pool worker cannot claim them. Duplicate observations never allocate a
+second concurrent repair.

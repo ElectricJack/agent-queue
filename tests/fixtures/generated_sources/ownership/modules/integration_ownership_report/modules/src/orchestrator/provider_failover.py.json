@@ -1,0 +1,32 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._failover_checkpoint": {
+      "baseline_span": [
+        72,
+        109
+      ],
+      "landing_span": [
+        72,
+        109
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._integration_wip_checkpoint": {
+      "reason": "Saves a stopped hierarchy/train writer's checkout as a 'WIP saved by AQ' commit fast-forwarded onto its own task branch, confined to the project's integration repository, then records the resume point. A non-fast-forward branch, another owner or another repository is left integration_managed for owner recovery; the release still goes through arelease_integration_writer_for_retry. Creates no aq/preserved ref, lifecycle journal or delivery claim."
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._is_task_writer_owner": {
+      "reason": "Reads the branch ownership row so only the stopped task's own worker/repair writer has its checkout saved; a verifier or any other owner keeps owner recovery. Read-only: no storage, fence change or publication authority."
+    },
+    "src/orchestrator/provider_failover.py::_INTEGRATION_MANAGED_MODES": {
+      "baseline_span": [
+        32,
+        35
+      ],
+      "landing_span": [
+        32,
+        35
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

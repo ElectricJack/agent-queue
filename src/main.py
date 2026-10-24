@@ -522,10 +522,14 @@ async def run(
             ).run(),
             name="aq-review-notifier",
         )
+        from src.project_schedules import ProjectScheduleService
         from src.wait_runtime.service import WaitService
 
         orch.wait_service = WaitService(orch)
         wait_service_task = asyncio.create_task(orch.wait_service.run(), name="aq-waits")
+        schedule_service_task = asyncio.create_task(
+            ProjectScheduleService(orch._command_handler).run(), name="aq-project-schedules",
+        )
         try:
             if freeze_startup_heap:
                 _freeze_startup_heap()
@@ -533,7 +537,10 @@ async def run(
         finally:
             review_notifier_task.cancel()
             wait_service_task.cancel()
-            await asyncio.gather(review_notifier_task, wait_service_task, return_exceptions=True)
+            schedule_service_task.cancel()
+            await asyncio.gather(
+                review_notifier_task, wait_service_task, schedule_service_task, return_exceptions=True,
+            )
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
     # (~3s) inside the task so it never blocks orchestrator startup.
@@ -576,6 +583,8 @@ async def run(
                 pass
         bot_task.cancel()
         scheduler_task.cancel()
+        # Finish background-service cancellation before disposing their database.
+        await asyncio.gather(bot_task, scheduler_task, return_exceptions=True)
         await metrics_sampler.stop()
         await orch.shutdown()
 

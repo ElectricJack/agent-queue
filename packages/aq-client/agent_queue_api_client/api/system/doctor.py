@@ -66,16 +66,20 @@ def sync_detailed(
     """Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
      Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
     Args:
         body (DoctorRequest):
@@ -107,16 +111,20 @@ def sync(
     """Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
      Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
     Args:
         body (DoctorRequest):
@@ -143,16 +151,20 @@ async def asyncio_detailed(
     """Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
      Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
     Args:
         body (DoctorRequest):
@@ -182,16 +194,20 @@ async def asyncio(
     """Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
      Run the health-check catalog for this install and return one result per check: id, severity
     (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently
     with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the
-    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are
-    idempotent and only touch derived state — WAL, expired log dirs — never tasks, vault files or
-    branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.
+    command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are
+    idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only
+    with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other
+    checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned,
+    otherwise 0.
 
     Args:
         body (DoctorRequest):

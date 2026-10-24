@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/descriptors.py::PLAYBOOK_DENIALS": "Generic playbook command denials for shell and daemon lifecycle; no integration-specific behavior."
+  }
+}

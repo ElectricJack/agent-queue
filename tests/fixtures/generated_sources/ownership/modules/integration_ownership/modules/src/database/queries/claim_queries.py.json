@@ -1,0 +1,302 @@
+{
+  "exclusions": {
+    "src/database/queries/claim_queries.py::route_claimable": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/database/queries/claim_queries.py::ClaimQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/claim_queries.py::FRONTIER_PREDICATE_DETAILS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/claim_queries.py::_pool_profiles_predicate": "Generic pool demand compatibility across authored profiles; composes ordinary task profile, class and role SQL, without integration delivery or storage. The frontier query remains independently charged.",
+    "src/database/queries/claim_queries.py::_pool_routing_predicates": "Generic pool class/role SQL shared by sizing and claiming; checks ordinary task fields only. No integration delivery, storage or authority. The integration frontier predicates and their callers remain independently charged.",
+    "src/database/queries/claim_queries.py::numeric_meta_value": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/claim_queries.py::route_claimable": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/database/queries/claim_queries.py::route_claimable_in": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/claim_queries.py::CLAIMED_BY_SESSION_KEY": {
+      "reason": "The task's own claim record, the only surviving holder proof after a real pool stop clears sessions.task_id (fleet-delta-97)."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._release_claim_on": {
+      "baseline_span": [
+        834,
+        1063
+      ],
+      "landing_span": [
+        830,
+        1059
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "baseline_span": null,
+      "landing_span": [
+        1036,
+        1106
+      ],
+      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim": {
+      "baseline_span": [
+        695,
+        833
+      ],
+      "landing_span": [
+        691,
+        829
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.bump_claim_epoch": {
+      "reason": "Claim-epoch mutation referencing the explicitly owned row-local manual-pause fence."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions": {
+      "reason": "Frontier diagnostics evaluate sibling delivery predicates using the revalidated Git prerequisite view."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions_many": {
+      "reason": "Evaluates integration delivery frontier predicates, cache uncertainty and blocking refresh batches, then attaches exact source/target diagnostics."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_preparation_state": {
+      "reason": "Revalidates the preparing claim and fresh project while projecting the task's integration source-admission requirement."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.count_ready_by_profile": {
+      "reason": "Pool demand counts use the project Git prerequisite view to admit delivered sibling dependencies."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.get_project_for_claim": {
+      "reason": "Adds integration source-admission demand to the project read used by the claim admission loop."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.get_settled_pool_claim": {
+      "baseline_span": [
+        1359,
+        1509
+      ],
+      "landing_span": [
+        1355,
+        1505
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation": {
+      "landing_span": [
+        1043,
+        1120
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.release_displaced_pool_claim": {
+      "baseline_span": [
+        1275,
+        1358
+      ],
+      "landing_span": [
+        1271,
+        1354
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.release_historical_pool_claim": {
+      "baseline_span": [
+        1510,
+        1594
+      ],
+      "landing_span": [
+        1506,
+        1590
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.select_ready_for_profile": {
+      "baseline_span": [
+        387,
+        511
+      ],
+      "landing_span": [
+        383,
+        507
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.take_task": {
+      "baseline_span": [
+        512,
+        587
+      ],
+      "landing_span": [
+        508,
+        583
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::_CLAIM_STACK_ORIGIN": {
+      "reason": "Caches an alias of task_branch_origins used by stacked-source claim admission."
+    },
+    "src/database/queries/claim_queries.py::_URGENT_OPERATION": {
+      "reason": "Caches an alias of integration_repair_operations for integration-aware claim frontier predicates."
+    },
+    "src/database/queries/claim_queries.py::_URGENT_STAGE": {
+      "reason": "Caches an alias of integration_repair_stages for urgent integration repair claim selection."
+    },
+    "src/database/queries/claim_queries.py::_claim_preparation_predicates": {
+      "reason": "Shared claim/frontier admission fences, including the active origin prerequisite-conflict snapshot and latest passing repair completion. Git proof is still required during preparation."
+    },
+    "src/database/queries/claim_queries.py::_exact_stopped_pool_holder": {
+      "reason": "Exact stopped-session and claim-epoch proof used by hierarchical container recovery; owns no git refs or replay state."
+    },
+    "src/database/queries/claim_queries.py::_frontier_predicates": {
+      "baseline_span": [
+        74,
+        106
+      ],
+      "landing_span": [
+        74,
+        106
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::_frontier_where": {
+      "baseline_span": [
+        131,
+        158
+      ],
+      "landing_span": [
+        131,
+        158
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::_ordinary_activation_eligibility": {
+      "landing_span": [
+        100,
+        107
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/database/queries/claim_queries.py::active_train_repair_bindings": {
+      "reason": "Reads the active stage of active or escalated batch repair operations to identify current train-repair delegate tasks, independent of titles. Read-only: claim ordering, pool sizing and stall diagnostics prioritize them; no new storage, delivery or replay authority."
+    },
+    "src/database/queries/claim_queries.py::claim_frontier_predicates": {
+      "reason": "Composes the claim frontier with project-specific Git prerequisite delivery predicates for shared diagnostic and admission readers."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.blocked_state import apply_label_filters, blocked_predicate": {
+      "baseline_span": [
+        31,
+        32
+      ],
+      "landing_span": [
+        31,
+        32
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, cross_parent_prerequisites_on_default, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, epic_refresh_ready, materialized_origin_when_hierarchical, never_leaseable_container, open_epic_refresh_batches": {
+      "reason": "Imports separate default-branch prerequisite proof and epic containment/refresh admission predicates, plus open refresh batch diagnostics."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, cross_parent_prerequisites_on_default, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports cross-parent default-branch delivery admission alongside sibling-stack and container frontier predicates."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports project-specific integration delivery predicates and the preserved-origin frontier fences."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Shared hierarchy-mode and container predicates used by claim admission and stale-container recovery."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode, container_flag_exists, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical": {
+      "baseline_span": [
+        33,
+        38
+      ],
+      "landing_span": [
+        33,
+        38
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.task_queries import ManualPauseActive, TransitionResult, _not_manually_paused, supports_returning": {
+      "reason": "Imports the row-local manual-pause fence shared by hierarchical claim recovery and ordinary claim mutation."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "baseline_span": null,
+      "landing_span": [
+        53,
+        71
+      ],
+      "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema imports; adds the batch repair operations read to identify active train-repair delegates for shared-pool claim priority and sizing."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspace_kinds, workspaces": {
+      "baseline_span": null,
+      "landing_span": [
+        58,
+        75
+      ],
+      "reason": "Integration table imports used by shared workspace/claim ownership guards."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema imports for open epic-refresh batches and active stack origins; preserves the separately reviewed frontier and prerequisite-repair admission surfaces."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Shared claim and integration schema imports, including open epic-refresh batches named by frontier exclusions."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports, including the active stack origin used to hold unresolved prerequisite repairs."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Shared claim and integration schema imports, including collection checkpoints used to prove stale-container recovery."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, sessions, task_completion_records, task_delivery_receipts, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "baseline_span": [
+        46,
+        58
+      ],
+      "landing_span": [
+        46,
+        58
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_clauses": {
+      "reason": "Hierarchical checkpoint and completed-child predicates for releasing an exact stale container claim."
+    },
+    "src/database/queries/claim_queries.py::stale_container_claim_statement": {
+      "reason": "Hierarchy-mode candidate read joining task claims, sessions and collection checkpoints."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._release_stale_container_claim_on::38814c21c0f19182dcafaa65739a065688b16d03d4250ec173f37f0c7f0e18b8": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 2040,
+      "owner": "ClaimQueryMixin._release_stale_container_claim_on",
+      "owner_fingerprint": "f4c16c961ffa7c4364b8713dfc9b61be23d715455e54ca7e4b11886dbc017a03",
+      "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1645,
+      "owner": "ClaimQueryMixin.activate_claim",
+      "owner_fingerprint": "455a8188c4eb48517f4ba8e811067cd71057f14e3c763425090ccb31be48683f",
+      "reason": "Deletes stale preparation/attention markers and the exact claimed_by_session binding under claim activation fences; this is claim lifecycle cleanup, not ref replay."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation::9db730027a1de7e70c139ab21146787d9948bcc16f5a6fec39ca36519907ee96": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1269,
+      "owner": "ClaimQueryMixin.park_task_for_continuation",
+      "owner_fingerprint": "359d350ab85d609adb511f91c8975dbe5fb46ec8708bc106c47e4342e9089059",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.release_historical_pool_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2421,
+      "owner": "ClaimQueryMixin.release_historical_pool_claim",
+      "owner_fingerprint": "33f786f583e284469fe110ba22079b81831aed80c4ae9748522dbb2b46caff44",
+      "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "exclusions": {
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.ASSIGNED, TaskEvent.AGENT_STARTED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.READY, TaskEvent.ASSIGNED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.READY, TaskEvent.CLAIMED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/state_machine.py::VALID_TASK_TRANSITIONS[(TaskStatus.WAITING_INPUT, TaskEvent.HUMAN_REPLIED)]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/state_machine.py::InvalidTransition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/state_machine.py::is_valid_status_transition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/state_machine.py::validate_waits_for": "Walks structural ancestry to reject waits-for self-deadlocks; the graph-only check reads no delivery evidence or integration state."
+  }
+}

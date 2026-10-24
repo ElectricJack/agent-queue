@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/batch_digest.py::canonical_batch_structure": "Canonicalizes active member fidelity fields and typed graph edges with stable endpoint identities; this attests ingestion structure rather than Git delivery.",
+    "src/task_graph/batch_digest.py::compute_structure_digest": "Hashes canonical ingestion graph JSON after excluding allowed retitle changes; it neither attests integration heads nor publishes refs.",
+    "src/task_graph/batch_digest.py::normalize_description": "Normalizes whitespace for graph description equivalence; it does not inspect integration configuration or proof."
+  }
+}

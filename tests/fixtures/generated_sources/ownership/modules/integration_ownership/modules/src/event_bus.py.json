@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/event_bus.py::EventBus": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

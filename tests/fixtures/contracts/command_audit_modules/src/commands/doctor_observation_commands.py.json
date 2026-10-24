@@ -1,0 +1,128 @@
+{
+  "doctor_catalog": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_doctor_catalog",
+    "resource_gates": [
+      "catalogue_only"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "catalog(self.doctor_registry)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "failure('doctor.invalid_arguments')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "failure('doctor.subsystem_unavailable')"
+      }
+    ],
+    "review_notes": "Read-only system observations preserve nested principal and capabilities. Audited producer adapters own identities and explicit per-project/kind coverage. Legacy health severity is independent of execution status. Snapshot arguments fail explicitly until C2 installs its transport. Catalogue contains only static registry metadata. Re-audited after lazy imports moved into the handler for CLI startup isolation; producer return branches and authority gates are unchanged.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2c9fd40bc986054a53d1d75b22665b74804f6a91175835420d8ac433ae4dd72f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_doctor_observations.py"
+    ]
+  },
+  "doctor_run": {
+    "argument_reads_diagnostic_only": [
+      "check_id",
+      "group",
+      "now",
+      "page_size",
+      "page_token",
+      "pagination",
+      "project_id",
+      "snapshot_id",
+      "timeout_s"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_doctor_run",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "bounded_inline(await collect_observations(self.doctor_registry, DoctorContext(config=self.config, db=self.db, handler=self, project_id=args.get('project_id'), reference_time=args.get('now'), read_only=True), check_id=args.get('check_id'), group=args.get('group'), timeout_s=args.get('timeout_s')))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "failure('doctor.invalid_arguments')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "failure('resource_scope_denied')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "failure('doctor.subsystem_unavailable')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await snapshot_command(self, 'doctor_run', args)"
+      }
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows. Re-audited after lazy imports moved into the handler for CLI startup isolation; producer return branches and authority gates are unchanged.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:ef43ccf2f01aa2ef931e2389e7efc6d0d48b579f9bccda1924c414e57cbcc951",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_observation_snapshots.py"
+    ]
+  },
+  "observation_snapshot_cleanup": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_observation_snapshot_cleanup",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': True, 'removed': removed}"
+      },
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': False, 'error_code': 'operator_only', 'error': 'operator_only'}"
+      },
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': 'invalid_arguments'}"
+      }
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:438a2d237e6fdbd8d40187a5da7436a820632d028a11db7f0dbfc2bec3c4760b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_observation_snapshots.py"
+    ]
+  }
+}

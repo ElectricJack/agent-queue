@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/database/additive_migrations.py::check_range": {
+      "reason": "Conservative nonexecuting migration-range checker used by versioned promotion admission; validates the exact before/after revision graph and reports changed historical or non-additive new migrations."
+    }
+  }
+}

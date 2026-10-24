@@ -948,3 +948,35 @@ async def test_malformed_normalized_quota_is_contained(tmp_path, db, bus, block)
     watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path)
     await watcher._record_provider_usage(entry)
     assert await db.latest_provider_usage() == []
+
+
+async def test_full_transcript_replay_after_retention_adds_no_usage(tmp_path, db, bus):
+    from sqlalchemy import delete, update
+    from src.database.tables import sessions, token_ledger, transcript_usage_calls
+    from src.sessions.transcripts.retention import archive_transcript_usage_calls
+
+    path = _make_transcript(tmp_path, "/work/retained", "retained")
+    await _make_session(db, "/work/retained", "retained")
+    _append(path, [_claude_usage("block", "msg-1", input_tokens=10, output_tokens=2)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 12
+    old = time.time() - 31 * 86400
+    async with db._engine.begin() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "s1").values(
+            state="stopped", desired_state="stopped", ended_at=old,
+        ))
+        await conn.execute(update(transcript_usage_calls).values(updated_at=old))
+    result = await archive_transcript_usage_calls(db._engine, backup_dir=tmp_path / "backups")
+    assert result["deleted"] == 1
+    # Lose both the original attribution evidence and the byte checkpoint.
+    async with db._engine.begin() as conn:
+        await conn.execute(delete(token_ledger))
+    await db.delete_session("s1")
+    await db.delete_transcript_checkpoint(str(path))
+    await _make_session(db, "/work/retained", "retained", session_id="s2", task_id="t2")
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert await _ledger(db) == []
+    # The fence covers only archived calls, not new usage in the same file.
+    _append(path, [_claude_usage("new", "msg-2", input_tokens=20, output_tokens=4)])
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert sum(row["tokens_used"] for row in await _ledger(db)) == 24

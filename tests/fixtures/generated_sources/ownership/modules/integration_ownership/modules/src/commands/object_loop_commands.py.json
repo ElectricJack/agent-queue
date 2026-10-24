@@ -1,0 +1,15 @@
+{
+  "exclusions": {
+    "src/commands/object_loop_commands.py::ObjectLoopCommandsMixin._cmd_object_checkpoint_read": "Object-loop checkpoint and visual-evidence read only; no Git integration authority or integration storage. The shared retained-artifact primitives it calls remain charged independently.",
+    "src/commands/object_loop_commands.py::ObjectLoopCommandsMixin._cmd_object_loop_reconcile": "Artifact-only object-loop task/gate scheduling and finalizer evidence handoff; no Git delivery or integration lifecycle. Shared retained-artifact primitives remain charged independently.",
+    "src/commands/object_loop_commands.py::_TERMINAL['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/commands/object_loop_commands.py::ObjectLoopCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/object_loop_commands.py::ObjectLoopCommandsMixin._cmd_artifact_verify": {
+      "reason": "Scoped retained-artifact verification command; uses shared job artifacts and object provenance to authorize evidence reads."
+    }
+  }
+}

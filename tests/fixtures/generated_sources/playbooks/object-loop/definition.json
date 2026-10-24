@@ -9,10 +9,13 @@
     },
     "profiles": {}
   },
-  "compiled_at": "2026-10-20T15:28:37.511746Z",
+  "compiled_at": "2026-10-22T19:51:22.596082Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "object-loop",
   "purpose": "routine",
+  "required_features": [
+    "collections_v1"
+  ],
   "rules": [
     {
       "entry_step": "on-formula--read",
@@ -95,7 +98,7 @@
     "project_id": "matter-engine-cpp",
     "type": "project"
   },
-  "source_hash": "sha256:0a1b96a900549bf840821eda167e0228c4c08711a8586261bf9cd015c093aa85",
+  "source_hash": "sha256:77da1958782764d017e6c25dd0d6389ff0c0b92d0883c1bdbd122af2366ec081",
   "steps": {
     "on-completion--adopt": {
       "command": "object_loop_reconcile",
@@ -479,11 +482,11 @@
       "outcome": "completed",
       "rule": "on-completion",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Completed",
       "type": "terminal"
@@ -492,21 +495,39 @@
       "outcome": "failed",
       "rule": "on-completion",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Failed",
       "type": "terminal"
     },
     "on-completion--loops": {
-      "body_entry": "on-completion--policy",
+      "body_entry": "on-completion--choose",
       "collection": {
-        "binding": "inputs",
-        "path": "loops",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "loops",
+          "type": "binding_ref"
+        },
+        "item_binding": "object",
+        "predicate": {
+          "left": {
+            "binding": "object",
+            "index": false,
+            "path": "policy_artifact",
+            "type": "loop_ref"
+          },
+          "op": "eq",
+          "right": {
+            "path": "artifact_sha256",
+            "type": "context_ref"
+          },
+          "type": "comparison"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "object",
@@ -526,38 +547,6 @@
         "runtime_error": "on-completion--failed"
       },
       "type": "foreach"
-    },
-    "on-completion--policy": {
-      "cases": [
-        {
-          "goto": "on-completion--choose",
-          "when": {
-            "left": {
-              "binding": "object",
-              "index": false,
-              "path": "policy_artifact",
-              "type": "loop_ref"
-            },
-            "op": "eq",
-            "right": {
-              "path": "artifact_sha256",
-              "type": "context_ref"
-            },
-            "type": "comparison"
-          }
-        }
-      ],
-      "default": "on-completion--loops",
-      "rule": "on-completion",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "policy",
-      "type": "decision"
     },
     "on-completion--read": {
       "command": "object_loop_inputs",
@@ -1077,54 +1066,6 @@
       },
       "type": "command"
     },
-    "on-completion--start-check": {
-      "cases": [
-        {
-          "goto": "on-completion--start",
-          "when": {
-            "op": "and",
-            "operands": [
-              {
-                "mode": "truthy",
-                "type": "exists",
-                "value": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "proposal_approved",
-                  "type": "loop_ref"
-                }
-              },
-              {
-                "left": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "policy_artifact",
-                  "type": "loop_ref"
-                },
-                "op": "eq",
-                "right": {
-                  "path": "artifact_sha256",
-                  "type": "context_ref"
-                },
-                "type": "comparison"
-              }
-            ],
-            "type": "bool"
-          }
-        }
-      ],
-      "default": "on-completion--starts",
-      "rule": "on-completion",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "start-check",
-      "type": "decision"
-    },
     "on-completion--start-reconcile": {
       "command": "object_loop_reconcile",
       "inputs": {
@@ -1162,11 +1103,45 @@
       "type": "command"
     },
     "on-completion--starts": {
-      "body_entry": "on-completion--start-check",
+      "body_entry": "on-completion--start",
       "collection": {
-        "binding": "inputs",
-        "path": "starts",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "starts",
+          "type": "binding_ref"
+        },
+        "item_binding": "start",
+        "predicate": {
+          "op": "and",
+          "operands": [
+            {
+              "mode": "truthy",
+              "type": "exists",
+              "value": {
+                "binding": "start",
+                "index": false,
+                "path": "proposal_approved",
+                "type": "loop_ref"
+              }
+            },
+            {
+              "left": {
+                "binding": "start",
+                "index": false,
+                "path": "policy_artifact",
+                "type": "loop_ref"
+              },
+              "op": "eq",
+              "right": {
+                "path": "artifact_sha256",
+                "type": "context_ref"
+              },
+              "type": "comparison"
+            }
+          ],
+          "type": "bool"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "start",
@@ -1569,11 +1544,11 @@
       "outcome": "completed",
       "rule": "on-failure",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Completed",
       "type": "terminal"
@@ -1582,21 +1557,39 @@
       "outcome": "failed",
       "rule": "on-failure",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Failed",
       "type": "terminal"
     },
     "on-failure--loops": {
-      "body_entry": "on-failure--policy",
+      "body_entry": "on-failure--choose",
       "collection": {
-        "binding": "inputs",
-        "path": "loops",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "loops",
+          "type": "binding_ref"
+        },
+        "item_binding": "object",
+        "predicate": {
+          "left": {
+            "binding": "object",
+            "index": false,
+            "path": "policy_artifact",
+            "type": "loop_ref"
+          },
+          "op": "eq",
+          "right": {
+            "path": "artifact_sha256",
+            "type": "context_ref"
+          },
+          "type": "comparison"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "object",
@@ -1616,38 +1609,6 @@
         "runtime_error": "on-failure--failed"
       },
       "type": "foreach"
-    },
-    "on-failure--policy": {
-      "cases": [
-        {
-          "goto": "on-failure--choose",
-          "when": {
-            "left": {
-              "binding": "object",
-              "index": false,
-              "path": "policy_artifact",
-              "type": "loop_ref"
-            },
-            "op": "eq",
-            "right": {
-              "path": "artifact_sha256",
-              "type": "context_ref"
-            },
-            "type": "comparison"
-          }
-        }
-      ],
-      "default": "on-failure--loops",
-      "rule": "on-failure",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "policy",
-      "type": "decision"
     },
     "on-failure--read": {
       "command": "object_loop_inputs",
@@ -2167,54 +2128,6 @@
       },
       "type": "command"
     },
-    "on-failure--start-check": {
-      "cases": [
-        {
-          "goto": "on-failure--start",
-          "when": {
-            "op": "and",
-            "operands": [
-              {
-                "mode": "truthy",
-                "type": "exists",
-                "value": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "proposal_approved",
-                  "type": "loop_ref"
-                }
-              },
-              {
-                "left": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "policy_artifact",
-                  "type": "loop_ref"
-                },
-                "op": "eq",
-                "right": {
-                  "path": "artifact_sha256",
-                  "type": "context_ref"
-                },
-                "type": "comparison"
-              }
-            ],
-            "type": "bool"
-          }
-        }
-      ],
-      "default": "on-failure--starts",
-      "rule": "on-failure",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "start-check",
-      "type": "decision"
-    },
     "on-failure--start-reconcile": {
       "command": "object_loop_reconcile",
       "inputs": {
@@ -2252,11 +2165,45 @@
       "type": "command"
     },
     "on-failure--starts": {
-      "body_entry": "on-failure--start-check",
+      "body_entry": "on-failure--start",
       "collection": {
-        "binding": "inputs",
-        "path": "starts",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "starts",
+          "type": "binding_ref"
+        },
+        "item_binding": "start",
+        "predicate": {
+          "op": "and",
+          "operands": [
+            {
+              "mode": "truthy",
+              "type": "exists",
+              "value": {
+                "binding": "start",
+                "index": false,
+                "path": "proposal_approved",
+                "type": "loop_ref"
+              }
+            },
+            {
+              "left": {
+                "binding": "start",
+                "index": false,
+                "path": "policy_artifact",
+                "type": "loop_ref"
+              },
+              "op": "eq",
+              "right": {
+                "path": "artifact_sha256",
+                "type": "context_ref"
+              },
+              "type": "comparison"
+            }
+          ],
+          "type": "bool"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "start",
@@ -2659,11 +2606,11 @@
       "outcome": "completed",
       "rule": "on-formula",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Completed",
       "type": "terminal"
@@ -2672,21 +2619,39 @@
       "outcome": "failed",
       "rule": "on-formula",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Failed",
       "type": "terminal"
     },
     "on-formula--loops": {
-      "body_entry": "on-formula--policy",
+      "body_entry": "on-formula--choose",
       "collection": {
-        "binding": "inputs",
-        "path": "loops",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "loops",
+          "type": "binding_ref"
+        },
+        "item_binding": "object",
+        "predicate": {
+          "left": {
+            "binding": "object",
+            "index": false,
+            "path": "policy_artifact",
+            "type": "loop_ref"
+          },
+          "op": "eq",
+          "right": {
+            "path": "artifact_sha256",
+            "type": "context_ref"
+          },
+          "type": "comparison"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "object",
@@ -2706,38 +2671,6 @@
         "runtime_error": "on-formula--failed"
       },
       "type": "foreach"
-    },
-    "on-formula--policy": {
-      "cases": [
-        {
-          "goto": "on-formula--choose",
-          "when": {
-            "left": {
-              "binding": "object",
-              "index": false,
-              "path": "policy_artifact",
-              "type": "loop_ref"
-            },
-            "op": "eq",
-            "right": {
-              "path": "artifact_sha256",
-              "type": "context_ref"
-            },
-            "type": "comparison"
-          }
-        }
-      ],
-      "default": "on-formula--loops",
-      "rule": "on-formula",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "policy",
-      "type": "decision"
     },
     "on-formula--read": {
       "command": "object_loop_inputs",
@@ -3257,54 +3190,6 @@
       },
       "type": "command"
     },
-    "on-formula--start-check": {
-      "cases": [
-        {
-          "goto": "on-formula--start",
-          "when": {
-            "op": "and",
-            "operands": [
-              {
-                "mode": "truthy",
-                "type": "exists",
-                "value": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "proposal_approved",
-                  "type": "loop_ref"
-                }
-              },
-              {
-                "left": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "policy_artifact",
-                  "type": "loop_ref"
-                },
-                "op": "eq",
-                "right": {
-                  "path": "artifact_sha256",
-                  "type": "context_ref"
-                },
-                "type": "comparison"
-              }
-            ],
-            "type": "bool"
-          }
-        }
-      ],
-      "default": "on-formula--starts",
-      "rule": "on-formula",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "start-check",
-      "type": "decision"
-    },
     "on-formula--start-reconcile": {
       "command": "object_loop_reconcile",
       "inputs": {
@@ -3342,11 +3227,45 @@
       "type": "command"
     },
     "on-formula--starts": {
-      "body_entry": "on-formula--start-check",
+      "body_entry": "on-formula--start",
       "collection": {
-        "binding": "inputs",
-        "path": "starts",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "starts",
+          "type": "binding_ref"
+        },
+        "item_binding": "start",
+        "predicate": {
+          "op": "and",
+          "operands": [
+            {
+              "mode": "truthy",
+              "type": "exists",
+              "value": {
+                "binding": "start",
+                "index": false,
+                "path": "proposal_approved",
+                "type": "loop_ref"
+              }
+            },
+            {
+              "left": {
+                "binding": "start",
+                "index": false,
+                "path": "policy_artifact",
+                "type": "loop_ref"
+              },
+              "op": "eq",
+              "right": {
+                "path": "artifact_sha256",
+                "type": "context_ref"
+              },
+              "type": "comparison"
+            }
+          ],
+          "type": "bool"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "start",
@@ -3749,11 +3668,11 @@
       "outcome": "completed",
       "rule": "on-review",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Completed",
       "type": "terminal"
@@ -3762,21 +3681,39 @@
       "outcome": "failed",
       "rule": "on-review",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Failed",
       "type": "terminal"
     },
     "on-review--loops": {
-      "body_entry": "on-review--policy",
+      "body_entry": "on-review--choose",
       "collection": {
-        "binding": "inputs",
-        "path": "loops",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "loops",
+          "type": "binding_ref"
+        },
+        "item_binding": "object",
+        "predicate": {
+          "left": {
+            "binding": "object",
+            "index": false,
+            "path": "policy_artifact",
+            "type": "loop_ref"
+          },
+          "op": "eq",
+          "right": {
+            "path": "artifact_sha256",
+            "type": "context_ref"
+          },
+          "type": "comparison"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "object",
@@ -3796,38 +3733,6 @@
         "runtime_error": "on-review--failed"
       },
       "type": "foreach"
-    },
-    "on-review--policy": {
-      "cases": [
-        {
-          "goto": "on-review--choose",
-          "when": {
-            "left": {
-              "binding": "object",
-              "index": false,
-              "path": "policy_artifact",
-              "type": "loop_ref"
-            },
-            "op": "eq",
-            "right": {
-              "path": "artifact_sha256",
-              "type": "context_ref"
-            },
-            "type": "comparison"
-          }
-        }
-      ],
-      "default": "on-review--loops",
-      "rule": "on-review",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "policy",
-      "type": "decision"
     },
     "on-review--read": {
       "command": "object_loop_inputs",
@@ -4347,54 +4252,6 @@
       },
       "type": "command"
     },
-    "on-review--start-check": {
-      "cases": [
-        {
-          "goto": "on-review--start",
-          "when": {
-            "op": "and",
-            "operands": [
-              {
-                "mode": "truthy",
-                "type": "exists",
-                "value": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "proposal_approved",
-                  "type": "loop_ref"
-                }
-              },
-              {
-                "left": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "policy_artifact",
-                  "type": "loop_ref"
-                },
-                "op": "eq",
-                "right": {
-                  "path": "artifact_sha256",
-                  "type": "context_ref"
-                },
-                "type": "comparison"
-              }
-            ],
-            "type": "bool"
-          }
-        }
-      ],
-      "default": "on-review--starts",
-      "rule": "on-review",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "start-check",
-      "type": "decision"
-    },
     "on-review--start-reconcile": {
       "command": "object_loop_reconcile",
       "inputs": {
@@ -4432,11 +4289,45 @@
       "type": "command"
     },
     "on-review--starts": {
-      "body_entry": "on-review--start-check",
+      "body_entry": "on-review--start",
       "collection": {
-        "binding": "inputs",
-        "path": "starts",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "starts",
+          "type": "binding_ref"
+        },
+        "item_binding": "start",
+        "predicate": {
+          "op": "and",
+          "operands": [
+            {
+              "mode": "truthy",
+              "type": "exists",
+              "value": {
+                "binding": "start",
+                "index": false,
+                "path": "proposal_approved",
+                "type": "loop_ref"
+              }
+            },
+            {
+              "left": {
+                "binding": "start",
+                "index": false,
+                "path": "policy_artifact",
+                "type": "loop_ref"
+              },
+              "op": "eq",
+              "right": {
+                "path": "artifact_sha256",
+                "type": "context_ref"
+              },
+              "type": "comparison"
+            }
+          ],
+          "type": "bool"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "start",
@@ -4839,11 +4730,11 @@
       "outcome": "completed",
       "rule": "recover",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Completed",
       "type": "terminal"
@@ -4852,21 +4743,39 @@
       "outcome": "failed",
       "rule": "recover",
       "source": {
-        "end_line": 178,
+        "end_line": 234,
         "excerpt": "## Failure handling, uniformly",
         "heading": "Failure handling, uniformly",
         "path": "object-loop.md",
-        "start_line": 178
+        "start_line": 234
       },
       "title": "Failed",
       "type": "terminal"
     },
     "recover--loops": {
-      "body_entry": "recover--policy",
+      "body_entry": "recover--choose",
       "collection": {
-        "binding": "inputs",
-        "path": "loops",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "loops",
+          "type": "binding_ref"
+        },
+        "item_binding": "object",
+        "predicate": {
+          "left": {
+            "binding": "object",
+            "index": false,
+            "path": "policy_artifact",
+            "type": "loop_ref"
+          },
+          "op": "eq",
+          "right": {
+            "path": "artifact_sha256",
+            "type": "context_ref"
+          },
+          "type": "comparison"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "object",
@@ -4886,38 +4795,6 @@
         "runtime_error": "recover--failed"
       },
       "type": "foreach"
-    },
-    "recover--policy": {
-      "cases": [
-        {
-          "goto": "recover--choose",
-          "when": {
-            "left": {
-              "binding": "object",
-              "index": false,
-              "path": "policy_artifact",
-              "type": "loop_ref"
-            },
-            "op": "eq",
-            "right": {
-              "path": "artifact_sha256",
-              "type": "context_ref"
-            },
-            "type": "comparison"
-          }
-        }
-      ],
-      "default": "recover--loops",
-      "rule": "recover",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "policy",
-      "type": "decision"
     },
     "recover--read": {
       "command": "object_loop_inputs",
@@ -5437,54 +5314,6 @@
       },
       "type": "command"
     },
-    "recover--start-check": {
-      "cases": [
-        {
-          "goto": "recover--start",
-          "when": {
-            "op": "and",
-            "operands": [
-              {
-                "mode": "truthy",
-                "type": "exists",
-                "value": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "proposal_approved",
-                  "type": "loop_ref"
-                }
-              },
-              {
-                "left": {
-                  "binding": "start",
-                  "index": false,
-                  "path": "policy_artifact",
-                  "type": "loop_ref"
-                },
-                "op": "eq",
-                "right": {
-                  "path": "artifact_sha256",
-                  "type": "context_ref"
-                },
-                "type": "comparison"
-              }
-            ],
-            "type": "bool"
-          }
-        }
-      ],
-      "default": "recover--starts",
-      "rule": "recover",
-      "source": {
-        "end_line": 65,
-        "excerpt": "## Sweep",
-        "heading": "Sweep",
-        "path": "object-loop.md",
-        "start_line": 65
-      },
-      "title": "start-check",
-      "type": "decision"
-    },
     "recover--start-reconcile": {
       "command": "object_loop_reconcile",
       "inputs": {
@@ -5522,11 +5351,45 @@
       "type": "command"
     },
     "recover--starts": {
-      "body_entry": "recover--start-check",
+      "body_entry": "recover--start",
       "collection": {
-        "binding": "inputs",
-        "path": "starts",
-        "type": "binding_ref"
+        "collection": {
+          "binding": "inputs",
+          "path": "starts",
+          "type": "binding_ref"
+        },
+        "item_binding": "start",
+        "predicate": {
+          "op": "and",
+          "operands": [
+            {
+              "mode": "truthy",
+              "type": "exists",
+              "value": {
+                "binding": "start",
+                "index": false,
+                "path": "proposal_approved",
+                "type": "loop_ref"
+              }
+            },
+            {
+              "left": {
+                "binding": "start",
+                "index": false,
+                "path": "policy_artifact",
+                "type": "loop_ref"
+              },
+              "op": "eq",
+              "right": {
+                "path": "artifact_sha256",
+                "type": "context_ref"
+              },
+              "type": "comparison"
+            }
+          ],
+          "type": "bool"
+        },
+        "type": "filter"
       },
       "failure_policy": "halt",
       "item_binding": "start",

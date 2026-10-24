@@ -1,0 +1,29 @@
+{
+  "generic_dependencies": {
+    "src/sessions/spec.py::SessionSpecBuilder": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/sessions/spec.py::SessionSpecBuilder._build": {
+      "baseline_span": [
+        559,
+        754
+      ],
+      "landing_span": [
+        508,
+        668
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/sessions/spec.py::import from src.sessions.env import build_session_env": {
+      "baseline_span": [
+        38,
+        38
+      ],
+      "landing_span": [
+        38,
+        38
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

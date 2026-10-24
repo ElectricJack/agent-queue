@@ -7,9 +7,11 @@ in `src/jobs/` (detached runs that survive a daemon restart and report a
 durable result), the end-to-end kit, smart test selection, and the GitHub
 Actions workflows whose check names the integration service waits on.
 
-This is system 16 of the 18 in the system inventory. It describes `main` as of
-2026-10-20. Where a guide already explains something well, this page gives the
-short version and links to it. Line numbers are a starting point for a reader;
+This is system 16 of the 18 in the system inventory. Runtime behavior was audited
+against `origin/dev` at `52d2efe4cb5380e6c1889b80f2bf2cce04af9473` on 2026-10-22.
+The planned-work section retains its dated 2026-10-20 snapshot. Where a guide
+already explains something well, this page gives the short version and links
+to it. Line numbers are a starting point for a reader;
 they drift.
 
 ## Contents
@@ -53,8 +55,8 @@ This system answers each of those:
    restart. The result reaches the waiting agent through the durable wait
    system, and the integration service uses jobs as its local CI.
 3. **Smart test selection proposes what to run.** It maps a change to the test
-   modules it can affect and records that proposal. Today it only observes. It
-   never narrows a run.
+   modules it can affect and records that proposal. Shadow mode observes without
+   changing the run; enforcement is a separate, disabled-by-default option.
 
 The GitHub Actions workflows are the fourth piece. They are the hosted CI
 whose check names the integration train and task completion require.
@@ -70,8 +72,8 @@ whose check names the integration train and task completion require.
 | **Default deselect** | `-m "not perf and not migration and not slow and not tmux and not integration"`. Both `pyproject.toml` and `aq test` apply it unless the caller passes `-m`. |
 | **Marker arm** | One of the slow marker families run on purpose: `-m "migration or slow"` or `-m "integration or perf"`. CI runs each as its own job. |
 | **Run-owned database** | A PostgreSQL database named `aq_test_ownv2_<owner>_<run>_<worker>`, created per test process and proven alive by an advisory lock. |
-| **Job** | One row in `jobs`: a server-built command with an owner, a workspace pin, a state machine and, when it finishes, an immutable result. |
-| **Preset** | The finite kind of command a job may run: `test`, `lint`, `e2e`, the Node presets, or `matter_render`. The server builds the argv. There is no shell. |
+| **Job** | One row in `jobs`: a server-built command with a task, integration or playbook owner, pinned inputs, a state machine and, when it finishes, an immutable result. |
+| **Preset** | The finite public kinds are `test`, `lint`, `e2e`, the Node presets and `matter_render`. The internal `playbook_script` preset runs validated playbook scripts through a separate adapter. |
 | **Runner** | The detached supervisor process, `python -m src.jobs.runner <dir>`. It holds the slot locks, runs the child, writes fsynced receipts. It has no database access. |
 | **Receipt** | A file the runner writes in the job directory: `intent.json`, `started.json`, `completion.json`. The daemon reads receipts to move a job forward. |
 | **Workspace pin** | A `job_workspace_pins` row that stops the workspace a job reads from being released, reset or deleted until the job's cleanup is proved. |
@@ -229,7 +231,7 @@ CLI [src/cli/jobs.py](../../../src/cli/jobs.py).
 **Switched off by default.** `resources.jobs.enabled` defaults to false. The
 flag gates new submissions and new launches only. Recovery, reconciliation,
 cancellation and cleanup keep running when it is off, so turning the flag off
-never strands a running job. Test and e2e jobs also need
+never strands a running job. Agent-queue test and e2e jobs also need
 `resources.jobs.test_database_url`, which must name a different database from
 the daemon's.
 
@@ -252,15 +254,17 @@ the daemon's.
 4. Inserts the row, pins the workspace and, with `--wait`, registers a durable
    job wait, all in one transaction.
 
-Submission is idempotent. The CLI mints the idempotency key before it calls the
-daemon, so a retry after a timeout returns the same job. The same key with a
-different request is `jobs.idempotency_conflict`.
+Submission is idempotent when retried with the same key. Pass and retain
+`--idempotency-key` (`--aq-idempotency-key` for detached `aq test`) before a
+submission that might need retrying. Without one, each CLI invocation mints a new
+key. The same key with a different request is `jobs.idempotency_conflict`.
 
 **Admit and launch.** `job_reconcile` runs at the top of every orchestrator
 cycle ([src/orchestrator/core.py](../../../src/orchestrator/core.py), around
 line 3401). `daemon-core` owns that ordering. Each pass:
 
-- cancels jobs whose owning task is no longer in progress, and fails jobs that
+- cancels jobs whose owning task is missing, completed, failed or blocked
+  (`WAITING` owners remain valid), and fails jobs that
   waited past their queue deadline (1800 s shared, 5400 s exclusive or full
   suite);
 - launches at most one job, chosen by `next_admission`: priority band
@@ -288,8 +292,12 @@ instead, one at a time.
 `cancelling` on the way to a cancel. Every move is a compare-and-set on
 `state_version`. A terminal move writes the result and a `job_outbox` row in
 the same transaction. Because the runner is detached, it survives a daemon
-restart. On the next cycle `reconcile` adopts it by matching the receipt nonce
-and checking boot id, pid and process start time. A job is never relaunched.
+restart. Before workspace recovery, startup recovery checks nonqueued ordinary
+jobs and their pins against receipts, process identities and slot-holder proofs.
+It can clear a stale pre-exec pin when the runner is proved dead; elapsed time
+alone is insufficient. On the next cycle `reconcile` adopts live runners by
+matching the receipt nonce and checking boot id, pid and process start time.
+A job is never relaunched.
 If there is any doubt (unreadable `/proc`, slots still held, descendants still
 alive), the job keeps its workspace pin with `cleanup_blocked` set and is
 retried next cycle. `aq doctor --check resources.jobs_cleanup [--fix]` reports
@@ -326,6 +334,14 @@ rules as `aq test`), `lint` (`ruff check`), `e2e` (exclusive; see
 `matter_render`. [adapters.py](../../../src/jobs/adapters.py) maps command
 strings such as `aq test …`, `pytest …` or `npm run build` to presets. That is
 how the integration service turns a configured validation command into a job.
+
+**Playbook scripts.** The internal `playbook_script` adapter uses the same jobs
+table and shared slot budget, with weight one and one active script per playbook
+owner. It pins its own input root rather than a worker workspace. The adapter
+requires both jobs and `resources.scripts.enabled` (the latter defaults true).
+Scripts use ordinary bounded processes, including explicitly declared shell
+interpreters, with encrypted request/result plumbing and separate cleanup and
+output handling. See [playbook-script-runner.md](../../guides/playbook-script-runner.md).
 
 ### Matter render jobs
 
@@ -368,14 +384,14 @@ The code is [src/test_selection/](../../../src/test_selection/).
 
 **Inputs.** Three files are checked in and kept fresh by tests:
 
-- `tests/selection_areas.yaml`: 96 areas, each a set of test-module globs.
+- `tests/selection_areas.yaml`: areas, each a set of test-module globs.
   Every module must match an area and every area a module.
 - `tests/selection_rules.yaml`: which changed paths invalidate everything,
   which are non-behavioural, which source paths own which areas, and which
   tests are critical.
 - `tests/selection_catalogue.json`: generated by
   `scripts/generate-selection-catalogue.py` from each test module's AST, with
-  a per-module digest. About 935 modules.
+  a per-module digest.
 
 **A selection** (`SelectionService.select`) is computed in stages:
 
@@ -389,9 +405,12 @@ The code is [src/test_selection/](../../../src/test_selection/).
    to everything.
 4. **J, judgments.** Optionally, one question per area to an external model
    (Jev, through the TypeSafe SDK), with strict token and time budgets.
-5. **Compose.** Without a promoted policy, the fallback F = M ∪ S is what
-   counts. In shadow mode the recorded proposal is M ∪ J. The result always
-   satisfies M ⊆ final ⊆ universe.
+5. **Compose.** The fallback F = M ∪ S expands to the whole universe if static
+   evidence is incomplete or mandatory rules require everything. Without valid,
+   complete judgments, final is F. With judgments, shadow records M ∪ J;
+   enforcement uses F ∪ J until a matching policy is promoted and its evidence is
+   complete, then M ∪ J. Unknown areas remain included. Explicit module targets
+   are also retained. The result always satisfies M ⊆ final ⊆ universe.
 
 The selection is stored in `test_selections` and a `test_selection.recorded.v1`
 event is emitted.
@@ -404,15 +423,18 @@ event is emitted.
 - **Shadow** (`--aq-smart`) records the proposal, runs exactly the targets the
   caller named, and records an execution observation. It never changes what
   runs.
-- **Enforce** runs only the selected modules. It needs
-  `test_selection.enforce_enabled` and a promoted project policy, refuses
-  narrowing flags, and exits 4 when the plan says a full run is required.
+- **Enforce** (`--aq-smart=enforce`) runs the selected modules plus explicit
+  targets. It needs `test_selection.enabled` and `test_selection.enforce_enabled`,
+  refuses narrowing flags and stale plans, and exits 4 when a worker's plan
+  requires an unauthorized full run. Local operator selections can authorize a
+  full run. Promotion permits omission from S; it is not required to enforce an
+  additive selection.
 
 Promotion and revocation are operator-only commands
 (`aq test-selection promote|revoke`). The promotion bar in the design (at least
 30 held-out replay cases, recall of at least 0.98, no critical misses) is
-measured by `scripts/replay-test-selection.py`. It has not been met, and no
-project is promoted. Phase 3 of the daemon cycle deletes selections older than
+measured by `scripts/replay-test-selection.py`; promotion is an explicit operator
+decision, not a default. Phase 3 of the daemon cycle deletes selections older than
 `test_selection.retention_days` (90), at most once an hour.
 
 ### CI in GitHub Actions
@@ -473,15 +495,16 @@ around line 5840):
 
 | Table | What one row is | Key facts |
 |---|---|---|
-| `jobs` | One job | Owner (`owner_kind` task or integration, `owner_id`, `claim_epoch`), preset and server-built `argv`, `contract` JSON, workspace and generation, input mode (live or snapshot) and fingerprint, class (shared or exclusive), weight, priority band, `state` and `state_version`, deadlines, runner identity (nonce, boot id, pid, start ticks), `result`, output retention, `cleanup_blocked`. Unique on (project, owner kind, owner, idempotency key). |
+| `jobs` | One job | Owner (`owner_kind` task, integration or playbook, `owner_id`, `claim_epoch`), preset and server-built `argv`, `contract` JSON, workspace and generation or script input root, input mode and fingerprint, class (shared or exclusive), weight, priority band, `state` and `state_version`, deadlines, runner identity (nonce, boot id, pid, start ticks), `result`, output retention, `cleanup_blocked`. Unique on (project, owner kind, owner, idempotency key). |
 | `job_workspace_pins` | A job's hold on a workspace generation | Never expires. `workspaces.job_pin_count` mirrors it. Release, reuse, deletion and pause recovery all check it. |
 | `job_outbox` | A terminal delivery intent | Key `job:<id>:terminal`. Consumed into a wait result or a task message. |
 
 The job's files live in `<data_dir>/runs/<job_id>/` (request, intent, started,
 completion, result, cancel, `instance.lock`, output head and tail, manifest,
-JUnit). Snapshot clones are in `<data_dir>/job-snapshots/` and editor pins in
-`<data_dir>/editor-pins/`. One id names the row, the `AQ_JOB_ID` environment
-variable and the directory.
+JUnit). Candidate checkouts use the project's bound storage root, falling back
+to `<data_dir>/job-snapshots/`; warm checkouts share the primary Git store.
+Editor pins live in `<data_dir>/editor-pins/`. One id names the row, the
+`AQ_JOB_ID` environment variable and the directory.
 
 Selection (migration `a00000000028_test_selections`):
 
@@ -501,13 +524,13 @@ Configuration ([src/config.py](../../../src/config.py)):
 |---|---|---|
 | `resources` | `test_slots`, `test_workers`, `test_wait_timeout`, `test_poll_interval`, `test_deselect_markers`, `test_interpreters`, `max_pytest_processes`, `cores`, `max_concurrent_agents`, `session_nice` | 2, CPU share, 1800 s, 2.0 s, the default deselect, {}, 24, CPU count, 8, 10 |
 | `resources.jobs` | `enabled`, `test_database_url`, queue and run deadlines, quotas, `full_suite_reserved_slots`, log and result retention, `matter_*` | off, unset, 1800/5400/7200 s, 100/10/2, 2, 14/90 days, unset |
+| `resources.scripts` | `enabled`, queue deadline, wall timeout and cap, stdout/stderr limits | on, 300 s, 60/900 s, 1 MiB each |
 | `resources.cgroups` | `enabled`, `cpu_quota_percent`, `memory_max` | off, 600, 6G |
 | `test_selection` | `enabled`, `jev_enabled`, `enforce_enabled`, model and budgets, `retention_days` | all off, `jev-1.13.0`, 90 |
 
 All of them hot-reload. `aq agent tune` writes the `resources` values a fresh
-install starts with ([default-tuning.md](../../guides/default-tuning.md)). As
-of this writing the operator's box runs with jobs enabled, 6 slots, 6 workers,
-and selection enabled in shadow with Jev and enforcement off.
+install starts with ([default-tuning.md](../../guides/default-tuning.md)). Installed
+operator settings can differ from these defaults.
 
 ## Boundaries
 
@@ -515,15 +538,15 @@ and selection enabled in shadow with Jev and enforcement off.
 |---|---|---|
 | `daemon-core` | `run_one_cycle` ordering | Runs `job_reconcile` at the top of each cycle and the selection retention sweep in phase 3 (housekeeping). This system owns what those passes do, not when they run. |
 | `scheduling-and-claims` | The box-wide resource gate: slot files, box lock, per-session caps, cgroups | `aq test` and the job runner are the gate's main clients. This system owns `aq test`'s use of it, full-suite detection and job weights. |
-| `task-graph` | Task status | A task-owned job requires its task in progress at the submitting claim's epoch. A job is cancelled when its task leaves that state. |
+| `task-graph` | Task status | Submission requires an in-progress task at the submitting claim's epoch. A missing, completed, failed or blocked owner causes cancellation; a waiting owner remains valid. |
 | `sessions-and-harnesses` | Durable waits, `aq prime`, the session-stop process sweep | Job waits and job results in prime. The instance-token sweep kills leaked test processes. Job runners are deliberately not sessions. |
 | `projects-workspaces-git` | Workspaces, generations, worktree release and reset | Jobs pin a workspace generation. `@guard_workspace` serializes worktree mutations against pins. |
 | `integration-and-delivery` | Trains, the development publisher, required checks, completion CI, the CI main sentinel | Submits integration jobs as local CI. Reads the required check names the workflows produce. Owns `aq ci completed-status`, `aq ci baseline-status` and the `ci-main-sentinel` playbook. |
 | `object-loop` (in integration-and-delivery) | The matter-engine object loop | Consumes `matter_render` jobs and `aq job retain`. |
-| `operations-and-recovery` | `aq doctor`, restart | Doctor checks `resources.load`, `resources.test_pressure` and `resources.jobs_cleanup`. A restart leaves runners running; the next cycle adopts them. |
+| `operations-and-recovery` | `aq doctor`, restart | Doctor checks `resources.load`, `resources.test_pressure` and `resources.jobs_cleanup`. Startup checks ordinary-job pins before workspace recovery, then cycle reconciliation adopts live runners. |
 | `configuration-and-vault` | Config loading, the tuner, the vault | Owns the `resources`, `resources.jobs` and `test_selection` keys and the baseline note in the vault. |
 | `api-and-clients`, `dashboard` | REST, SSE, generated clients | The job and test-selection commands are on the API. Job output streams at `GET /api/jobs/{job_id}/output`. `job_reconcile` is excluded from public transports. |
-| `playbooks` | Policy | No playbook drives tests or jobs today. Judgment about failing tests lives in repair tasks and the CI sentinel playbook, not here. |
+| `playbooks` | Policy and script-step lifecycle | Script steps submit internal `playbook_script` jobs, pin run inputs and consume script results. Repair tasks and the CI sentinel playbook own judgment about failures. |
 
 ## Design principles and invariants
 
@@ -540,9 +563,9 @@ and selection enabled in shadow with Jev and enforcement off.
    reported as a red test. Exit 5 (nothing collected) is never a pass.
 4. **Never run everything by accident.** `aq test` with no arguments refuses.
    One full suite at a time. The slow markers stay off unless asked for.
-5. **No shell, finite presets.** A job runs an argv the server built from a
-   named preset and validated arguments. There is no arbitrary-command
-   endpoint.
+5. **Validated execution contracts.** Public jobs use finite presets with
+   server-built argv. The internal script adapter validates declared playbook
+   scripts and their interpreters; it is not an arbitrary-command endpoint.
 6. **One identity per job.** The row, `AQ_JOB_ID` and the run directory share
    one id. Every state change is a compare-and-set, and the terminal result and
    its delivery intent commit together.
@@ -563,31 +586,14 @@ and selection enabled in shadow with Jev and enforcement off.
 
 ## Known gaps
 
-### Where the docs and the code disagree
+### Inventory snapshot
 
-- **What shadow mode runs.** The selection guide says shadow "then runs exactly
-  the modules it proposed", and its flag table says "compute, record and run
-  the proposed selection". The code runs the targets the caller named and
-  never changes `pytest_args` (`src/test_selection/policy.py` docstring, the
-  `aq test --aq-help` text, `src/cli/test_runner.py` around line 1214). The
-  code is the intended behaviour. The guide should be corrected.
-- **Who reads the slot-wait report.** The resource-gating guide (around line
-  365) says the development publisher sets `AQ_TEST_SLOT_REPORT` and
-  `AQ_TEST_WAIT_TIMEOUT` to keep queueing out of its run budget. The publisher
-  now validates through managed jobs, whose queue and run deadlines are
-  separate. `aq test` still writes the report, but nothing in production reads
-  it (`read_slot_wait` is used only by tests).
-- **The system inventory** says CI "consumes the same selection rules and
-  baselines". It does not. CI's only "selection" is `pytest-split` timing
-  shards. It also lists "workspace jobs". There is no workspace preset;
-  `src/jobs/workspace.py` is the pin guard. Its plan citations are also
-  inexact: the selection plan is `plans/2026-09-25-smart-test-selection-plan.md`,
-  and the bounded-checks plan is about delivery-decision latency, not tests
-  (see [Planned work](#planned-work)).
-- **managed-jobs.md** still opens "Phases 2 and 3 leave
-  `resources.jobs.enabled: false`". That is the code default, but the
-  integration service's local CI now depends on jobs being on. The spec does
-  not say which phase turns the default on, or whether one will.
+The 2026-10-20 system inventory is a discovery snapshot. Its claim that hosted
+CI consumes selection rules and baselines does not describe the workflows:
+CI splits tests by recorded timing, while workers compare failures to the vault
+baseline. Its “workspace jobs” entry refers to workspace pin guards, not a public
+preset. The bounded-checks plan concerns delivery-decision latency, not executable
+validation (see [Planned work](#planned-work)).
 
 ### Stale code and comments
 
@@ -616,26 +622,29 @@ and selection enabled in shadow with Jev and enforcement off.
 - **Full-suite detection is static.** It judges from argv and the module count.
   It cannot see what a conftest or plugin selects, and a run just under half
   the modules is a slice.
-- **Full suites still take shared admission** (box lock phase 1). Exclusive
-  admission for full suites is designed but not switched on.
+- **Full suites use shared admission** plus the full-suite lock. Managed full
+  suites reserve capacity for focused foreground runs rather than draining all
+  shared work.
 - **No gate for a bare `pytest`.** The gate holds only for callers that use
   `aq test` or jobs.
 - **cgroups are opt-in** and need systemd user delegation. Without them, CPU
   and memory limits are `nice` and xdist caps only.
-- **Selection is shadow only.** All three switches default off, the promotion
-  bar is unmet, runtime savings have never been measured, and the static
-  engine and Jev SDK are optional extras whose absence silently forces the
-  fallback.
+- **Selection requires opt-in.** All three switches default off. Shadow records
+  evidence without changing targets; enforcement and omission from the static
+  set need separate enablement and promotion respectively. Optional static/Jev
+  dependencies may be unavailable, producing a recorded conservative fallback.
 - **The catalogue freshness check is skipped in CI** (`CI` set). Drift is caught
   there only by `tests/test_selection_catalogue.py`.
-- **CI does not test `main` on push.** Only `main-attestation.yml` runs, and it
-  does nothing until its repository variables are set.
+- **Protected-branch pushes use attestation.** They do not directly trigger
+  `tests.yml`. The attestation workflow needs repository variables and App
+  credentials to audit pushes and run the reusable tests for an unattested head.
 - **Shard timings drift.** `.test_durations` was last refreshed on 2026-09-25.
   Nothing refreshes it automatically.
-- **Wall-clock budgets are never enforced in CI.** `perf_strict` tests skip
-  unless `AQ_PERF_STRICT=1`, and CI sets it only for the CLI startup check.
-- **The recorded baseline is old.** The latest note is
-  `full-suite-baseline-2026-09-22.md`. Nothing schedules a new one.
+- **Most wall-clock budgets skip in CI.** `perf_strict` tests skip unless
+  `AQ_PERF_STRICT=1`; CI enables it for the serial CLI startup check only.
+- **The recorded baseline is maintained separately.** Workers must use the
+  latest vault note; neither CI nor job results automatically annotate failures
+  against it.
 - **The test-database reaper is manual.** It has no timer.
 - **Process identity is local.** Runner adoption depends on this host's boot
   id and `/proc`. Running jobs on another machine would need node-qualified
@@ -671,8 +680,8 @@ rewrite of the systems README. It changes no code.
 |---|---|---|
 | `specs/2026-09-24-exclusive-job-queue.md` | Final ("ready for implementation planning"). The duplicate `-2` copy is withdrawn (`rev-prime-dune`). | The design behind managed jobs: bands, weights, exclusive drain. Implemented through phase 4 in [managed-jobs.md](../implementation/managed-jobs.md). |
 | `specs/2026-09-24-managed-long-running-commands.md` | Final. The `-2` copy is withdrawn (`rev-amber-crest`). | Detached runner, receipts, durable waits, output retention. Implemented. |
-| `specs/2026-09-24-smart-test-selection-2.md` | `rev-sharp-crest`, revision 3, status implemented. Revision 1 (`…-selection.md`) is final. The repository copy is the design spec linked above. | The selection pipeline described here. Enforcement waits on the promotion bar. |
-| `plans/2026-09-25-smart-test-selection-plan.md` | `rev-smart-beacon`, approved | The implementation plan. Delivered except promotion, which needs replay evidence that does not exist yet. |
+| `specs/2026-09-24-smart-test-selection-2.md` | `rev-sharp-crest`, revision 3, status implemented. Revision 1 (`…-selection.md`) is final. The repository copy is the design spec linked above. | The selection pipeline described here. Omitting static candidates waits on promotion. |
+| `plans/2026-09-25-smart-test-selection-plan.md` | `rev-smart-beacon`, approved | The implementation plan. The selection implementation is delivered; promotion remains an operator decision requiring replay evidence. |
 | `specs/2026-09-24-resource-aware-planner-2.md` | `rev-grand-cascade`, in review (revision 1), backlog | Adaptive job admission (`resources.jobs.adaptive`, off by default) on top of the static slots, from measured per-command history. The exclusive job queue is its hard prerequisite, and that is now met. Not started. |
 | `specs/2026-10-06-distributed-worker-nodes.md` | `rev-eager-quest`, in review (revision 2) | Moves job runners and sessions behind an execution-worker service, even on one machine. Jobs would get node-qualified identities, and test slots would become per node. It names `JobService.launch` and the runner as the boundary to factor. Not started. |
 | `plans/2026-10-07-bounded-aq-checks-measured-audit-and-phased-implementation.md` | `rev-agile-orbit`, approved | **Adjacent, not test work.** Its "routine checks" are bounded delivery and scheduling decisions. It explicitly excludes executable validation and remote CI. Nothing in it changes this system. |
@@ -691,6 +700,7 @@ rewrite of the systems README. It changes no code.
 | Test databases | [tests/pg_dsn.py](../../../tests/pg_dsn.py), [tests/db_fixtures.py](../../../tests/db_fixtures.py), [test_db_reaper.py](../../../src/resources/test_db_reaper.py) | `aq test tests/test_pg_dsn.py tests/test_test_db_reaper.py` |
 | Baseline parser | [test_baseline.py](../../../src/resources/test_baseline.py) | `aq test tests/test_test_baseline.py` |
 | Managed jobs | [src/jobs/](../../../src/jobs/), [job_commands.py](../../../src/commands/job_commands.py), [job_queries.py](../../../src/database/queries/job_queries.py), [src/cli/jobs.py](../../../src/cli/jobs.py) | `aq test tests/test_jobs.py tests/test_jobs_queries.py tests/test_jobs_runner.py tests/test_jobs_recovery.py tests/test_jobs_waits.py tests/test_jobs_output.py tests/test_jobs_attachments.py tests/test_jobs_matter.py` |
+| Playbook scripts | [src/jobs/playbook.py](../../../src/jobs/playbook.py), [playbook-script-runner.md](../../guides/playbook-script-runner.md) | `aq test tests/test_playbook_script.py tests/test_playbook_script_recovery.py` |
 | Smart test selection | [src/test_selection/](../../../src/test_selection/), [test_selection_commands.py](../../../src/commands/test_selection_commands.py) | `aq test tests/test_selection_*.py` |
 | Catalogue freshness | [scripts/generate-selection-catalogue.py](../../../scripts/generate-selection-catalogue.py) | `aq test tests/test_selection_catalogue.py` |
 | e2e kit | `scripts/e2e-*.sh`, [scripts/e2e/](../../../scripts/e2e/), [src/jobs/e2e.py](../../../src/jobs/e2e.py) | `aq test tests/test_e2e_kit_fixtures.py tests/test_e2e_probe.py`, then `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` |

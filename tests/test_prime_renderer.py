@@ -256,6 +256,18 @@ class TestGoldenAssembly:
         assert "content hash" in body
         assert "Do not wait for approval" in body
 
+    @pytest.mark.parametrize("bounded", [False, True])
+    async def test_followup_task_does_not_get_revision_publication_guidance(
+        self, db, config, task, bounded
+    ):
+        await db.set_task_meta(task.id, "review_response", {
+            "review_id": "rev-approved", "revision": 2, "task_kind": "followup",
+        })
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=bounded)
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Review revision publication" not in body
+        assert "aq review submit --review-id rev-approved" not in body
+
     async def test_task_section_omits_subtasks_block_when_none_exist(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["task"]
@@ -891,6 +903,46 @@ class TestStaticSections:
         assert "aq task close task-1" in body
         assert "aq session drain-ack" in body
         assert "--deliverable-unmet 'id: reason'" in body
+
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    @pytest.mark.parametrize("delivery_mode", ["disabled", "development"])
+    async def test_worker_brief_merges_dev_before_submission(
+        self, db, config, task, lifecycle, delivery_mode
+    ):
+        await db.update_project(task.project_id, hierarchical_integration_mode=delivery_mode)
+        await db.create_session(
+            SessionRecord(
+                id="sync-session",
+                project_id=task.project_id,
+                profile_id="coder",
+                harness="codex",
+                provider="fake",
+                name="sync-session",
+                lifecycle=lifecycle,
+                work_dir="/tmp/sync-session",
+                epoch="test",
+                instance_token="test-only",
+                started_at=time.time(),
+                task_id=task.id,
+                state="running",
+            )
+        )
+
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, session_id="sync-session")
+        body = " ".join({s.key: s.body for s in doc.sections}["completion_protocol"].split())
+        submission = body.split("## Never close over unpushed commits", 1)[1]
+        steps = (
+            "final submission step for every code task",
+            "`git merge origin/dev` (merge, not rebase)",
+            "Resolve any conflicts with full context",
+            "run only targeted tests for the touched files",
+            "do not run a full CI pass",
+            "Commit the result",
+            "push with guarded `aq git push`",
+            "then publish/close the task",
+        )
+        positions = [submission.index(step) for step in steps]
+        assert positions == sorted(positions)
 
     @pytest.mark.parametrize("harness", ["claude", "codex"])
     @pytest.mark.parametrize("delivery_mode", ["disabled", "development"])

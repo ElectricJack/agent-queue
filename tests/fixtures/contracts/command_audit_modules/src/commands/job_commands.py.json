@@ -1,0 +1,363 @@
+{
+  "job_cancel": {
+    "argument_reads_diagnostic_only": [
+      "job_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_cancel",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': True, 'job': self._public_job(await self._jobs().cancel(job))}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': 'not_found'}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:dbced2e25cffe1d5e233943fc17e179bebe2b5a2b400147d89f9361cd6efc293",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
+    ]
+  },
+  "job_get": {
+    "argument_reads_diagnostic_only": [
+      "job_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_get",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': True, 'job': self._public_job(job)} if job else {'success': False, 'error': 'not_found'}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:51086251fcae777e8683524db2cd1183b2ad746b8d6fdff644aa2de4d65ffb87",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
+    ]
+  },
+  "job_list": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "project_id",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': True, 'jobs': visible}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': 'jobs.project_required'}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:fe6938688cfe995f20d9eb42ee242580078c523b7af4bd5137993348315125cc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
+    ]
+  },
+  "job_logs": {
+    "argument_reads_diagnostic_only": [
+      "after",
+      "job_id",
+      "limit"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_logs",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': 'not_found'}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': 'logs_expired', 'result': job['result']}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': True, **response}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': True, **response}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': 'logs_not_ready'}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': 'output_unavailable'}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': exc.code}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:53185aacffbc0e1a43c4c936f904f107cdb7f348508de35dcc65809bc6b859d9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
+    ]
+  },
+  "job_reconcile": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "argumentless",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_reconcile",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "closed",
+    "source_digest": "sha256:428e18fb882631ae5d8efdcb5a15d542258a95dd1816b9b9a87c9ba0a4aecba4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_streams_api.py"
+    ]
+  },
+  "job_result": {
+    "argument_reads_diagnostic_only": [
+      "job_id",
+      "max_bytes"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_result",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': True, 'result': result}"
+      },
+      {
+        "protocol": "explicit success boolean or existing job projection",
+        "return": "{'success': False, 'error': 'not_found'}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:2db1f0ae3455de88f1e3471d33bac34181ac430ca9bc9f169d095fd939735428",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
+    ]
+  },
+  "job_retain": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_retain",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'not_found'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'jobs.capture_unavailable'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'jobs.capture_unavailable'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **response}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:6c5a3f5b4e00e50c692305ce894c04504ee8c5788d4ab6a3819fd77ef6e06082",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "job_submit": {
+    "argument_reads_diagnostic_only": [
+      "argv",
+      "attempt_id",
+      "claim_epoch",
+      "idempotency_key",
+      "preset",
+      "project_id",
+      "session_id",
+      "task_id",
+      "wait"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_submit",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'jobs.stale_claim' if denied.get('result') == 'stale_claim' else 'jobs.out_of_scope', 'error': denied['error']}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "response"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': code, 'error': str(exc)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:7541b40a579268a3df794937e681cb1801c87555df25b1a44d5aad0ae020c9ab",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "job_submit_integration": {
+    "argument_reads_diagnostic_only": [
+      "argv",
+      "idempotency_key",
+      "input_ref",
+      "operation_id",
+      "preset",
+      "project_id",
+      "queue_seconds",
+      "run_seconds",
+      "snapshot_group",
+      "store"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_submit_integration",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "{'success': True, 'job': job}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{'success': False, 'error_code': str(exc), 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{'success': True, 'job': dict(existing)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:5fa962c2b886793e09e67e8170e74e2e4dca73c9ef7223f751cdd7dd1499a22f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

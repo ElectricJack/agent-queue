@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/task_graph/activity.py::attach_activity": {
+      "fingerprint": "1ef7f3073d7ddedaa3cc31dd6b830848e2c4a3fef166b07a190b9379ced6c693",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/activity.py::load_activity": {
+      "fingerprint": "848b8244b579e43443b96a77cdb9ea63679d38c4fcdd5f4fe65543852a2cfa80",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

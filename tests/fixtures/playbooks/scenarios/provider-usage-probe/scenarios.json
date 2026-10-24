@@ -1,0 +1,72 @@
+{
+  "event": {
+    "event_type": "timer.10m",
+    "event_id": "probe-tick",
+    "tick_time": "2026-10-22T12:00:00Z"
+  },
+  "scenarios": [
+    {
+      "id": "reading",
+      "outcome": "probed",
+      "terminal": "completed"
+    },
+    {
+      "id": "wording-changed",
+      "stdout": {
+        "result": "No recognized limit lines"
+      },
+      "outcome": "unparsed",
+      "terminal": "completed"
+    },
+    {
+      "id": "api-key",
+      "stdout": {
+        "result": "You are using an API key from console.anthropic.com to power your usage"
+      },
+      "outcome": "not_applicable",
+      "terminal": "completed"
+    },
+    {
+      "id": "missing-cli",
+      "raises": "missing",
+      "outcome": "unavailable",
+      "terminal": "completed"
+    },
+    {
+      "id": "timeout",
+      "hang": true,
+      "outcome": "unavailable",
+      "terminal": "completed"
+    },
+    {
+      "id": "disabled",
+      "disabled": true,
+      "outcome": "disabled",
+      "terminal": "completed"
+    },
+    {
+      "id": "nonzero-exit",
+      "returncode": 1,
+      "outcome": "rejected",
+      "terminal": "failed"
+    },
+    {
+      "id": "malformed-envelope",
+      "stdout": "<html>login</html>",
+      "outcome": "rejected",
+      "terminal": "failed"
+    },
+    {
+      "id": "subprocess-exception",
+      "raises": "runtime",
+      "outcome": "rejected",
+      "terminal": "failed"
+    },
+    {
+      "id": "adapter-unavailable",
+      "adapter_unavailable": true,
+      "outcome": "runtime_error",
+      "terminal": "failed"
+    }
+  ]
+}

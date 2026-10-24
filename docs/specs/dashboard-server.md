@@ -4,6 +4,59 @@ tags: [spec, dashboard, daemon, api, installer, security]
 
 # Dashboard server process and API-only daemon
 
+## Current process boundary (2026-10-23)
+
+The dashboard is a separate OS process, with its own event loop and PID. The
+daemon must not import `src.dashboard_server` or `src.dashboard_assets.runtime`,
+mount the SPA/static assets, build the bundle, or start an in-process UI server.
+`aq start` and `aq restart` may launch both services from the **CLI process**;
+`aq dashboard serve` owns its foreground process. Installed serving defaults to
+8082; 5173 is the separate Vite development server. Neither runs on the daemon's
+API listener (8081 by default).
+
+Asset verification, static reads, SPA fallback, proxy relays and relay counters
+belong to the dashboard server. React rendering, query timers, query caches and
+viewer state belong to the browser. The daemon exposes ordinary authenticated
+APIs and the compatibility JSON redirect at `/dashboard`; it must not acquire
+browser polling or rendering jobs as part of installation or startup.
+
+The sole legacy HTML exception is `GET /plans/{task_id}` in `src/api/health.py`.
+It renders a plan document on demand, has no runtime caller in the audited
+checkout, and is not part of the dashboard host. Preserve that existing
+contract: the standalone server still rejects `/plans`. The guard allows this
+exact route and tests that neighboring paths do not gain HTML serving. This
+exception does not permit a dashboard mount or additional HTML endpoints.
+
+**API work still costs resources.** Process separation does not make dashboard
+API calls free. The following shared services deliberately remain in the daemon:
+
+* The durable graph projection and viewport API (`src/task_graph/layout/`,
+  `src/orchestrator/layout_step.py`, `src/api/graph_layout.py`) publish consistent,
+  versioned coordinates for all clients. CLI/MCP graph rebuild, tidy and reflow
+  commands use the same projection. Dirty-mark consumption, job recovery and
+  atomic publication must continue with no dashboard process or browser open.
+  The bounded geometry cache is an API response optimization, keyed by the
+  published version and request parameters; it holds no browser session state.
+* Fleet sampling, history rollups and relay telemetry (`src/metrics/`) support
+  operational diagnosis through `/api/metrics/series` and `metrics.tick`.
+  The sampler reads cumulative counters from the separate server over HTTP;
+  it does not host the relay or import its implementation. Monitoring an absent
+  server records an unavailable observation, rather than starting it.
+* Health/readiness, event streams and session pane/terminal streams are general
+  CLI/MCP/REST services. Pane capture is shared per subscribed session and ends
+  when its subscribers leave. Roaming dashboard-state commands persist opaque
+  client state; they run no UI timer or renderer.
+
+These are the explicit general-API justifications for retained aggregation and
+layout work, not a claim of zero daemon CPU. Browser-only computation must stay
+outside the daemon. The [source audit](../reports/2026-10-23-dashboard-process-boundary.md)
+records the lifecycle, installer and service-unit paths. The fresh-process guard
+in `tests/test_api_dashboard_pointer.py` exercises real API/MCP assembly and
+lifespans, rejects dashboard imports (including caught attempts), inspects mounts
+and requests static paths without starting a daemon or opening a database.
+
+## Original design record
+
 <!-- aq:historical -->
 > **Design record — implemented 2026-09-21.** Written on 2026-09-20 against
 > `main` `0ad341dfa`, before the code. It is not revised to track the code
@@ -19,6 +72,26 @@ tags: [spec, dashboard, daemon, api, installer, security]
 **Decision owner:** Jack, 2026-09-20 — the daemon goes back to exposing an API and
 nothing else, and the one-command install keeps ending at an open dashboard.
 This spec decides how; the implementation tasks follow it.
+
+## Plan viewer follow-up (2026-10-23)
+
+The plan viewer now follows the same process boundary as the dashboard. The
+standalone dashboard serves `/plans/{task_id}` through its SPA fallback, and the
+browser renders markdown with the bundled `MarkdownPreview` component. It reads
+`GET /api/plans/{task_id}` through the existing same-origin JSON relay; no renderer
+or CDN script belongs to the daemon. The response is
+`{"task_id": "<id>", "content": "<markdown>"}`. Hierarchical task IDs remain valid;
+malformed IDs return `400`, and missing plans or an unconfigured provider return
+`404`. Markdown is returned unchanged as data, including empty content.
+
+The daemon's old `/plans/{task_id}` HTML route and unused `get_plan_url` helper
+are removed. Direct requests to that daemon path return `404`; plan bookmarks
+must use the dashboard server's origin. `/plans` is no longer a reserved prefix
+at the dashboard server. All other reserved prefixes and import boundaries remain
+as specified below. The JSON endpoint is included in OpenAPI and both clients
+are regenerated. Tests guard the daemon's response declarations and live plan
+responses against `text/html`, and cover SPA plan deep links, JSON errors,
+hierarchical IDs, markdown rendering and failures to load a plan.
 
 ## 0. Summary
 
@@ -132,7 +205,7 @@ the generated client's base URL.
 
 A prefix matches on a segment boundary (`/api` and `/api/…`, never `/apix`).
 Nothing else is forwarded. The daemon's non-dashboard prefixes and retired
-documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json`, `/plans` and
+documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json` and
 `/dashboard` — answer `404` at the dashboard server and never fall back to
 `index.html`, so a client pointed at the wrong port gets an error, not HTML; no
 SPA route uses them. A proxied path whose percent-decoded form contains a `.` or

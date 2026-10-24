@@ -37,3 +37,17 @@ metadata, profile/class semantics and portable values before writes. Unexpected
 members, traversal, symlinks and unsafe config fields are rejected. Configuration
 and profiles containing unknown credential fields fail visibly, rather than
 silently exporting them.
+
+`wait_policy`, including per-project overrides and optional metrics cohort, travels.
+The top-level local sections `data_dir`, `workspace_dir`, `project_roots`,
+`database_path`, `git_identity` and `workspaces` do not. Reconfigure compiler-cache
+paths on the destination rather than copying another host's workspace settings.
+
+Readers limit each archive member to 2 MB and the archive to 8 MB. Export preview
+(`preview_portable_config`) describes what will be exported; import's `dry_run`
+validates the supplied archive and reports destination conflicts without writing.
+The config candidate preflight currently uses a temporary sibling filename and
+no caller-selected profile, so it does not validate the exact environment/profile
+overlay combination used by the live daemon. Reload and inspect the result after
+an import. The `agents_config`/YAML `agents` mismatch is documented in the
+[configuration reference](../reference/configuration.md#top-level-sections).

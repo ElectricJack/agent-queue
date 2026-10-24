@@ -1,0 +1,237 @@
+{
+  "digest_facts": {
+    "argument_reads_diagnostic_only": [
+      "now"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/digest_commands.py:DigestCommandsMixin._cmd_digest_facts",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', \"digest facts are the supervisor's author turn; a project-scoped session cannot read the fleet window\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.disabled', 'discord.digest.supervisor_authored is off; the deterministic digest is what posts and it has no author window')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'no digest window at that start in this generation')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'that window was not held for an author: it was suppressed, already posted, or predates supervisor authoring')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'request_id': request['id'], 'window_id': window['id'], 'state': request['state'], 'deadline': float(request['deadline']), 'seconds_remaining': max(0.0, float(request['deadline']) - float(args.get('now') or time.time())), 'facts': dict(request['brief'] or {}), 'facts_hash': request['brief_hash']}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:b4a2f6bccf62132a965c380fe54b80bc4d19abef6e449b23abf2d313ecf3e995",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_digest_supervisor.py"
+    ]
+  },
+  "digest_post": {
+    "argument_reads_diagnostic_only": [
+      "body",
+      "window"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/digest_commands.py:DigestCommandsMixin._cmd_digest_post",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'only the supervisor author, or an install-wide service, may post')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.disabled', 'discord.digest.supervisor_authored is off; there is no author window to post')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.invalid', 'window is required: pass the window start')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'no digest window at that start in this generation')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'that window was never held for an author')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.closed', f'window {window['id']} is {request['state']}; a window posts once and is never edited afterwards')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.invalid', 'digest body is empty')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.invalid', 'digest links are inserted by the daemon')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.invalid', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('digest.closed', 'the window is no longer yours: it was claimed for delivery or its deadline passed')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'request_id': changed['id'], 'window_id': window['id'], 'state': changed['state'], 'version': changed['version'], 'text': text, 'characters': len(text)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:ac4c7c8df03f160dd0cfa73280982f6cd09eccac02ca1995b6d6c903fd19fa45",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_digest_supervisor.py"
+    ]
+  },
+  "digest_preview": {
+    "argument_reads_diagnostic_only": [
+      "dashboard_url",
+      "now"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_digest_scope": "sha256:e9635f5363e7643a5459f79ff76bf37c681b995c7b4ef1d01e038fbe6af58988"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/digest_commands.py:DigestCommandsMixin._cmd_digest_preview",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'destination': schedule.destination, 'config_generation': schedule.generation, 'enabled': schedule.enabled, 'window': {'since': window.since, 'until': window.until, 'catchup': window.catchup}, 'would_send': result.send, 'reason': result.reason, 'text': result.text, 'completed_count': result.completed_count, 'active_count': result.active_count, 'idle_tasks': inputs.idle_tasks, 'open_escalations': open_escalations, 'suppression_reason': None if result.send else result.reason, 'settings_errors': settings_errors, 'warnings': config.warnings()}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:694c61f209ee23a57cd33e921dff2861942f3548ac2e9f8e706e0396e2f7698b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_digest_commands.py"
+    ]
+  },
+  "digest_request": {
+    "argument_reads_diagnostic_only": [
+      "now"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/digest_commands.py:DigestCommandsMixin._cmd_digest_request",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'only the install-wide digest service/playbook may request')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'requested': 0, 'cancelled': await self.db.cancel_digest_requests(now=now)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'requested': requested, 'cancelled': 0}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:e0732bd41cb7bdcab1881ade0273ea48493599215a733ccc056bdc03fd9c65df",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "digest_status": {
+    "argument_reads_diagnostic_only": [
+      "now"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_digest_scope": "sha256:e9635f5363e7643a5459f79ff76bf37c681b995c7b4ef1d01e038fbe6af58988"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/digest_commands.py:DigestCommandsMixin._cmd_digest_status",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'destination': schedule.destination, 'config_generation': schedule.generation, 'channel_id': config.channel_id, 'digest': {'enabled': config.digest.enabled, 'interval_minutes': config.digest.interval_minutes, 'project_ids': list(schedule.project_ids), 'categories': sorted(schedule.categories), 'catchup_hours': config.digest.catchup_hours, 'supervisor_authored': schedule.supervisor_authored, 'cadence_minutes': config.digest.cadence_minutes, 'author_fallback_minutes': config.digest.author_fallback_minutes}, 'escalation': {'enabled': config.escalation.enabled, 'mention_user_ids': list(config.escalation.mention_user_ids), 'mention_role_ids': list(config.escalation.mention_role_ids), 'reminder_minutes': config.escalation.reminder_minutes, 'supervisor_delivery_timeout_minutes': config.escalation.supervisor_delivery_timeout_minutes}, 'next_evaluation_at': schedule.next_evaluation_at(now, last_window_end=last_end), 'last_window_end': last_end, 'recent_windows': [{'id': window['id'], 'window_start': window['window_start'], 'window_end': window['window_end'], 'send_status': window['send_status'], 'suppression_reason': window['suppression_reason'], 'is_catchup': window['is_catchup'], 'config_generation': window['config_generation'], 'attempt_count': window['attempt_count']} for window in recent], 'delivery_health': health, 'open_escalations': len(escalations), 'pending_escalation_deliveries': pending_escalation_deliveries, 'cutover': cutover_status, 'intake': intake, 'settings_errors': validate_settings(config, known), 'warnings': warnings}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:f61237186abf881d62f96a788244e8c1e33a5a66278eb34026dd1310a329fce5",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_digest_commands.py"
+    ]
+  }
+}

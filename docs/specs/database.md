@@ -11,6 +11,9 @@ tags: [spec, database]
 > Start at [the documentation home](../README.md) for what AQ does today, and
 > see [historical material](../history/README.md) for how this material is
 > organised.
+> Current implementation: [daemon-core](systems/daemon-core.md) and
+> [architecture](../concepts/architecture.md). Domain-specific behaviour is
+> described by the sibling [system specs](systems/README.md).
 
 ## 1. Overview
 
@@ -900,6 +903,32 @@ are never rewritten.
 the table and restores per-row charging; ledger rows survive.
 The legacy SQLite importer excludes this table because it was introduced after
 SQLite removal.
+
+Revision `a00000000122` adds `idx_transcript_usage_calls_updated`
+(`updated_at`, `usage_key`) for bounded retention scans. Calls from sessions
+stopped for more than 30 days, with counters untouched for more than 30 days,
+may be archived and replaced atomically by permanent replay fences.
+
+### Table: `transcript_usage_fences`
+
+Permanent exact membership batches for archived transcript call identities
+(Alembic `a00000000122`). Ingestion ignores fenced keys, including replay under
+another session or with higher counters. Live calls retain per-call maxima.
+Fences have no session or ledger foreign keys and never expire with those rows.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | UUID identifying the compaction batch |
+| `usage_keys` | JSONB | NOT NULL | Object mapping each sealed usage key to `true` |
+| `archived_at` | REAL | NOT NULL | Compaction timestamp |
+| `archive_path` | TEXT | NOT NULL | Durable gzip JSONL archive containing the original counters |
+
+`idx_transcript_usage_fences_keys` is a GIN containment index using
+`jsonb_path_ops`. Archive publication and fsync precede the short transaction
+that revalidates eligibility and atomically inserts the fence and deletes the
+counter rows. Downgrade refuses to drop populated fences. The legacy SQLite
+importer excludes this table because it was introduced after SQLite removal.
+See [session runtime](design/session-runtime.md) for retention and replay semantics.
 
 ### Table: `benchmark_stage_spans`
 
@@ -2373,12 +2402,12 @@ drives it yet, and every subject defaults to the `legacy` engine. Typed model:
 | `writer_claimed_at` | REAL | nullable | When the writer was claimed |
 | `writer_last_push_at` | REAL | nullable | Writer's last observed push |
 | `writer_stop_proof` | JSONB | nullable | Proof the writer stopped |
-| `budget_ordinal` | INTEGER | nullable, `>= 0` | Current writer ordinal; the budget columns are all set or all NULL |
+| `budget_ordinal` | INTEGER | nullable, `>= 0` | Current writer ordinal; requires class and start, with optional limits |
 | `budget_class` | TEXT | nullable | Intelligence class of the ordinal |
 | `budget_started_at` | REAL | nullable | Budget clock start |
-| `budget_deadline_at` | REAL | nullable, `>= budget_started_at` | Budget clock deadline |
+| `budget_deadline_at` | REAL | nullable, `>= budget_started_at` when set | Budget deadline; NULL means unlimited time |
 | `budget_attempts` | INTEGER | NOT NULL, default 0, `>= 0` | Counted conclusive exact-head attempts |
-| `budget_attempt_limit` | INTEGER | nullable, `> 0` | Attempt bound of the ordinal |
+| `budget_attempt_limit` | INTEGER | nullable, `> 0` | Attempt bound of the ordinal; NULL means unlimited attempts |
 | `version` | INTEGER | NOT NULL, default 0, never decreases | Optimistic-concurrency token of visit writes |
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
@@ -2577,9 +2606,9 @@ non-terminal batch per project over `target_ref IS NULL` rows only. A row with a
 `target_ref` is the Git-first train's additive input/intent shape, advanced
 solely by that train: it is never mutually exclusive with a legacy batch, never
 reads as busy to the legacy scheduler, and never holds its members out of the
-legacy frontier — so a rollback to `integration.git_first: shadow` leaves it
-inert rather than blocking. See
-[the cutover runbook](../guides/git-first-cutover-runbook.md#rollback).
+legacy frontier. These predicates isolate historical rows; trial mode has been
+removed and the train is always active. See
+[the current train runbook](../guides/git-first-train-runbook.md).
 
 A red Git-first candidate is repaired only where the target commit it was built
 on does not also fail the same required check. An epic whose only failures are
@@ -2737,7 +2766,7 @@ a fence, then accepted into the next revision.
 | `operation_id` | TEXT | NOT NULL | With `stage_ordinal` REFERENCES `integration_repair_stages` ON DELETE RESTRICT |
 | `operation_episode_id` | TEXT | NOT NULL | Repair operation episode |
 | `stage_ordinal` | INTEGER | NOT NULL, `>= 0` | Repair stage that reserved the resolution; any retained successor stage |
-| `stage_deadline_at` | REAL | NOT NULL | Stage deadline the resolution must land by |
+| `stage_deadline_at` | REAL | nullable | Stage deadline the resolution must land by; NULL for an unlimited stage |
 | `project_id` | TEXT | NOT NULL | Project |
 | `repair_task_id` | TEXT | NOT NULL REFERENCES tasks(id) | Delegate task |
 | `repair_session_id` | TEXT | NOT NULL REFERENCES sessions(id) | Delegate session |
@@ -3533,6 +3562,33 @@ idempotency_key)`. `ck_agent_cron_state` bounds lifecycle values and
 `ck_agent_cron_attempts_epoch` bounds attempts and claim epoch.
 `idx_agent_cron_scan` indexes `(state, checked_at, next_fire_at)`.
 Legacy SQLite files predate this table and have no schedules to import.
+
+### Table: `project_schedules`
+
+Project-owned one-shot supervisor notifications introduced by PostgreSQL revision
+`a00000000123` ([implementation](implementation/2026-10-24-project-schedules.md)).
+Rows survive session and claim turnover; they hold no worker or continuation.
+Legacy SQLite files predate this table and contain no notifications to import.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Stable schedule id and notification thread id |
+| `project_id` | TEXT | NOT NULL, FK → projects, ON DELETE CASCADE | Owning project |
+| `idempotency_key` | TEXT | NOT NULL | Unique within the project |
+| `due_at` | REAL | NOT NULL | Absolute UTC instant as Unix seconds |
+| `body` | TEXT | NOT NULL | Notification text |
+| `state` | TEXT | NOT NULL | pending, fired or cancelled |
+| `created_at` | REAL | NOT NULL | Registration time |
+| `cancelled_at` | REAL | nullable | Present only for cancelled schedules |
+| `fired_at` | REAL | nullable | Present only for fired schedules |
+| `message_id` | TEXT | nullable | Soft reference to the queued supervisor message |
+
+`uq_project_schedules_key` covers `(project_id, idempotency_key)`.
+`ck_project_schedules_receipt` enforces lifecycle values and requires exactly
+the receipt fields appropriate to each state. Firing queues the message and
+records its id in the same transaction; row locks serialize cancellation and
+firing. `idx_project_schedules_due` indexes `(due_at, id)` for pending rows;
+`idx_project_schedules_project` indexes `(project_id, due_at, id)` for inspection.
 
 ### Table: `agent_waits`
 

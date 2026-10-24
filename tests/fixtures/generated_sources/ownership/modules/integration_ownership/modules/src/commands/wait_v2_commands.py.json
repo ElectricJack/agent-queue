@@ -1,0 +1,9 @@
+{
+  "exclusions": {
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_register": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  }
+}

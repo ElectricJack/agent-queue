@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/doctor/session_checks.py::_check_flock": "Generic session/process registration audit used by the stall patrol and sessions.untracked for every role and project; no integration, delivery, branch or Git authority. Integration-specific sweep orchestration is charged independently.",
+    "src/doctor/session_checks.py::session_authentication_findings": "Generic read-only session credential diagnostics for every named supervisor and harness session; no code-delivery state, branch ownership or integration authority. The stall sweep adapter remains charged separately.",
+    "src/doctor/session_checks.py::session_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -712,6 +712,8 @@ class TestDriftDetection:
             # Cron reconciliation and delivery run only under the daemon's
             # agent-cron service principal and remain excluded from MCP.
             "reconcile_agent_cron",
+            # Project-owned notification scans use the daemon service principal.
+            "reconcile_project_schedules",
             "cron_delivery_begin",
             "cron_delivery_finish",
             # Daemon-only collaboration expiry/retention uses a fallback schema.

@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/preparation_failure.py::preparation_identity": {
+      "reason": "Builds an allowlisted diagnostic snapshot of integration origin base SHA, checkpoint generation and branch owner fence; integration-specific evidence fields make the full helper shared-owned despite its non-authoritative output."
+    }
+  }
+}

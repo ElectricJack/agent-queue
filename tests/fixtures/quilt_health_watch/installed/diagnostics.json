@@ -1,0 +1,23 @@
+[
+  {
+    "code": "delegation_runtime_checked",
+    "message": "no tool-using AI step precedes 'pre-market--check' on every path, so the delegation narrowing is enforced at run time by check_delegation",
+    "rule_id": "pre-market",
+    "severity": "info",
+    "step_id": "pre-market--check"
+  },
+  {
+    "code": "delegation_runtime_checked",
+    "message": "no tool-using AI step precedes 'market-hours--check' on every path, so the delegation narrowing is enforced at run time by check_delegation",
+    "rule_id": "market-hours",
+    "severity": "info",
+    "step_id": "market-hours--check"
+  },
+  {
+    "code": "delegation_runtime_checked",
+    "message": "no tool-using AI step precedes 'off-hours--check' on every path, so the delegation narrowing is enforced at run time by check_delegation",
+    "rule_id": "off-hours",
+    "severity": "info",
+    "step_id": "off-hours--check"
+  }
+]

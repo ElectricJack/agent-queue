@@ -1,0 +1,7 @@
+{
+  "exclusions": {
+    "src/playbooks/script_inputs.py::QuotaLedger._locked": "Generic script input/output quota persistence uses atomic_json; it writes no integration lifecycle, ref replay or task metadata.",
+    "src/playbooks/script_inputs.py::canonical": "Generic canonical JSON for script input pins; not integration ref serialization.",
+    "src/playbooks/script_inputs.py::digest": "Generic SHA-256 for script bytes; not integration lifecycle storage."
+  }
+}

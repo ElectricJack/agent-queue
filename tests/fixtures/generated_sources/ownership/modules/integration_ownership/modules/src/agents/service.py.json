@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/agents/service.py::_ACTIVE_TASKS[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/agents/service.py::_ACTIVE_TASKS[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

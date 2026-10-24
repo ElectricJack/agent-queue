@@ -1,0 +1,241 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/runtime.py::V2PlaybookRuntime": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/playbooks/runtime.py::V2PlaybookRuntime.__init__": {
+      "baseline_span": [
+        95,
+        132
+      ],
+      "landing_span": [
+        94,
+        126
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._dispatch_integration_pending": {
+      "baseline_span": [
+        640,
+        694
+      ],
+      "landing_span": [
+        634,
+        688
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._ensure_integration_reconciler": {
+      "baseline_span": [
+        562,
+        574
+      ],
+      "landing_span": [
+        556,
+        568
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._integration_done": {
+      "baseline_span": [
+        597,
+        602
+      ],
+      "landing_span": [
+        591,
+        596
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._no_integration_consumer": {
+      "baseline_span": [
+        395,
+        452
+      ],
+      "landing_span": [
+        389,
+        446
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._reconcile_integration_pending": {
+      "baseline_span": [
+        603,
+        632
+      ],
+      "landing_span": [
+        597,
+        626
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._refresh_locked": {
+      "baseline_span": [
+        150,
+        213
+      ],
+      "landing_span": [
+        144,
+        207
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._schedule_integration_pending": {
+      "baseline_span": [
+        575,
+        596
+      ],
+      "landing_span": [
+        569,
+        590
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._select_integration_destinations": {
+      "baseline_span": [
+        453,
+        561
+      ],
+      "landing_span": [
+        447,
+        555
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime._wait_for_integration_wakeup": {
+      "baseline_span": [
+        633,
+        639
+      ],
+      "landing_span": [
+        627,
+        633
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime.accept_integration_event": {
+      "baseline_span": [
+        296,
+        394
+      ],
+      "landing_span": [
+        290,
+        388
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime.is_active": {
+      "baseline_span": [
+        133,
+        141
+      ],
+      "landing_span": [
+        127,
+        135
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::V2PlaybookRuntime.shutdown": {
+      "baseline_span": [
+        698,
+        715
+      ],
+      "landing_span": [
+        689,
+        705
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::_FrozenOperationRoute.from_target": {
+      "baseline_span": [
+        70,
+        79
+      ],
+      "landing_span": [
+        69,
+        78
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::_FrozenOperationRoute.matches": {
+      "baseline_span": [
+        80,
+        90
+      ],
+      "landing_span": [
+        79,
+        89
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::_INTEGRATION_RECONCILE_INTERVAL_SECONDS": {
+      "baseline_span": [
+        39,
+        39
+      ],
+      "landing_span": [
+        38,
+        38
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::_INTEGRATION_RECONCILE_MAX_BACKOFF_SECONDS": {
+      "baseline_span": [
+        40,
+        40
+      ],
+      "landing_span": [
+        39,
+        39
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::_INTEGRATION_REPLAY_PAGE_SIZE": {
+      "baseline_span": [
+        38,
+        38
+      ],
+      "landing_span": [
+        37,
+        37
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::_IntegrationDestination": {
+      "baseline_span": [
+        41,
+        50
+      ],
+      "landing_span": [
+        40,
+        49
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::import from src.integration.outbox import DestinationArtifactUnavailable, NoIntegrationEventConsumer, advance_acceptance_cursor, freeze_destination_manifest, load_acceptance_state": {
+      "baseline_span": [
+        13,
+        19
+      ],
+      "landing_span": [
+        13,
+        19
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::import from src.playbooks.services import INTEGRATION_LIFECYCLE_PLAYBOOK_IDS, IntegrationRouteTarget, build_v2_engine, is_integration_route_event, resolve_integration_route": {
+      "baseline_span": [
+        28,
+        34
+      ],
+      "landing_span": [
+        27,
+        33
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/runtime.py::import from src.playbooks.services import INTEGRATION_LIFECYCLE_PLAYBOOK_IDS, PROMOTION_POLICY_EVENTS, IntegrationRouteTarget, build_v2_engine, is_integration_route_event, resolve_integration_route": {
+      "reason": "Imports the retained promotion event names used by the no-consumer proof guard. This is policy-routing ownership, not a writer or separate delivery lifecycle."
+    }
+  }
+}

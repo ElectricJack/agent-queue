@@ -1,0 +1,40 @@
+{
+  "storage_sinks": {
+    "src/integration/obsolete_close.py::ObsoleteClose._cancel_parked::e52c7120e74f62418ccc9b3012ad0370a2813f2cb0e12cfc8c67a3f6189797d2": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 586,
+      "owner": "ObsoleteClose._cancel_parked",
+      "owner_fingerprint": "87eed5740ad54a0ffb5ccc2a2c9817be525d7c9059711f092de3f4fc121c661b",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/obsolete_close.py::ObsoleteClose._record_cleanup::209996bd6a28d1375f335ce38b97022f3411025593a530bafa356f17b816195d": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 614,
+      "owner": "ObsoleteClose._record_cleanup",
+      "owner_fingerprint": "656d947f41757db65487e12643cd64d3aed914c9e9fcd8e4184b3629057091b5",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/obsolete_close.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 238,
+      "owner": "ObsoleteClose.close",
+      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/obsolete_close.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 209,
+      "owner": "ObsoleteClose.close",
+      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

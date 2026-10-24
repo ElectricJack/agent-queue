@@ -1,0 +1,180 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/workspace.py::WorkspaceMixin._hierarchy_origin_and_fence": {
+      "baseline_span": [
+        541,
+        703
+      ],
+      "landing_span": [
+        541,
+        703
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._hierarchy_repair_start": {
+      "baseline_span": [
+        704,
+        735
+      ],
+      "landing_span": [
+        704,
+        735
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._integration_preparation_cleanup_unproved": {
+      "baseline_span": null,
+      "landing_span": null,
+      "reason": "Integration handoff reads durable preparation cleanup uncertainty before proving a writer stopped."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._operator_handoff_start": {
+      "reason": "Exact-origin operator handoff start under the owner fence; resumes audited progress on the owned task branch through owner recovery without publication."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace": {
+      "baseline_span": [
+        736,
+        832
+      ],
+      "landing_span": [
+        736,
+        832
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace_locked": {
+      "reason": "Exact managed checkout preparation under the existing branch mutation fence; consumes retained merge inputs without publication or changing the immutable filing origin."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_slot_workspace": {
+      "baseline_span": [
+        1141,
+        1254
+      ],
+      "landing_span": [
+        1141,
+        1254
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_workspace_locked": {
+      "baseline_span": [
+        151,
+        540
+      ],
+      "landing_span": [
+        151,
+        540
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.aconfirm_integration_owner_handoff": {
+      "baseline_span": [
+        1274,
+        1514
+      ],
+      "landing_span": [
+        1274,
+        1470
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.aconfirm_integration_owner_stopped_for_repair": {
+      "baseline_span": [
+        1933,
+        2027
+      ],
+      "landing_span": [
+        1889,
+        1983
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.aconfirm_integration_pool_owner_handoff": {
+      "baseline_span": [
+        1666,
+        1778
+      ],
+      "landing_span": [
+        1622,
+        1734
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.aconfirm_integration_pool_published_repair_handoff": {
+      "baseline_span": [
+        1779,
+        1796
+      ],
+      "landing_span": [
+        1735,
+        1752
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.aconfirm_stopped_integration_pool_owner_handoff": {
+      "baseline_span": [
+        1515,
+        1665
+      ],
+      "landing_span": [
+        1471,
+        1621
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.arecover_completed_integration_pool_claim": {
+      "baseline_span": [
+        1797,
+        1932
+      ],
+      "landing_span": [
+        1753,
+        1888
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.arelease_integration_writer_for_retry": {
+      "baseline_span": [
+        2028,
+        2118
+      ],
+      "landing_span": [
+        1984,
+        2074
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin.arelease_never_attached_integration_launch": {
+      "baseline_span": [
+        2119,
+        2145
+      ],
+      "landing_span": [
+        2075,
+        2101
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::import from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES, RETRYABLE_INTEGRATION_OWNER_ROLES, BranchKey, Fence": {
+      "baseline_span": [
+        14,
+        23
+      ],
+      "landing_span": [
+        14,
+        23
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/workspace.py::import from src.integration.ownership import BranchBusy, BranchOwnership, BranchOwnershipError, StaleFence": {
+      "baseline_span": [
+        24,
+        29
+      ],
+      "landing_span": [
+        24,
+        29
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

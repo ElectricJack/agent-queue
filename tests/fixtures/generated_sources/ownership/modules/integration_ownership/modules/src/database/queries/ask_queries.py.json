@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/ask_queries.py::ask_audience_predicate": "Generic SQL audience filtering shared by every ask source; integration source authority remains independently charged."
+  }
+}

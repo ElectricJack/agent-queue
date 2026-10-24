@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/integration.py::app_mode": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/integration.py::development_validation": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/integration.py::protection": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/integration.py::train_onboarding": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/integration.py::trust_manifest": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

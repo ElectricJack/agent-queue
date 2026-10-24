@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::44714f7cb26e83228b185710d18977e72d64ead34c438f688b00c1ec53fbcd80": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 160,
+      "owner": "LegacyParkRetirement.run",
+      "owner_fingerprint": "7dad23cf19f18c3a2dc4170712eeda592fb74ab6192ea785591ca29cb48d36fd",
+      "reason": "Ordinary immutable operator audit of an exact preview-fenced historical source abandonment. It is written in the same exclusion transaction and is not ref replay, publication, task completion or delivery authority."
+    },
+    "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": {
+      "call": "insert",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 156,
+      "owner": "LegacyParkRetirement.run",
+      "owner_fingerprint": "7dad23cf19f18c3a2dc4170712eeda592fb74ab6192ea785591ca29cb48d36fd",
+      "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
+    }
+  }
+}

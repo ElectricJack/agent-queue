@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -32,10 +34,176 @@ POINTER_BODY = {
 }
 
 
+def test_daemon_startup_cannot_import_or_host_the_dashboard(tmp_path):
+    """Exercise the real API/MCP assembly in a clean interpreter, without sockets or DB IO.
+
+    A sys.modules check in pytest would be polluted by dashboard/CLI tests.
+    Record even attempted imports here: an optional import caught by startup
+    must fail this guard too. Only uvicorn's socket-serving method is replaced;
+    the daemon entrypoint imports, app factory, MCP mount and lifespans are real.
+    """
+    probe = r'''
+import asyncio
+import importlib.abc
+import inspect
+from pathlib import Path
+import sys
+from unittest.mock import patch
+
+forbidden = ("src.dashboard_server", "src.dashboard_assets.runtime")
+attempts = []
+
+class NoDashboard(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if any(fullname == prefix or fullname.startswith(prefix + ".") for prefix in forbidden):
+            attempts.append(fullname)
+            raise ImportError("dashboard code in daemon: " + fullname)
+
+sys.meta_path.insert(0, NoDashboard())
+
+import src.main
+from src.config import AppConfig, DatabaseConfig
+from src.embedded_mcp import run_mcp_server
+from src.orchestrator import Orchestrator
+from fastapi import APIRouter, FastAPI
+from httpx import ASGITransport, AsyncClient
+from starlette.routing import Mount
+from starlette.responses import HTMLResponse
+from starlette.staticfiles import StaticFiles
+import uvicorn
+
+async def check():
+    root = Path(sys.argv[1])
+    config = AppConfig(
+        data_dir=str(root / "data"), workspace_dir=str(root / "work"),
+        database=DatabaseConfig(url="postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"),
+    )
+    orch = Orchestrator(config)
+    shutdown = asyncio.Event()
+    errors = []
+    served = []
+    # Plan markdown is data; the daemon declares no HTML endpoint.
+    allowed_html_routes = set()
+    html_routes = set()
+
+    def effective_routes(app):
+        for route in getattr(app, "routes", ()):
+            contexts = getattr(route, "effective_route_contexts", None)
+            if callable(contexts):
+                # New FastAPI versions retain lazy include wrappers. Contexts
+                # carry combined prefixes and inherited response classes;
+                # mounts instead live on the resolved Starlette route.
+                for context in contexts():
+                    yield context.starlette_route or context
+                for context in route.effective_low_priority_routes():
+                    yield context.starlette_route or context
+            else:
+                yield route
+
+    def check_routes(app, prefix=""):
+        assert not isinstance(app, StaticFiles), type(app)
+        assert not type(app).__module__.startswith(forbidden), type(app)
+        for route in effective_routes(app):
+            path = prefix + route.path
+            if isinstance(route, Mount):
+                check_routes(route.app, path)
+            endpoint = getattr(route, "endpoint", None)
+            response_class = getattr(route, "response_class", None)
+            returns_html = isinstance(response_class, type) and issubclass(
+                response_class, HTMLResponse
+            )
+            if endpoint is not None:
+                returns_html |= "HTMLResponse" in str(inspect.signature(endpoint).return_annotation)
+            if returns_html:
+                assert path in allowed_html_routes, path
+                html_routes.add(path)
+
+    # Prove that lazy includes are inspected, not silently skipped. Even an
+    # otherwise allowed path is forbidden under an include prefix, including
+    # when the HTML response class is inherited from the containing router.
+    nested = APIRouter(default_response_class=HTMLResponse)
+    nested.add_api_route("/plans/{task_id}", lambda: "unexpected HTML")
+    parent = APIRouter()
+    parent.include_router(nested, prefix="/nested")
+    invalid_app = FastAPI(docs_url=None, redoc_url=None)
+    invalid_app.include_router(parent, prefix="/unexpected")
+    try:
+        check_routes(invalid_app)
+    except AssertionError as exc:
+        assert str(exc) == "/unexpected/nested/plans/{task_id}", exc
+    else:
+        raise AssertionError("guard missed HTML in a nested include")
+
+    async def plan_content(task_id):
+        return "# Legacy plan"
+
+    async def serve(server, *args, **kwargs):
+        try:
+            app = server.config.app
+            check_routes(app)
+            assert html_routes == allowed_html_routes, html_routes
+            assert app.docs_url is None and app.redoc_url is None
+            async with app.router.lifespan_context(app):
+                async with AsyncClient(
+                    transport=ASGITransport(app), base_url="http://127.0.0.1:8081",
+                    follow_redirects=False,
+                ) as client:
+                    for path in ("/", "/index.html", "/assets/app.js", "/focus", "/docs", "/redoc"):
+                        response = await client.get(path)
+                        assert response.status_code == 404, (path, response.status_code)
+                        assert "text/html" not in response.headers.get("content-type", ""), path
+                    for path in ("/dashboard", "/dashboard/index.html", "/dashboard/assets/app.js"):
+                        response = await client.get(path)
+                        assert response.status_code == 307, (path, response.status_code)
+                        assert response.json()["error"] == "dashboard_not_served_here"
+                        assert response.headers["location"].startswith("http://127.0.0.1:8082/")
+                    response = await client.get("/api/plans/solid-grove.13")
+                    assert response.status_code == 200
+                    assert response.headers["content-type"].startswith("application/json")
+                    assert response.json()["content"] == "# Legacy plan"
+                    for path, status in (
+                        ("/plans", 404), ("/plans/solid-grove/extra", 404),
+                        ("/plans/solid..grove", 404),
+                        ("/plans/solid-grove.13", 404),
+                        ("/api/plans/solid..grove", 400),
+                    ):
+                        response = await client.get(path)
+                        assert response.status_code == status, (path, response.status_code)
+                        assert "text/html" not in response.headers.get("content-type", ""), path
+            served.append(True)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            shutdown.set()
+
+    # Startup cannot hide a dashboard launch behind a new subprocess either.
+    with patch.object(uvicorn.Server, "serve", serve), patch(
+        "subprocess.Popen", side_effect=AssertionError("daemon launched a hosting process")
+    ):
+        await asyncio.wait_for(
+            run_mcp_server(orch, config, shutdown, plan_content_provider=plan_content), timeout=60
+        )
+    assert not errors, errors
+    assert served == [True], served
+    assert not attempts, attempts
+    assert not [name for name in sys.modules if name.startswith(forbidden)]
+
+asyncio.run(check())
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @asynccontextmanager
 async def daemon_app(
     tmp_path: Path, *, dashboard_server: Any = None, name: str = "dashboard_pointer.db",
-    health_provider: Any = None,
+    health_provider: Any = None, plan_content_provider: Any = None,
 ) -> AsyncIterator[Any]:
     """A real ``create_app()`` application over a PostgreSQL-backed orchestrator.
 
@@ -74,9 +242,13 @@ async def daemon_app(
         deps._require_session_token,
         deps._health_provider,
         deps._health_monitor,
+        deps._plan_content_provider,
     )
     try:
-        yield create_app(orch, config, health_provider=health_provider)
+        yield create_app(
+            orch, config, health_provider=health_provider,
+            plan_content_provider=plan_content_provider,
+        )
     finally:
         (
             deps._orchestrator,
@@ -85,6 +257,7 @@ async def daemon_app(
             deps._require_session_token,
             deps._health_provider,
             deps._health_monitor,
+            deps._plan_content_provider,
         ) = saved
         await db.close()
 
@@ -182,6 +355,43 @@ async def test_daemon_disables_docs_ui_but_still_serves_openapi(live_app):
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
         assert response.json() == app.openapi()
+
+
+async def test_daemon_serves_no_text_html_routes(tmp_path):
+    """Guard the complete app's declarations and the former live HTML endpoint."""
+    async def plan_provider(task_id):
+        return "# A real plan\n<script>alert('untrusted markdown')</script>"
+
+    async with daemon_app(tmp_path, plan_content_provider=plan_provider) as app:
+        def routes(router):
+            for route in router.routes:
+                contexts = getattr(route, "effective_route_contexts", None)
+                if contexts is not None:
+                    yield from contexts()
+                elif isinstance(route, Mount) and hasattr(route.app, "routes"):
+                    yield from routes(route.app)
+                else:
+                    yield route
+
+        for route in routes(app):
+            response_class = getattr(route, "response_class", None)
+            response_class = getattr(response_class, "value", response_class)
+            assert getattr(response_class, "media_type", None) != "text/html", route.path
+        for path, operations in app.openapi()["paths"].items():
+            for operation in operations.values():
+                for response in operation.get("responses", {}).values():
+                    assert "text/html" not in response.get("content", {}), path
+
+        with TestClient(app, follow_redirects=False) as client:
+            for path in ("/plans/solid-grove.13", "/docs", "/redoc"):
+                response = client.get(path, headers={"accept": "text/html"})
+                assert response.status_code == 404, path
+                assert "text/html" not in response.headers.get("content-type", ""), path
+            response = client.get("/api/plans/solid-grove.13", headers={"accept": "text/html"})
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("application/json")
+            assert response.json()["task_id"] == "solid-grove.13"
+            assert response.json()["content"].startswith("# A real plan")
 
 
 async def test_dashboard_paths_redirect_307_to_the_dashboard_server_with_the_pointer_body(

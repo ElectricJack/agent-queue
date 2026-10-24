@@ -479,7 +479,7 @@ def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
     # The whole session family the derivation reaches, so a new unfenced
     # session command cannot appear without this test noticing.
     assert _dispatchable_session_commands() == [
-        "session_drain_ack", "session_kill", "session_logs", "session_peek",
+        "rebind_workspace", "session_drain_ack", "session_kill", "session_logs", "session_peek",
         "supervisor_restart",
     ]
 

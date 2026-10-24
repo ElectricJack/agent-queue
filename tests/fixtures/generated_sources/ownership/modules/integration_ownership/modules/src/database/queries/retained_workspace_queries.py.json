@@ -1,0 +1,13 @@
+{
+  "shared": {
+    "src/database/queries/retained_workspace_queries.py::finish": {
+      "reason": "Exact snapshot revalidation and native owner/session/workspace release after preservation and fresh termination proof; successor and operation fences retained."
+    },
+    "src/database/queries/retained_workspace_queries.py::import from src.database.tables import agents, integration_branch_owners, job_workspace_pins, repos, sessions, task_context, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "reason": "Shared schema imports for fenced retained-workspace handoff and checkpoint evidence."
+    },
+    "src/database/queries/retained_workspace_queries.py::snapshot": {
+      "reason": "Binds current retained-workspace source, acquisition generation, session instance, claim, pins and native integration owner before cleanup."
+    }
+  }
+}

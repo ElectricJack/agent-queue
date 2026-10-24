@@ -236,8 +236,12 @@ class DB:
     async def list_workspaces(self, project_id=None):
         return [w for w in self.workspaces if project_id in (None, w.project_id)]
 
+    async def count_available_workspaces(self, project_id, **kwargs):
+        return 1
+
     async def get_project(self, project_id):
-        return SimpleNamespace(id=project_id, git_identity_name=None, git_identity_email=None)
+        return SimpleNamespace(id=project_id, max_concurrent_agents=2,
+                               git_identity_name=None, git_identity_email=None)
 
     async def list_provider_availability(self):
         return self.providers
@@ -708,7 +712,7 @@ async def test_stall_sweep_names_orphan_pr_and_inventory_failures(context, monke
     assert findings[1]["detail"] == "offline"
 
 
-async def test_a_stranded_child_line_names_the_missing_path(context):
+async def test_legacy_subject_absence_does_not_report_a_train_child_as_stranded(context):
     """The shape both PR lines miss: completed, pushed, no PR, no delivery."""
     context.db.rows = [
         {"task_id": "container.1", "project_id": "one", "parent_task_id": "container",
@@ -724,14 +728,9 @@ async def test_a_stranded_child_line_names_the_missing_path(context):
 
     findings = await module._stranded_child_findings(context, NOW)
 
-    assert [item["kind"] for item in findings] == ["stranded_child", "stranded_child"]
-    first = findings[0]
-    assert first["project_id"] == "one" and first["parent_task_id"] == "container"
-    assert "22m" in first["detail"] and "aq/container.1" in first["detail"]
-    # Every part of the container's path is named, including the absent ones.
-    assert "checkpoint awaiting_children" in first["detail"]
-    assert "operation none" in first["detail"] and "Subject none" in first["detail"]
-    assert "no collector will carry it" in findings[1]["detail"]
+    # Parent Subjects no longer collect children. These rows cannot prove a
+    # train stall; current train status supplies its blockers instead.
+    assert findings == []
 
 
 async def test_the_stranded_child_line_is_quiet_on_a_healthy_train(context):
@@ -887,3 +886,19 @@ async def test_delivery_held_ready_work_is_not_reported_as_unclaimed(context):
     assert finding["kind"] == "WAITING-ON-DELIVERY"
     assert finding["blockers"] == ["source.6"]
     assert "aq/epic" in finding["detail"]
+
+
+async def test_workspace_capacity_sweep_names_physical_holds(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    holds = [{"workspace_id": "held", "reason": "hibernated_checkout", "task_id": "paused"},
+             {"workspace_id": "stale", "reason": "stopped_agent_lock", "agent_id": "old"}]
+    monkeypatch.setattr(context.db, "count_available_workspaces", AsyncMock(return_value=0))
+    read = AsyncMock(return_value=holds)
+    monkeypatch.setattr(import_module("src.workspace_ownership"), "workspace_capacity_holds", read)
+    [finding] = await module._workspace_capacity_findings(context, {"one"}, [task("ready")])
+    assert finding["kind"] == "workspace_capacity_held"
+    assert finding["holds"] == holds and finding["ready_task_ids"] == ["ready"]
+    read.assert_awaited_once_with(context.db, "one")
+    context.db.count_available_workspaces.return_value = 1
+    assert await module._workspace_capacity_findings(context, {"one"}, [task("ready")]) == []

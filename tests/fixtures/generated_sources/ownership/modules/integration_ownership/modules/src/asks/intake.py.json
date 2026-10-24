@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/asks/intake.py::input_values": "Generic human discussion input normalization, reply binding and provenance; integration source effects remain independently charged."
+  }
+}

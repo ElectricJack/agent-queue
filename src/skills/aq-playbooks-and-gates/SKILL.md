@@ -7,7 +7,7 @@ allowed-tools:
 
 # aq playbooks + gates
 
-Playbooks are deterministic DAGs that fire on bus events (`task.created`,
+Playbooks are typed, bounded graphs that fire on bus events (`task.created`,
 `task.completed`, `spec.approved`, `proposal.ready`, `gate.resolved`).
 The framework dispatches them deterministically. Ordinary Markdown compilation
 uses the compiler agent; pipeline compilation is deterministic.
@@ -25,8 +25,8 @@ gate, or activate a playbook. The API option `invoke_ai` requires supervisor aut
 ```bash
 aq playbook list                                 # every playbook + enabled state
 aq playbook get-source --playbook-id <id>        # the playbook's markdown source
-aq playbook health                               # active runs, stuck, failure rate
-aq playbook show-graph --playbook-id <id>        # DAG rendered as ASCII
+aq playbook activation-health                    # enabled state and activation health
+aq playbook v2-graph --playbook-id <id>          # structured semantic graph
 ```
 
 ## Inspect runs
@@ -39,18 +39,21 @@ aq playbook inspect-run --run-id <run_id>        # nodes, statuses, outputs
 
 ## Resolve a paused run
 
-A run that hit a HITL node parks in status `paused`. Find it, read why it
-stopped, then hand it the decision:
+For a run waiting on a human decision, inspect its wait and declared options
+before sending a decision. A paused run can also need technical recovery;
+`resume` accepts only human waits:
 
 ```bash
-aq playbook list-runs --status paused            # everything awaiting a human
+aq playbook list-runs --status paused            # inspect paused runs and their wait kind
 aq playbook inspect-run --run-id <run_id>        # which node paused, and on what
 aq playbook resume --run-id <run_id> --human-input "approve"
 ```
 
-`--human-input` is free text: it is appended to the run's conversation and
-is what the next transition is evaluated against, so say *approve* / *reject*
-plus the reason rather than a bare token.
+`--human-input` is the exact declared option key, such as `approve`; it is not
+conversation text. Put an optional explanation in `--overall-note`. An undeclared
+option is refused. Event, child-task and timer waits consume their registered
+cause rather than manual prose. Inspect the pinned artifact and use `--expected`
+when the decision needs an explicit version/wait precondition.
 
 Gate rows can also be driven directly, when you have the gate id rather than
 a run id:
@@ -86,9 +89,8 @@ The only way to name a profile is the audited emergency override,
 a human's instruction (it needs `--reason`, and `aq doctor --check
 routing.bypassed` lists it until `aq task route` clears it).
 
-Prefer `aq playbook resume` when the paused run's HITL node wants free text
-back in the run conversation; use `gate-resolve` when the gate row itself is
-what you are answering.
+Use `aq playbook resume` for a declared option on a human wait; use
+`gate-resolve` when the gate row itself is what you are authorized to answer.
 
 When a gate does resolve, two things happen:
 1. The gate row transitions to `resolved` + records who resolved it.
@@ -97,15 +99,17 @@ When a gate does resolve, two things happen:
 
 ## Playbook compilation (compiler-as-agent path)
 
-Ordinary playbook markdown edits enqueue a compile task under the
-`playbook-compiler` profile. Do not validate or install the source inline:
-the compiler task validates a proposal for the reviewed activation workflow.
+Markdown saves do not automatically enqueue compiler tasks. Explicitly arrange an
+author/compiler-agent task for prose source, prepare a semantic body containing
+only `rules` and `steps`, and iterate with `aq playbook v2-propose`. Proposal is
+read-only and does not activate. Review the exact source/artifact bundle, import
+it, then deliberately activate its hash through the authorized operator path.
 
-`playbook-compiler` agents iterate with `aq playbook v2-propose` and never
-activate; activation is `aq playbook activate` against a reviewed hash.
-
-For the `pipeline` kind (deterministic parse, no LLM), edits go straight to
-the parser — no compiler task is enqueued.
+`aq playbook update-source` writes full Markdown with optional source-hash CAS.
+For `kind: pipeline`, it lowers synchronously and directly updates the existing
+activation on success, preserving the enabled bit; it bypasses the ordinary
+activation-diff path. For prose it leaves source saved and reports `compiled: false`;
+a proposal is still needed. Failure leaves the previous active artifact live.
 
 ## Run a playbook by hand
 
@@ -123,10 +127,10 @@ The system default pipeline is a `kind: pipeline` playbook with exactly
 three rules — approved specs in, an approved task batch out:
 
 - `spec.approved` → create a spec-ingest task under the `spec-ingest`
-  profile with an explicit `standard-high` class, deduped on
-  `spec-ingest:<spec_path>`, that turns the approved spec into a
-  `task_batch_propose` proposal.
-- `proposal.ready` → open a human gate ("Approve task batch?") whose
+  role, deduped on `spec-ingest:decision:<id>` with its approved packet receipt.
+  Its server-stamped task batch commits directly after validation, without a
+  second human gate.
+- Ordinary `proposal.ready` → open a human gate ("Approve task batch?") whose
   `await_id` is pinned to the proposal id. The proposal's payload is
   frozen from then on (`task_batch_update` refuses), so the decision
   covers exactly one revision.
@@ -160,9 +164,9 @@ file under its own id and is bound to it.
 To see them in action:
 
 ```bash
-aq playbook show-graph --playbook-id default-pipeline
+aq playbook v2-graph --playbook-id default-pipeline
 aq playbook list-runs --playbook-id default-pipeline --limit 20
-aq playbook show-graph --playbook-id default-assignment-routing
+aq playbook v2-graph --playbook-id default-assignment-routing
 ```
 
 ## Rules of thumb
@@ -174,10 +178,9 @@ aq playbook show-graph --playbook-id default-assignment-routing
 - **A stuck run wants attention, not a re-run.** `aq playbook
   inspect-run` shows why it stalled; fix the underlying cause (missing
   context, failing sub-command, expired gate) before restarting.
-- **Compile errors go to the playbook-compiler agent, not to you.** If
-  a `.md` edit produced a FAILED compile task, that task will show the
-  error — read it, fix the markdown, re-save, the watcher enqueues a
-  fresh compile.
+- **Compile failures need an explicit revision.** Inspect proposal diagnostics,
+  correct source or semantic body, and re-propose; a file save does not schedule a
+  fresh compile. Compiler agents never activate policy themselves.
 
 ## Catalogue, state and scripts
 

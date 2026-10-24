@@ -1,0 +1,14 @@
+{
+  "storage_writer_review": {
+    "actual_audit_table": "events; op_events and operation_events are also scanned to prevent a renamed/new sink.",
+    "count_basis": "Current source call sites at the repository binding review revision; historical baseline and landing remain fixed.",
+    "counts": {
+      "intent": 4,
+      "ordinary": 198,
+      "retire": 19
+    },
+    "legacy": "Integration subject journal append calls and direct inserts, plus explicit historical development.operation cancellation revisions, are retirement findings. Duplicate merged_at, PR-base delivery annotations and repair-evidence metadata also retire.",
+    "ordinary": "Task status/completion identity, claims, holds, provider intent, resume keys, job records, audit events and refusal notes retain their ordinary owners. Generic dynamic metadata/event writes require review when their enclosing code changes.",
+    "sites": "tests/integration_ownership.json storage_sinks: complete reviewed call and owner AST identities."
+  }
+}

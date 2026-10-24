@@ -41,7 +41,6 @@ _CREATE_APP_DEPS_GLOBALS = (
     "_health_provider",
     "_plan_content_provider",
     "_started_at",
-    "_base_url",
 )
 
 

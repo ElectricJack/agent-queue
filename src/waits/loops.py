@@ -9,6 +9,26 @@ from sqlalchemy import and_, func, or_, select
 
 from src.database.tables import events, sessions, task_comments, tasks, wait_records
 from src.waits.conditions import Condition, SleepDecision, canonical
+from src.waits.graph import graph_locked
+
+
+async def prepare_progress(conn, owners):
+    """Git is an observation, never work to perform while holding GRAPH_LOCK."""
+    if graph_locked(conn):
+        return
+    from src.git.manager import GitManager
+
+    heads = {}
+
+    async def read_head(work_dir, branch):
+        key = (work_dir, branch)
+        if key not in heads:
+            heads[key] = await GitManager().arev_parse(work_dir, branch)
+        return heads[key]
+
+    for owner in owners:
+        await progress(conn, owner, read_head=read_head)
+    conn.info["wait_progress_observations"] = (conn.sync_connection.get_transaction(), heads)
 
 
 async def progress(conn, owner, *, task=None, continuation=None, read_head=None):
@@ -27,10 +47,16 @@ async def progress(conn, owner, *, task=None, continuation=None, read_head=None)
             sessions.c.id == owner["session_id"],
         ))).mappings().first()
         if session and session["work_dir"]:
-            if read_head is None:
-                from src.git.manager import GitManager
-                read_head = GitManager().arev_parse
-            head = await read_head(session["work_dir"], branch)
+            if graph_locked(conn):
+                transaction, observations = conn.info.get("wait_progress_observations", (None, {}))
+                if transaction is not conn.sync_connection.get_transaction():
+                    return None
+                head = observations.get((session["work_dir"], branch))
+            else:
+                if read_head is None:
+                    from src.git.manager import GitManager
+                    read_head = GitManager().arev_parse
+                head = await read_head(session["work_dir"], branch)
         if not head:
             return None
     comment = (await conn.execute(select(func.count(task_comments.c.id),

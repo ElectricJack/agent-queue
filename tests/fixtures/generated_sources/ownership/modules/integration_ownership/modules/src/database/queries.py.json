@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries.py::proposal_queries": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

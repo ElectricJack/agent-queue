@@ -34,7 +34,7 @@ packages/aq-ts-client/
 From the repository root:
 
 ```bash
-npm install                                # once, sets up the workspaces
+npm ci                                     # once, installs the locked workspaces
 ./scripts/regenerate-ts-client.sh --from-file
 ```
 
@@ -134,7 +134,7 @@ Three things sit beside the generated client rather than inside it:
 | File | Why it exists |
 |---|---|
 | [`dashboard/src/api/legacy-fetch.ts`](../../../dashboard/src/api/legacy-fetch.ts) | Bare `fetch` for the routes the generated client does not cover well — `/health`, `/ready`, `/plans/{task_id}`, the task file routes — and for callers that must branch on a status code (403 vs 404 vs 413) instead of catching a generic error. New code should not reach for it. |
-| [`dashboard/src/ws/useEventStream.ts`](../../../dashboard/src/ws/useEventStream.ts) | A module-scoped singleton WebSocket to `/ws/events` with exponential backoff, the `after_seq` cursor and the epoch guard. OpenAPI cannot describe a socket, so this is hand-written — see [streaming](events.md). |
+| [`dashboard/src/ws/useEventStream.ts`](../../../dashboard/src/ws/useEventStream.ts) | A module-scoped singleton WebSocket to `/ws/events` with exponential backoff, the `after_seq` cursor and the epoch guard. OpenAPI does not describe a WebSocket, so this is hand-written — see [streaming](events.md). |
 | [`dashboard/src/ws/terminalSocket.ts`](../../../dashboard/src/ws/terminalSocket.ts) | The `aq-terminal-v1` terminal attach socket. |
 
 Polling and pushing work together: React Query holds the data, and a frame on
@@ -143,8 +143,12 @@ That is why the WebSocket carries identifiers rather than full objects.
 
 ## Version compatibility
 
-`@hey-api/openapi-ts` is pinned as a dev dependency of the package
-(`^0.61.0`, with `@hey-api/client-fetch` `^0.6.0` at runtime). Because the
+`@hey-api/openapi-ts` is pinned to `0.61.3`, its TypeScript peer to `5.7.3`,
+and runtime `@hey-api/client-fetch` to `0.6.0`. The regeneration script checks
+these exact versions in this checkout's `node_modules`, then invokes the
+installed generator directly. A missing or mismatched toolchain fails with an
+`npm ci --prefix …` recovery command; it never downloads a generator from
+`npx` or borrows one from an ancestor checkout. Because the
 output is regenerated rather than committed, a generator upgrade cannot
 produce a stale diff the way it can for the Python client — but it can change
 the shape of the generated API, so treat a bump as a change to every call
@@ -161,18 +165,20 @@ committed spec.
 
 The generated client is stateless. The dashboard's state lives in React Query's
 cache (memory, per tab) plus two `localStorage` keys used by the event stream
-(`aq:ws:last_seq` and `aq:ws:epoch`). Nothing the dashboard stores is
-authoritative; the daemon's database is.
+(`aq:ws:last_seq` and `aq:ws:epoch`). These transport cursors and query results are not
+authoritative. The broader
+dashboard also has server-backed state documents; see the
+[dashboard system spec](../../specs/systems/dashboard.md).
 
 ## Common failures and recovery
 
 | Symptom | Cause | Recovery |
 |---|---|---|
-| `Cannot find module '@aq/ts-client'` | The client has not been generated, or `npm install` has not run at the root. | `npm install` then `npm run generate:ts-client`. |
+| `Cannot find module '@aq/ts-client'` | The client has not been generated, or `npm install` has not run at the root. | `npm ci` then `npm run generate:ts-client`. |
 | A new endpoint is missing from the SDK | The committed `openapi.json` is behind the daemon. | Regenerate the spec (`./scripts/regenerate-api-client.sh --offline`) and then the TS client. |
 | TypeScript errors right after pulling | The generated tree is from an older spec. | Re-run the generate step; `pretypecheck` does it for you. |
 | Every request 404s in dev | The Vite proxy is not routing, or `VITE_API_URL` points somewhere else. | Check `dashboard/vite.config.ts` and the daemon's port. |
-| Every request answers `503` `daemon_unreachable` | The dashboard server is up and the daemon is not. | `aq status`, then `aq start`; the response carries `X-AQ-Dashboard-Server`, which tells it from the daemon's own degraded `/health` `503`. |
+| Every request answers `503` `daemon_unreachable` | The dashboard server is up and the daemon is not. | Check `aq status`; an operator can start the daemon (workers must not); the response carries `X-AQ-Dashboard-Server`, which tells it from the daemon's own degraded `/health` `503`. |
 | A mutation silently "succeeds" on an error | Something bypassed `dashboard/src/api/client.ts` and called the package directly. | Import from `../api/client`, which installs the throwing interceptor. |
 
 ## Related pages

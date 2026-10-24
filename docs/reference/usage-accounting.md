@@ -39,13 +39,18 @@ wire-format dicts so a transcript can be JSON-logged.
 | `caller` | Free-text label written to the call log, e.g. `playbook:<artifact>:<step>`. |
 
 `ResolvedCall` adds the fields a call actually needs — `base_url`, `api_key`,
-`extras` (the class slice minus `model`) — and a `cache_key` of
-`(provider, model, base_url, extras)`, which is what `LLMClient` caches adapter
+`extras` (the class slice minus `model`) and `credential` (`llm` or `fallback`)
+— and a `cache_key` of `(credential, provider, model, base_url, extras)`, which is what `LLMClient` caches adapter
 instances by.
 
 Resolution order in `resolve_call`: `spec.model` → intelligence class →
 `llm.model` → the adapter's own fallback. An unknown class, or a class with no
 slice for the provider, logs a warning and falls through.
+
+`resolve_fallback_call` uses `llm.fallback` while the primary availability gate
+blocks calls. A missing fallback, a class without a fallback-provider slice,
+or an explicit model for another vendor refuses the route. The fallback's own
+model and default class replace the primary's; `max_tokens` is shared.
 
 ### `ProviderUsageSnapshot` — [`src/providers/snapshot.py`](../../src/providers/snapshot.py)
 
@@ -134,7 +139,7 @@ Class extras reaching each adapter:
 
 | Extra key | Consumed by | Effect |
 |---|---|---|
-| `thinking` | anthropic | Mapped by level to a budget — `off` 0, `low` 1024, `medium` 4096, `high` 16000 — or passed through when already an int. A non-zero budget also raises `max_tokens` to at least `budget + 1024`. |
+| `thinking` | anthropic | Mapped by level to a budget — `off` 0, `low` 1024, `medium` 4096, `high` 16000 — or passed through when already an int. Unrecognized strings, including the shipped `xhigh`, map to 0 (a known adapter mismatch). A non-zero budget also raises `max_tokens` to at least `budget + 1024`. |
 | `thinking_budget` | google | Passed to `ThinkingConfig`, and **added on top of** `max_output_tokens` so thinking cannot starve the visible response. Default `8192`. |
 | `reasoning_effort` | openai | Sent as `reasoning_effort` when non-empty. |
 
@@ -160,6 +165,8 @@ from union types and from enums, because Gemini has no union type.
 | Method | Returns | Notes |
 |---|---|---|
 | `resolve(spec)` | `ResolvedCall` | Pure; no I/O. |
+| `resolve_current(spec)` | `ResolvedCall` | Names a compatible fallback while gated, otherwise the primary; does not admit or make a call. |
+| `cli_settings(class_id, harness)` | `(provider, model, effort)` | Resolves the profile's headless CLI model without API credentials. |
 | `is_configured(spec)` | `bool` | Never calls the provider; swallows missing SDK / bad id. |
 | `is_model_loaded(spec)` | `bool` | Only meaningful for a local OpenAI-compatible endpoint; fails open. |
 | `complete(messages, system, spec)` | `LLMResponse` | One call. `LLMResponse` carries `text`, `tool_calls`, `raw`, `usage`. |
@@ -174,12 +181,24 @@ optional `on_tool_turn` callback as an `LLMToolTurn` carrying
 usage. A callback that raises becomes `LLMToolTurnBoundaryError` — a durable
 persistence failure, explicitly *not* a provider failure.
 
-Every call is logged through `LLMLogger` in a `finally` block, so failures are
-logged with their error and duration too.
+Every attempted SDK call is logged through `LLMLogger` in a `finally` block,
+including errors. A gate refusal happens before that block and makes no SDK
+call or JSONL entry. Fallback calls do not provide primary-recovery evidence.
+
+### Headless CLI transport — [`src/llm/cli.py`](../../src/llm/cli.py)
+
+An `llm` step may select `transport: cli` instead of the default `api`. It
+requires a tool-free profile with a harness and `default_class`, runs Claude,
+Codex or Gemini in an empty temporary directory and validates final JSON with
+the step schema. No task, tmux session, transcript-ledger row or `LLMLogger`
+entry is created. It uses the CLI login rather than `llm` credentials or fallback.
+`CliAnswer` carries `text` and reported `TokenUsage`: Claude includes cache
+tokens in budgeted input; Codex reads `turn.completed.usage`; Gemini sums
+model stats. Missing usage fails the total-token budget after the call.
 
 ## Budgets
 
-### Playbook `llm` steps — the only enforced budget
+### Playbook `llm` steps — hard call budgets
 
 `AiBudget` ([`src/playbooks/definition.py`](../../src/playbooks/definition.py))
 requires all four fields; there is no unbounded AI step.
@@ -195,7 +214,7 @@ Enforcement ([`src/playbooks/executors/llm.py`](../../src/playbooks/executors/ll
 
 | Check | When | Outcome |
 |---|---|---|
-| Adapter reports usage at all | Before the first call | `budget_exceeded`, diagnostic `provider does not report usage` |
+| API adapter reports usage at all | Before the first API call | `budget_exceeded`, diagnostic `provider does not report usage` |
 | Calls used ≥ `max_calls` | Before each attempt, and via `stopped_by == "max_turns"` | `budget_exceeded` |
 | `usage.reported` false with a total budget set | After each call | `budget_exceeded`, diagnostic `provider did not report usage` |
 | `output_tokens > max_output_tokens` or `total > max_total_tokens` | After each call | `budget_exceeded` |
@@ -203,7 +222,7 @@ Enforcement ([`src/playbooks/executors/llm.py`](../../src/playbooks/executors/ll
 | Response is not one valid JSON object matching the schema | After each call | Retry with a correction turn; `invalid_output` when retries are spent |
 | Outcome field missing or not a declared transition | After validation | `invalid_output` |
 | A published tool was denied to the step's principal | After the loop | `unauthorized` |
-| Adapter raised | Anywhere | `provider_error`, diagnostic is the exception class name |
+| Adapter raised | Anywhere | `provider_error`; diagnostic is the exception class, or `provider_unavailable` for a gate refusal without a compatible fallback |
 | Run cancelled / tool turn interrupted | Anywhere | `cancelled` / `operator_decision_required` |
 
 `retry.max_attempts` covers schema failures only. Provider errors are not
@@ -212,14 +231,21 @@ retried inside the step.
 In dry-run mode no tools are published — a model-visible tool is an executable
 capability, and dispatching one would bypass the preview-only boundary.
 
-### Session-side backoff
+### Session-side provider failures
 
 Coding-agent sessions have no token budget. A session that dies with
 rate-limit-shaped text in its final pane capture is classified `RATE_LIMIT`
 ([`src/sessions/exit_classifier.py`](../../src/sessions/exit_classifier.py),
 patterns include `rate.?limit`, `usage limit reached`, `quota exceeded`, `429`,
-`too many requests`, `overloaded_error`). The cooldown is the classifier's
-default of **900 s** — the reconciler does not pass another value. Effects
+`too many requests`, `overloaded_error`). The classifier's fallback cooldown is **900 s**. In the default
+`provider_failover.mode: enforce`, attributed failures instead use provider
+failover: checkpoint and hand off work without spending a task retry, pause
+the first suspect for 30 s, and return work to READY once the provider trips.
+A failed checkpoint push holds the task. Live blocking usage screens use the
+same path, including explicit OpenCode quota retry deadlines. See the
+[outage guide](../guides/provider-outage.md#what-aq-does-on-its-own).
+
+Outside enforce mode, the legacy backoff applies
 ([`src/sessions/reconciler.py`](../../src/sessions/reconciler.py)):
 
 * the session row goes to `state=sleeping`, `sleep_reason=rate_limit`;
@@ -254,7 +280,9 @@ The 80% / 95% budget-warning helper in the orchestrator has no caller on
 
 `src/tokens/tracker.py` (`RateLimitWindow`) was deleted: no production importer,
 no test, and it counted against a hand-configured cap rather than a provider's
-real quota. Provider headroom remains unstarted design work.
+real quota. Provider-reported headroom now feeds availability thresholds,
+routing weights and allocation views. Reset-aware dynamic concurrency pacing
+from the original usage-aware-concurrency proposal is not implemented.
 
 `BudgetManager` is covered by `tests/test_budget.py`; the reload wiring by
 `tests/test_orchestrator.py::TestGlobalBudgetReload`. Treat everything on it
@@ -270,6 +298,7 @@ real quota. Provider headroom remains unstarted design work.
 | `llm.base_url` | `""` | restart | `openai` only. Anything other than `api.openai.com` is treated as a local endpoint. |
 | `llm.max_tokens` | `4096` | restart | Default output ceiling. |
 | `llm.default_class` | `""` | restart | Intelligence class used when a call names none. |
+| `llm.fallback` | `null` | restart | Optional second API credential: required `provider`, plus `model`, `api_key`, `base_url`, `default_class`. Used while the primary `llm` key is unavailable. |
 | `providers.claude.usage_probe_enabled` | `true` | hot | `false` makes the probe a healthy no-op, reported `disabled`. |
 | `providers.claude.binary` | `claude` | hot | Point at a shim when the real CLI is not first on `PATH`. |
 | `providers.claude.stale_after_seconds` | `1500` | hot | One horizon shared by the API, the card and the doctor check. Must be > 0. |
@@ -339,8 +368,8 @@ Under `<data_dir>/logs/llm/<YYYY-MM-DD>/`, append-only JSONL:
 | File | One entry per | Contains |
 |---|---|---|
 | `llm.jsonl` | Direct `LLMClient` call | `caller`, `model`, `provider` (the adapter class name), `duration_ms`, `prompt_fingerprint`, full `input` (system, messages, tools, `input_tokens_est`), `output` (text parts, tool uses, `output_tokens_est`), `error` |
-| `claude_agent.jsonl` | Agent session logged via `log_agent_session` | Task id, session id, model, prompt, output summary, optional transcript |
-| `tasks/<task_id>.jsonl` | Same entries, per task | As above |
+| `claude_agent.jsonl` | Explicit `log_agent_session` call; currently no production caller | Task id, session id, model, prompt, output summary, optional transcript |
+| `tasks/<task_id>.jsonl` | Same explicit helper call, per task | As above |
 | `prompt_analytics.jsonl` | Hourly flush | Per `caller:provider:model`: call count, estimated token sums, total duration, error count, plus derived `avg_duration_ms`, `token_efficiency`, `error_rate` |
 
 `*_est` fields are characters ÷ 4. They never enter the ledger and are never

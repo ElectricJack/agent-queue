@@ -1,6 +1,8 @@
 # Table families
 
-All 98 tables, grouped by what they are for. Each family opens with what it is
+Selected table families, grouped by what they are for. This catalog is not an
+exhaustive inventory of the current schema; consult the owning
+[system spec](../../specs/systems/README.md) for newer domain tables. Each family opens with what it is
 *about*; the tables inside it are listed with their purpose, the columns that
 carry meaning, and any invariant the database itself enforces.
 

@@ -1,0 +1,12 @@
+{
+  "generic_dependencies": {
+    "src/commands/message_commands.py::MessageCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_inbox": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_list": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_reply": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_send": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._ordinary_message_sender": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::import from src.collaboration import CollaborationError, is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::import from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS, Message, SessionRecord, TaskStatus": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

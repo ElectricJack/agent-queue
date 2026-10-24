@@ -1,0 +1,37 @@
+{
+  "shared_definitions": {
+    "src/config_tuning.py::apply_tuning": {
+      "baseline_span": [
+        787,
+        841
+      ],
+      "landing_span": [
+        787,
+        841
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/config_tuning.py::recommended_tuning": {
+      "baseline_span": [
+        157,
+        255
+      ],
+      "landing_span": [
+        157,
+        255
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config_tuning.py::tuning_notes": {
+      "baseline_span": [
+        274,
+        692
+      ],
+      "landing_span": [
+        274,
+        692
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

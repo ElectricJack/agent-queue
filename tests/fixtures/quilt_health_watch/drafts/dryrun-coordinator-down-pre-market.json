@@ -1,0 +1,130 @@
+{
+  "event": {
+    "type": "cron.03:00",
+    "tick_time": "2026-09-28T10:00:00.000000+00:00",
+    "interval": "03:00"
+  },
+  "check_summary": "QUILT-HEALTH: ALERT - coordinator DOWN after one watchdog restart attempt; no new error signatures",
+  "tree": {
+    "artifact_sha256": "sha256:1106457d00ac79ed070ab0ec311c2e671abd9e8f6f24716185de92781e577477",
+    "rules_selected": [
+      "pre-market"
+    ],
+    "paths": [
+      {
+        "rule_id": "pre-market",
+        "nodes": [
+          {
+            "step_id": "pre-market--check",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": "pre-market--read",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--read",
+            "status": "simulated",
+            "outcome": "read",
+            "target": "pre-market--verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--verdict",
+            "status": "resolved",
+            "outcome": "matched",
+            "target": "pre-market--alert",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--alert",
+            "status": "unresolved",
+            "outcome": "queued",
+            "target": "pre-market--done",
+            "reason": "no preview adapter",
+            "possible_outcomes": [
+              "queued",
+              "rejected"
+            ],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--done",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": null,
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          }
+        ],
+        "status": "unresolved",
+        "completed": false,
+        "omitted_frontiers": []
+      },
+      {
+        "rule_id": "pre-market",
+        "nodes": [
+          {
+            "step_id": "pre-market--check",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": "pre-market--read",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--read",
+            "status": "simulated",
+            "outcome": "read",
+            "target": "pre-market--verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--verdict",
+            "status": "resolved",
+            "outcome": "matched",
+            "target": "pre-market--alert",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--alert",
+            "status": "unresolved",
+            "outcome": "rejected",
+            "target": "pre-market--failed",
+            "reason": "no preview adapter",
+            "possible_outcomes": [
+              "queued",
+              "rejected"
+            ],
+            "rule_id": null
+          },
+          {
+            "step_id": "pre-market--failed",
+            "status": "resolved",
+            "outcome": "failed",
+            "target": null,
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          }
+        ],
+        "status": "unresolved",
+        "completed": false,
+        "omitted_frontiers": []
+      }
+    ],
+    "truncated": false,
+    "step_visits": 6
+  }
+}

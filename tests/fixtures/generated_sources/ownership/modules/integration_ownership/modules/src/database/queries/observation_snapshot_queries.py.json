@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/database/queries/observation_snapshot_queries.py::task_rows": "Generic protected-snapshot projection of ordinary task rows; integration_mode is an existing task column copied verbatim. No integration storage, lifecycle or ref authority."
+  }
+}

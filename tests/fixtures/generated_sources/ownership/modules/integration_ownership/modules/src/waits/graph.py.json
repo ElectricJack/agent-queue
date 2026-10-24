@@ -1,0 +1,15 @@
+{
+  "exclusions": {
+    "src/waits/graph.py::lock_graph": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority."
+  },
+  "generic_dependencies": {
+    "src/waits/graph.py::GRAPH_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::add_edges": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::apply_base_priority_change": "Generic wait graph urgency propagation shared by ordinary task priority writes; no integration policy or ref authority.",
+    "src/waits/graph.py::clear_edges": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::lock_component_tasks": "Generic wait graph urgency propagation shared by ordinary task priority writes; no integration policy or ref authority.",
+    "src/waits/graph.py::lock_graph": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
+    "src/waits/graph.py::recompute_from": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::would_create_cycle": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

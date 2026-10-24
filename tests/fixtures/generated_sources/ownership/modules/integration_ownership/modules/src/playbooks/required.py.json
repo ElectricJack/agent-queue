@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/required.py::REQUIRED_SYSTEM_PLAYBOOK_IDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/required.py::RequiredPlaybookReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/required.py::ensure_reviewed_playbook_bundles": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/required.py::reviewed_bundle_source": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

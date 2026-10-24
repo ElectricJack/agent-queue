@@ -1,0 +1,12 @@
+{
+  "generic_dependencies": {
+    "src/commands/mcp_commands.py::McpCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._build_mcp_config": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_create_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_delete_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_edit_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_probe_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._mcp_project_scope": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._vault_mcp_server_path": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

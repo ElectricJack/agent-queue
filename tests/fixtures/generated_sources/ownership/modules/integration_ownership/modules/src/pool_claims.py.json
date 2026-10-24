@@ -1,0 +1,11 @@
+{
+  "generic_dependencies": {
+    "src/pool_claims.py::CLAIM_FAILURE_DRAIN_REASON": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::MAX_IDENTICAL_CLAIM_FAILURES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::idle_pool_claim_loop_stalled": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/pool_claims.py::is_live_pool_claim_task_status": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/pool_claims.py::pool_claim_budget_exhausted": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::pool_claim_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::pool_claim_loop_stall_seconds": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

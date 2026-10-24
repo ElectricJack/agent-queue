@@ -2,9 +2,10 @@
 
 Two trigger families are supported:
 
-- ``timer.{N}m`` / ``timer.{N}h`` — periodic, elapsed-time based. First fire on
-  startup (all timers considered overdue), then every N minutes/hours. Not
-  persisted — daemon restart resets elapsed time.
+- ``timer.{N}m`` / ``timer.{N}h`` — periodic, elapsed-time based. A new trigger
+  first fires after a full interval. Last-fire wall times are persisted and
+  reconstructed into monotonic elapsed time after a daemon restart; missed
+  intervals coalesce into one event rather than replaying a backlog.
 - ``cron.HH:MM`` — once per local day at a wall-clock time (e.g. ``cron.07:00``,
   ``cron.17:30``). Fires at-or-after the target within a single ~5s tick.
   Per-trigger "last fired date" is persisted to disk so daemon restarts do

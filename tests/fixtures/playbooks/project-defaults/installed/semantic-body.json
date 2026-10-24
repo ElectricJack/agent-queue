@@ -1,0 +1,92 @@
+{
+  "rules": [
+    {
+      "entry_step": "file-graft-hooks-chore--ensure_chore",
+      "id": "file-graft-hooks-chore",
+      "name": "file-graft-hooks-chore",
+      "source": {
+        "end_line": 48,
+        "excerpt": "## Rule: file-graft-hooks-chore",
+        "heading": "Rule: file-graft-hooks-chore",
+        "path": "system/playbooks/project-defaults.md",
+        "start_line": 48
+      },
+      "trigger": {
+        "event_type": "project.created",
+        "filter": {
+          "workspace_in_vault": false
+        }
+      }
+    }
+  ],
+  "steps": {
+    "file-graft-hooks-chore--done": {
+      "outcome": "completed",
+      "rule": "file-graft-hooks-chore",
+      "source": {
+        "end_line": 108,
+        "excerpt": "## Failure handling, uniformly",
+        "heading": "Failure handling, uniformly",
+        "path": "system/playbooks/project-defaults.md",
+        "start_line": 108
+      },
+      "title": "Completed",
+      "type": "terminal"
+    },
+    "file-graft-hooks-chore--ensure_chore": {
+      "command": "ensure_task",
+      "inputs": {
+        "dedup_key": {
+          "type": "literal",
+          "value": "project-defaults:graft-hooks"
+        },
+        "description": {
+          "type": "literal",
+          "value": "Enable graft for this repository by committing its Claude Code hooks at repo\nlevel. Filed by the system playbook project-defaults when this project was\ncreated (Jack, 2026-09-27: graft's hooks live in each AQ project repository,\nnot in the global ~/.claude/settings.json, so graft never indexes the AQ\nvault).\n\nGraft is optional, and not every AQ install has it. Check the install first,\nbefore you change anything:\n- command -v graft finds the graft CLI;\n- command -v node finds Node.js (every hook runs node);\n- the hook template\n  /home/jkern/.agent-queue/vault/system/templates-graft-claude-settings.json\n  exists;\n- the helper the template's hooks run,\n  /home/jkern/.claude/helpers/graft-hooks.cjs, exists.\n\nIf any check fails, graft is not installed on this host: change nothing and\nclose with outcome pass, naming the missing piece in the summary. Do not\ninstall graft or write the helper yourself; installing graft is the\noperator's choice.\n\nSteps, once every check passes:\n1. Read the hook block from the template (a JSON object with a single\n   \"hooks\" key).\n2. Merge it into .claude/settings.json at the repository root. Create the\n   file if it is missing, keep every existing key and hook, and do not add a\n   hook entry that is already present. Do not touch .claude/settings.local.json.\n2b. Merge the mcpServers block from\n   /home/jkern/.agent-queue/vault/system/templates-graft-mcp.json into .mcp.json\n   at the repository root the same way (create it if missing, keep existing\n   servers). Never run graft init with global wiring and never edit\n   ~/.claude/settings.json, ~/.claude.json, ~/.codex or OpenCode config:\n   graft is per-repo only, and it stays off in AQ worker worktrees.\n3. Make sure .gitignore contains the line /graft/ (graft's regenerable index\n   cache), adding it if absent.\n4. If .gitignore ignores .claude as a whole directory (a bare .claude or\n   .claude/ pattern), git cannot re-include a file beneath it: replace those\n   lines with **/.claude/* and !/.claude/settings.json. Confirm with\n   git check-ignore --no-index that .claude/settings.json is not ignored and\n   that .claude/settings.local.json and graft/ still are.\n5. Check the JSON parses: python3 -m json.tool .claude/settings.json.\n6. Commit only .claude/settings.json, .mcp.json and .gitignore with the message\n   \"chore: enable graft hooks at repo level\", then publish and close as\n   aq prime instructs.\n\nIf the repository root lies inside /home/jkern/.agent-queue/vault, change\nnothing and close with outcome pass, saying so in the summary. No code\nchanges and no tests beyond the checks above."
+        },
+        "intelligence_class": {
+          "type": "literal",
+          "value": "fast-high"
+        },
+        "project_id": {
+          "path": "project_id",
+          "type": "event_ref"
+        },
+        "title": {
+          "type": "literal",
+          "value": "Enable graft hooks at repo level"
+        }
+      },
+      "rule": "file-graft-hooks-chore",
+      "save_result_as": "chore",
+      "source": {
+        "end_line": 54,
+        "excerpt": "1. Call `ensure_task` with `project_id` bound to the event's `project_id`,",
+        "heading": "Rule: file-graft-hooks-chore",
+        "path": "system/playbooks/project-defaults.md",
+        "start_line": 54
+      },
+      "title": "ensure_chore",
+      "transitions": {
+        "created": "file-graft-hooks-chore--done",
+        "rejected": "file-graft-hooks-chore--failed",
+        "reused": "file-graft-hooks-chore--done",
+        "runtime_error": "file-graft-hooks-chore--failed"
+      },
+      "type": "command"
+    },
+    "file-graft-hooks-chore--failed": {
+      "outcome": "failed",
+      "rule": "file-graft-hooks-chore",
+      "source": {
+        "end_line": 108,
+        "excerpt": "## Failure handling, uniformly",
+        "heading": "Failure handling, uniformly",
+        "path": "system/playbooks/project-defaults.md",
+        "start_line": 108
+      },
+      "title": "Failed",
+      "type": "terminal"
+    }
+  }
+}

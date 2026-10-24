@@ -17,7 +17,7 @@ from .app import cli, console
 def _host():
     from src.install.platform import describe_host
     from src.install.state import default_state_dir
-    from src.install.update import Host, _distribution_present, find_pg_dump, installed_extras
+    from src.install.update import Host, _distribution_present, installed_extras
 
     facts = describe_host().facts
     venv_aq = Path(sys.executable).parent / "aq"
@@ -27,7 +27,6 @@ def _host():
         system=facts.system,
         arch=facts.arch,
         state_dir=default_state_dir(),
-        pg_dump=find_pg_dump(),
         extras=installed_extras(_distribution_present),
     )
 

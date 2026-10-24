@@ -197,6 +197,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # Session-owned recurring prompts shipped in PostgreSQL revision 86;
         # legacy SQLite files predate schedules and their delivery diagnostics.
         "agent_cron",
+        # Project-owned one-shot notifications arrived in PostgreSQL revision 123.
+        "project_schedules",
         # Verified waits and continuation admission shipped in PostgreSQL
         # revisions 97/103 and later; legacy SQLite has no lifecycle to import.
         "admission_reservations", "continuations", "wait_bridge_progress",
@@ -267,8 +269,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # K14 compatibility attempt counters shipped in PostgreSQL revision
         # 67, after SQLite removal; legacy files have no managed-source usage.
         "record_compatibility_usage",
-        # Per-API-call transcript usage maxima shipped in revision 56.
-        "transcript_usage_calls",
+        # Per-API-call transcript usage maxima (revision 56) and replay fences (121).
+        "transcript_usage_calls", "transcript_usage_fences",
         # Encrypted playbook private values (revision 95), protected
         # observation snapshots (revision 97) and durable playbook state
         # namespaces and journals (revision 98) shipped after SQLite removal;

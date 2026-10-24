@@ -113,12 +113,14 @@ async def test_v1_reconciler_skips_adopted_wait_even_after_old_expiry(bridge):
         assert (await conn.execute(select(messages))).first() is None
 
 
-async def test_stale_claim_cannot_be_adopted(bridge):
+@pytest.mark.parametrize('state', ['active', 'satisfied', 'expired', 'cancelled'])
+async def test_stale_claim_cannot_be_adopted(bridge, state):
     from sqlalchemy import update
     from src.database.tables import tasks
 
     await legacy(bridge)
     async with bridge.db._engine.begin() as conn:
+        await conn.execute(update(agent_waits).values(state=state))
         await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(claim_epoch=2))
     with pytest.raises(WaitError, match='current live claim'):
         await bridge.adopt_agent_wait('old', handler=None)
@@ -441,6 +443,92 @@ async def test_legacy_terminal_cancellation_is_not_reinterpreted_as_satisfaction
         row = (await conn.execute(select(wait_records))).mappings().one()
         assert row['outcome'] == 'cancelled'
         assert row['decision_inputs']['legacy_terminal']['state'] == state
+
+
+@pytest.mark.parametrize('state', ['satisfied', 'expired', 'cancelled'])
+@pytest.mark.parametrize('session_state', ['stopped', 'missing'])
+async def test_terminal_wait_without_session_settles_held_bridge(bridge, state, session_state):
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import delete, update
+
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import continuations, sessions, tasks, wait_bridge_progress
+    from src.wait_runtime.legacy_pass import receipt
+
+    await legacy(bridge)
+    async with bridge.db._engine.begin() as conn:
+        # This project has historical waits only, with no scheduler frontier.
+        await conn.execute(update(tasks).where(tasks.c.id == 'source').values(status='COMPLETED'))
+        await conn.execute(insert(messages).values(
+            id='old-result', project_id='p', from_kind='system', from_id='agent-waits',
+            to_kind='session', to_id='s', body_kind='wait_result', body='Historical result',
+            created_at=NOW-10))
+        await conn.execute(update(agent_waits).values(
+            state=state, resolved_at=NOW-10, digest={'historical': True},
+            result_ref='historical-source', result_message_id='old-result'))
+        if session_state == 'missing':
+            await conn.execute(delete(sessions).where(sessions.c.id == 's'))
+        else:
+            await conn.execute(update(sessions).where(sessions.c.id == 's').values(
+                state='stopped', desired_state='stopped'))
+        await receipt(conn, 'p', 'agent-waits', 'agent_wait:old', 'held',
+                      {'success': False, 'error_code': 'wait.out_of_scope'}, NOW-1)
+        original = dict((await conn.execute(select(agent_waits))).mappings().one())
+        original_task = dict((await conn.execute(select(tasks).where(
+            tasks.c.id == 'owner'))).mappings().one())
+        original_message = dict((await conn.execute(select(messages))).mappings().one())
+
+    preview = await bridge.run({'project_id': 'p'}, principal=TRUSTED_LOCAL)
+    assert preview['result']['projects']['p'] == [{'kind': 'agent_wait', 'id': 'old'}]
+    for _ in range(2):
+        result = await bridge.run({'project_id': 'p', 'apply': True}, principal=TRUSTED_LOCAL)
+        report = result['result']['projects']['p']
+        assert report['state'] == 'complete'
+        assert report['items'][0]['result'] == {
+            'success': True, 'legacy_id': 'old',
+            'disposition': 'terminal_session_unavailable', 'legacy_state': state,
+            'session_id': 's', 'session_state': session_state,
+        }
+    async with bridge.db._engine.connect() as conn:
+        progress = (await conn.execute(select(wait_bridge_progress))).mappings().all()
+        assert {r['identity']: r['state'] for r in progress} == {
+            'agent_wait:old': 'complete', '*': 'complete'}
+        assert next(r for r in progress if r['identity'] != '*')['evidence'] == (
+            report['items'][0]['result'])
+        assert dict((await conn.execute(select(agent_waits))).mappings().one()) == original
+        assert dict((await conn.execute(select(messages))).mappings().one()) == original_message
+        assert dict((await conn.execute(select(tasks).where(
+            tasks.c.id == 'owner'))).mappings().one()) == original_task
+        assert not (await conn.execute(select(wait_records))).first()
+        assert not (await conn.execute(select(continuations))).first()
+        assert not (await conn.execute(select(wait_deadlines))).first()
+
+    bridge.service.command = AsyncMock()
+    await bridge.service.startup_bridge()
+    bridge.service.command.assert_not_awaited()
+
+
+@pytest.mark.parametrize('session_state', ['stopped', 'missing'])
+async def test_active_wait_without_session_remains_held(bridge, session_state):
+    from sqlalchemy import delete, update
+
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import sessions, tasks, wait_bridge_progress
+
+    await legacy(bridge)
+    async with bridge.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'source').values(status='COMPLETED'))
+        if session_state == 'missing':
+            await conn.execute(delete(sessions).where(sessions.c.id == 's'))
+        else:
+            await conn.execute(update(sessions).values(state='stopped', desired_state='stopped'))
+    result = await bridge.run({'project_id': 'p', 'apply': True}, principal=TRUSTED_LOCAL)
+    assert result['result']['projects']['p']['state'] == 'held'
+    async with bridge.db._engine.connect() as conn:
+        assert await conn.scalar(select(agent_waits.c.state)) == 'active'
+        assert set((await conn.execute(select(wait_bridge_progress.c.state))).scalars()) == {'held'}
+        assert not (await conn.execute(select(wait_records))).first()
 
 
 async def test_escalation_resolution_between_watermark_and_registration_is_not_lost(bridge, monkeypatch):

@@ -376,3 +376,22 @@ def test_execution_metadata_changes_are_visible_in_both_review_diffs(updates):
     assert projected["executable_change"]
     row = next(row for row in projected["rules"] if row["rule_id"] == "execution-metadata")
     assert row["field_changes"][0]["executable"]
+
+
+def test_feature_check_avoids_schema_projection_and_reads_live_registration(monkeypatch):
+    lookup = RegistryContractLookup()
+    expected = {name: lookup.get(name).required_features for name in ("doctor", "ensure_task")}
+    monkeypatch.setattr(lookup, "get", lambda name: pytest.fail("built a schema for feature metadata"))
+    raw = twin()
+    for name, required in expected.items():
+        raw["steps"]["act"]["command"] = name
+        artifact = PlaybookDefinition.model_validate(raw)
+        assert features.infer_required_features(artifact, contracts=lookup) == required
+    assert lookup.required_features("missing-command") == ()
+
+    execution = SimpleNamespace(schema_generation=1)
+    registration = SimpleNamespace(contract=SimpleNamespace(execution=execution))
+    live = RegistryContractLookup(SimpleNamespace(get=lambda name: registration))
+    assert live.required_features("plugin") == ()
+    execution.schema_generation = 2
+    assert live.required_features("plugin") == ("generated_commands_v1",)

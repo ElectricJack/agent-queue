@@ -200,7 +200,7 @@ class MessageDeliveryEngine:
         if activity == "sleeping":
             if pending[0].body_kind == "schedule_prompt":
                 return result
-            if all(msg.body_kind in {"conversation_input", "ask_input"} for msg in pending):
+            if all(msg.body_kind == "ask_input" for msg in pending):
                 return result
             if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
                 return result

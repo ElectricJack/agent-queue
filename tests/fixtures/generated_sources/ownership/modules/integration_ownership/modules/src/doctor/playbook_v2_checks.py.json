@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/playbook_v2_checks.py::playbook_v2_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

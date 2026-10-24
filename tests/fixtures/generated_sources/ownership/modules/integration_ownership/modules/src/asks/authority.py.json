@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/asks/authority.py::authorize_input_actor": "Generic stored human-input identity, source binding, audience and live supervisor checks shared by every ask source. No integration subject, branch, gate or publication state is interpreted; authorize_source and IntegrationAdapter remain independently charged.",
+    "src/asks/authority.py::public_allowed": "Generic audience and authenticated-principal predicate shared by every ask source; integration source authorization remains independently charged."
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/profiles/mcp_inline_migration.py::_write_registry_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_inline_migration.py::import from src.profiles.mcp_registry import McpServerConfig, render_server_markdown, vault_path_for": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_inline_migration.py::migrate_vault_profiles": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/mcp_inline_migration.py::migrate_yaml_config_profiles": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

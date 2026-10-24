@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+from src.asks.delivery import config_fingerprint
 from src.commands.principal import ExecutionPrincipal, principal_context
 from src.conversations.intake import (
     ACTION_IGNORE,
@@ -137,7 +138,14 @@ class DiscordInboundRouter:
             result = await self._handler.execute("ask_intake", {"envelope": envelope, "source": source})
         if result.get("success"):
             return "posted:created" if result.get("created") else "posted:replayed"
-        return "refused:" + result.get("error_code", "ask.intake_failed")
+        code = result.get("error_code", "ask.intake_failed")
+        logger.info(
+            "discord shared intake refused reason=%s guild=%s channel=%s message=%s author=%s",
+            code, observed.guild_id, observed.channel_id,
+            observed.external_message_id, observed.author_id,
+        )
+        self._diagnostics.record(code)
+        return "refused:" + code
 
     async def route(self, message: Any, *, bot_user_id: int | None, source: str = "gateway") -> str:
         """Escalations stop routing even on failure; conversations fail closed."""
@@ -147,7 +155,9 @@ class DiscordInboundRouter:
         if enabled is not None:
             try:
                 active = await enabled(channel_id=str(self._config.discord.channel_id),
-                                       guild_id=str(self._config.discord.guild_id))
+                                       guild_id=str(self._config.discord.guild_id),
+                                       project_id=self._config.discord.project_id or None,
+                                       config_fingerprint=config_fingerprint(self._config))
                 if active is True:
                     return await self._route_shared(message, bot_user_id=bot_user_id, source=source)
             except Exception:

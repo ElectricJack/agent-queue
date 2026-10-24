@@ -12,6 +12,22 @@ tags: [spec, plugins, extensibility]
 > see [historical material](../history/README.md) for how this material is
 > organised.
 
+> **Superseded implementation details (audit 2026-10-23).** Use the
+> [plugins guide](../guides/plugins-and-mcp.md) and
+> [system spec](systems/plugins-mcp-and-tools.md) for current behavior.
+> The body below preserves the original design: its `/plugin-*` management
+> slash commands, hook lifecycle, automatic task-completion reload, local-path
+> CLI install, `update --all`/`--rev`, `edit-prompt`, instance `config.yaml`
+> and enforced permission sandbox are not current interfaces. Source clones
+> live at `plugins/<name>/`, separate data at `plugin-data/<name>/`, and config
+> is JSON on the database row. Cron methods remain; hooks are removed.
+> `aq plugin` directly edits installation/database state and requires restart;
+> live `plugin_*` commands separately use `CommandHandler`. The implementation
+> lives in `src/commands/`, `src/tools/` and `src/plugins/`, not the removed
+> `src/command_handler.py` or `src/tool_registry.py`. Plugin Discord extension
+> groups remain supported. The proposed CLAUDE.md installation requirement
+> below is not validated by the current loader.
+
 **Source files:** `src/plugins/` , modifications to `src/command_handler.py`, `src/tool_registry.py`, `src/orchestrator.py`, `src/cli/app.py`, `src/discord/bot.py`
 **Related specs:** [specs/command-handler](command-handler.md), [specs/tiered-tools](tiered-tools.md), [design/playbooks](design/playbooks.md)
 

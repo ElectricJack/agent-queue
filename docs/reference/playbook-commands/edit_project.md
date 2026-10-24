@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:ef328ffe6a57927cd7fd65d9e9b4dcac6650cf216b13969da192bca97246a55f` |
+| Contract fingerprint | `sha256:0499b862133e41f8542fa2fff4f487a942f6b6488455fcb7a4479e3be02f08c6` |
 
 ## Parameters
 
@@ -33,7 +33,7 @@
 | `git_identity_email` | `string` | no | — | Operator-only Git commit email override, paired with git_identity_name; empty on both resets to inheritance. |
 | `integration_repository_id` | `string \| null` | no | — | LOCAL-only designated integration repository ID. |
 | `hierarchical_integration_policy` | `object \| null` | no | — | LOCAL-only complete typed hierarchical integration policy. |
-| `hierarchical_integration_mode` | `"disabled" \| "observe" \| "hierarchy" \| "train" \| "development"` | no | — | LOCAL-only integration mode for new reconciler subjects. |
+| `hierarchical_integration_mode` | `"disabled" \| "observe" \| "hierarchy" \| "train" \| "development"` | no | — | LOCAL-only integration delivery mode for the Git-first train. |
 | `promotion_flow` | `array \| object \| null` | no | — | LOCAL-only promotion flow (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS. |
 | `expected_integration_generation` | `integer` | no | — | Required generation CAS for integration configuration. |
 | `reason` | `string` | no | — | Operator reason recorded for integration configuration. |

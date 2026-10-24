@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/jobs/workspace.py::guard_workspace": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/workspace.py::mutation_guard": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/collecting_parent_recovery.py::CollectingParentRecovery.run::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 264,
+      "owner": "CollectingParentRecovery.run",
+      "owner_fingerprint": "1a6aa2fa22b8261ee40a382d3f278ea917c8ed6b84adce9c3d6c762bbd543105",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/collecting_parent_recovery.py::CollectingParentRecovery.run::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 270,
+      "owner": "CollectingParentRecovery.run",
+      "owner_fingerprint": "1a6aa2fa22b8261ee40a382d3f278ea917c8ed6b84adce9c3d6c762bbd543105",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

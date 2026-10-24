@@ -6,12 +6,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     agents, archived_tasks, benchmark_stage_spans, projects, sessions, task_session_attempts, tasks,
-    token_ledger, transcript_usage_calls,
+    token_ledger, transcript_usage_calls, transcript_usage_fences,
 )
 
 
@@ -35,13 +35,27 @@ class TokenQueryMixin:
         if any(value < 0 for value in observed.values()):
             raise ValueError("transcript usage counters must be nonnegative")
         async with self._engine.begin() as conn:
+            fenced = select(transcript_usage_fences.c.id).where(
+                transcript_usage_fences.c.usage_keys.contains({usage_key: True})
+            ).limit(1)
+            if (await conn.execute(fenced)).first() is not None:
+                return
             await conn.execute(pg_insert(transcript_usage_calls).values(
                 usage_key=usage_key, first_ledger_id=None, updated_at=time.time(),
                 **dict.fromkeys(fields, 0),
             ).on_conflict_do_nothing(index_elements=["usage_key"]))
             prior = (await conn.execute(select(transcript_usage_calls).where(
                 transcript_usage_calls.c.usage_key == usage_key
-            ).with_for_update())).mappings().one()
+            ).with_for_update())).mappings().one_or_none()
+            # Retention can delete while our INSERT/SELECT waits. Its fence and
+            # deletion commit together; READ COMMITTED sees it on this statement.
+            if prior is None:
+                return
+            if (await conn.execute(fenced)).first() is not None:
+                await conn.execute(delete(transcript_usage_calls).where(
+                    transcript_usage_calls.c.usage_key == usage_key
+                ))
+                return
             baseline = {key: prior[key] for key in fields}
             first_id = prior["first_ledger_id"]
             source = None

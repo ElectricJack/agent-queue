@@ -1,0 +1,31 @@
+{
+  "storage_sinks": {
+    "src/integration/gates.py::GatePrimitives.eject_on::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 537,
+      "owner": "GatePrimitives.eject_on",
+      "owner_fingerprint": "7b494405c18d4b096d79c0c313182087ffdb6ad3c5c86d8ab191ab92377db41e",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/gates.py::RootMemberEjection.eject::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 852,
+      "owner": "RootMemberEjection.eject",
+      "owner_fingerprint": "32b4dca2a7ef6a23fdbec7b45755b952e89746974e74ed0667b8a57b13099b00",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/gates.py::RootMemberEjection.eject::b67871c23227990c50463f1b3621700239a4eb204c61e89e1ea0d93e917cb124": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 903,
+      "owner": "RootMemberEjection.eject",
+      "owner_fingerprint": "32b4dca2a7ef6a23fdbec7b45755b952e89746974e74ed0667b8a57b13099b00",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

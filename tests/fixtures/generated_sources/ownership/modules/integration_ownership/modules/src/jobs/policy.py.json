@@ -1,0 +1,11 @@
+{
+  "generic_dependencies": {
+    "src/jobs/policy.py::JobError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/policy.py::NODE_PRESETS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/policy.py::TERMINAL": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/policy.py::node_executable": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/policy.py::presets": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/policy.py::request_hash": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/jobs/policy.py::validate_args": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

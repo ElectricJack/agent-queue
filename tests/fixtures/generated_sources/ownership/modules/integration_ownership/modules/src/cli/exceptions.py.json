@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/cli/exceptions.py::CommandError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/exceptions.py::DaemonNotRunningError": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

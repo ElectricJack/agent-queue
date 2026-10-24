@@ -1,0 +1,324 @@
+{
+  "create_mcp_server": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/mcp_commands.py:McpCommandsMixin._cmd_create_mcp_server",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Cannot create MCP server '{config.name}' — name is reserved by the embedded agent-queue server\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"MCP server '{config.name}' already exists (scope={project_id or 'system'})\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'created': config.name, 'scope': 'project' if project_id else 'system', 'project_id': project_id, 'path': target}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d480b5d397922ed54489ec29911aeddd42a0fb105a2e59a3d5b28c7944d70da6",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_mcp_commands.py"
+    ]
+  },
+  "delete_mcp_server": {
+    "argument_reads_diagnostic_only": [
+      "name"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/mcp_commands.py:McpCommandsMixin._cmd_delete_mcp_server",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'name is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Cannot delete '{name}' — it's the embedded agent-queue server\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Cannot delete MCP server '{name}': still referenced by {len(referencing)} profile(s)\", 'referenced_by': referencing}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"MCP server '{name}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'deleted': name, 'scope': 'project' if project_id else 'system', 'path': target}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e2271d578498251133e46d0f0308015a4bd0e934c404318bb110681d3e00c118",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_mcp_commands.py"
+    ]
+  },
+  "edit_mcp_server": {
+    "argument_reads_diagnostic_only": [
+      "args",
+      "command",
+      "description",
+      "env",
+      "headers",
+      "name",
+      "notes",
+      "transport",
+      "url"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/mcp_commands.py:McpCommandsMixin._cmd_edit_mcp_server",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'name is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"MCP server '{name}' not found in vault (scope={project_id or 'system'})\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f'Existing markdown is malformed: {parsed.errors}'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'updated': name, 'scope': 'project' if project_id else 'system', 'path': target}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:2b0641026ad9494de6747b2d31a0466d4e7a0a5be42f4ea6bf0ee5a90d3fef82",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_mcp_commands.py"
+    ]
+  },
+  "get_mcp_server": {
+    "argument_reads_diagnostic_only": [
+      "name",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/mcp_commands.py:McpCommandsMixin._cmd_get_mcp_server",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'name is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'MCP registry not available'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"MCP server '{name}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "d"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:82f7a93540b72d8b89b6c1055611f0233f707fa11a5f682310a12deb6439ecbc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_mcp_commands.py"
+    ]
+  },
+  "list_mcp_servers": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/mcp_commands.py:McpCommandsMixin._cmd_list_mcp_servers",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'servers': [], 'count': 0}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'servers': servers, 'count': len(servers)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:23aaa2bd17b01a0aed84f6b4b6d78dcdb3480589bcdd31813f5fd614a05a2237",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_mcp_commands.py"
+    ]
+  },
+  "list_mcp_tool_catalog": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "server_names"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/mcp_commands.py:McpCommandsMixin._cmd_list_mcp_tool_catalog",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'servers': {}}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'servers': out, 'count': len(out)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7faa756d68024770eee41813fc06ebaa8f6c40fc9c4179ed7ccd5e2bef4f79a8",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "probe_mcp_server": {
+    "argument_reads_diagnostic_only": [
+      "name",
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/mcp_commands.py:McpCommandsMixin._cmd_probe_mcp_server",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'name is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'MCP registry/catalog not initialised'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"MCP server '{name}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'probed': entry.to_dict()}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:775a8c8036e1959533676a1e87d47c141d34d256a37e85521cdea19e5669e4fa",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_mcp_commands.py"
+    ]
+  }
+}

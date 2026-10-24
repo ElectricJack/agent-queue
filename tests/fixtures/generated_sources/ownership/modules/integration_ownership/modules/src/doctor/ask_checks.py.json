@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged."
+  }
+}

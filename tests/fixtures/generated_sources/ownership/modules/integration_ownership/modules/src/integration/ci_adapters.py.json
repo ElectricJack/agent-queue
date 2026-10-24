@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/ci_adapters.py::CIAdapters._record::f24a910932fd04223fce85eb802cd0fee6012b1a48ee37ec75cc9a605f928f70": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 102,
+      "owner": "CIAdapters._record",
+      "owner_fingerprint": "8b2978d86212ba7aff8fe3c35b3ab9c07d3c0f900eb99c12fa8e45423b654dd3",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

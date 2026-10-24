@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/source_delivery.py::retire_delivered_queued_repairs::4b7da187805bc601684854d077b088429d2190c9b0f5126419adee2bc186fa6a": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 396,
+      "owner": "retire_delivered_queued_repairs",
+      "owner_fingerprint": "d9fe5f397c1b7c3200bad5020f2104a8e866228967d1d9fa7b495292f8dc4cf2",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/source_delivery.py::retire_reopened_source_repairs_on::7032d70701a482232d21878d7f693cac7a9fb3daaf68364d1511a0604d9c9d91": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 147,
+      "owner": "retire_reopened_source_repairs_on",
+      "owner_fingerprint": "95134e1f5d3ff8c5b5c49c02fe14b2c75fc86c0344e2aaebe2cc25a26881d16c",
+      "reason": "Audit of one source-CI delegate the reopen fence already made terminal: names the discarded source head and reopen context in the same transaction. No ref replay authority; branch origins retire through the ordinary origin guard."
+    }
+  }
+}

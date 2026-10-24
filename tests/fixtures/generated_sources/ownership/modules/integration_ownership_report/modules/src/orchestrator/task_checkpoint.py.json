@@ -1,0 +1,13 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/task_checkpoint.py::capture_checkpoint": {
+      "reason": "Captures full retained source using isolated index; may store preparation cleanup uncertainty, never remote-ref replay authority."
+    },
+    "src/orchestrator/task_checkpoint.py::salvage_checkpoint": {
+      "reason": "Preserves best-effort patch using an isolated index with fresh repository/branch validation; explicit partial evidence grants no restoration or ref publication authority."
+    },
+    "src/orchestrator/task_checkpoint.py::validate_checkpoint_branch": {
+      "reason": "Source identity gate rejects foreign attached branches and preserves detached identity without inferring a restorable branch."
+    }
+  }
+}

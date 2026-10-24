@@ -43,6 +43,20 @@ def test_pool_rename_sends_display_name_and_keeps_profile_id():
     )
 
 
+def test_pool_delete_sends_explicit_vault_depth():
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.execute.return_value = {"success": True, "deleted": "rung"}
+    with patch("src.cli.app._get_client", return_value=client):
+        result = CliRunner().invoke(cli, [
+            "pool", "delete", "--profile-id", "rung", "--depth", "directory",
+        ])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with(
+        "pool_delete", {"profile_id": "rung", "depth": "directory"}
+    )
+
+
 @pytest.fixture
 def status():
     from src.api.models.provider import ProviderAllocationStatusResponse

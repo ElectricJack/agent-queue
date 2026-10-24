@@ -1,0 +1,343 @@
+{
+  "test_select": {
+    "argument_reads_diagnostic_only": [
+      "acceptance_commands",
+      "base_ref",
+      "claim_epoch",
+      "jev",
+      "marker_policy",
+      "mode",
+      "narrowing_flags",
+      "project_id",
+      "targets",
+      "task_id",
+      "workspace"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_select",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('disabled', 'test selection is disabled')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_mode', 'mode must be plan_only, shadow or enforce')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('enforce_not_enabled', 'test-selection enforcement is disabled')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('narrowing_flags', 'enforce cannot narrow the selected union', narrowing_flags=args['narrowing_flags'])"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('spoofed_workspace', 'workspace is derived from the session')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'a session holding a task is required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'the session holds no task')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'the task is outside the live session scope')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**err, 'error_code': err.get('result', 'out_of_scope')}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('stale_claim', 'the session claim is no longer current')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('workspace_required', 'local selection requires a workspace')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'local selection requires project_id')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'test selection requires a held task or local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('workspace_invalid', 'workspace must be an absolute git directory')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'selection_id': record['id'], 'record': record, 'full_suite_authorized': full_suite_authorized, 'ordered': [m for m in record['argv'][0] if m in record['final_modules']], **{field: record[field] for field in fields}}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:1cfbe34425de22326577de62d389d19f8eed8152f967866eacdb5c997e1a7eaf",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "test_selection_list": {
+    "argument_reads_diagnostic_only": [
+      "before",
+      "limit",
+      "project_id",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_selection_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'selections': rows}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:2b0f7650522490e2aeafb7efa8bb01cb84451d2b737aa8d68301bd4c986cac02",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "test_selection_observe": {
+    "argument_reads_diagnostic_only": [
+      "duration_ms",
+      "executed_modules",
+      "exit_code",
+      "failed_node_ids",
+      "payload",
+      "selection_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_selection_observe",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_found', 'test selection was removed')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'observation_id': row['id']}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:ba638a11f2d1d821f200ed0ab641da5352b6fd27d3c650375e2150789b3b058d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "test_selection_policy_show": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_selection_policy_show",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'config': {k: getattr(cfg, k) for k in ('enabled', 'jev_enabled', 'enforce_enabled', 'model')}, 'promotion': await self.db.active_test_selection_promotion(project_id=args['project_id']), 'latest_digests': digests}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:538fe1d6c3be45748fc8e27577c43cc687923cbbed81a41c2d6aa5fed2a7adc4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "test_selection_promote": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_selection_promote",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'test-selection promotion requires local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('promotion_active', 'the project already has an active promotion')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'promotion': row}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:fe15c1cbca83ba6bcf311cfda54ae762ea09f4d0e294706bd917457209e89ae1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "test_selection_recheck": {
+    "argument_reads_diagnostic_only": [
+      "selection_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_selection_recheck",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, **await self._test_selection_service().recheck(args['selection_id'])}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:8cb4c50aa6e6ef5238b54dc19633514c1962012ad41cb72242956dbcdc715b06",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "test_selection_revoke": {
+    "argument_reads_diagnostic_only": [
+      "promotion_id",
+      "reason"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_selection_revoke",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'test-selection promotion requires local operator')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'revoked': revoked}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:8121d7c30ff89c345f7c2a909437efdb71fadf00a8e2f6eeb11ce5c290afcb68",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "test_selection_show": {
+    "argument_reads_diagnostic_only": [
+      "selection_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/test_selection_commands.py:TestSelectionCommandsMixin._cmd_test_selection_show",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "err"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'selection': row, 'observations': await self.db.list_test_selection_observations(args['selection_id'])}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:b20f5577d0636acf8a543e18e8097827b8cb27d62244f3a8e4f0c1ccb34fe4fb",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

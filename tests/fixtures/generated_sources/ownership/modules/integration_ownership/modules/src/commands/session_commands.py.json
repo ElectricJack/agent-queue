@@ -1,0 +1,285 @@
+{
+  "exclusions": {
+    "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/commands/session_commands.py::_CLOSEABLE[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/commands/session_commands.py::SessionCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_sleep": "Changes session running intent after provider/process confirmation and delegates pool draining to its claim lifecycle; it does not inspect integration owners or Git delivery."
+  },
+  "shared": {
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_obsolete": {
+      "baseline_span": [
+        803,
+        887
+      ],
+      "landing_span": [
+        724,
+        808
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary": {
+      "reason": "Coordinates accepted completion, retained source evidence and integration handoff before claim release; the full ordinary-close body remains charged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_logs": {
+      "baseline_span": [
+        381,
+        506
+      ],
+      "landing_span": [
+        357,
+        482
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_prune": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_sleep": {
+      "landing_span": [
+        738,
+        784
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close": {
+      "baseline_span": [
+        888,
+        1682
+      ],
+      "landing_span": [
+        809,
+        1603
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::4440a33c54ab4fa4c809666198358bb0499a892c5fc60e199b16f28357f6a517": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1505,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores caller close_notes as ordinary completion narrative; notes neither authorize integration handoff nor attest delivery."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::4c9eda3727972063970ceb5f31add9dca5ecf28f36a7217710d665d7181a99bb": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1495,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores the task failure_class used to explain the work outcome; it contains no ref intent or delivery lifecycle generation."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1509,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Records close_session_id for completion attribution to the accepting worker session; session identity alone cannot authorize publication."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1906,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Marks claim_release_declined for attention after the guarded release refuses; the diagnostic cannot override that refusal."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1497,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores work_outcome as the task's work result, separately from independently observed integration delivery."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1499,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores the explicitly supplied work_commit locator for completion reporting; the SHA is a source observation, not proof that a target contains it."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1767,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores the accepted task summary for user-facing completion history; no integration state is derived from its prose."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1493,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores the ordinary task outcome accepted by close; downstream delivery still requires its separate fenced integration proof."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1507,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores the worker verification narrative; this historical claim is not a CI attestation or Git containment predicate."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1565,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores the identity-bound accepted-close completion draft for crash recovery, including work evidence and tests; it creates no integration episode, ref intent or delivery journal."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1503,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores work_branch as the worker-reported completion locator; a branch name does not prove remote publication or grant ownership."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1749,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "owner_fingerprint": "807aba1e4afda12dd6db5fdfcec61eb87565a7ca0ca7f606cdb1db7700804e52",
+      "reason": "Stores the automatically observed work_commit_auto SHA as source work evidence; current Git checks still decide integration containment."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::2000800a19f07b12dcfd441b364b958149789c935756a56406678e50d5d7e2c8": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1319,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "eb5214b9825c8aad11de6ca9ecf9baa56dbaa62ac2d8e7648b147fe054c86164",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'failure_class' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4440a33c54ab4fa4c809666198358bb0499a892c5fc60e199b16f28357f6a517": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1461,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4c9eda3727972063970ceb5f31add9dca5ecf28f36a7217710d665d7181a99bb": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1451,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary close failure_class metadata, explicitly reset to null when the current close has no failure class so a prior transient attempt cannot suppress substantive-failure routing. No ref replay or duplicate integration lifecycle storage."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1465,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1849,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1453,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1455,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1723,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1449,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1463,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1521,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1459,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1705,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/plugins/services.py::ConfigService.integration_git_first": {
+      "fingerprint": "acd18e95c2bb4048e999ee03cb2f5162be5fd85256d39cddb45c21d84e60ef1c",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/plugins/services.py::ConfigServiceImpl.integration_git_first": {
+      "fingerprint": "f60d647e80c43fbdb93b12cd2a90701fdaf89b5b7f6a2c4bc79bb9194ebe32c8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

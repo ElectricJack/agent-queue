@@ -1,0 +1,47 @@
+{
+  "generic_dependencies": {
+    "src/api/models/graph_layout.py::AncestorRef": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::ExtentResponse": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LayoutEdge": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LayoutJob": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LayoutRect": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LayoutStub": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LayoutWorker": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::ListRequest": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::ListResponse": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LocateHit": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LocateRequest": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::LocateResponse": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::NodeResponse": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::RunningTargetResponse": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::StubOverflow": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::TidyRequest": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::TidyResponse": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::TilesRequest": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/api/models/graph_layout.py::TilesResponse": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/api/models/graph_layout.py::LayoutNode.delivery": {
+      "baseline_span": [
+        163,
+        164
+      ],
+      "landing_span": [
+        163,
+        164
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/api/models/graph_layout.py::import from src.api.models.task import EpicDeliveryStatus, PhaseHoldDetail": {
+      "baseline_span": [
+        17,
+        17
+      ],
+      "landing_span": [
+        17,
+        17
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

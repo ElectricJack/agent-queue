@@ -76,9 +76,13 @@ def infer_required_features(
             required.add("state_v1")
         if name == "playbook_script_run":
             required.add("script_v1")
-        contract = contracts.get(name) if contracts is not None else None
-        if contract is not None:
-            required.update(contract.required_features)
+        feature_lookup = getattr(contracts, "required_features", None)
+        if callable(feature_lookup):
+            required.update(feature_lookup(name))
+        else:
+            contract = contracts.get(name) if contracts is not None else None
+            if contract is not None:
+                required.update(contract.required_features)
     metadata = definition.trusted_execution
     if metadata is not None and metadata.state_schema_version is not None:
         required.add("state_v1")

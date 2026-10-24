@@ -102,6 +102,23 @@ def test_file_source_and_project_can_be_overridden():
     assert args["dry_run"] is False
 
 
+def test_batch_propose_file_preserves_delivered_design_settlement():
+    document = {
+        "project_id": "p", "source": "spec:decision:approved", "tasks": [],
+        "no_op": {"reason": "All design goals delivered", "delivered_evidence": ["PR #1905"]},
+    }
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.execute.return_value = {"success": True, "committed": True, "task_ids": []}
+    with patch("src.cli.tasks._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["--json", "task", "batch-propose", "--file", "-"], input=json.dumps(document),
+        )
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with("task_batch_propose", {**document, "dry_run": False})
+    assert json.loads(result.output)["data"]["task_ids"] == []
+
+
 def test_inline_batch_options_keep_existing_cli_compatible():
     client = AsyncMock()
     client.__aenter__.return_value = client

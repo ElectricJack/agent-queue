@@ -27,7 +27,7 @@ from src.database.tables import (
     tasks as tasks_table,
 )
 from src.models import DAEMON_AUTHORED_TASK_TYPES, ProjectStatus, TaskStatus
-from src.routing.sources import LEGACY, UNROUTED
+from src.routing.sources import LEGACY, ROUTER, UNROUTED
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,9 @@ def _value(value):
 class RouteNeededMixin:
     _route_needed_emitted: dict[str, float]
 
-    async def _route_needed_candidates(self, ready_projects: frozenset[str] = frozenset()):
+    async def _route_needed_candidates(
+        self, ready_projects: frozenset[str] = frozenset(), *, include_router_routes: bool = False,
+    ):
         """Queued tasks nothing can pick up until the router routes them (I5).
 
         READY / BLOCKED tasks, plus DEFINED tasks that are unblocked or whose
@@ -54,7 +56,9 @@ class RouteNeededMixin:
         is born that way, swarm work model §12).  Unassigned, not a plan
         subtask, not a container (the ``container`` flag or a child, the
         claim frontier's two rules), in an active project, and either
-        ``unrouted`` or ``legacy`` in a project in *ready_projects*.  Exclude
+        ``unrouted`` or ``legacy`` in a project in *ready_projects*. With
+        *include_router_routes*, also inspect router routes in ready projects
+        so CommandHandler can invalidate unavailable targets. Exclude
         inactive backlogs in SQL so they cannot spawn routing playbooks or
         delay other work on the event loop.
         """
@@ -75,7 +79,9 @@ class RouteNeededMixin:
             needs_route = or_(
                 needs_route,
                 and_(
-                    tasks_table.c.route_source == LEGACY,
+                    tasks_table.c.route_source.in_(
+                        [LEGACY, ROUTER] if include_router_routes else [LEGACY]
+                    ),
                     tasks_table.c.project_id.in_(sorted(ready_projects)),
                 ),
             )
@@ -125,9 +131,15 @@ class RouteNeededMixin:
         now = time.time()
         from src.routing.readiness import orchestrator_ready_projects
 
+        handler = getattr(self, "_command_handler", None)
         candidates = await self._route_needed_candidates(
-            await orchestrator_ready_projects(self)
+            await orchestrator_ready_projects(self), include_router_routes=handler is not None,
         )
+        if handler is not None:
+            reset = await handler.reconcile_unavailable_routes(
+                [task for task in candidates if task.route_source == ROUTER]
+            )
+            candidates = [task for task in candidates if task.route_source != ROUTER] + reset
         live = {task.id for task in candidates}
         for task_id in [t for t in emitted_at if t not in live]:
             emitted_at.pop(task_id, None)

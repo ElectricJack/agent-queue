@@ -1,0 +1,25 @@
+{
+  "onboarding_repository_verifier_review": {
+    "added_definition_fingerprints": 1,
+    "current_owned_groups": {
+      "companions": 12602,
+      "engine": 87440,
+      "guards": 639,
+      "policy": 480,
+      "policy_sources": 1999,
+      "shared": 47771,
+      "ui": 333
+    },
+    "current_owned_total": 151264,
+    "current_table_count": 45,
+    "definitions": [
+      "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project"
+    ],
+    "fixed_baseline_and_caps_unchanged": true,
+    "new_storage_sites": [],
+    "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority.",
+    "reviewed_source_revision": "7671106776f35eb06ccfaaa2b0fde1805f6f3ee1",
+    "unknown_definitions": [],
+    "unknown_storage_sites": []
+  }
+}

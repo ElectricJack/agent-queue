@@ -34,6 +34,7 @@ REROUTABLE_STATUSES = (
     TaskStatus.READY.value,
     TaskStatus.BLOCKED.value,
     TaskStatus.PAUSED.value,
+    TaskStatus.RESUME_PENDING.value,
 )
 #: Automatic reasons share the per-task move limit and cooldown.
 AUTOMATIC_REASON = "provider_unavailable"
@@ -351,7 +352,8 @@ class TaskRerouteQueryMixin:
     ) -> list[dict]:
         """Queued tasks on *profile_ids* the sweep may move, in claim order.
 
-        ``READY`` unblocked rows and stopped ``BLOCKED`` rows, plus every ``PAUSED`` row on an
+        ``READY`` unblocked rows, stopped ``BLOCKED`` rows and unassigned
+        ``RESUME_PENDING`` continuations with no live writer, plus every ``PAUSED`` row on an
         automatic backoff (``resume_after`` set -- never an operator hold) so
         the caller can tell a provider pause (``task_metadata
         ['provider_pause']``) from a legacy one.  *task_ids* narrows to
@@ -375,7 +377,8 @@ class TaskRerouteQueryMixin:
                 tasks.c.status == TaskStatus.PAUSED.value, tasks.c.resume_after.is_not(None)
             )
             blocked = tasks.c.status == TaskStatus.BLOCKED.value
-            conditions.append(ready | blocked | paused)
+            resume_pending = tasks.c.status == TaskStatus.RESUME_PENDING.value
+            conditions.append(ready | blocked | paused | resume_pending)
         stmt = (
             select(tasks, pool_primary_kind().label("workspace_kind"))
             .where(and_(*conditions))

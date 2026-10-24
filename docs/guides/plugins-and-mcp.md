@@ -40,7 +40,7 @@ flows are independent:
 flowchart LR
   C["MCP-aware client"] -->|"calls AQ commands"| A["AQ embedded MCP endpoint\n/mcp"]
   W["AQ worker session"] -->|"calls external tools"| E["registered external\nMCP server"]
-  R["AQ MCP registry\nvault markdown"] --> W
+  R["AQ MCP registry\nvault markdown"] -.->|"records intended selection\nlaunch does not apply it"| W
 ```
 
 1. **AQ exposes MCP.** The daemon runs a streamable-HTTP server at `/mcp` on
@@ -48,17 +48,18 @@ flowchart LR
    commands such as task and project operations. This is implemented by
    [src/embedded_mcp.py](../../src/embedded_mcp.py) and
    [src/mcp_registration.py](../../src/mcp_registration.py).
-2. **A worker consumes external MCP.** An operator registers a stdio or HTTP
-   MCP server, then names it in a profile. At task launch the selected harness
-   receives that server configuration and can call its tools. AQ does not
-   proxy those calls through its own `/mcp` endpoint.
+2. **AQ catalogs external MCP.** An operator registers a stdio or HTTP
+   server and names it in a profile. Registry CRUD, probing and catalog reads
+   work, but session launch currently does not resolve those names into
+   harness configuration. Workers need MCP configuration supplied outside
+   AQ to call an external server. AQ does not proxy those calls through `/mcp`.
 
 Do not solve an external-tool problem by adding a command to AQ's embedded
 MCP endpoint, and do not add `agent-queue` to a registry file merely to expose
 AQ to an editor. The daemon supplies the synthetic `agent-queue` entry itself
-when embedded-MCP task injection is enabled.
+when the embedded-MCP registry entry is enabled.
 
-## A realistic setup: give a profile an external tool server
+## A realistic setup: register and inspect an external tool server
 
 Assume the daemon is running, a project named `demo` exists, and `npx
 @modelcontextprotocol/server-filesystem /tmp/aq-demo` is a tool server you
@@ -67,9 +68,9 @@ probes it:
 
 ```bash
 aq mcp create-server --name demo-files --project-id demo --transport stdio \
-  --description "Read-only demo files" --command npx \
+  --description "Demo files" --command npx \
   --args '["@modelcontextprotocol/server-filesystem", "/tmp/aq-demo"]'
-aq mcp list-tool-catalog --project-id demo --server-names demo-files
+aq mcp list-tool-catalog --project-id demo --server-names '["demo-files"]'
 ```
 
 The create command writes
@@ -104,11 +105,12 @@ Finally, put only the registry name in the profile's `## MCP Servers` block:
 - demo-files
 ```
 
-The output to expect is a session configuration containing the resolved stdio
-or HTTP definition. The profile is the selection point; the registry file is
-the connection-definition owner. A project entry with the same name shadows a
-system entry, so use project scope for credentials or tools that differ by
-project.
+The profile records the intended selection; it does not currently change
+the launched session. `src/sessions/spec.py` starts sessions without
+`--mcp-config`, and `TaskContext.mcp_servers` is not populated from the
+registry. Inspect the catalog to confirm registration and probing, then
+configure the harness separately if it needs these tools. A project entry
+with the same name shadows a system entry.
 
 > **Warning.** `env` and `headers` are stored in vault markdown. Treat a
 > registry entry as configuration with the same secret-handling requirements
@@ -121,9 +123,9 @@ project.
 |---|---|---|
 | Register an external server | Name, `stdio` command and arguments *or* HTTP URL and headers; optional project scope | Vault markdown entry, then a memory-resident registry entry |
 | Probe a server | Registry name and scope | Tool snapshot or an error, with a timestamp, in the in-memory catalog |
-| Select a server for a worker | A profile's list of registry names | Resolved MCP configuration passed to the task harness |
+| Record intended worker servers | A profile's list of registry names | Names stored on the profile; launch does not yet apply them |
 | Publish AQ through MCP | Running daemon and `mcp_server` configuration | Streamable-HTTP endpoint at `http://HOST:PORT/mcp` |
-| Install an external plugin | Git URL and valid plugin package | Clone/install record, loaded plugin, and its registered capabilities |
+| Install an external plugin through the CLI | Git URL and valid plugin package | Clone/install record; restart required for activation |
 
 For the external-server commands, use `aq mcp list-servers`, `aq mcp
 get-server`, and `aq mcp list-tool-catalog` to inspect state without changing
@@ -134,25 +136,35 @@ changes.
 
 The shipped `mcp_server` defaults are `enabled: true`, host `127.0.0.1`, port
 `8081`, and `inject_into_tasks: true` in
-[src/config.py](../../src/config.py). Therefore a default local daemon serves
-AQ's streamable-HTTP endpoint at `http://127.0.0.1:8081/mcp` and can inject a
-synthetic `agent-queue` server into task contexts.
+[src/config.py](../../src/config.py). With MCP enabled the endpoint is
+`http://127.0.0.1:8081/mcp`. There is a loader inconsistency: omitting the
+whole `mcp_server` section retains `enabled: true`, while including a section
+without `enabled` loads it as false. Set `enabled` explicitly.
+
+`inject_into_tasks` currently controls the synthetic `agent-queue` registry
+entry, gated by `enabled`. It does not inject configuration into running
+worker harnesses.
 
 This repository's actual deployment policy may change `host`, `port`,
-`excluded_commands`, or task injection in `~/.agent-queue/config.yaml`; those
+`excluded_commands`, or the synthetic registry entry in `~/.agent-queue/config.yaml`; those
 are configured local policy, not a promise that every deployment is publicly
 reachable. Keep the default loopback host unless an operator deliberately
 places authentication and network controls in front of a wider bind.
 
-AQ derives tools from its command definitions, typed command contracts,
-plugin-provided definitions, and command-handler discovery. The effective
+AQ derives tools from a shared command descriptor snapshot composed from
+explicit definitions, typed contracts, plugin registrations and handler
+discovery (`src/commands/command_inventory.py`). The effective
 exclusions are the union of code defaults, `mcp_server.excluded_commands`, and
-`AGENT_QUEUE_MCP_EXCLUDED`; every remaining call still goes through normal
-command authorization. In particular, MCP publication does not bypass a
-session token's scope or a profile's capability policy. The detailed command
+`AGENT_QUEUE_MCP_EXCLUDED`; every remaining call goes through `CommandHandler`. However, the current
+MCP handler does **not** forward the authenticated request scope. Its calls
+therefore run as trusted local calls; `question_*` commands instead receive a
+fixed MCP identity. The HTTP middleware rejects invalid bearer tokens, but
+a valid worker token does not narrow MCP dispatch. Use the authenticated
+CLI/HTTP command path for worker scope and keep `/mcp` an operator surface.
+`agentqueue://` resources also read shared state directly. The detailed command
 surface is in [agent-facing tools](../reference/cli/agent-tools.md#mcp).
 
-> **Optional compatibility, off by default.** Old profile blocks that embed
+> **Legacy compatibility.** Old profile blocks that embed
 > MCP configuration are migrated once into registry markdown by
 > [src/profiles/mcp_inline_migration.py](../../src/profiles/mcp_inline_migration.py).
 > New profiles must use names. The proposed `/mcp-task` narrow endpoint is not
@@ -162,9 +174,10 @@ surface is in [agent-facing tools](../reference/cli/agent-tools.md#mcp).
 
 External plugins are operator-installed code, not task-local packages. AQ
 clones an installation under its data directory, installs a package with
-`pyproject.toml` editable mode when possible (falling back to legacy
-`requirements.txt`), records lifecycle state, and loads the plugin. Use the
-current CLI to inspect a plugin before or after changing it:
+`pyproject.toml` in editable mode when possible (falling back to legacy
+`requirements.txt`), and records lifecycle state. The CLI requires a daemon
+restart to activate it. Use the current CLI to inspect a plugin before or
+after changing it:
 
 ```bash
 aq plugin install https://example.invalid/acme/aq-demo-plugin.git
@@ -173,12 +186,24 @@ aq plugin info aq-demo-plugin
 aq plugin config aq-demo-plugin enabled=true
 ```
 
+`aq plugin` is an operator-only, direct-database/filesystem CLI in
+`src/cli/plugins.py`; it is a current exception to the usual daemon-command
+path. It does not mutate the live plugin registry. Install, enable, update,
+reload and config changes require a restart to reach the running plugin;
+disable/remove do not stop an already-loaded instance. The separate
+`plugin_*` CommandHandler commands operate on the live registry. Worker
+sessions must not use the direct-database CLI to bypass their scope.
+
 `install` intentionally has no sample public URL here: a plugin URL is a
 trust decision, and `example.invalid` is not executable. The live command
 surface supports `list`, `info`, `config`, `disable`, `enable`, `reload`,
-`update`, `prompts`, and `remove`; run `aq plugin --help` for the version you
+`update`, `prompts`, `diff-prompts`, `reset-prompts`, and `remove`; run `aq plugin --help` for the version you
 operate. `remove` deletes the installed plugin record and data, so disable it
-first when you only need a reversible stop.
+when you want to retain its install. `remove` and `reset-prompts` prompt for
+confirmation; JSON mode requires `--yes`. CLI `update` accepts one name,
+without `--all` or `--rev`; CLI `reload` supports only legacy `plugin.yaml`
+packages and still requires a restart. `config NAME KEY=VALUE` stores values
+as strings; it does not apply the daemon context's schema validation.
 
 External plugins run with `TrustLevel.EXTERNAL`. They can obtain only the
 `config` and `vault_watcher` services through `PluginContext.get_service`.
@@ -195,12 +220,17 @@ plugin code and its dependency chain before installation.
 | `aq-git` internal plugin | Shipped and loaded at daemon startup | Git and integration commands and `git` tool category |
 | `aq-notes` internal plugin | Shipped and loaded at daemon startup | Project note commands and `notes` tool category |
 | `aq-vibecop` internal plugin | Shipped and loaded at daemon startup | Optional local VibeCop static-analysis commands; reports how to install VibeCop when absent |
-| `aq-memory` external plugin | Optional; not bundled with AQ | Semantic memory service and its `memory_*` commands/tools when installed and not paused by local feature policy |
+| `aq-inbox` internal plugin | Shipped and discovered; polling disabled by default | Gmail polling and allowlist commands when `inbox.enabled` and project configuration are set; the package re-exports `InboxPlugin` for discovery |
+| `aq-memory` external plugin | Not bundled; startup currently excludes both `aq-memory` and `memory` | Legacy memory writer remains unloaded pending the versioned read-only adapter handshake (K07); installation alone does not activate it |
 | Third-party plugin | Optional; chosen and installed by an operator | Any capabilities registered through the public plugin API |
 
 The `aq memory` CLI group can be visible even when `aq-memory` is absent
 because its tool shape is declared by the core surface. It is not proof that a
-memory backend is installed; inspect `aq plugin list` and the command result.
+memory backend is active; `load_all(skip=LEGACY_MEMORY_PLUGINS)` in
+`src/orchestrator/core.py` deliberately skips it even when installed. Data
+and installation records are retained. `memory_*` calls are paused when
+`memory.enabled` is false; otherwise an absent handler can return an unknown
+command with an install hint. That hint does not override the startup guard.
 The former in-tree memory manager is removed. Do not revive it or direct users
 to an old `src/memory.py` API.
 
@@ -279,7 +309,9 @@ both `hello` and `hello-example.hello` available to command dispatch;
 `register_tool` adds its JSON schema to tool discovery and, when AQ's embedded
 MCP server starts, to the MCP registration pass. A plugin may also register
 event types, services it provides, doctor checks, cron-decorated methods, a
-Click CLI group, and prompt templates. It must clean up background work in
+Click CLI group, prompt templates, and plugin Discord command groups.
+The Discord adapter still mounts those groups; the former core plugin
+management slash commands are retired. A plugin must clean up background work in
 `shutdown`.
 
 Use the public `PluginContext` rather than importing an orchestrator,
@@ -298,24 +330,26 @@ removed: `aq plugin logs` explicitly reports that it no longer exists.
 | External MCP definition | MCP registry and vault watcher | `vault/[projects/<id>/]mcp-servers/<name>.md` |
 | External MCP tool catalog | MCP catalog/probe service | Daemon memory; refreshed at startup, watcher changes, or explicit probe |
 | AQ embedded endpoint configuration | Operator configuration | `~/.agent-queue/config.yaml`, `mcp_server` section |
-| `aq://` references in playbooks | Playbook compiler | Rewritten to approved config-rooted filesystem paths; not an MCP registry |
+| `aq://` reference helpers | `src/aq_uri.py` | Root mapping and traversal checks; no current compiler call to `rewrite_aq_uris` |
 
 `aq://` has five read-only authorities: `prompts`, `vault`, `logs`, `tasks`,
 and `attachments`. It rejects `..` path segments and has no workspace
-authority. It is a compile-time portable resource reference, not a URI for
-calling an MCP server.
+authority. The path resolver can expand these references, but the playbook compiler
+does not currently invoke the rewrite helper. Pass a supported filesystem
+path where a consumer requires one. MCP read resources use the separate
+`agentqueue://` scheme.
 
 ## Common failures and recovery
 
 | Symptom | Diagnose | Recovery |
 |---|---|---|
-| External tool is absent from a worker | `aq mcp get-server --name NAME` and inspect the profile's MCP names | Add the correct registry name to the profile; check project scope and name shadowing |
+| External tool is absent from a worker | Inspect registry and profile names, then the harness configuration | Profile selection is not applied at launch; configure the harness outside AQ |
 | Catalog says a server has no tools or an error | `aq mcp probe-server --name NAME` | Verify the executable/URL and its credentials, then re-probe. A probe times out after 10 seconds rather than blocking the daemon indefinitely. |
-| A tool works through `aq` but not AQ's `/mcp` | Inspect `mcp_server.excluded_commands` and `AGENT_QUEUE_MCP_EXCLUDED` | Remove only a deliberate exclusion; command authorization still applies afterward. |
-| Plugin is `ERROR` or fails to load | `aq plugin info NAME` and daemon logs | Fix package metadata/entry point or dependency installation; then `aq plugin reload NAME` or enable it again. |
+| A tool works through `aq` but not AQ's `/mcp` | Inspect `mcp_server.excluded_commands` and `AGENT_QUEUE_MCP_EXCLUDED` | Check the exclusion and caller identity; MCP currently lacks scoped dispatch. |
+| Plugin is `ERROR` or fails to load | `aq plugin info NAME` and daemon logs | Fix package metadata/entry point or dependency installation; use live registry lifecycle commands or an operator restart. CLI `reload` is legacy-only and does not reload the daemon. |
 | Plugin cannot access a service | Review its trust level and use `PluginContext` | External plugins only receive the public service allowlist. Redesign the extension boundary instead of importing a private daemon object. |
-| `aq memory` has no backend | `aq plugin list` and the command response | Install and configure the external `aq-memory` plugin if local policy permits; do not expect a bundled memory implementation. |
-| An `aq://` playbook reference is rejected | Read the compiler error | Use one of the five supported authorities and a path under its root; remove traversal segments. |
+| `aq memory` has no backend | `aq plugin list` and the command response | The startup legacy-memory fence deliberately prevents loading; installation alone cannot restore the backend. |
+| An `aq://` playbook reference is rejected | Read the compiler error | The rewrite helper is not called by the compiler; use an accepted filesystem path and remove traversal segments. |
 
 ## Related pages
 

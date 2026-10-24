@@ -1,0 +1,56 @@
+{
+  "exclusions": {
+    "src/cli/formatters.py::_DEP_LABELS['related']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "generic_dependencies": {
+    "src/cli/formatters.py::format_active_tasks_all": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_agent_table": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_archived_tasks": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_ask_detail": "Generic human request detail, document, discussion and receipt presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_list": "Generic human request list and pagination presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_preview": "Generic prepared human decision packet presentation; integration effects remain in the charged source adapter.",
+    "src/cli/formatters.py::format_ask_receipt": "Generic human request receipt presentation; no integration lifecycle or ref authority.",
+    "src/cli/formatters.py::format_available_tools": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_chain_health": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_confirmation": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_entity_detail": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_event_list": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_flock": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_formula_list": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_key_value": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_playbook_graph": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_pool_table": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_profile_detail": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_profile_list": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_project_table": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_prompt_list": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_provider_allocation_apply": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_provider_allocation_preview": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_provider_allocation_status": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_provider_held_tasks": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_provider_table": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_review_detail": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_review_table": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_task_deps": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_task_recent_activity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_task_table": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_task_tree": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_text_content": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_token_audit": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_token_usage": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/formatters.py::format_workspace_list": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/cli/formatters.py::format_task_detail": {
+      "baseline_span": [
+        238,
+        377
+      ],
+      "landing_span": [
+        238,
+        377
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

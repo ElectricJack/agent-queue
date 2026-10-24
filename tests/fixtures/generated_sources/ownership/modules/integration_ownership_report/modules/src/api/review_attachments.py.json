@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/api/review_attachments.py::download_review_attachment": {
+      "baseline_span": [
+        16,
+        54
+      ],
+      "landing_span": [
+        16,
+        54
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/api/review_attachments.py::import from src.api.scope import check_request_scope": {
+      "baseline_span": [
+        13,
+        13
+      ],
+      "landing_span": [
+        13,
+        13
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

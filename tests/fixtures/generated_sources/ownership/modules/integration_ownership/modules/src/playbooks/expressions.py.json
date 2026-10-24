@@ -1,0 +1,17 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/expressions.py::BindingRef": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::Comparison": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::Condition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::Identifier": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::LiteralValue": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::ResolutionScope": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::V2Base": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::Value": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::check_expression_depth": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::condition_values": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::evaluate_condition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::resolve_value": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/expressions.py::walk_value": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -91,6 +91,7 @@ def _obsolete_notice():
         and_(messages.c.from_kind == "system", subject_task.is_not(None), ~unfinished),
         and_(messages.c.body_kind.in_((
             "supervisor_delivery", "escalation_reply", "escalation_owner_reminder",
+            "wait_escalation",
         )), escalation),
         and_(messages.c.from_kind == "system", messages.c.body_kind == "agent_question",
              question),

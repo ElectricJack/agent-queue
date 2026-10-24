@@ -1,0 +1,13 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/layout/view.py::active_expansion": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::ancestors_of": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::cap_stubs": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::depth_first_order": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::dock_workers": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::forced_expansion_for": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::owner_map": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::remap_edges": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/layout/view.py::resolve_visible": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

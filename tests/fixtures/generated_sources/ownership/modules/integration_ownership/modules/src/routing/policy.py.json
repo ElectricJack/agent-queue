@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/routing/policy.py::parse_policy": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

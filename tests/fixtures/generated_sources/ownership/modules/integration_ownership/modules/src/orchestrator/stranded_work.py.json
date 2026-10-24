@@ -1,0 +1,28 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/stranded_work.py::UNMERGED_BRANCH_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/stranded_work.py::UNMERGED_COMMIT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/stranded_work.py::WIP_SAVED_PREFIX": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/stranded_work.py::save_wip_to_task_branch": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/stranded_work.py::unpushed_close_issues": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/orchestrator/stranded_work.py::RESUME_POINT_META": {
+      "reason": "Task metadata key for the saved-WIP resume point, read only by exact-origin preparation; vocabulary with no storage or authority of its own."
+    },
+    "src/orchestrator/stranded_work.py::record_resume_point": {
+      "reason": "Records the commit a stopped hierarchy/train writer's work was saved at, pinned to the task's canonical origin (repository, branch, base SHA). Exact-origin preparation honours it only while Git proves base, saved commit and origin/<branch> are in order, and the launch deletes it; no publication, ref replay or lifecycle journal."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/stranded_work.py::record_resume_point::2b663916202a6ce99dfb412d74a9f87ff533f98c03da3562610da15ffad30cec": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 219,
+      "owner": "record_resume_point",
+      "owner_fingerprint": "15a47e712dfda75d5465809af27b89b6048181736a10185d40ac585c214bb06f",
+      "reason": "Records the saved-WIP resume point (repository, branch, canonical base SHA, saved commit) for the next exact-origin preparation, which re-proves Git ancestry before continuing from origin/<branch> and otherwise starts from the filing base; the launch deletes it. Not a durable assertion of ref state: no publication, ref replay or duplicate lifecycle. Metadata key: RESUME_POINT_META"
+    }
+  }
+}

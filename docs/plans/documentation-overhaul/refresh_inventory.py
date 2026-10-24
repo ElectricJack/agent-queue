@@ -264,6 +264,8 @@ def _owned_page_rules() -> list[tuple[str, str, str, str, str]]:
 # Ordered rules: (glob, shard, component page, category, note).
 # First match wins, so narrower globs come first.
 RULES: list[tuple[str, str, str, str, str]] = [
+    ("src/project_schedules.py", "scheduler", "docs/guides/project-schedules.md",
+     PRODUCTION, "Durable project-owned one-shot supervisor notifications."),
     # ---------------------------------------------------------------- docs
     ("LICENSE", "contributing", "docs/contributing/README.md", SUPPORTING,
      "Repository license; explained with contributor and distribution policy."),
@@ -409,6 +411,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
     ("src/workspace_listing.py", "workspaces",
      "docs/specs/command-handler.md", PRODUCTION,
      "Bounded, read-only workspace owner and checkout diagnostics."),
+    ("src/workspace_ownership.py", "workspaces",
+     "docs/specs/command-handler.md", PRODUCTION,
+     "Independent checkout ownership fences and stopped idle session recovery."),
     ("src/workspace_registration.py", "workspaces",
      "docs/specs/command-handler.md", PRODUCTION,
      "Missing workspace path detection and actionable registration repair guidance."),

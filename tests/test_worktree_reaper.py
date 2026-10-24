@@ -273,6 +273,7 @@ async def test_existing_binding_reconciliation_preserves_source_and_owner(
             for _ in range(2):
                 o._last_worktree_reaper = 0
                 await o._reap_worktree_slots()
+                await o._worktree_maintenance_task
             sent = [c for c in handler.execute.await_args_list if c.args[0] == "message_send"]
             # Only retained findings ask the supervisor for recovery, once per
             # changed findings set; healthy or preparing bindings stay quiet.
@@ -463,6 +464,7 @@ async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
             for _ in range(2):
                 o._last_worktree_reaper = 0
                 await o._reap_worktree_slots()
+                await o._worktree_maintenance_task
             sent = [c for c in handler.execute.await_args_list if c.args[0] == "message_send"]
             # A proved reservation sends no fenced-recovery notice; a genuine
             # one is reported once per changed findings set.
@@ -1334,6 +1336,33 @@ class TestRestoreDisabledSlots:
             )
             o._last_worktree_reaper = 0.0
             await o._reap_worktree_slots()
+            await o._worktree_maintenance_task
             assert (await o.db.get_workspace(slot_ws.id)).enabled is True
         finally:
             await o.shutdown()
+
+
+async def test_slow_maintenance_does_not_hold_cycle_or_overlap(tmp_path, monkeypatch):
+    import asyncio
+
+    o = await _orch(tmp_path)
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def maintenance():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(o, "_reap_worktree_slots_pass", maintenance)
+    try:
+        o._last_worktree_reaper = 0
+        await asyncio.wait_for(o._reap_worktree_slots(), 5)
+        await asyncio.wait_for(entered.wait(), 5)
+        first = o._worktree_maintenance_task
+        o._last_worktree_reaper = 0
+        await asyncio.wait_for(o._reap_worktree_slots(), 5)
+        assert o._worktree_maintenance_task is first
+        assert not first.done()
+    finally:
+        release.set()
+        await o.shutdown()

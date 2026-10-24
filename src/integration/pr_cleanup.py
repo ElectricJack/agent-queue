@@ -33,6 +33,7 @@ from src.integration.cleanup import IntegrationCleanupService
 from src.integration.delivery_branches import ACTIVE_BATCH_LIFECYCLES, branch_of
 from src.integration.delivery_path import lacks_pull_request_host
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
+from src.integration.row_query import select_row
 from src.logging_config import log_handled
 from src.projects.github import GitHubError
 
@@ -247,19 +248,7 @@ class SettledTaskPullRequestClosure:
             marker = f"<!-- aq-settled-pr:{task_id}:{expected} -->"
             async with self.db.immediate() as conn:
                 await self.db.lock_hierarchy_project(conn, task.project_id)
-                current = (
-                    (
-                        await conn.execute(
-                            select(tasks)
-                            .where(
-                                tasks.c.id == task_id,
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                current = await select_row(conn, tasks, tasks.c.id == task_id, lock=True)
                 writer = await conn.scalar(
                     select(sessions.c.id)
                     .where(

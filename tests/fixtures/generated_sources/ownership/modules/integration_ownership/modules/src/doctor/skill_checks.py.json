@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/skill_checks.py::skill_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

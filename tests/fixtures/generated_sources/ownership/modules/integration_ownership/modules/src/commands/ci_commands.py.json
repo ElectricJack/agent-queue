@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/commands/ci_commands.py::CiCommandsMixin._cmd_ci_repair_adopt::6d89497b2ea12abe254916f285b85cb2ab0a3f714a4997e13d5ab01c77707f57": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 635,
+      "owner": "CiCommandsMixin._cmd_ci_repair_adopt",
+      "owner_fingerprint": "bbffc5de77104e0ea80b15f57ea9fd6af2354b03eaa6e20c2f5e9fdbc498bc82",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
+    }
+  }
+}

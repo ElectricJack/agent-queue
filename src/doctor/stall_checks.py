@@ -736,7 +736,7 @@ _SUBJECTS = {
     "worker_relaunch_loop": ("task", "task_id"),
     "train_repair_capacity_wait": ("task", "task_id"),
     "train_repair_off_frontier": ("task", "task_id"),
-    "slot_capacity_short": None, "train_batch_stalled": ("batch", "batch_id"),
+    "slot_capacity_short": None, "workspace_capacity_held": None, "train_batch_stalled": ("batch", "batch_id"),
     "non_design_expensive_route": ("task", "task_id"),
     "pool_without_claim": ("session", "session_name"),
     "idle_worker": ("task", "task_id"), "idle_pool": ("session", "session_name"),
@@ -939,6 +939,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                    lambda c: _continuous_promotion_findings(c, active, now)),
             _probe(ctx, active, ("stranded_promotion_task",),
                    lambda c: _stranded_promotion_findings(c, active)),
+            _probe(ctx, active, ("workspace_capacity_held",),
+                   lambda c: _workspace_capacity_findings(c, active, tasks)),
             _probe(ctx, active, ("slot_capacity_short",),
                    lambda c: _slot_capacity_findings(c, active)),
             _probe(ctx, active, ("train_batch_stalled",),
@@ -1006,6 +1008,31 @@ async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -
             "container_dependencies_truncated", None,
             "container dependency report capped at 50 edges; resolve findings and rerun",
         ))
+    return findings
+
+
+async def _workspace_capacity_findings(ctx, active, task_inventory):
+    from src.workspace_ownership import workspace_capacity_holds
+
+    findings = []
+    for project_id in sorted(active):
+        ready = [t for t in task_inventory if t.project_id == project_id
+                 and t.status == TaskStatus.READY and not getattr(t, "is_blocked", False)]
+        if not ready:
+            continue
+        project = await ctx.db.get_project(project_id)
+        cap = project.max_concurrent_agents if ctx.config.worktrees.enabled else None
+        if await ctx.db.count_available_workspaces(
+            project_id, kind_id="project-repo", worktree_slot_cap=cap,
+        ):
+            continue
+        holds = await workspace_capacity_holds(ctx.db, project_id)
+        if holds:
+            findings.append(_finding(
+                "workspace_capacity_held", project_id,
+                "Ready work has no physical checkout capacity; inspect retained ownership "
+                "before releasing locks", holds=holds, ready_task_ids=[t.id for t in ready],
+            ))
     return findings
 
 
@@ -1168,44 +1195,8 @@ async def _validation_findings(ctx: DoctorContext | None = None) -> list[dict]:
 
 
 async def _stranded_child_findings(ctx: DoctorContext, now: float) -> list[dict]:
-    """Completed children whose container cannot deliver their pushed branch.
-
-    Both existing pull-request lines require a pull request to already be on the
-    row, so neither sees a completed task with ``pr_url`` NULL -- which is
-    exactly how bright-rapids-84.1/.2/.3/.4/.7/.9 stranded.  This line reports
-    the missing one and names which part of the container's path is gone.
-
-    Quiet under ``git_first: active``: the train collects every child into its
-    parent branch without a parent Subject, so "no collector" would be false;
-    ``aq integration status`` names a train lane's blockers instead.
-    """
-    integration = getattr(ctx.config, "integration", None)
-    if getattr(integration, "git_first", "shadow") == "active":
-        return []
-    from src.integration.stranded_children import (
-        STRANDED_CHILD_AFTER_SECONDS,
-        stranded_child_statement,
-    )
-
-    async with ctx.db._engine.connect() as conn:
-        rows = await _mapping_rows(conn, stranded_child_statement(
-            completed_before=now - STRANDED_CHILD_AFTER_SECONDS,
-        ))
-    return [
-        _finding(
-            "stranded_child",
-            row["project_id"],
-            f"{row['task_id']} completed {int((now - row['updated_at']) / 60)}m ago "
-            f"on branch {row['branch']} with "
-            f"no pull request and no delivery, and its container {row['parent_task_id']} "
-            f"is {row['parent_status']} "
-            f"(checkpoint {_row(row, 'parent_state')}, operation "
-            f"{_row(row, 'operation_state')}, Subject {_row(row, 'subject_phase')}); "
-            "no collector will carry it",
-            **{key: value for key, value in row.items() if key != "project_id"},
-        )
-        for row in rows
-    ]
+    """The train collects children without Subjects; its status names blockers."""
+    return []
 
 
 def _row(row, key: str) -> str:

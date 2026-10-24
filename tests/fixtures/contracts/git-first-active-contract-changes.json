@@ -1,0 +1,614 @@
+{
+  "source_base": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473",
+  "reason": "Describe the active Git-first delivery train after retiring shadow. Only the edit_project delivery-mode description changes; schemas and historical contract evidence are preserved.",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "5ad86b7f44dac557ceadbb11c3f38b78764df9a7b2d43dcfdddef62eac548c96",
+  "contracts": {},
+  "transport_definitions": {
+    "edit_project": {
+      "previous_sha256": "13fbc3403ae3bd797ec5a82c02982cdb84c5c3c026df5183bdee5c93bb56aac6",
+      "sha256": "d41952915fe43d43e1146e27fd34f357836cd6c68e2b2d84d918d797c3b3e11f"
+    }
+  },
+  "catalogue_sections": {
+    "explicit": {
+      "list": true,
+      "previous_order": [
+        "policy_export",
+        "policy_diff",
+        "policy_apply",
+        "list_projects",
+        "project_relocate",
+        "repair_repository_checkout",
+        "repair_workspace_checkout",
+        "project_doctor",
+        "create_project",
+        "pause_project",
+        "resume_project",
+        "set_project_constraint",
+        "release_project_constraint",
+        "edit_project",
+        "bind_project_repository",
+        "get_git_identity",
+        "set_git_identity",
+        "set_default_branch",
+        "get_project",
+        "list_tasks",
+        "list_active_tasks_all_projects",
+        "task_recent_activity",
+        "get_task_tree",
+        "task_children",
+        "task_progress",
+        "reparent_task",
+        "create_task",
+        "ensure_task",
+        "get_downstream_tasks",
+        "task_route",
+        "task_route_override",
+        "add_workspace",
+        "list_workspaces",
+        "list_project_roots",
+        "browse_project_root",
+        "get_github_auth_status",
+        "list_github_owners",
+        "search_github_repositories",
+        "onboard_project",
+        "get_project_onboarding",
+        "list_workspace_kinds",
+        "find_merge_conflict_workspaces",
+        "workspace_doctor",
+        "workspace_cutover",
+        "workspace_retire_claim",
+        "workspace_clear_sentinel",
+        "workspace_reap",
+        "release_workspace",
+        "remove_workspace",
+        "edit_workspace",
+        "queue_sync_workspaces",
+        "list_agents",
+        "get_agent",
+        "create_agent",
+        "edit_agent",
+        "delete_agent",
+        "session_prune",
+        "session_cleanup",
+        "session_input",
+        "supervisor_restart",
+        "start_agent_terminal",
+        "get_task",
+        "edit_task",
+        "pause_task",
+        "resume_task",
+        "discard_pause_checkpoint",
+        "stop_task",
+        "task_recover",
+        "restart_task",
+        "reopen_with_feedback",
+        "remove_task",
+        "delete_task",
+        "archive_task",
+        "list_archived",
+        "skip_task",
+        "get_task_dependencies",
+        "add_dependency",
+        "remove_dependency",
+        "get_chain_health",
+        "get_status",
+        "list_event_triggers",
+        "get_recent_events",
+        "read_logs",
+        "get_task_result",
+        "run_command",
+        "get_stuck_tasks",
+        "delete_project",
+        "get_token_usage",
+        "token_audit",
+        "get_chat_analyzer_metrics",
+        "list_prompts",
+        "read_prompt",
+        "render_prompt",
+        "restart_daemon",
+        "orchestrator_control",
+        "get_agent_error",
+        "list_profiles",
+        "create_profile",
+        "get_profile",
+        "edit_profile",
+        "delete_profile",
+        "list_available_tools",
+        "check_profile",
+        "profile_audit",
+        "profile_drift",
+        "profile_reseed",
+        "install_profile",
+        "export_profile",
+        "import_profile",
+        "scan_stub_staleness",
+        "get_config",
+        "get_config_schema",
+        "preview_portable_config",
+        "export_portable_config",
+        "import_portable_config",
+        "update_config",
+        "reload_config",
+        "claude_usage",
+        "archive_settings",
+        "provide_input",
+        "set_task_status",
+        "task_deps",
+        "discord_purge_channel",
+        "shutdown",
+        "update_and_restart",
+        "find_applicable_tool",
+        "run_playbook",
+        "dry_run_playbook",
+        "show_playbook_graph",
+        "list_playbooks",
+        "list_playbook_runs",
+        "inspect_playbook_run",
+        "resume_playbook",
+        "cancel_playbook_run",
+        "playbook_health",
+        "playbook_graph_view",
+        "playbook_commands",
+        "playbook_v2_graph",
+        "playbook_graph_layout_save",
+        "playbook_activation_health",
+        "playbook_activate",
+        "playbook_artifacts",
+        "playbook_artifact_diff",
+        "playbook_pending_events",
+        "playbook_pending_event_action",
+        "playbook_run_overlay",
+        "get_playbook_source",
+        "playbook_source_resync",
+        "update_playbook_source",
+        "playbook_delete",
+        "set_playbook_enabled",
+        "show_effective_profile",
+        "list_mcp_servers",
+        "get_mcp_server",
+        "list_mcp_tool_catalog",
+        "probe_mcp_server",
+        "create_mcp_server",
+        "edit_mcp_server",
+        "delete_mcp_server",
+        "get_benchmark_report",
+        "doctor",
+        "get_costs",
+        "db_preflight_hierarchy",
+        "get_schema",
+        "project_ready",
+        "task_show",
+        "task_comment",
+        "benchmark_stage_record",
+        "task_comments",
+        "task_comment_edit",
+        "task_comment_delete",
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
+        "phase_create",
+        "phase_list",
+        "task_set",
+        "task_close",
+        "task_heartbeat",
+        "subagent_event",
+        "task_claim",
+        "task_handoff",
+        "message_send",
+        "message_reply",
+        "message_inbox",
+        "message_list",
+        "message_status",
+        "agent_message",
+        "memory_save",
+        "memory_search",
+        "create_task_graph",
+        "formula_list",
+        "formula_show",
+        "formula_cook",
+        "graph_layout_rebuild",
+        "graph_tidy",
+        "graph_reflow_status",
+        "ci_completed_status",
+        "ci_baseline_status",
+        "ci_repair_adopt",
+        "provider_usage_probe",
+        "provider_status",
+        "provider_held_tasks",
+        "provider_allocation_status",
+        "provider_allocation_preview",
+        "provider_allocation_apply",
+        "provider_history",
+        "provider_recheck",
+        "provider_set_state",
+        "provider_reroute",
+        "provider_reroute_undo",
+        "pr_merge",
+        "spec_approve",
+        "task_batch_propose",
+        "task_batch_update",
+        "task_batch_commit",
+        "task_batch_validate",
+        "task_batch_discard",
+        "playbook_v2_validate",
+        "playbook_v2_propose",
+        "playbook_v2_import",
+        "playbook_v2_shadow_compile",
+        "list_intelligence_classes",
+        "edit_intelligence_class",
+        "delete_intelligence_class",
+        "pool_status",
+        "pool_rename",
+        "pool_scale",
+        "pool_set_enabled",
+        "pool_set_lifecycle",
+        "question_list",
+        "question_answer",
+        "question_escalate",
+        "review_attachment_add",
+        "review_attachment_list",
+        "review_submit",
+        "review_show",
+        "review_list",
+        "review_reopen",
+        "review_withdraw",
+        "gate_reopen",
+        "ask_prepare_decision",
+        "ask_decide",
+        "ask_retry_operation",
+        "review_feedback_complete",
+        "review_decide",
+        "approve_pull_request",
+        "review_comment",
+        "review_dispatch",
+        "review_delegate",
+        "review_import_edits",
+        "github_issue_triage",
+        "github_issue_fix_approved",
+        "github_issue_close_rejected",
+        "github_issue_rejection",
+        "dashboard_state_list",
+        "dashboard_state_get",
+        "dashboard_state_put",
+        "dashboard_state_reset",
+        "escalation_create",
+        "escalation_list",
+        "escalation_get",
+        "escalation_reply",
+        "escalation_update",
+        "escalation_resolve",
+        "escalation_apply_reply",
+        "escalation_sweep",
+        "digest_preview",
+        "digest_status",
+        "digest_facts",
+        "digest_post",
+        "digest_request",
+        "morning_report_tick",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
+        "report_reconcile",
+        "report_request",
+        "report_brief",
+        "report_submit",
+        "supervisor_inbox_post",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+        "supervisor_inbox_history",
+        "message_wait",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
+        "integration_batch_fix",
+        "collaboration_create",
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
+        "job_submit",
+        "job_submit_integration",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "job_retain",
+        "artifact_verify",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
+        "test_selection_list",
+        "test_selection_policy_show",
+        "test_selection_promote",
+        "test_selection_revoke",
+        "knowledge_create",
+        "knowledge_list",
+        "knowledge_show",
+        "knowledge_update",
+        "knowledge_history",
+        "knowledge_diff",
+        "knowledge_retire",
+        "knowledge_restore",
+        "record_show",
+        "record_search",
+        "knowledge_export",
+        "record_repair",
+        "record_capabilities",
+        "link_create",
+        "link_list",
+        "link_remove",
+        "knowledge_propose",
+        "knowledge_proposal_show",
+        "knowledge_proposal_decide",
+        "knowledge_verify",
+        "knowledge_authority_grant",
+        "knowledge_authority_revoke",
+        "knowledge_share",
+        "knowledge_redact",
+        "knowledge_generation_tick",
+        "knowledge_generation_status",
+        "knowledge_create_task",
+        "knowledge_cite",
+        "knowledge_context_deliver",
+        "decision_record",
+        "decision_list",
+        "operator_execute",
+        "operator_preflight",
+        "wait_ack",
+        "wait_checkpoint",
+        "wait_decide",
+        "wait_explain",
+        "wait_graph",
+        "wait_lift",
+        "playbook_script_run",
+        "ensure_spec_ingest",
+        "ensure_fidelity_review",
+        "approved_spec_packet",
+        "spec_ingest_reconcile",
+        "batch_reconcile",
+        "spec_ingest_legacy_inventory",
+        "ask_list",
+        "ask_show",
+        "ask_history",
+        "ask_reply",
+        "ask_apply_input",
+        "ask_discussion_reply",
+        "ask_update_context",
+        "ask_reconcile",
+        "ask_legacy_reset",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_repair_delivery",
+        "ask_intake",
+        "ask_button",
+        "integration_continue_close"
+      ],
+      "entries": {
+        "edit_project": {
+          "previous": {
+            "name": "edit_project",
+            "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "string",
+                  "description": "Project ID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New project name (optional)"
+                },
+                "supervisor_enabled": {
+                  "type": "boolean",
+                  "description": "Enable a project supervisor on the next message. Default false: the global supervisor handles this project. Disabling drains the running project supervisor after its current turn."
+                },
+                "credit_weight": {
+                  "type": "number",
+                  "description": "New scheduling weight (optional)"
+                },
+                "max_concurrent_agents": {
+                  "type": "integer",
+                  "description": "New max concurrent agents (optional)"
+                },
+                "budget_limit": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Token budget limit (optional, null to clear)"
+                },
+                "assignment_playbook_id": {
+                  "type": "string",
+                  "description": "LOCAL-only: the routing playbook that routes this project's tasks (its router binding). It must be active and grant task_route_apply; a project is never unbound."
+                },
+                "repo_default_branch": {
+                  "type": "string",
+                  "description": "Default git branch for the project (e.g. main, dev, master)"
+                },
+                "review_delegate_to": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "user",
+                    "supervisor"
+                  ],
+                  "description": "LOCAL-only default document-review decider; empty clears it."
+                },
+                "git_identity_name": {
+                  "type": "string",
+                  "description": "Operator-only Git commit name override for this project. Set with git_identity_email; empty on both resets the project to inherit the installation default (see get_git_identity)."
+                },
+                "git_identity_email": {
+                  "type": "string",
+                  "description": "Operator-only Git commit email override, paired with git_identity_name; empty on both resets to inheritance."
+                },
+                "integration_repository_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "LOCAL-only designated integration repository ID."
+                },
+                "hierarchical_integration_policy": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "description": "LOCAL-only complete typed hierarchical integration policy."
+                },
+                "hierarchical_integration_mode": {
+                  "type": "string",
+                  "enum": [
+                    "disabled",
+                    "observe",
+                    "hierarchy",
+                    "train",
+                    "development"
+                  ],
+                  "description": "LOCAL-only integration mode for new reconciler subjects."
+                },
+                "promotion_flow": {
+                  "type": [
+                    "array",
+                    "object",
+                    "null"
+                  ],
+                  "description": "LOCAL-only promotion flow (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS."
+                },
+                "expected_integration_generation": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Required generation CAS for integration configuration."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Operator reason recorded for integration configuration."
+                }
+              },
+              "required": [
+                "project_id"
+              ]
+            }
+          },
+          "current": {
+            "name": "edit_project",
+            "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "project_id": {
+                  "type": "string",
+                  "description": "Project ID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "New project name (optional)"
+                },
+                "supervisor_enabled": {
+                  "type": "boolean",
+                  "description": "Enable a project supervisor on the next message. Default false: the global supervisor handles this project. Disabling drains the running project supervisor after its current turn."
+                },
+                "credit_weight": {
+                  "type": "number",
+                  "description": "New scheduling weight (optional)"
+                },
+                "max_concurrent_agents": {
+                  "type": "integer",
+                  "description": "New max concurrent agents (optional)"
+                },
+                "budget_limit": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "description": "Token budget limit (optional, null to clear)"
+                },
+                "assignment_playbook_id": {
+                  "type": "string",
+                  "description": "LOCAL-only: the routing playbook that routes this project's tasks (its router binding). It must be active and grant task_route_apply; a project is never unbound."
+                },
+                "repo_default_branch": {
+                  "type": "string",
+                  "description": "Default git branch for the project (e.g. main, dev, master)"
+                },
+                "review_delegate_to": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "user",
+                    "supervisor"
+                  ],
+                  "description": "LOCAL-only default document-review decider; empty clears it."
+                },
+                "git_identity_name": {
+                  "type": "string",
+                  "description": "Operator-only Git commit name override for this project. Set with git_identity_email; empty on both resets the project to inherit the installation default (see get_git_identity)."
+                },
+                "git_identity_email": {
+                  "type": "string",
+                  "description": "Operator-only Git commit email override, paired with git_identity_name; empty on both resets to inheritance."
+                },
+                "integration_repository_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "LOCAL-only designated integration repository ID."
+                },
+                "hierarchical_integration_policy": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "description": "LOCAL-only complete typed hierarchical integration policy."
+                },
+                "hierarchical_integration_mode": {
+                  "type": "string",
+                  "enum": [
+                    "disabled",
+                    "observe",
+                    "hierarchy",
+                    "train",
+                    "development"
+                  ],
+                  "description": "LOCAL-only integration delivery mode for the Git-first train."
+                },
+                "promotion_flow": {
+                  "type": [
+                    "array",
+                    "object",
+                    "null"
+                  ],
+                  "description": "LOCAL-only promotion flow (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS."
+                },
+                "expected_integration_generation": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Required generation CAS for integration configuration."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Operator reason recorded for integration configuration."
+                }
+              },
+              "required": [
+                "project_id"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

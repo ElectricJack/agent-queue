@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/plugin_commands.py::PluginCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,243 @@
+[
+  {
+    "id": "source-settled-no-op",
+    "rule": "advance-source",
+    "calls": []
+  },
+  {
+    "id": "explicit-request",
+    "rule": "explicit-request",
+    "calls": [
+      "integration_promotion_policy_input",
+      "promote_request"
+    ]
+  },
+  {
+    "id": "already-requested",
+    "rule": "explicit-request",
+    "responses": {
+      "promote_request": {
+        "outcome": "already_requested"
+      }
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "promote_request"
+    ]
+  },
+  {
+    "id": "backmerge-debt-before-active-intent",
+    "rule": "explicit-request",
+    "policy": {
+      "backmerge_pending": true,
+      "active_request_id": "active"
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "message_send"
+    ],
+    "distinct_event": true
+  },
+  {
+    "id": "current-intent-waits",
+    "rule": "explicit-request",
+    "policy": {
+      "active_request_id": "active"
+    },
+    "calls": [
+      "integration_promotion_policy_input"
+    ]
+  },
+  {
+    "id": "notes-not-reviewed",
+    "rule": "explicit-request",
+    "event": {
+      "notes_reviewed": false
+    },
+    "responses": {
+      "promote_request": {
+        "outcome": "notes_not_reviewed"
+      }
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "promote_request",
+      "message_send"
+    ]
+  },
+  {
+    "id": "hotfix-request",
+    "rule": "hotfix-completed",
+    "event": {
+      "from_task": "hotfix-task"
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "promote_request"
+    ]
+  },
+  {
+    "id": "hotfix-held",
+    "rule": "hotfix-completed",
+    "event": {
+      "from_task": "hotfix-task"
+    },
+    "policy": {
+      "backmerge_pending": true
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "message_send"
+    ]
+  },
+  {
+    "id": "published-intent",
+    "rule": "visit-intent",
+    "event": {
+      "batch_id": "promotion-batch"
+    },
+    "calls": [
+      "integration_promotion_publish"
+    ]
+  },
+  {
+    "id": "testing-intent",
+    "rule": "visit-intent",
+    "event": {
+      "batch_id": "promotion-batch"
+    },
+    "responses": {
+      "integration_promotion_publish": {
+        "outcome": "testing"
+      }
+    },
+    "calls": [
+      "integration_promotion_publish"
+    ]
+  },
+  {
+    "id": "held-intent",
+    "rule": "visit-intent",
+    "event": {
+      "batch_id": "promotion-batch"
+    },
+    "responses": {
+      "integration_promotion_publish": {
+        "outcome": "held"
+      }
+    },
+    "calls": [
+      "integration_promotion_publish",
+      "message_send"
+    ]
+  },
+  {
+    "id": "delivered-backmerge",
+    "rule": "backmerge-delivered",
+    "calls": [
+      "integration_backmerge_source"
+    ]
+  },
+  {
+    "id": "request-migration-refusal",
+    "rule": "explicit-request",
+    "responses": {
+      "promote_request": {
+        "outcome": "migrations_not_additive"
+      }
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "promote_request",
+      "message_send"
+    ]
+  },
+  {
+    "id": "hotfix-migration-refusal",
+    "rule": "hotfix-completed",
+    "event": {
+      "from_task": "hotfix-task"
+    },
+    "responses": {
+      "promote_request": {
+        "outcome": "migration_range_invalid"
+      }
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "promote_request",
+      "message_send"
+    ]
+  },
+  {
+    "id": "backmerge-override-refusal",
+    "rule": "backmerge-delivered",
+    "responses": {
+      "integration_backmerge_source": {
+        "outcome": "breaking_migration_override_forbidden"
+      }
+    },
+    "calls": [
+      "integration_backmerge_source",
+      "message_send"
+    ]
+  },
+  {
+    "id": "read-runtime-error",
+    "rule": "explicit-request",
+    "responses": {
+      "integration_promotion_policy_input": {
+        "outcome": "runtime_error"
+      }
+    },
+    "calls": [
+      "integration_promotion_policy_input"
+    ],
+    "lifecycle": "failed"
+  },
+  {
+    "id": "notification-rejected",
+    "rule": "explicit-request",
+    "policy": {
+      "backmerge_pending": true
+    },
+    "responses": {
+      "message_send": {
+        "outcome": "rejected"
+      }
+    },
+    "calls": [
+      "integration_promotion_policy_input",
+      "message_send"
+    ],
+    "lifecycle": "failed"
+  },
+  {
+    "id": "missing-acknowledgement",
+    "rule": "explicit-request",
+    "missing": [
+      "notes_reviewed"
+    ],
+    "calls": [
+      "integration_promotion_policy_input"
+    ],
+    "lifecycle": "failed"
+  },
+  {
+    "id": "missing-source",
+    "rule": "explicit-request",
+    "responses": {
+      "integration_promotion_policy_input": {
+        "outcome": "policy_input",
+        "policy": {
+          "backmerge_pending": false,
+          "active_request_id": null
+        }
+      }
+    },
+    "calls": [
+      "integration_promotion_policy_input"
+    ],
+    "lifecycle": "failed"
+  }
+]

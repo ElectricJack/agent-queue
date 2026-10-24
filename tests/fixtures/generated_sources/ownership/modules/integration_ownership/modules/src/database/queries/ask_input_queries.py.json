@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/ask_input_queries.py::text_hash": "Generic UTF-8 human input hashing; no integration state or authority."
+  }
+}

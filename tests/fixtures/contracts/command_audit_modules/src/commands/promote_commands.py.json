@@ -1,0 +1,506 @@
+{
+  "integration_backmerge_source": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_integration_backmerge_source",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "PromotionRefusal('unauthorized', 'Backmerge authorship is a daemon mechanism.').response()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "cancelled"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'backmerges_authored', 'project_id': project.id, 'backmerges': results}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.response()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:6bb517f5e16b4fbc9647576b6216ba3af18923d7b6b8e1895d2d9daca9560b32",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "integration_promotion_notes_input": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_integration_promotion_notes_input",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "PromotionRefusal('unauthorized', 'Notes input is a daemon mechanism.').response()"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'notes_input', 'project_id': project.id, 'notes_input': None}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'notes_input', 'project_id': project.id, 'notes_input': value}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': exc.outcome, 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:31be0bc83884bb3983f91cc22131d883027ad3c618f19046b4b08b2b6a3a8992",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "integration_promotion_policy_input": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_integration_promotion_policy_input",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "PromotionRefusal('unauthorized', 'Promotion policy input is daemon-owned.').response()"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'policy_input', 'project_id': project.id, 'policy': {'step': step, 'source_sha': source, 'backmerge_pending': debt, 'active_request_id': active['request_id'] if active else None, 'active_batch_id': active['id'] if active else None, 'newer_source': bool(active and current.get('source_sha') != source)}}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.response()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:24d763f0e330ca90f02ca2f2704320d1cd1aa8a908ecdd63e45bbcaf7a42a425",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_approve": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_approve",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "self._woken({'success': True, 'outcome': 'already_approved' if already else 'approved', 'project_id': project.id, 'request_id': request.request_id, 'batch_id': row['id'], 'pr_url': meta['pr_url'], 'review': review}, project.id, row['repository_id'], row['target_ref'])"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.response()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:964c852df58eea985d7ff0e29aef206f56081c7bbcfa709a0abd5195bf3c3408",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_cancel": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_cancel",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "self._woken({'success': True, 'outcome': 'cancelled', 'project_id': project.id, 'request_id': request.request_id, 'batch_id': row['id'], 'pr_url': meta['pr_url']}, project.id, row['repository_id'], row['target_ref'])"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_intent_response('already_cancelled', row)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.response()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_intent_response('already_cancelled', locked)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:707bf4782ae31ddec91c4944e32098b1187c61faf34cf1f2856104e422b59a38",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_hotfix": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_hotfix",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': 'unavailable', 'error': created.get('error', 'Hotfix task filing failed.')}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'hotfix_filed', 'project_id': project.id, 'task_id': created['task_id'], 'promotion': meta}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.response()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:46a63637831f8dd87b7a45ec2245af52642571278d23e3ff45186f59df6d9ac7",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._promotion_cached(args, 'listed')"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:90220d819c7834c9b047c44926dfbf9a7dcfdc949105107f38ec79d857063909",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_prepare": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_prepare",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'prepared', 'project_id': project.id, 'task_id': task.id, 'version': version, 'notes_input': notes_input, 'draft': draft}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': exc.outcome, 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:4b223dae33ac0b7fd2594c4285cc980268fa5eb986e0fbd01acf6037152b42c8",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_repair": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_repair",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._woken(result | {'outcome': 'repaired', 'backup_path': str(backup), 'previous': {key: task[key] for key in ('status', 'profile_id', 'route_source', 'route')}}, project.id, row['repository_id'], row['target_ref'])"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.response()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_unavailable(exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:7571821ad7ee942a1c5a179b3a58579b53b03b6f88cd2ae88e0e08bb0456d743",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_request": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_request",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._request_promotion(args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:f252394b4334c3530704117e41f84a01ab522292b6a42c7ea5d30c43dfc870bc",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_rulesets": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_rulesets",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': 'not_found', 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**result, 'outcome': 'rulesets', 'app_id': app_id, 'rulesets': promotion_rulesets(result['flow'], default_branch=default_branch, app_id=app_id), 'workflow_triggers': promotion_workflow_triggers(result['flow'], default_branch=default_branch)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:35d258a1527219f5fcad5391b13006df0461270999ccd54507236ece4af34dba",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_schema": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_schema",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'schema', 'schema': FlowSchema.schema()}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:cabe49c45d4f6174dbb177645f3f85f94b236f4dd64826db01fd408816494636",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_status": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_status",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._promotion_cached(args, 'status')"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:46e00ee37582ba182ebb809fc2744325b27f3ab24ff734bf3e45d2bddac2f52e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "promote_validate": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/promote_commands.py:PromoteCommandsMixin._cmd_promote_validate",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': 'unauthorized', 'error': 'Project is outside caller scope.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': 'not_found', 'error': f'Project {project_id!r} does not exist.'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'outcome': 'not_found', 'error': 'Repository default branch is missing.'}"
+      },
+      {
+        "protocol": "explicit_boolean: result.valid",
+        "return": "{'success': result.valid, 'outcome': 'valid' if result.valid else 'invalid', 'project_id': project_id, **result.as_dict(), 'warnings': warnings, **remote}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:c9b2acec8a94b3cee5a128227657b684eda7f68a5b47aa9b49ca1ba9f6324efa",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

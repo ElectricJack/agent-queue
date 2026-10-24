@@ -1,0 +1,30 @@
+{
+  "repository_binding_review": {
+    "added_definition_fingerprints": 4,
+    "current_owned_groups": {
+      "companions": 12573,
+      "engine": 87440,
+      "guards": 639,
+      "policy": 480,
+      "policy_sources": 1999,
+      "shared": 47736,
+      "ui": 333
+    },
+    "current_owned_total": 151200,
+    "current_table_count": 45,
+    "definitions": [
+      "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository",
+      "src/database/queries/project_queries.py::import from src.database.tables import archived_tasks, chat_analyzer_suggestions, events, integration_batches, project_integration_leases, project_constraints, projects, repos, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_integration_checkpoints, task_metadata, task_results, task_subtasks, task_tools, tasks, token_ledger, workspaces",
+      "src/plugins/internal/git.py::GitPlugin._push_authorized",
+      "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]"
+    ],
+    "fixed_baseline_and_caps_unchanged": true,
+    "new_storage_sites": {
+      "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository::21ae1cd4ddf58cf690836c6bf31c504fe7942594a23d94bcc21935941e496c96": "ordinary"
+    },
+    "reason": "Review first-repository binding refusal fences, the extracted guarded publication body and registration as integration-owned definitions. The one new storage site is an ordinary atomic authorization audit. No new table, replay authority, duplicate delivery state or baseline/cap change.",
+    "reviewed_source_revision": "b890fb3f3ed937bde6de013eb637a4a572b31d3a",
+    "unknown_definitions": [],
+    "unknown_storage_sites": []
+  }
+}

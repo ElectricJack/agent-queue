@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/dashboard_paths.py::escalation_path": "Generic dashboard route escaping for every human incident. No code integration, ref identity, lifecycle state or delivery authority; integration callers remain charged separately."
+  }
+}

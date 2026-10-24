@@ -410,7 +410,9 @@ def _stage_profile_ids() -> frozenset[str]:
         SPECIAL_PURPOSE_PROFILE_IDS,
     )
 
-    return frozenset(SPECIAL_PURPOSE_PROFILE_IDS | EXCLUDED_PROFILE_IDS | {"pr-merger"})
+    return frozenset(
+        SPECIAL_PURPOSE_PROFILE_IDS | EXCLUDED_PROFILE_IDS | {"pr-merger", "fidelity-reviewer"}
+    )
 
 
 def worker_route(

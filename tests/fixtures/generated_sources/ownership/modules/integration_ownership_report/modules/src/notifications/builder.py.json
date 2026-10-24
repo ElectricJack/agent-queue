@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/notifications/builder.py::build_task_detail": {
+      "baseline_span": [
+        20,
+        48
+      ],
+      "landing_span": [
+        20,
+        48
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

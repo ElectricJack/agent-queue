@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/install/deploy_history.py::read_history": "Generic read-only installation deployment evidence and migration recovery hold display; no project integration state, branch ownership, ref replay or delivery authority. The shared system-config response that calls it remains charged independently."
+  }
+}

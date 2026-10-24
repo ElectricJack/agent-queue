@@ -76,7 +76,7 @@ vocabulary the rest of the documentation uses.
 ```mermaid
 flowchart TD
     A["You create a task<br/>dashboard, aq CLI, REST or MCP"] --> B{"Routed?"}
-    B -- "no class or profile" --> R["Routing playbook picks an<br/>intelligence class and profile"]
+    B -- "unrouted" --> R["Routing playbook plans class + profile;<br/>classifies task facts when needed"]
     R --> C
     B -- yes --> C["Orchestrator waits until nothing<br/>blocks it: dependencies, gates, capacity"]
     C --> D["Worktree slot reserved: an isolated<br/>checkout on the task's own aq/ branch"]
@@ -93,11 +93,12 @@ flowchart TD
    [default pipeline](src/prompts/default_playbooks/default-pipeline.md) creates a
    spec-ingest task, which proposes a task batch, which waits at a human gate before
    anything is written into the graph.
-2. **Routing chooses capabilities, not a hard-coded model.** A task missing an
-   intelligence class or a profile makes the orchestrator emit `task.route_needed`. The
-   shipped [routing playbook](src/prompts/default_playbooks/default-assignment-routing.md)
-   asks a small model to pick a class and a profile from the catalog of what this install
-   can actually run, and writes both onto the task. A *profile* is the markdown role —
+2. **Routing chooses capabilities, not a hard-coded model.** An unrouted task
+   makes the orchestrator emit `task.route_needed`. The shipped
+   [routing playbook](src/prompts/default_playbooks/default-assignment-routing.md)
+   uses a deterministic planner to select a class and compatible profile from live
+   capacity. When needed, a model classifies task facts such as kind and risk;
+   it does not choose the provider or profile. The router writes the route. A *profile* is the markdown role —
    what the agent is for, which tools it may use, which harness runs it. An *intelligence
    class* maps a level such as `standard-high` onto provider-specific model and
    reasoning settings.
@@ -139,14 +140,17 @@ you type in an escalation thread is the only thing that travels back in.
 
 ## Where things live
 
-Operator-editable policy is markdown under `~/.agent-queue/vault/`, watched by the daemon:
-agent profiles, harness definitions, intelligence classes, workspace kinds, playbooks,
-formulas, and per-project overrides, specs, notes and memory. Markdown is the editable
-source; database rows and compiled artifacts are projections of it. Obsidian works on the
-vault, and nothing requires it.
+Operator-editable definitions are Markdown under `~/.agent-queue/vault/`. The daemon
+watches profiles, harnesses, intelligence classes, workspace kinds and formulas.
+Playbook import and activation are explicit; editing a source file does not activate
+it. Review documents mirror database revisions; knowledge records are owned by
+PostgreSQL and exported to Markdown. Legacy notes and memory files remain retained
+sources, rather than automatically ingested records. Legacy facts
+and override indexing are inactive. See [configuration and the vault](docs/concepts/configuration-and-vault.md)
+for source ownership and refresh behavior. Obsidian works on the vault and is optional.
 
 Durable state — tasks, gates, sessions, claims, workspaces, delivery journals — is in
-PostgreSQL. The control path is deterministic on purpose: scheduling, dependency and gate
+PostgreSQL, alongside canonical reviews, decisions and versioned knowledge. The control path is deterministic on purpose: scheduling, dependency and gate
 resolution, assignment and recovery need no LLM call. Models do the parts that need
 judgment.
 

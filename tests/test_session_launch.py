@@ -160,6 +160,35 @@ async def test_uncertain_stop_keeps_starting_registration(db):
     assert len(flock_session_rows(await db.list_sessions(), [])) == 1
 
 
+@pytest.mark.parametrize("cleanup_method", ["stop", "confirm_stopped"])
+async def test_cancel_during_failed_launch_cleanup_keeps_cancellation(db, cleanup_method):
+    record, spec = registration(lifecycle="named")
+    provider = FakeProvider()
+    provider.script_start_error(record.name, RuntimeError("launch failed"))
+    entered = asyncio.Event()
+
+    async def blocked_cleanup(*_args):
+        entered.set()
+        await asyncio.Event().wait()
+
+    setattr(provider, cleanup_method, blocked_cleanup)
+    launch = asyncio.create_task(launch_session(db, provider, spec, record))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        launch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await launch
+        assert launch.cancelled()
+        # Cleanup has not proved the process stopped. Reconciliation still
+        # owns the committed registration after the consumer shuts down.
+        assert (await db.get_session(record.id)).state == "starting"
+        assert len(flock_session_rows(await db.list_sessions(), [])) == 1
+    finally:
+        if not launch.done():
+            launch.cancel()
+        await asyncio.gather(launch, return_exceptions=True)
+
+
 async def test_reconciliation_does_not_reap_launch_awaiting_provider(db):
     record, spec = registration(lifecycle="named")
     provider = FakeProvider()
@@ -334,7 +363,7 @@ _START_SITES = {
     ("src/discord/adapter.py", "self._bot.start"): 1,
     # Freezes an epic refresh batch (conflicting root PR, collected-epic aggregate
     # readiness); the train visits it without launching an agent.
-    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 2,
+    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
     # Batch fixer reservation hands its launch to DaemonFixerRuntime, whose
     # process start is the launch_session call pinned below.
     ("src/integration/fixers.py", "self.runtime.start"): 1,
@@ -405,6 +434,8 @@ _PROCESS_SITES = {
     # Authenticated acquisition, push and credential-free import share this Git-only spawn.
     ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
+    # The generated merge driver invokes only Git's low-level merge-file command.
+    ("src/integration/generated_merge_driver.py", "main", "create_subprocess_exec"): 1,
     # Bounded ccache/sccache statistics read for warm build caches; never an agent.
     ("src/build_cache.py", "cache_counters", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,

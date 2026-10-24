@@ -1,0 +1,307 @@
+{
+  "task_route": {
+    "argument_reads_diagnostic_only": [
+      "intelligence_class",
+      "prefer",
+      "prefer_mode",
+      "reason",
+      "task_id",
+      "task_type"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/routing_commands.py:RoutingCommandsMixin._cmd_task_route",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task.id, 'route_source': UNROUTED, 'class_hint': getattr(fresh, 'class_hint', None), 'task_type': str(task_type) if task_type else None, 'prefer_target': getattr(fresh, 'prefer_target', None), 'prefer_mode': getattr(fresh, 'prefer_mode', None), 'cleared': cleared}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': NOT_ROUTABLE, 'error': f\"task '{task.id}' is running or claimed; stop it first (aq task stop --task-id {task.id}), then run aq task route again\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': error}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid task_type '{kind}'. Allowed: {', '.join(sorted(TASK_TYPE_VALUES))}\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': error}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': NOT_ROUTABLE, 'error': f\"task '{task.id}' still has live session '{session.id}' ({session.state}); stop its writer with `aq session kill {session.id}`, wait for confirmed termination, then run aq task route again\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c4239f8c8abc20405f3321c8e87a156af43d04886d40a8d4601fccd443d2729d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_delegation_no_widening.py",
+      "tests/test_provider_intent.py",
+      "tests/test_routing_router.py",
+      "tests/test_task_route.py",
+      "tests/test_task_routing_contract.py"
+    ]
+  },
+  "task_route_apply": {
+    "argument_reads_diagnostic_only": [
+      "plan",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/routing_commands.py:RoutingCommandsMixin._cmd_task_route_apply",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'routing.invalid_plan', 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'stale', 'task_id': task.id, 'reason': stale}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'stale', 'task_id': task.id, 'reason': 'benchmark requested model mapping changed'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'stale', 'task_id': task.id, 'reason': f\"no candidate of the plan serves the strict preference '{target}'\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'stale', 'task_id': task.id, 'reason': 'no candidate of the plan is launchable now'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'stale', 'task_id': task.id, 'reason': 'the task changed before the route was written'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'routing.busy', 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'routed', 'task_id': task.id, 'profile_id': chosen.profile_id, 'intelligence_class': chosen.intelligence_class, 'provider': chosen.provider, 'provider_intent': selection.provider_intent, 'lane': chosen.lane, 'reason': reason, 'preference': preference, 'planned_profile_id': planned_profile_id, 'adjusted_at_apply': adjusted, 'resolved_gate_ids': resolved}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:bb4871f9cd9f7f2f61775e7edea48eb2aacc211f8f618ca428fec15c1c1bf496",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_route_override": {
+    "argument_reads_diagnostic_only": [
+      "intelligence_class",
+      "profile_id",
+      "reason",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_route_actor": "sha256:d72bc9e262a2b706279943c25205f213b9b7fc0e413addbbd6aae633ba98c6ae",
+      "_route_state_refusal": "sha256:00bd52b546fd1a919d1bc6e7051ce83d9bc511fb76bec87d11296e4757b14b94"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/routing_commands.py:RoutingCommandsMixin._cmd_task_route_override",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id and profile_id are required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': INVALID_OVERRIDE, 'error': f\"reason is required: {OVERRIDE_REASON_MIN} to {OVERRIDE_REASON_MAX} characters saying why the router's choice is overridden (got {len(reason)})\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "invalid(f\"profile '{profile_id}' not found\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "invalid(error)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "invalid(f\"'{profile.id}' is a role profile, not a worker route\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "invalid(f\"intelligence_class is required: profile '{profile.id}' has no fixed class and the task names none\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "invalid(error)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "invalid(f\"profile '{profile.id}' cannot run class '{class_id}': {why}\")"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "invalid(f\"task '{task.id}' needs a workspace kind no pool prepares; override it to a task-lifecycle profile\")"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': NOT_ROUTABLE, 'error': f\"task '{task.id}' changed before the override was written (claimed, started or finished); stop it first and override it again\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'task_id': task.id, 'profile_id': facts.id, 'intelligence_class': class_id, 'provider': facts.provider, 'provider_intent': 'pinned', 'route_source': OVERRIDE, 'by': actor['by'], 'resolved_gate_ids': resolved}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c952d827a6f537ff5087a81a6019b9fed228a98002316e879339cb073430a949",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_assignment_routing.py",
+      "tests/test_delegation_no_widening.py",
+      "tests/test_provider_intent.py",
+      "tests/test_task_route.py",
+      "tests/test_task_routing_contract.py"
+    ]
+  },
+  "task_route_plan": {
+    "argument_reads_diagnostic_only": [
+      "classification",
+      "policy",
+      "task_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/routing_commands.py:RoutingCommandsMixin._cmd_task_route_plan",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'task_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"task '{task_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'already_routed', 'task_id': task.id, 'profile_id': task.profile_id, 'intelligence_class': task.intelligence_class, 'provider_intent': getattr(task, 'provider_intent', None), 'route_source': source, 'route': getattr(task, 'route', None)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'code': 'routing.invalid_policy', 'error': str(exc)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'held', 'task_id': task.id, 'benchmark_arm': arm_name, 'reason': 'requested_model_unavailable', 'requested_model': arm.requested_model, 'mapped_model': mapped, 'live_context': dict(snapshot.context), 'live_summary': summarize_context(snapshot.context)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': result.outcome, **result.value, 'live_context': dict(snapshot.context), 'live_summary': summarize_context(snapshot.context)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:6af02d646ffc7c91609e4a83ceb151129d566f1b145585f21a2ba50436f7273f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

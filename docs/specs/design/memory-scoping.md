@@ -18,6 +18,11 @@ tags: [design, memory, scoping, tools]
 
 ---
 
+> **Current boundary (2026-10-22).** The collection and L0–L3 design below is historical. Current prime leaves
+> legacy L1/L2 memory slots empty and uses an explicitly enabled, scoped knowledge
+> bundle. Retrieval does not broaden the caller's record permissions. See
+> [knowledge context](../knowledge-context.md).
+
 ## 1. Overview
 
 Memory is organized into **scopes** that form a specificity hierarchy and **tiers**

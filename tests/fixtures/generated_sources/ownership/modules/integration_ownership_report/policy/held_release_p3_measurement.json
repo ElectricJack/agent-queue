@@ -1,0 +1,13 @@
+{
+  "held_release_p3_measurement": {
+    "authority": "decision:8f9bd96b-900d-4afc-8b98-645dd0ae4eab",
+    "global_request": "msg-a65b93b943b44cd48cbdee7fb0672950",
+    "grant_delivery_message_id": "msg-8011136a1ef04a6b8ec1112fab150eb1",
+    "measured_engine_lines": 85317,
+    "measured_owned_total": 161162,
+    "measured_shared_lines": 62288,
+    "measured_table_count": 45,
+    "source_revision": "681915da53686a31f183fd6c63040e979b124d15",
+    "task_id": "fair-ember-93"
+  }
+}

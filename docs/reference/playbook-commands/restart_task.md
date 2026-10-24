@@ -14,13 +14,15 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:2ebbf85e499d65c2cbea4035da7e91e6a45f7ae701f4c4025573a293add5af41` |
+| Contract fingerprint | `sha256:b92dc2532c2fe660a6e09fd01c1594c385b33f30a6fa4aeb824138a6bae97b19` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `task_id` | `string` | yes | — | Task ID to restart |
+| `override_hold` | `boolean` | no | — | Explicitly release the recovery hold (operator/global supervisor only) |
+| `reason` | `string` | no | — | Required reason for overriding a recovery hold |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
@@ -45,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id | — | always |
+| Composite using task_id, override_hold, reason | — | always |
 
 <!-- aq:generated:end -->
 

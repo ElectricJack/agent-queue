@@ -1,0 +1,10 @@
+{
+  "shared": {
+    "dashboard/src/pages/command-center/statusPillModel.ts::export interface StatusPillInput {": {
+      "reason": "The status pill input carries an epic's integration delivery projection alongside the stored lifecycle status."
+    },
+    "dashboard/src/pages/command-center/statusPillModel.ts::import { deliveryCardStatus, deliveryHeadline, describeDelivery, type EpicDelivery } from \"../../components/epicDeliveryFormat\";": {
+      "reason": "The shared card/frame status pill imports the epic delivery projection formatters so an integration hold renders its delivery status, not a chosen pause."
+    }
+  }
+}

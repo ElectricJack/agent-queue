@@ -1,5 +1,13 @@
 # Dashboard state-boundary inventory
 
+<!-- aq:historical -->
+> **Historical migration inventory (2026-09-10).** The browser-backed feature state
+> listed below was input to the migration, which has shipped. Old browser values are
+> ignored, not imported or used as fallback. Use the [implemented state contract](2026-09-10-dashboard-state-contract-design.md),
+> `src/dashboard_state/namespaces.py` and the [current guide](../../guides/dashboard.md#state-ownership-and-live-updates)
+> for present ownership. In-place expansion and task-node manual pinning have also
+> been superseded by the tiled graph's container navigation.
+
 **Date:** 2026-09-10
 
 **Scope:** production code under `dashboard/src`

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/routing.py::install_routing_activation_snapshot": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/routing.py::requires_routing_gate": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

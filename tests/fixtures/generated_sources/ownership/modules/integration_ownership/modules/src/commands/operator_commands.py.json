@@ -1,0 +1,22 @@
+{
+  "exclusions": {
+    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
+    "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority."
+  },
+  "shared": {
+    "src/commands/operator_commands.py::OperatorCommandsMixin._operator_repository_probes": {
+      "reason": "Operator preflight's read-only GitHub prerequisites for integration setup: the project integration repository, promotion-flow branches, online runner labels and trust-manifest App identities. Reports blockers only; no integration storage, lifecycle or ref writes."
+    }
+  },
+  "storage_sinks": {
+    "src/commands/operator_commands.py::OperatorCommandsMixin._operator_audit::bd2a4a293320cc867e1020b0690f6f6eed30d0527bacc63a71e5489091be21fe": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 208,
+      "owner": "OperatorCommandsMixin._operator_audit",
+      "owner_fingerprint": "d0485324b8c1e7a7b7aff9196dc465b8b7f2be406d2d0b8151c9edbb0b6cf08b",
+      "reason": "Operator-worker action, result, refusal and preflight audit records on the events table keyed by project, task, session and claim epoch; ordinary audit with no integration state or ref replay authority."
+    }
+  }
+}

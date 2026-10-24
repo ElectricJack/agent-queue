@@ -79,16 +79,16 @@ class PromotionPolicy(Strict):
 
 class IntegrationSettings(Strict):
     """Portable inputs, never a source installation's activation identities."""
-
     type: Literal["integration_settings"] = "integration_settings"
     version: Literal[1] = 1
     engine: Literal["shadow", "active"]
     integration_mode: Literal["pull_request"] = "pull_request"
-    hierarchical_integration_mode: Literal["disabled", "observe", "hierarchy", "train"]
+    hierarchical_integration_mode: Literal[
+        "disabled", "observe", "hierarchy", "train", "development"
+    ]
     integration_repository_id: str | None = None
     default_branch: str
-    # Placeholders may stand for check-name arrays until materialization. The
-    # ordinary integration policy validator validates the resolved structure.
+    # Check-name placeholders are materialized before integration policy validation.
     policy: dict[str, Any] | None = None
     promotion_flow: list[dict[str, Any]] | None = None
 

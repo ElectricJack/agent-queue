@@ -1,0 +1,27 @@
+{
+  "exclusions": {
+    "src/waits/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/waits/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "shared": {
+    "src/waits/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/waits/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    }
+  },
+  "storage_sinks": {
+    "src/waits/scheduler.py::SchedulerWaitService.deadline::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 277,
+      "owner": "SchedulerWaitService.deadline",
+      "owner_fingerprint": "f1022096d1e79be84d5287104e90d38b0e5701433470e2d6c8f9e91145746115",
+      "reason": "Wait escalation audit event in the existing event stream; no ref replay or duplicate integration journal."
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/workspace_registration.py::path_is_missing": "Distinguishes confirmed FileNotFoundError from inaccessible filesystem paths; it supplies no workspace-release or integration ownership authority.",
+    "src/workspace_registration.py::workspace_missing_detail": "Formats a repair instruction that preserves holder locks before registration removal; this presentation helper performs no integration lifecycle operation."
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "source_base": "feeb89e65",
+  "reason": "Add the bounded operational_retention archive command (calm-grove-13). Preserve all existing descriptor bytes.",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "290e2dbbcf78de54529980c650bba931be38d264d552e14ece9e1a3d87dca47f",
+  "command": "operational_retention",
+  "explicit_entry": {
+    "name": "operational_retention",
+    "description": "Archive and collect one bounded batch of old operational records.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean",
+          "default": false,
+          "description": "Count eligible records without archiving or deletion."
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 1000
+        }
+      }
+    }
+  },
+  "tool_category": "system",
+  "contract_fingerprint": "sha256:6d29d06593291ff15a9321ad2cfaa411802373ba337fda20d698f1bc9dbc29f2",
+  "merged_source": "f8af6255714732c751b89ad4bea8bb8f1ab8fa51"
+}

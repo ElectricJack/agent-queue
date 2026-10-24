@@ -6,6 +6,12 @@ The [operator runbook](../guides/human-asks-rollout.md) defines live evidence,
 missing-evidence handling, transfer and rollback. H08 integrates H01–H07 from
 `526d811d6`; H08-OPS and H09-OPS own the production gates.
 
+The table and recorded H08 receipt below retain the design's provisional migration
+labels 91/92/93. In the merged chain these are ledger `a00000000096`, source fences
+`a00000000097` and shared input/outbox `a00000000098`; 91–93 now name unrelated
+revisions. Treat the historical receipt as evidence for its recorded checkout,
+not an instruction to migrate production to those provisional IDs.
+
 Test references below are exact pytest node names unless a browser check or Vitest
 file is named. Parameterized tests cover all collected variants. Run the complete
 area commands after this table; a node reference alone is not a passing receipt.

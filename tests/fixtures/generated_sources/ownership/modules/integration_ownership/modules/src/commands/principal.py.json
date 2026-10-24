@@ -1,0 +1,12 @@
+{
+  "generic_dependencies": {
+    "src/commands/principal.py::ExecutionPrincipal": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/principal.py::PrincipalKind": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/principal.py::SERVER_OWNED_ARG_KEYS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/principal.py::TRUSTED_LOCAL": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/principal.py::_principal_var": "Generic request principal context storage; integration dispatch and object scope checks are charged independently.",
+    "src/commands/principal.py::current_principal": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/principal.py::matches_session_instance": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/principal.py::principal_context": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,5 +1,10 @@
 # Integration subject writers — primitives 11–13
 
+> **Retired (2026-10-22, azure-ridge-72).** `WriterPrimitives` was never wired into a
+> production engine and was removed with its tests to restore the integration transition
+> cap. Only `OperationSafety` remains in `src/integration/writers.py`. This document is
+> kept as history.
+
 Implemented for `amber-meadow-15.2` from approved `rev-agile-ridge` revision 2,
 §3.4, using the contracts/schema from prerequisite `vivid-willow.1` at
 `9ad7f4ead`. The approved design is in the operator vault at

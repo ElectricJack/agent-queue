@@ -1,0 +1,7 @@
+{
+  "shared": {
+    "src/test_selection/report.py::render_report": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

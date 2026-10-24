@@ -56,7 +56,9 @@ from typing import Any
 from src.escalations.autoresolve import (
     AutoDecision,
     RuleContext,
+    EscalationAutoResolver,
     gate_resolved_rule,
+    source_cleared_rule,
     task_terminal_rule,
 )
 from src.escalations.facts import OPEN_STATES
@@ -144,6 +146,7 @@ class SweepFacts:
 
     #: The incident's live gate row, or ``None`` when it has no gate source.
     gate: Mapping[str, Any] | None = None
+    automatic_decision: AutoDecision | None = None
     #: Whether the incident's source record still exists.  Tri-state on purpose:
     #: ``False`` is a *proven* absence (the row this module looked up is gone),
     #: ``None`` means "this module cannot see that source table at all", which is
@@ -290,6 +293,12 @@ def _decision_item(row: Mapping[str, Any], decision: AutoDecision, *, reason: st
         evidence=decision.evidence,
         reason=reason,
     )
+
+
+def source_cleared(row, facts, ctx) -> SweepItem | None:
+    if facts.automatic_decision is None:
+        return None
+    return _decision_item(row, facts.automatic_decision, reason="its durable source cleared")
 
 
 def gate_resolved(
@@ -507,6 +516,7 @@ def triage(
 #: closes nothing.
 SWEEP_RULES: tuple[Callable[..., SweepItem | None], ...] = (
     gate_resolved,
+    source_cleared,
     withdrawn_review,
     task_terminal,
     archived_task,
@@ -682,6 +692,13 @@ class EscalationSweeper:
             )
         return SweepFacts(
             gate=gate,
+            automatic_decision=await EscalationAutoResolver(
+                self.db, self.config, rules=(
+                    gate_resolved_rule, task_terminal_rule,
+                    # Deliberately exclude age-only expiry from the explicit sweep.
+                    source_cleared_rule,
+                ),
+            ).decide(row),
             source_found=source_found,
             task_status=task_status,
             project_status=str(getattr(getattr(project, "status", None), "value", "") or ""),
@@ -761,6 +778,7 @@ class EscalationSweeper:
         """
         if item.rule in {
             "withdrawn_review", "task_terminal", "archived_task", "worker_template_grants",
+            "sweep", "gate_resolved",
         }:
             current = await self.db.get_escalation(item.escalation_id)
             if current is None or int(current["revision"]) != item.revision:

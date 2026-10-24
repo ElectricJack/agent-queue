@@ -1,0 +1,20 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/project_relocation_commands.py::ProjectRelocationCommandsMixin._cmd_project_relocate": {
+      "fingerprint": "2962f2de4e1f3900cbf1bba94862f51a6923340c0c14f598ce0b1bbd4034d0f1",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/project_relocation_commands.py::import from src.integration.checks import ChecksState, ExactChecks, RequiredChecks": {
+      "fingerprint": "4cce2ec42c147531332cd0a8b460907b13fb85e5e23090e7c41a17c6d35a6aeb",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/project_relocation_commands.py::import from src.integration.development_policy import project_development_pin": {
+      "fingerprint": "e06ea2c9fd0cb0862fa7aea718340ee855dd8a9165d5bc5a8550cbbeb98f226f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/project_relocation_commands.py::import from src.integration.runtime_contracts import HeadIdentity": {
+      "fingerprint": "22e8da93f245e510ec49dd0446faec6f710ed0bc77e49acbe67ebdcc867f794b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

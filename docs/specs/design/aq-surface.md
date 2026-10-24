@@ -11,6 +11,8 @@ tags: [design, cli, mcp, api, auth, prime, surface]
 > Start at [the documentation home](../../README.md) for what AQ does today, and
 > see [historical material](../../history/README.md) for how this material is
 > organised.
+> Current command dispatch, discovery and authorization:
+> [daemon-core](../systems/daemon-core.md#24-the-command-handler).
 
 **Status:** Draft — approved direction (2026-08-19)
 **Principles:** [guiding-design-principles](guiding-design-principles.md) (#2 visible and editable, #7 events not coupling, #9 simple interfaces, #10 fewer moving parts)
@@ -100,6 +102,16 @@ a BLOCKED checkpointed producer to READY.
 
 For an active repair delegate, `reserve-owner` instead redispatches its current
 repair stage using the normal fenced handoff, without resetting its budget.
+`aq task restart <id>` refuses an active, decided supervisor recovery hold before
+continuation cleanup or branch reservation. The error and `aq task explain` name
+the hold, its owner and reason. `--override-hold --reason <explanation>` authorizes
+release only for a local operator or live global supervisor, matching `task recover`
+release authority. The READY transaction rechecks the exact incident and prior hold
+timestamp; a concurrent replacement hold refuses the restart. Accepted overrides
+preserve the prior decision in incident history, record the authenticated releaser
+and explanation, and append a task comment. Refused restarts retain the hold.
+Undecided incidents can still be superseded by an ordinary accepted restart.
+
 `aq task restart` uses that same handoff for a stopped delegate rather than a
 bare status flip: a repair delegate owns no branch origin, so the pool claim
 frontier admits it only on the exact reserved `repair` fence of its operation's

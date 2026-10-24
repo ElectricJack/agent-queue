@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/commands/collaboration_lifecycle.py::CollaborationLifecycleMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/collaboration_lifecycle.py::CollaborationReconciler": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

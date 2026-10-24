@@ -51,26 +51,19 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 <!-- aq:generated:end -->
 
-## Purpose
+## Current V2 behavior
 
-TODO: what this command is for, in the reader's terms.
+This compatibility verb delegates to activation health in
+[the handler](../../../src/commands/playbook_commands.py). It reports activation
+readiness and reasons, not run failure rates or stuck-run statistics; legacy
+`status` and `limit` do not filter runs here. Prefer
+`aq playbook activation-health --playbook-id <id>`.
 
-## When a playbook uses it
-
-TODO: the situations a playbook step reaches for it.
-
-## How it works internally
-
-TODO: step by step through the executor and handler, with file references.
-
-## Side effects and persistence
-
-TODO: what it writes, which tables or files hold it, and what survives a restart.
-
-## Failure modes and diagnostics
-
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
-
-## Example step
-
-TODO: a realistic playbook step that calls this command.
+Health is recomputed from stored artifact references, live command/profile
+fingerprints and feature support. Protected-key readiness is a separate requirement
+for generated-command and script execution. Authored and active
+source digests expose edits not deployed. The read writes no policy or run state.
+Inspect `list-runs`, `inspect-run` and `run-overlay` for execution history; use
+explicit reviewed import/activation or operator doctor repair for unready policy.
+See [activation evaluation](../../../src/playbooks/activation.py) and
+[recovery guidance](../../concepts/playbooks.md#common-failures-and-recovery).

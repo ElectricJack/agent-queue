@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/waits/dispatcher.py::WakeDispatcher.finish": {
+      "fingerprint": "72250fa356fd585f1ff3ace2752f5b66ef46ff299c317cb7b429c6edad297347",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/dispatcher.py::import from src.wait_runtime.legacy_parking import legacy_parked": {
+      "fingerprint": "d17fd7e44a3789eee16d2431375a60574724f88b4deb4e755922c961b6d7c080",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

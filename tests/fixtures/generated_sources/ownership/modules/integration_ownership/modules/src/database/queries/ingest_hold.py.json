@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation."
+  }
+}

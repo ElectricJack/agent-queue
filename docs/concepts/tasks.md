@@ -98,7 +98,7 @@ The close is the worker's completion event, not a claim that the code is already
 
 ### Statuses and phases
 
-`TaskStatus` has nine stored values. The claim record also has a finer-grained, transient phase; do not confuse it with a task status.
+`TaskStatus` has twelve stored values. The claim record also has a finer-grained, transient phase; do not confuse it with a task status.
 
 | State or phase | Meaning | What normally happens next |
 |---|---|---|
@@ -107,15 +107,18 @@ The close is the worker's completion event, not a claim that the code is already
 | `ASSIGNED` | A push-scheduled worker has been selected but has not started. | `AGENT_STARTED` moves it to `IN_PROGRESS`; an execution error can return it to `READY`. |
 | `claiming` / `preparing` / `active` | Claim-lease phases, not statuses: AQ is reserving a pool task, preparing its workspace, or has an active worker session. | A successful pool claim changes the task straight from `READY` to `IN_PROGRESS`. |
 | `IN_PROGRESS` | A worker is executing the task. Graph containers can also use this status while their children are open, without being runnable worker work. | The worker closes it, it pauses, requests input, fails, or is stopped. |
+| `WAITING` | A durable message/event wait is registered while the session is still resident. | Acknowledgement returns it to `IN_PROGRESS`, or hibernation releases the resident session. |
+| `HIBERNATED` | A durable wait persists without a resident worker session. | Resolving the wait moves it to `RESUME_PENDING`. |
+| `RESUME_PENDING` | The wait resolved and AQ is arranging resumption. | Acknowledgement returns it to `IN_PROGRESS`; a held resume returns it to `HIBERNATED`. |
 | `WAITING_INPUT` | The worker asked a question and is awaiting a reply. | A reply resumes it; input timeout can pause it. |
-| `PAUSED` | Work is temporarily stopped, for example token/backoff recovery or an explicit pause. | A resume timer or operator resume returns it to the ready path. |
+| `PAUSED` | Work is temporarily stopped, for example token/backoff recovery or an explicit pause. | A resume timer or operator resume restores the appropriate ready or suspended path. A manual pause need not have a timer. |
 | `COMPLETED` | AQ recorded successful task completion. | Integration may later deliver its branch; archival can move its record out of the active table. |
 | `FAILED` | This attempt did not complete. It may be restarted while retry policy permits. | Restart/retry returns it to `READY`; exhausted retries become `BLOCKED`. |
 | `BLOCKED` | Terminal failure or administrative stop requiring deliberate intervention. | An operator can restart or skip it; it does not quietly become complete. |
 
 `delivered` is deliberately absent from this table: it is an integration journal outcome for branch content reaching the default branch, not a `TaskStatus`. Likewise, **archived** and **deleted** are data-lifecycle operations, not statuses. Archiving moves a terminal record to `archived_tasks` while retaining its identity and history; deletion removes an active task/subtree subject to hierarchy protections.
 
-> **Compatibility note.** [src/state_machine.py](../../src/state_machine.py) is the authoritative transition table and dependency-cycle validator, but its strict enforcement setting ships off (`state_machine.enforce: false`). Current command paths still update durable task state through the command/database layer. Treat the table as the documented intended transition model, not a promise that every legacy write is rejected by that module today.
+> **Transition enforcement.** [src/state_machine.py](../../src/state_machine.py) is the authoritative transition table. Legacy invalid transitions warn by default (`state_machine.enforce: false`), but transitions involving `WAITING`, `HIBERNATED` or `RESUME_PENDING` are checked even with that setting off. Completion also enforces open-child and managed-integration guards; administrative forced transitions are separate.
 
 ### Dependency types
 
@@ -124,13 +127,30 @@ The hierarchy (`parent_task_id`) tells readers what belongs together. Dependency
 | Edge type | Blocks readiness? | Satisfaction / purpose |
 |---|---:|---|
 | `blocks` | Yes | The upstream task must be `COMPLETED`. Use for an ordinary prerequisite. |
-| `parent-child` | Yes | Holds a child until its container has been released from `DEFINED`. This is an execution edge, separate from the structural parent field. |
+| `parent-child` | Yes | Holds a child while its container is `DEFINED`, or manually `PAUSED` with child withholding enabled. This is an execution edge, separate from the structural parent field. |
 | `waits-for` | Yes | Dynamic fan-in: waits for every `parent-child` child of the named container to complete. |
 | `conditional-blocks` | Yes | A contingency runs only after the upstream task has terminally failed. If that upstream task completes, the contingency is closed as a no-op. |
+| `delivery-of` | Yes | Requires source completion in SQL and current Git proof that the source is contained in the default target. A historical receipt alone cannot release it. |
 | `discovered-from` | No | Provenance: this work was discovered while doing another task. |
 | `related`, `duplicates`, `supersedes` | No | Association and planning metadata; these never withhold readiness. |
 
 AQ checks cycles across every blocking type and also rejects an impossible `waits-for` edge from a descendant to its own ancestor. A non-blocking provenance cycle is allowed because it cannot deadlock execution. The source definitions are [src/models.py](../../src/models.py) and [src/state_machine.py](../../src/state_machine.py).
+
+### Readiness, hierarchy and close guards
+
+`is_blocked` records unsatisfied dependency edges and gates, not the entire claim decision. A `READY`, unblocked task may still be withheld by a hold, held ingestion batch, routing, capacity or integration admission. The shared request-scoped `AdmissionView` combines graph facts with current Git evidence. Lists use cached evidence and do not fetch Git. `aq task explain --task-id <id>` identifies the relevant reason.
+
+Completed prerequisite branches can be stacked into a dependent's prepared workspace before delivery to its parent or the default branch. This is the default prerequisite-branch policy unless explicitly opted out. Stacking is preparation evidence; `delivery-of` still requires default-target containment, and a reopened source invalidates stale preparation.
+
+Structural depth is at most three levels **including** the root (root → phase/container → leaf). Dotted task ids remain unchanged after reparenting. Containers are never claimed; declared empty containers and empty phases stay open. Ordinary settlement requires all children `COMPLETED`; managed integration parents additionally require the train's completion proof. Stale paused/blocked containers settle only after verified child delivery.
+
+Phases sequence sibling containers through `blocks` edges. Phases and keyed standing parents are unavailable in hierarchical/train projects, where integration owns the branch structure. A graph with phases needs a root graph. A profile granted graph creation can file direct children under its held task, or declare a document `parent:` container under it; `--root` requires that document container. Hierarchical/train worker graphs cannot declare their own parent container. `--reason` is required for worker filing. `--after-review <id>` gates every node until that existing, nonwithdrawn review is approved.
+
+Subtasks are a task's checklist, not separately scheduled tasks: at most 15 rows, addressed by 1-based ordinal, with `pending`, `in_progress`, `done` or `skipped` state. A passing close refuses unfinished rows unless `--skip-open-subtasks` is supplied.
+
+Deliverable evaluation never runs commands. A `test` item needs a matching `--test` record and existing named paths; `--command` alone does not satisfy it. A `command` item accepts matching `--command` or `--test` evidence. `flag` and `registration` checks search repository text; they do not prove runtime registration. A `review` item requires a nonwithdrawn submission of the requested kind, not approval. Explicit `--deliverable-unmet 'id: reason'` declarations do not bypass separate review-revision, completion-CI or child guards. See [completion CI](../specs/design/task-completion-ci.md) and [review revision completion](../specs/design/review-revision-completion.md).
+
+A train-managed passing close can return `close_in_progress` while author-assisted parent publication finishes. Follow the returned instructions and preserve the claim and workspace. After an ambiguous response, inspect the claim and task before retrying close.
 
 ## Formulas and layout
 
@@ -144,7 +164,9 @@ aq formula show health-endpoint --project-id demo --var service=api
 aq formula cook health-endpoint --project-id demo --var service=api --dry-run
 ```
 
-`show` is read-only: it resolves inheritance, substitutes variables and validates the result. `cook` creates the resulting graph in one transaction (or reports it with `--dry-run`) and records the resolved snapshot and provenance on the container. Cooking is an operator action, not an agent-session command. [src/task_graph/formulas.py](../../src/task_graph/formulas.py) keeps the in-memory registry fresh from vault changes and retains the previous valid formula if a half-saved edit cannot parse.
+`show` is read-only: it resolves inheritance, substitutes variables and validates the result. `cook` creates the resulting graph in one transaction (or reports it with `--dry-run`) and records the resolved snapshot and provenance on the container. Cooking requires elevated/operator or supervisor authority; ordinary worker sessions may list and show formulas. [src/task_graph/formulas.py](../../src/task_graph/formulas.py) keeps the in-memory registry fresh from vault changes and retains the previous valid formula if a half-saved edit cannot parse.
+
+Inheritance merges authored defaults and parent fields, and merges nodes/phases by key. New phases append after inherited ones; authored lists such as `needs`, `labels` and `subtasks` replace rather than concatenate. A `system:<name>` parent pins that inheritance hop to system scope. `aq formula show --as-cooked <container-id>` reads the saved cook snapshot instead of today's template. Reserved `object` and `variation` recipes have additional transactional approval/input guards, including on dry runs; project shadows cannot bypass them.
 
 ### Layout
 
@@ -159,6 +181,10 @@ flowchart LR
 ```
 
 The fully expanded layout is durable. Collapsing a container is a per-viewer derived calculation: it shrinks that container to a tile and reclaims space without rewriting the stored layout. Dirty marks cause incremental recomputation; a full tidy recomputes a project. The dashboard and API are consumers of the projection, while the layout driver owns the write process. See [src/task_graph/layout/driver.py](../../src/task_graph/layout/driver.py), [src/task_graph/layout/engine.py](../../src/task_graph/layout/engine.py), and [src/task_graph/layout/compaction.py](../../src/task_graph/layout/compaction.py).
+
+Layout is enabled by default. Configuration lives under `dashboard.graph_layout` (or top-level `graph_layout` when the nested block is absent): `incremental_debounce_ms: 500`, `reconcile_interval_seconds: 900`, `tidy_job_budget_seconds: 60`, and `row_aspect: 1.3`. The engine rules version is 4. Container order is stable by dependency depth then `(created_at, id)`; root serial chains use serpentine rows. Root tidy seeds by phase, activity, creation time and id, then runs its bounded optimiser. Incremental root placement preserves existing ordinals while fitting new work. Reconciliation repairs missing geometry and advances projects to current rules.
+
+Operators can request `aq graph tidy --project-id <id>` or `aq graph tidy --all` (durable bulk work), inspect `aq graph reflow-status`, or use `aq graph layout-rebuild --project-id <id>` for a full synchronous rebuild. Dirty work is debounced and processed in bounded batches; tidy jobs advance over multiple daemon cycles.
 
 ## Inputs and outputs
 
@@ -182,13 +208,13 @@ The fully expanded layout is durable. Collapsing a container is a per-viewer der
 
 | Symptom | Diagnose | Recovery |
 |---|---|---|
-| A task stays `DEFINED` or does not run. | `aq task explain <task-id>` and `aq task deps --task-id <task-id>` show persistent dependency/gate reasons before transient capacity reasons. | Complete/remove the real prerequisite, resolve the indicated gate, remove an intentional hold when appropriate, or supply the missing route/capacity. Do not force status merely to bypass a real blocker. |
+| A task stays `DEFINED` or does not run. | `aq task explain --task-id <task-id>` and `aq task deps --task-id <task-id>` show persistent dependency/gate reasons before transient capacity reasons. | Complete/remove the real prerequisite, resolve the indicated gate, remove an intentional hold when appropriate, or supply the missing route/capacity. Do not force status merely to bypass a real blocker. |
 | Adding an edge is refused as a cycle. | Read the named task ids in the command error and inspect `aq task deps`. | Reverse or remove the incorrect blocking relationship. Use `related` or `discovered-from` for an informational relationship, not `blocks`. |
 | A graph/formula validation fails. | Run the same `--dry-run`; findings identify malformed nodes, unknown keys, bad dependency types, cycles or inaccessible `spec_ref` paths. | Fix the source document. A failure creates no partial graph; formula registry errors preserve the prior valid formula. |
 | A worker's close is refused for missing evidence. | Compare declared deliverables with the `--test` and `--command` records supplied to close. | Run the named focused check, record its exact repeatable command, or explicitly mark a deliberately unshipped item with `--deliverable-unmet 'id: reason'`. |
 | A research or design task's close is refused with an unmet `review` item. | The task has not submitted a document review (`aq review list` shows none it authored). | Submit the proposal or report with `aq review submit --task-id <task-id> --file <draft.md> --kind <kind> --title "<title>"` — a committed copy does not count — or, when there is no document, close with `--deliverable-unmet 'review: <reason>'`. See the [reviews guide](../guides/reviews.md#the-workers-side). |
 | A task needs another attempt. | Inspect `aq task get-result --task-id <task-id>` and the task's failure context. | Use the operator restart path for a failed/stopped task after fixing the cause; exhausted retries require deliberate handling rather than silent looping. |
-| Deletion is refused because branches exist. | `aq task delete` reports the protected branch-discard condition and names the affected branches. | Decide explicitly: `--branches keep` preserves remote refs; `--branches delete` discards them. Use `--cascade` only when the whole subtree is intended. |
+| Work should be deleted. | An operator/supervisor runs `aq task delete --task-id <id> --preview` to inspect the plan and warnings. | Choose `--recursive` for a subtree or `--task-only` to reparent surviving children; choose `--branches keep` (default) or `delete`, then confirm with `--yes`. Selected running work is stopped before deletion; `--stop-running` acknowledges that warning. `--cascade` is a deprecated alias for `--recursive`. |
 | Completed work is not on the default branch. | Check the project's integration status and delivery journal. | Treat completion and delivery separately; a parked batch retains the source branch and is repaired or retried through integration policy. |
 
 Archiving is the safer history-retention operation for a terminal task. It moves the task into the archive while preserving its identity and task history; permanently deleting an archived record is a separate, more destructive action.

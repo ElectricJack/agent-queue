@@ -1,0 +1,22 @@
+{
+  "storage_sinks": {
+    "src/integration/delegate_release.py::release_delegates_on::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 343,
+      "owner": "release_delegates_on",
+      "owner_fingerprint": "b5ea33838f48d54c05f15af238ecaf7b638d3e7d96e60bd5be89307e41bce279",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/delegate_release.py::release_delegates_on::6af5b4b38876529c6af81fbe30ba9d64b278e240f478636c41232f56ccbb6734": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 365,
+      "owner": "release_delegates_on",
+      "owner_fingerprint": "b5ea33838f48d54c05f15af238ecaf7b638d3e7d96e60bd5be89307e41bce279",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

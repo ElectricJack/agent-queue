@@ -645,6 +645,7 @@ def test_an_install_that_never_mentions_discord_is_ready(tmp_path):
     assert discord.state is StepState.SKIPPED
     assert CAPABILITY_DISCORD in discord.summary
     assert "messaging_platform: none" in (home / "config.yaml").read_text(encoding="utf-8")
+    assert load_yaml(home / "config.yaml")["integration"]["git_first"] == "active"
 
 
 def test_selecting_discord_without_a_token_stops_at_the_human_and_says_where(tmp_path):

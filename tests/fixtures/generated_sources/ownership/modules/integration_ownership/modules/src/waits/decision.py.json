@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/waits/decision.py::ceiling_anchor": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decision.py::decide_sleep": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decision.py::measured_inputs": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decision.py::project_policy": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

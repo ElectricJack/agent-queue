@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/playbooks/receipts.py::RECEIPT_OUTCOMES['cancelled']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

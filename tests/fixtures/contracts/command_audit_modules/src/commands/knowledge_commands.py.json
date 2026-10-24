@@ -1,0 +1,1065 @@
+{
+  "knowledge_authority_grant": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_authority_grant",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('authority_grant', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:9f687b66f37624e20dc8ecb31fd9f9480e1fef2f3329a920816a31559f315765",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_authority_revoke": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_authority_revoke",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('authority_revoke', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:1681cd238076fe6622492507b17a87861fb5fbab4825ec73cf69571b83363c79",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_cite": {
+    "argument_reads_diagnostic_only": [
+      "claim_epoch",
+      "idempotency_key",
+      "identity",
+      "kind",
+      "revision_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_cite",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "dict(success=True, citation_id=citation_id)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:9b5911484f9aaf4c75007a0eb52c8eac90a1248d13eeb5775f184cfc199b6c09",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_context_deliver": {
+    "argument_reads_diagnostic_only": [
+      "bundle_id",
+      "claim_epoch",
+      "idempotency_key",
+      "rendered_sha256",
+      "state",
+      "transport"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_context_deliver",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._knowledge_context_service().observe_delivery(principal=current_principal(), bundle_id=args['bundle_id'], transport=args['transport'], transport_key=args['idempotency_key'], rendered_sha256=args['rendered_sha256'], state=args.get('state', 'delivered'), claim_epoch=args.get('claim_epoch'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:31e4f1ffacb781aec108aff1a0df78ffd23f88521d3d706a066d19de8f94e377",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_create": {
+    "argument_reads_diagnostic_only": [
+      "body",
+      "category",
+      "claim_epoch",
+      "idempotency_key",
+      "if_link_token",
+      "metadata",
+      "source_task_id",
+      "sources",
+      "summary",
+      "tags",
+      "title"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_create",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._knowledge_service().create(snapshot=snapshot, source_task_id=args.get('source_task_id'), if_link_token=args.get('if_link_token'), principal=principal, project_id=_knowledge_scope(args), idempotency_key=args.get('idempotency_key'), claim_epoch=args.get('claim_epoch'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:544c07b754810fff9c788ddfa6760d774b4453b6802bddb3430a9e7d1ff71514",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_create_task": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_create_task",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await create_task_from_knowledge(self, args, current_principal())"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:688e1f94ea96a2e315c20383f09ca80d2ae3b10c4360d9531b9a421f05032144",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_diff": {
+    "argument_reads_diagnostic_only": [
+      "from_revision",
+      "identity",
+      "to_revision"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_diff",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'read', 'record_id': before.get('record_id'), 'from_revision': before.get('revision_id'), 'to_revision': after.get('revision_id'), 'changes': changes}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:fb7e31f84993d20902eb599d1b950cfb09af710d9f6e7ce8439a66c42e93c5aa",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_export": {
+    "argument_reads_diagnostic_only": [
+      "identity",
+      "revision_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_export",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await exporter.manual(identity=args.get('identity'), principal=current_principal(), project_id=_knowledge_scope(args), revision_id=args.get('revision_id'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:f3fc010acc4deed7900631f4b13194b7a2fa39e55cbc7b65b846e21d3c6db96e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_generation_status": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_generation_status",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('record.forbidden', 'Generation diagnostics require the local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await generation_status(self.db)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:0bbb02418b00a7d816da78e1362a6302e2521e46652acfbaf63f7320f702d726",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_generation_tick": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_generation_tick",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('record.forbidden', 'Generation tick requires the daemon service or local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "dict(success=True, captured=captured, states=states)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:ed338a1f9bbae88e03cb27b8eba6ce422bf8bb1ee1ff21802bd3425a32111b6d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_history": {
+    "argument_reads_diagnostic_only": [
+      "before_sequence",
+      "identity",
+      "limit"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_history",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._knowledge_service().history(identity=args.get('identity'), principal=current_principal(), project_id=_knowledge_scope(args), before_sequence=args.get('before_sequence'), limit=int(args.get('limit', 25)))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:c5241c9b6c635af2878e70d85fee463d40de280bed3f3a5832f93bd0784309d1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_import": {
+    "argument_reads_diagnostic_only": [
+      "backup_receipt",
+      "expected_revisions",
+      "expected_source_hashes",
+      "idempotency_key",
+      "limit",
+      "manifest_content_base64",
+      "manifest_sha256",
+      "operation",
+      "roots",
+      "run_id",
+      "scope_aliases",
+      "selected_item_ids",
+      "snapshot_id",
+      "snapshot_timestamp",
+      "source_installation_id",
+      "vector_export"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_import",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('knowledge_import.forbidden', 'Requires the local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await service.apply(**common, manifest_content_base64=args.get('manifest_content_base64'), selected_item_ids=args.get('selected_item_ids'), expected_revisions=args.get('expected_revisions'), expected_source_hashes=args.get('expected_source_hashes'), idempotency_key=args.get('idempotency_key'), backup_receipt=args.get('backup_receipt'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await service.resume(**common, run_id=args.get('run_id'), cancel=operation == 'cancel')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('knowledge_import.source_unavailable', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('knowledge_import.invalid_input', 'Unknown import operation')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('knowledge_import.disabled', 'Enable knowledge and knowledge.import_inventory before dry-run')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('knowledge_import.invalid_input', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('knowledge_import.source_unavailable', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "report.to_dict()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:f45171b2557c00228b876f0aa4424fec633166e4c6838410135bf3a99cbaaf57",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._search(args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:e56405d1d129dad345a786a344e33b878dd6d14b35a675b6234ab6311e1d6e4d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_proposal_decide": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_proposal_decide",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('proposal_decide', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:98c8a1ee6d530a96b3eb7e64e6af02c2254226bad4aa5658c780017d03b19f1b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_proposal_show": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_proposal_show",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('proposal_show', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:28a7eccd5acce007ba39ee8a81a1d26e6b48e97dbce649b3d31aded5a255fb6d",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_propose": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_propose",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('propose', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:28cad272ed3129356f58f9c58e319a6a831806db53efc66e54a7ad281072558a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_redact": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_redact",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('redact', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:5182a7ea1d159d52556c0befa87c906054f37df2416545894ea48d1c2e251e8f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_restore": {
+    "argument_reads_diagnostic_only": [
+      "claim_epoch",
+      "idempotency_key",
+      "identity",
+      "if_revision",
+      "reason",
+      "revision_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_restore",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._knowledge_service().restore(identity=args.get('identity'), revision_id=args.get('revision_id'), reason=args.get('reason', ''), principal=current_principal(), project_id=_knowledge_scope(args), idempotency_key=args.get('idempotency_key'), if_revision=args.get('if_revision'), claim_epoch=args.get('claim_epoch'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:9af0ed4370731482531c92077d3967dd1e5a337fbc52242fc6d73f92ce57177e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_retire": {
+    "argument_reads_diagnostic_only": [
+      "claim_epoch",
+      "idempotency_key",
+      "identity",
+      "if_revision",
+      "reason",
+      "successor_record_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_retire",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._knowledge_service().retire(identity=args.get('identity'), reason=args.get('reason', ''), principal=current_principal(), project_id=_knowledge_scope(args), idempotency_key=args.get('idempotency_key'), if_revision=args.get('if_revision'), successor_record_id=args.get('successor_record_id'), claim_epoch=args.get('claim_epoch'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:3b56dada849a9479d8efa93b609b7878c19b2a54769af8dbf5bfab6581c6df84",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_share": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_share",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('share', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:3113227659094ab533604212fa6fe20c6d5844317528f8396ee0f7df2327f032",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_show": {
+    "argument_reads_diagnostic_only": [
+      "identity",
+      "revision_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_show",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._knowledge_service().show(identity=args.get('identity'), principal=current_principal(), project_id=_knowledge_scope(args), revision_id=args.get('revision_id'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:a45f4804bf09204426b4c2339997d971c2d477d4fc8e4885084a16531dbd3bf6",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_update": {
+    "argument_reads_diagnostic_only": [
+      "claim_epoch",
+      "idempotency_key",
+      "identity",
+      "if_revision"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_update",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._knowledge_service().update(identity=args.get('identity'), patch=patch, principal=current_principal(), project_id=_knowledge_scope(args), idempotency_key=args.get('idempotency_key'), if_revision=args.get('if_revision'), claim_epoch=args.get('claim_epoch'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:29383242731a67d377f897427056f4fd7c0585e631932c5e3ff40d7daea4cdc6",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "knowledge_verify": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_knowledge_verify",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._protection('verify', args)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:5a711d08461fad8f1b6c3dc3b64972f57c23b95f98d7068f7a22dea1799d84d1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "link_create": {
+    "argument_reads_diagnostic_only": [
+      "claim_epoch",
+      "idempotency_key",
+      "identity",
+      "if_link_token",
+      "if_revision",
+      "operations"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_link_create",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._record_service().mutate_links(identity=args.get('identity'), operations=args.get('operations') or [], principal=current_principal(), project_id=_knowledge_scope(args), idempotency_key=args.get('idempotency_key'), if_revision=args.get('if_revision'), if_link_token=args.get('if_link_token'), claim_epoch=args.get('claim_epoch'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:488401bbb113398ff25a0b5972677775e0ed24fdcccc15dda26cb2167a3f57f0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "link_list": {
+    "argument_reads_diagnostic_only": [
+      "identity",
+      "revision_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_link_list",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._record_service().list_links(identity=args.get('identity'), principal=current_principal(), project_id=_knowledge_scope(args), revision_id=args.get('revision_id'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:9b900673570adcd5143df364ab2190a9e394592290179385487a16cca686e74a",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "link_remove": {
+    "argument_reads_diagnostic_only": [
+      "claim_epoch",
+      "idempotency_key",
+      "identity",
+      "if_link_token",
+      "if_revision",
+      "link_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_link_remove",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._record_service().mutate_links(identity=args.get('identity'), operations=[{'action': 'remove', 'link_id': link_id}], principal=current_principal(), project_id=_knowledge_scope(args), idempotency_key=args.get('idempotency_key'), if_revision=args.get('if_revision'), if_link_token=args.get('if_link_token'), claim_epoch=args.get('claim_epoch'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:64e4de088242854da6cc02d873a066c5a93a23b5d485a0be6fa391542bcd9ee4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "record_capabilities": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_record_capabilities",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'read', 'capabilities': {'enabled': cfg.enabled, 'global_enabled': cfg.global_enabled, 'writes_enabled': cfg.writes_enabled, 'ui_enabled': cfg.ui_enabled, 'enabled_projects': [project for project in cfg.enabled_projects if principal is not None and (principal.kind.value == 'local' or principal.project_id == project or (principal.elevated and principal.project_id is None))], 'legacy_memory_mode': cfg.legacy_memory_mode, 'features': {name: getattr(cfg, name).enabled for name in ('context', 'semantic', 'extraction', 'consolidation', 'export', 'import_inventory', 'import_apply')}, 'profile_granted_operations': sorted(grants), 'granted_operations': sorted(available), 'unavailable_operations': unavailable}}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:46d96df8685f0fbadbf1ba54ff93d1ba6b87b3d0714a9f135cff84e8647e110d",
+    "tests": [
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_knowledge_commands.py::test_worker_capabilities_match_activation_and_read_results",
+      "tests/test_knowledge_commands.py::test_worker_record_reads_reject_other_project"
+    ]
+  },
+  "record_repair": {
+    "argument_reads_diagnostic_only": [
+      "dry_run",
+      "event_id",
+      "max_batches",
+      "operation"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_record_repair",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('record.forbidden', 'Record repair requires the local operator')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('knowledge.disabled', 'Enable core records before applying repair')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await TaskRecordBackfill(self.db).run(dry_run=dry_run, max_batches=args.get('max_batches', 2))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await RecordOutbox(self.db, self.config.knowledge).replay(event_id=uuid_value(args.get('event_id'), 'event_id'), dry_run=dry_run)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('record.invalid_input', 'Unknown record repair operation')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('record.integrity_conflict', exc)"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:a0dcfad08fcbe7265116e03eb6762a2fa278122c73f974bd7aaf31c78bd53055",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "record_search": {
+    "argument_reads_diagnostic_only": [
+      "category",
+      "cursor",
+      "include_disputed",
+      "include_retired",
+      "kind",
+      "lifecycle",
+      "limit",
+      "query",
+      "verification"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_record_search",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._record_service().search(principal=current_principal(), project_id=_knowledge_scope(args), kind=args.get('kind', 'knowledge'), query=args.get('query') or '', category=args.get('category'), lifecycle=args.get('lifecycle'), verification=args.get('verification'), include_retired=args.get('include_retired', False), include_disputed=args.get('include_disputed', False), limit=args.get('limit', 25), cursor=args.get('cursor'))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:c3dd89192545fd69e6eb7e6515a092a3fb209ce27ad48fd80e1bc21f28be7ed4",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "record_show": {
+    "argument_reads_diagnostic_only": [
+      "identity",
+      "include_edges",
+      "revision_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/knowledge_commands.py:KnowledgeCommandsMixin._cmd_record_show",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._record_service().show(identity=args.get('identity'), principal=current_principal(), project_id=_knowledge_scope(args), revision_id=args.get('revision_id'), include_edges=args.get('include_edges', False))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "exc.result()"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:f01a90b9a79bedf77bb24e4134fef9a9d16970fc139827a7c00701c610183f10",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

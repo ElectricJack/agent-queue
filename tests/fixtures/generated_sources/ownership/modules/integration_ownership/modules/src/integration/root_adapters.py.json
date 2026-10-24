@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/root_adapters.py::RootPrimitiveAdapters._journal::a0e501158092e2f8b0db91017b8aa25b6c76123a7843e0de9a1f0882e3ad1a8c": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 220,
+      "owner": "RootPrimitiveAdapters._journal",
+      "owner_fingerprint": "b778b6ec5f758afa21d136f8445684b1805b5c786f520ba945b570507b109056",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

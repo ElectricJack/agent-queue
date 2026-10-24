@@ -1,0 +1,27 @@
+{
+  "authenticated_push_merge_measurement": {
+    "approval_message_id": "msg-49a7a4f4f8a5420eb80abf1d4d8b4a12",
+    "authority": "Supervisor reopen preapproval, 2026-10-23: exact merged amendment for PR #1882.",
+    "authorized_engine_delta": 13,
+    "authorized_owned_delta": 13,
+    "authorized_table_delta": 0,
+    "dev_engine_lines": 85010,
+    "dev_owned_total": 161198,
+    "dev_table_count": 45,
+    "headroom": 0,
+    "measured_engine_lines": 85023,
+    "measured_owned_total": 161211,
+    "measured_source_revision": "34302a22e2bc0541d1e73b667bb9161cf27431e6",
+    "measured_table_count": 45,
+    "merged_dev_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "prior_engine_cap": 85544,
+    "prior_owned_total_cap": 161213,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1882",
+    "reason": "Carry unchanged approved push diagnostics onto independently measured dev; retain all historical grants and real reductions.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "restore_task": "azure-ridge-72",
+    "task_id": "fleet-dune-15"
+  }
+}

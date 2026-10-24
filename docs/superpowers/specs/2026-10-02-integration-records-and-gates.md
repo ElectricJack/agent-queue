@@ -1,5 +1,10 @@
 # Integration records and gates: phase 2 primitives 14–19
 
+> **Partly retired (2026-10-22, azure-ridge-72).** `RecordsPrimitives`, the attempt
+> reader and the gate wait/eject ports were never bound in production and were removed.
+> The human gates (`GatePrimitives.gate_on`, `answer_on`, `release_hold`) and the journal
+> helpers in `records.py` remain live. This document is kept as history.
+
 Task `amber-meadow-15.3` (`p2_gates`), implementing `rev-agile-ridge`
 revision 2, §3.2–§3.7. Builds on the published `vivid-willow.1`
 foundation (`9ad7f4ead`). This task preserves that prerequisite commit;

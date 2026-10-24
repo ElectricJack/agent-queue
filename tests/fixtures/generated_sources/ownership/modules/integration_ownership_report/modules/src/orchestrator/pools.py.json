@@ -1,0 +1,36 @@
+{
+  "shared_definitions": {
+    "src/orchestrator/pools.py::PoolsMixin._delivery_admission": {
+      "baseline_span": [
+        212,
+        220
+      ],
+      "landing_span": [
+        212,
+        220
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._measure_pools": {
+      "baseline_span": [
+        221,
+        423
+      ],
+      "landing_span": [
+        221,
+        423
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._reconcile_pools_inner": {
+      "landing_span": [
+        611,
+        661
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/orchestrator/pools.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode": {
+      "reason": "Carries the project integration mode and verified prerequisite set into pool demand measurement."
+    }
+  }
+}

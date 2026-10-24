@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/commands/contracts/cron.py::register_cron_contracts": "Session-owned recurring prompt contracts use generic command-dispatch dependencies; they do not authorize integration or code delivery."
+  }
+}

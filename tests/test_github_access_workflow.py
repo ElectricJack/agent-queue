@@ -381,37 +381,6 @@ async def test_bootstrap_401_retries_with_a_new_app_candidate(workflow):
 
 
 @pytest.mark.asyncio
-async def test_integration_audit_publication_reconciles_by_idempotency_key(workflow):
-    access, _, _, _, state_path, log_path, mode = workflow
-    state = json.loads(state_path.read_text())
-    branch = "aq/integration/batch"
-    state["heads"][branch] = HEAD
-    state_path.write_text(json.dumps(state))
-    binding = await access.bind_repository("acme/widgets")
-    client = GitHubClient(binding, access=access)
-    key = "d" * 64
-    created = await client.create_audit_pr(
-        repository_id="private-fixture", branch=branch, head_sha=HEAD,
-        base_branch="main", batch_id="batch", idempotency_key=key,
-        repository_numeric_id=303, repository_full_name="acme/widgets",
-    )
-    assert created.number == 8
-    assert created.head_sha == HEAD
-    assert (await client.lookup_audit_pr(idempotency_key=key, branch=branch)) == created
-    repeated = await client.create_audit_pr(
-        repository_id="private-fixture", branch=branch, head_sha=HEAD,
-        base_branch="main", batch_id="batch", idempotency_key=key,
-        repository_numeric_id=303, repository_full_name="acme/widgets",
-    )
-    assert repeated == created
-    events = _events(log_path)
-    assert sum(
-        e["argv"][0] == "api" and "POST" in e["argv"] for e in events
-    ) == 1
-    assert all(e["kind"] == ("app" if mode != "existing_login" else "login") for e in events)
-
-
-@pytest.mark.asyncio
 async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
     workflow, tmp_path, internal_plugins_handler,
 ):

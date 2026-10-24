@@ -295,18 +295,18 @@ class WriterBudget(_Frozen):
     ordinal: int = Field(ge=0)
     intelligence_class: str = Field(min_length=1)
     started_at: float
-    deadline_at: float
+    deadline_at: float | None
     attempts: int = Field(default=0, ge=0)
     attempt_limit: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _clock(self) -> WriterBudget:
-        if self.deadline_at < self.started_at:
+        if self.deadline_at is not None and self.deadline_at < self.started_at:
             raise ValueError("a budget deadline cannot precede its start")
         return self
 
     def expired(self, now: float) -> bool:
-        return now >= self.deadline_at
+        return self.deadline_at is not None and now >= self.deadline_at
 
     @property
     def exhausted(self) -> bool:

@@ -1,0 +1,19 @@
+{
+  "deferred_worker_recovery_review": {
+    "baseline": "Pinned baseline, landing and allowance unchanged.",
+    "lock_order": "Project hierarchy lock precedes session/task rows in failure/disposition transactions, matching owner-recovery release order.",
+    "ordinary_state": "worker_recovery_disposition observes the failed claim and teardown outcome; branch/work_dir are historical pointers. Existing owner and source authority records remain canonical. The same transaction blocks a confirmed retained writer with its original failure cause; no owner, hold, budget or source proof is rewritten. prepare_guarded_recovery resets ordinary stall metadata only while the exact failed attempt still owns the task.",
+    "storage_sinks": {
+      "src/sessions/worker_recovery.py::prepare_guarded_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "call": "delete",
+        "disposition": "ordinary",
+        "integration_signal": false,
+        "line": 302,
+        "owner": "prepare_guarded_recovery",
+        "owner_fingerprint": "001b9fe77f07c2555eec510d1804540fbccf64361f136ef7c2ff1b8ea07dc934",
+        "reason": "Removes only the failed worker native resume key under exact task epoch/session instance/failure-record guards; ordinary continuation state, no ref replay or integration lifecycle authority."
+      }
+    },
+    "task": "stark-quest-41"
+  }
+}

@@ -2,6 +2,14 @@
 
 Tasks: `bright-flare`, 2026-09-26; `wise-bridge`, `solid-horizon`, 2026-09-27.
 
+> **Retired (2026-10-22, `azure-ridge-72`).** The Development publishers that
+> filed these repairs were retired on 2026-10-12. The repair-filing code they
+> called (`ensure_repair`, `repair_chain`) and its task templates were deleted
+> once nothing called them. Historical repair rows keep their
+> `development_repair_sources` and `development_repair_evidence` metadata, and
+> branch cleanup still recognises `development-repair-*` identities. The rest of
+> this page records the retired behaviour.
+
 A development publisher merge conflict on a completed source must journal the
 exact source revision and conflicting paths, then create or reuse one bounded
 repair task for that manifest. Independent work may continue. Dispatch resumes

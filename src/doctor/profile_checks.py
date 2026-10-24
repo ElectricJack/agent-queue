@@ -25,8 +25,8 @@ block, preserving operator edits such as ``harness: codex``.
 
 ``profiles.supervisor_capability_drift``
 
-The supervisor is the one profile whose shipped grants are merged into its
-vault copy automatically (:mod:`src.profiles.capability_sync`, on daemon
+The supervisor, like every shipped system profile, has its shipped grants merged
+into its vault copy automatically (:mod:`src.profiles.capability_sync`, on daemon
 start and on every vault reload), because each control a release added for
 it used to stay denied until someone hand-edited the file.  This check names
 the shipped capabilities the vault copy still lacks — between an upgrade and

@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/records.py::append_record_on::2975ebc9f9661128b24c63404fc4fa76e7f5cbabd7d7fb25eb4373858467f1e7": {
+      "call": "append_integration_subject_journal_on",
+      "disposition": "retire",
+      "integration_signal": true,
+      "line": 190,
+      "owner": "append_record_on",
+      "owner_fingerprint": "6682141ececa691e9a17ff958f3b6296c316ed0a9f9a9e396e2693ba73c08a5b",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    }
+  }
+}

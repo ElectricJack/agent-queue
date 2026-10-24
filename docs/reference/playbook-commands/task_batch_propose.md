@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:64a80a92cc0b460e4c9a6a6c3c42a003ca9c825a5672e6e5f75495958234245c` |
+| Contract fingerprint | `sha256:6b8a70abe88b5196096bb9f86c77a20fc6e3bcd966449b10d8733cd9a10263c3` |
 
 ## Parameters
 
@@ -23,6 +23,7 @@
 | `project_id` | `string` | no | — | Project to propose into (defaults to the active one). |
 | `source` | `string` | yes | — | Where the proposal came from (e.g. a spec path or playbook id). Recorded as provenance on every task the commit creates. |
 | `dry_run` | `boolean` | no | — | Validate and return the diff without storing a proposal. |
+| `no_op` | `object` | no | — | Design-ingest settlement when every approved goal is already delivered; requires no change operations. |
 | `edits` | `object[]` | no | — | Existing task edits and controls. Live control changes are refused. |
 | `remove_edges` | `object[]` | no | — | Typed edges to remove: from, to, dep_type (default blocks). |
 | `comments` | `object[]` | no | — | Append comments to existing ids or tempIds. Author comes from the caller. |
@@ -52,7 +53,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id, source, dry_run, edits, remove_edges, comments, tasks, edges | — | always |
+| Composite using project_id, source, dry_run, no_op, edits, remove_edges, comments, tasks, edges | — | always |
 
 <!-- aq:generated:end -->
 

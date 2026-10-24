@@ -1,0 +1,37 @@
+{
+  "shared_definitions": {
+    "src/install/onboarding.py::_introduces_no_error": {
+      "baseline_span": [
+        337,
+        354
+      ],
+      "landing_span": [
+        337,
+        354
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/install/onboarding.py::check_step": {
+      "baseline_span": [
+        766,
+        870
+      ],
+      "landing_span": [
+        766,
+        870
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/install/onboarding.py::config_step": {
+      "baseline_span": [
+        355,
+        504
+      ],
+      "landing_span": [
+        355,
+        504
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

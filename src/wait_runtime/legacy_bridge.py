@@ -18,7 +18,9 @@ from src.database.queries.continuation_queries import measurement_medians
 from src.database.tables import agent_waits, messages, tasks, wait_deadlines, wait_records
 from src.waits.conditions import NodeKey, Scope, WaitError, canonical
 from src.waits.decision import decide_sleep, measured_inputs, project_policy
-from src.waits.graph import add_edges, lock_graph, recompute_from, would_create_cycle
+from src.waits.graph import (
+    add_edges, background_graph_work, lock_graph, recompute_from, would_create_cycle,
+)
 from src.wait_runtime.hibernate import begin_suspension
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
@@ -46,12 +48,18 @@ def legacy_times(row):
 
 
 class LegacyWaitBridge:
+    # A held project (an unadoptable legacy item, a failed audit) is retried
+    # after this delay by the startup bridge rather than on every cycle tick.
+    RETRY_SECONDS = 300.0
+
     def __init__(self, service, *, clock=time.time):
         self.service = service
         self.orch = service.orch
         self.db = self.orch.db
         self.clock = clock
+        self.retry_at = {}
 
+    @background_graph_work()
     async def run(self, args, *, principal, scope=None, handler=None):
         from src.wait_runtime.legacy_pass import run_pass
 
@@ -96,6 +104,15 @@ class LegacyWaitBridge:
             policy = project_policy(self.orch.config.wait_policy, old['project_id'])
             if not policy.v2_enabled:
                 raise WaitError('wait.disabled', 'verified waits are disabled for this project')
+            if old['state'] in {'satisfied', 'expired', 'cancelled'} and (
+                    session is None or session['state'] == 'stopped'):
+                # There is no live recipient to adopt. Settle migration with
+                # explicit evidence while preserving the historical outcome and
+                # outbox; no new wait, delivery or owner transition is needed.
+                return {'success': True, 'legacy_id': legacy_id,
+                        'disposition': 'terminal_session_unavailable',
+                        'legacy_state': old['state'], 'session_id': old['session_id'],
+                        'session_state': session['state'] if session else 'missing'}
             scope = Scope(old['project_id'], 'task' if task else 'session', old['owner_id'],
                           old['session_id'], old['session_instance_token'], old['claim_epoch'],
                           elevated=old['owner_kind'] == 'supervisor')

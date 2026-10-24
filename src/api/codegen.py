@@ -60,6 +60,7 @@ API_EXCLUDED = {
 
     "ask_intake", "ask_button",
     "reconcile_agent_cron",
+    "reconcile_project_schedules",
     "cron_delivery_begin",
     "cron_delivery_finish",
     "reconcile_agent_waits",  # internal scan; never callable over HTTP

@@ -2,12 +2,13 @@
 
 import json
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner
+from src.database.queries.wait_queries import verify_owner
 from src.database.tables import agents, messages, sessions, task_metadata, tasks, wait_records
 from src.waits.conditions import WaitError
+from src.waits.graph import lock_graph
 from src.waits.holding import WAKE_BODY_KINDS, addressed_to_wait
 from src.waits.sources import execute_task_status_mutation
 
@@ -33,7 +34,7 @@ async def acknowledge_in_place(conn, *, wait_id, scope, now):
     those messages delivered, releasing protection and rebasing liveness commit
     together. Mail arriving after this snapshot remains in the ordinary inbox.
     """
-    await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+    await lock_graph(conn)
     scope = await verify_owner(conn, scope)
     row = (await conn.execute(select(wait_records).where(
         wait_records.c.id == wait_id,

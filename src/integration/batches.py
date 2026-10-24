@@ -111,6 +111,27 @@ def withheld_source_blocker(target, task_id, source_sha, row):
     }
 
 
+def pair_conflict_sources_query(target, target_sha):
+    """Daemon-owned ejections withhold only the rejected source/target pair.
+
+    The immutable batch record survives task archival and daemon restarts.
+    Ordinary operator ejections do not create a conflict exclusion.
+    """
+    member, batch = integration_batch_members, integration_batches
+    conflict = batch.c.ejection_record["pair_conflict"]
+    return select(member.c.task_id, member.c.source_sha, batch.c.id.label("batch_id"),
+                  batch.c.human_abort_reason).select_from(
+        member.join(batch, batch.c.id == member.c.batch_id)
+    ).where(
+        batch.c.project_id == target.project_id,
+        batch.c.repository_id == target.repository_id,
+        batch.c.target_ref == target.target_ref,
+        ejection_instruction(batch.c.id),
+        conflict["target_sha"].astext == target_sha,
+        conflict["sources"][member.c.task_id].astext == member.c.source_sha,
+    )
+
+
 async def released_repair_attempts_on(conn, target, members) -> int:
     """Repair attempts an operator-released aborted batch spent on these sources.
 
@@ -456,7 +477,7 @@ class BatchStore:
                                               "green_sha": delivered_sha}))
 
     async def eject(self, batch, task_id, replacement, members, *, trees, authorize,
-                    dry_run, operator_id, reason):
+                    dry_run, operator_id, reason, dependent_ids=(), pair_conflict=None):
         """Abort and replace under the publisher's lock; never edit membership.
 
         The batch owns the operator's release instruction. It changes neither
@@ -474,9 +495,12 @@ class BatchStore:
             frozen = (await conn.execute(select(integration_batch_members).where(
                 integration_batch_members.c.batch_id == batch.id,
             ).order_by(integration_batch_members.c.ordinal))).mappings().all()
+            removed = {task_id, *dependent_ids}
+            if not removed <= {r["task_id"] for r in frozen}:
+                raise ValueError("ejected dependents are not frozen members")
             expected = tuple(replace(BatchMember(r["task_id"], r["source_sha"],
                 r["source_base_sha"], r["ordinal"]), order=i)
-                for i, r in enumerate(r for r in frozen if r["task_id"] != task_id))
+                for i, r in enumerate(r for r in frozen if r["task_id"] not in removed))
             if not any(r["task_id"] == task_id for r in frozen) or expected != members:
                 raise ValueError("frozen batch membership changed")
             source_projects = (await conn.execute(union_all(*(
@@ -502,6 +526,9 @@ class BatchStore:
                            "task_id": task_id,
                            "replacement_batch_id": replacement.id if replacement else None,
                            "operator_id": operator_id, "reason": reason}
+            if pair_conflict is not None:
+                instruction["pair_conflict"] = dict(pair_conflict)
+                instruction["dependent_ids"] = sorted(set(dependent_ids))
             await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
@@ -830,6 +857,13 @@ class BatchService:
         repo = await self.gitops.repository(batch)
         await self.gitops.validate_repository(repo)
         members = ordered_members(members, dependencies)
+        async with self.store.db._engine.connect() as conn:
+            excluded = {(row.task_id, row.source_sha) for row in (await conn.execute(
+                pair_conflict_sources_query(batch, snapshot.target_oid).where(
+                    integration_batch_members.c.task_id.in_([m.task_id for m in members]))
+            )).all()}
+        if any((m.task_id, m.source_sha) in excluded for m in members):
+            raise ValueError("pair_conflict: source and target heads have not changed")
         if (snapshot.observation.project_id, snapshot.observation.repository_id,
             snapshot.observation.target_ref) != (batch.project_id, batch.repository_id,
                                                  batch.target_ref):

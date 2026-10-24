@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/commands/wait_commands.py::WaitCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/wait_commands.py::WaitCommandsMixin._cmd_wait_get": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/wait_commands.py::WaitCommandsMixin._cmd_wait_register": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/wait_commands.py::import from src.agent_waits import WaitError, deadline_for, typed_match, wait_next_step": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

@@ -1,13 +1,13 @@
 # Module catalog — database
 
-Schema, query modules, migrations and data lifecycle: the 61 production modules
-that own every durable row in an AQ install, plus the 20 supporting files that
-define and migrate the schema.
+Schema, query modules, migrations and data lifecycle. This catalog covers
+selected modules; the source directories and owning [system specs](../../specs/systems/README.md)
+provide the current inventory as domains grow.
 
 Prose for everything here lives on five pages:
 
 * [The database](../database/README.md) — concepts, layering, entity diagrams, write ownership.
-* [Table families](../database/tables.md) — all 98 tables, grouped.
+* [Table families](../database/tables.md) — selected table families.
 * [Query modules](../database/queries.md) — the query layer in prose.
 * [Migrations](../database/migrations.md) — Alembic, scope policy, backup and restore.
 * [Data lifecycle](../database/data-lifecycle.md) — close, archive, delete, retention.
@@ -17,7 +17,7 @@ Prose for everything here lives on five pages:
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [`src/database/__init__.py`](../../../src/database/__init__.py) | Builds the one backend from config, refuses a non-PostgreSQL DSN outright, and redacts passwords out of any DSN that reaches a log. | [reference/database/README.md](../database/README.md) | `Database` is an alias for the PostgreSQL adapter, kept so existing imports work. `tests/test_database_backend_selection.py` |
-| [`src/database/tables.py`](../../../src/database/tables.py) | The schema's source of truth: 98 SQLAlchemy Core `Table` objects with their columns, named check constraints and indexes. | [reference/database/tables.md](../database/tables.md) | Migrations follow this file, never the reverse. Every `CheckConstraint` must be named or autogenerate emits a spurious drop. `tests/test_database.py` |
+| [`src/database/tables.py`](../../../src/database/tables.py) | The schema's source of truth: SQLAlchemy Core `Table` objects with their columns, named check constraints and indexes. | [reference/database/tables.md](../database/tables.md) | Migrations follow this file, never the reverse. Every `CheckConstraint` must be named or autogenerate emits a spurious drop. `tests/test_database.py` |
 | [`src/database/base.py`](../../../src/database/base.py) | The `DatabaseBackend` protocol — the full read/write contract a backend must satisfy, organised by domain. | [reference/database/queries.md](../database/queries.md) | What type checkers see; adding a query method means adding it here too. |
 | [`src/database/engine.py`](../../../src/database/engine.py) | Async engine creation and the schema lifecycle: the already-at-head fast path, the Alembic preflight, the legacy-stamp path, and the idempotent startup row normalisations. | [reference/database/migrations.md](../database/migrations.md) | Uses `engine.connect()`, not `begin()`, so Alembic owns per-revision transaction boundaries. `tests/test_database_engine.py` |
 | [`src/database/migration_guard.py`](../../../src/database/migration_guard.py) | Who may migrate which database: `current_scope()` (who is asking) × `is_production_database()` (what they point at) → migrate or verify. | [reference/database/migrations.md](../database/migrations.md) | Exists because of the 2026-09-02 incident; `AQ_DB_SCOPE` in the environment deliberately outranks a process-declared scope. `tests/test_migration_guard.py`, `tests/test_migration_guard_restoration.py` |
@@ -31,7 +31,7 @@ Prose for everything here lives on five pages:
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [`src/database/adapters/__init__.py`](../../../src/database/adapters/__init__.py) | Exports the one adapter. PostgreSQL is the only backend. | [reference/database/README.md](../database/README.md) | `tests/test_sqlite_removal.py` is the ratchet that keeps it that way. |
-| [`src/database/adapters/postgresql.py`](../../../src/database/adapters/postgresql.py) | Composes the 47 query mixins into the single object every caller uses; owns engine lifecycle, schema setup and the test-only truncate. | [reference/database/queries.md](../database/queries.md) | `reset_for_tests` refuses unless the DSN is `POSTGRES_TEST_DSN` or `AQ_ALLOW_DB_RESET=1`. `tests/test_database_postgresql.py` |
+| [`src/database/adapters/postgresql.py`](../../../src/database/adapters/postgresql.py) | Composes the domain query mixins into the single object every caller uses; owns engine lifecycle, schema setup and the test-only truncate. | [reference/database/queries.md](../database/queries.md) | `reset_for_tests` refuses unless the DSN is `POSTGRES_TEST_DSN` or `AQ_ALLOW_DB_RESET=1`. `tests/test_database_postgresql.py` |
 
 ## Query modules — tasks and the work graph
 

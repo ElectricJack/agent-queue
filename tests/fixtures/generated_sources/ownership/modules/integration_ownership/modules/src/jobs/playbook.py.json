@@ -1,0 +1,12 @@
+{
+  "exclusions": {
+    "src/jobs/playbook.py::import from src.jobs.artifacts import atomic_json, job_directory, read_json": "Playbook-only adapter import of generic managed-job receipt I/O; independent integration callers remain charged.",
+    "src/jobs/playbook.py::import from src.jobs.identity import processes, require_readable_identity, verified": "Playbook-only adapter import of generic process identity verification; no integration decisions.",
+    "src/jobs/playbook.py::launch_payload": "Decrypts script inputs for a closed stdin pipe; no integration identity or publication.",
+    "src/jobs/playbook.py::reconcile": "Settles protected script completion or pauses its owning playbook run; no integration ref replay.",
+    "src/jobs/playbook.py::retire": "Releases playbook input/output quotas and launch intent at result retention expiry; no integration lifecycle.",
+    "src/jobs/playbook.py::run": "Executes a pinned playbook script and encrypts its process result; independent of source CI jobs.",
+    "src/jobs/playbook.py::settle_unlaunched": "Records an unlaunched script cancellation/expiry as protected output; no integration lifecycle.",
+    "src/jobs/playbook.py::submit": "Admits playbook-owned scripts only, with encrypted inputs and immutable input pins; no integration submission."
+  }
+}

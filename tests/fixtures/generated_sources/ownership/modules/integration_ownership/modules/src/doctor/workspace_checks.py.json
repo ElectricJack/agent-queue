@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/workspace_checks.py::workspace_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

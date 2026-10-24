@@ -1,0 +1,6 @@
+{
+  "exclusions": {
+    "src/playbooks/waits.py::CHILD_TERMINAL_STATUSES['COMPLETED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/playbooks/waits.py::CHILD_TERMINAL_STATUSES['FAILED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

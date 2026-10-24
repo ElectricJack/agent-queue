@@ -33,10 +33,12 @@ worst case of ignoring it is one profile the operator deletes again.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,20 @@ def _store(data_dir: str, retired: dict) -> str:
     return path
 
 
+@contextmanager
+def _mutation_lock(data_dir: str):
+    # Deletions run off the event loop and may overlap with another delete
+    # or installer. Lock the complete read-modify-replace, not only the write.
+    path = retired_defaults_path(data_dir) + ".lock"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def retired_default_ids(data_dir: str) -> set[str]:
     """Shipped profile ids the operator has deleted, as a set."""
     return set(_load(data_dir))
@@ -111,14 +127,15 @@ def retire_default(data_dir: str, profile_id: str, reason: str = "") -> bool:
     profile_id = (profile_id or "").strip()
     if not profile_id:
         return False
-    retired = _load(data_dir)
-    if profile_id in retired:
-        return False
-    entry: dict = {"retired_at": time.time()}
-    if reason:
-        entry["reason"] = reason
-    retired[profile_id] = entry
-    path = _store(data_dir, retired)
+    with _mutation_lock(data_dir):
+        retired = _load(data_dir)
+        if profile_id in retired:
+            return False
+        entry: dict = {"retired_at": time.time()}
+        if reason:
+            entry["reason"] = reason
+        retired[profile_id] = entry
+        path = _store(data_dir, retired)
     logger.info(
         "Recorded shipped profile '%s' as operator-retired in %s "
         "(startup seeding will skip it; 'aq agent profile-reseed %s' restores it)",
@@ -134,11 +151,12 @@ def unretire_default(data_dir: str, profile_id: str) -> bool:
     profile_id = (profile_id or "").strip()
     if not profile_id:
         return False
-    retired = _load(data_dir)
-    if profile_id not in retired:
-        return False
-    del retired[profile_id]
-    _store(data_dir, retired)
+    with _mutation_lock(data_dir):
+        retired = _load(data_dir)
+        if profile_id not in retired:
+            return False
+        del retired[profile_id]
+        _store(data_dir, retired)
     logger.info(
         "Cleared the operator-retired tombstone for shipped profile '%s'", profile_id
     )

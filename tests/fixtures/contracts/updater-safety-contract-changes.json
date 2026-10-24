@@ -1,0 +1,15 @@
+{
+  "source_base": "52d2efe4cb5380e6c1889b80f2bf2cce04af9473",
+  "source_commit": "39e3737bca63a9f952a99ddb73a4b7ba27878c79",
+  "reason": "Describe the guarded updater refusal when no deployment selector is configured. Only update_and_restart description text changes; preserve all earlier compatibility evidence.",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "621bc4d1a5de44ff2b4af315418795ac8aa7a37611a0934a90f0595d613d23f6",
+  "transport_definitions": {
+    "update_and_restart": {
+      "previous_description": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+      "description": "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; otherwise refuses with operator configuration guidance. Run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+      "previous_sha256": "c6cc2ada0d23b881024ed35bc6dd9001d3afa30758b17eac62fcf9f92ba7731e",
+      "sha256": "b84a60beca91d2f6b51f003cac9fce6d6adbc56d642c72cf29cc08279b3b9e10"
+    }
+  }
+}

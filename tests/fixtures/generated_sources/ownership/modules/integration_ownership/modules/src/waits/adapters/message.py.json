@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/waits/adapters/message.py::MessageAdapter.authorise": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::MessageAdapter.collaboration_snapshot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::MessageAdapter.snapshot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::import from src.collaboration import is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::import from src.database.tables import collaboration_members, collaboration_messages, collaboration_threads, messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

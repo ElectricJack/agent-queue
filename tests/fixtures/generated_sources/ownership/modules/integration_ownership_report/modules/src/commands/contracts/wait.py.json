@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/contracts/wait.py::WaitCancelArgs.owner_kind": {
+      "fingerprint": "bb039279ba77e89d31eca6edca1130dccc1041bc7b4e573c5c03759b66f84734",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

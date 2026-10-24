@@ -444,7 +444,9 @@ class ReportCommandsMixin:
             text = f"{text}\n{sanitise(dashboard_footer)}"
         total = f"{text}\n{marker_for(row['owner_ref'])}"
         if not text.strip() or len(total) > MAX_CHARS:
-            return _error("report.invalid", "report exceeds 1,200 characters after rendering")
+            return _error(
+                "report.invalid", f"report exceeds {MAX_CHARS:,} characters after rendering"
+            )
         try:
             expected_version = int(args["expected_version"])
         except (KeyError, TypeError, ValueError):

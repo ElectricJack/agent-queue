@@ -22,7 +22,7 @@ from src.waits.conditions import Condition, SourceEvent, WaitError
 from src.waits.explain import owner_key
 from src.waits.graph import clear_edges, lock_component_tasks, lock_graph, recompute_from
 from src.waits.listener import ListenerUnavailable
-from src.waits.loops import progress
+from src.waits.loops import prepare_progress, progress
 from src.waits.ownership import fence_owner
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 from src.wait_runtime.legacy_parking import legacy_parked
@@ -46,6 +46,7 @@ class WakeDispatcher:
         ))).mappings().first()
         if durable is None or dict(durable) != event:
             return {"success": False, "error_code": "wait.source_unresolved"}
+        await prepare_progress(conn, [candidate])
         await lock_graph(conn)
         # Lock all task nodes in lexical order, before any wait row. Source
         # writers need not hold the graph lock, so retain their locks through

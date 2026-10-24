@@ -102,7 +102,7 @@ def task_batch_propose(ctx, change_file, project_id, source, dry_run, **operatio
     if not change_file and not inline:
         raise click.UsageError("supply --file or inline change set operations")
     document = _load_graph_document(change_file) if change_file else inline
-    allowed = {"project_id", "source", "tasks", "edits", "edges", "remove_edges", "comments"}
+    allowed = {"project_id", "source", "tasks", "edits", "edges", "remove_edges", "comments", "no_op"}
     if unknown := set(document) - allowed:
         raise click.UsageError(f"unknown change set fields: {sorted(unknown)}")
     provenance = source or document.get("source") or change_file
@@ -608,11 +608,17 @@ def task_stop(ctx: click.Context, task_id: str, yes: bool) -> None:
 @task.command("restart")
 @click.argument("task_id")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
+@click.option("--override-hold", is_flag=True, help="Explicitly release a recovery hold")
+@click.option("--reason", default=None, help="Required explanation for a hold override")
 @click.pass_context
 @_handle_errors
-def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
+def task_restart(
+    ctx: click.Context, task_id: str, yes: bool, override_hold: bool, reason: str | None,
+) -> None:
     """Restart a failed or stopped task."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if override_hold and (not reason or not reason.strip()):
+        raise click.UsageError("--override-hold requires --reason")
 
     if not yes:
         from .menus import confirm
@@ -623,7 +629,10 @@ def task_restart(ctx: click.Context, task_id: str, yes: bool) -> None:
 
     async def _restart():
         async with _get_client(api_url) as client:
-            return await client.execute("restart_task", {"task_id": task_id})
+            args = {"task_id": task_id}
+            if override_hold:
+                args.update(override_hold=True, reason=reason)
+            return await client.execute("restart_task", args)
 
     result = _run(_restart())
     emit(

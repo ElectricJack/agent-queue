@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -156,7 +157,10 @@ async def handler(db, config):
     orch.db = db
     orch.git = MagicMock()
     orch._worktree_slots = MagicMock(
-        return_value=MagicMock(reset_slot_for_task=AsyncMock(return_value="aq/t"))
+        return_value=MagicMock(
+            reset_slot_for_task=AsyncMock(return_value="aq/t"),
+            prefetch_slot_for_task=AsyncMock(),
+        )
     )
     orch._last_scheduler_state = None  # no snapshot yet → admissible
     # ``orch.git`` is a bare MagicMock (no real checkout exists under
@@ -269,7 +273,13 @@ async def test_ordinary_preparation_rechecks_new_source_artifacts(
         await db.add_dependency("dependent", "source")
     sid, work_dir = await pool_session(db, tmp_path)
 
+    resets = 0
+
     async def reset(*args, **kwargs):
+        nonlocal resets
+        resets += 1
+        if resets > 1:
+            return "aq/dependent"
         if mutation == "completion":
             await db.save_task_completion(TaskCompletion(
                 id="late-source", task_id="source", outcome="pass", commits=["a" * 40],
@@ -282,10 +292,18 @@ async def test_ordinary_preparation_rechecks_new_source_artifacts(
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
     result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["result"] == "no_ready_work", result
-    assert (await db.get_session(sid)).claims == 0
-    assert (await db.get_task("dependent")).status is TaskStatus.READY
-    assert not (work_dir / ".aq" / "claim.json").exists()
+    if result["result"] == "no_ready_work":
+        assert resets == 1
+        assert (await db.get_session(sid)).claims == 0
+        assert (await db.get_task("dependent")).status is TaskStatus.READY
+        assert not (work_dir / ".aq" / "claim.json").exists()
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["claim_epoch"] == 2
+    assert resets == 2  # The first admission cannot authorize the changed source.
+    assert (await db.get_session(sid)).claims == 1
+    assert (await db.get_task("dependent")).status is TaskStatus.IN_PROGRESS
+    assert (work_dir / ".aq" / "claim.json").exists()
 
 
 async def test_ordinary_preparation_retries_a_locked_artifact_free_source(handler, db, tmp_path):
@@ -740,13 +758,11 @@ async def test_repair_start_allows_git_import_beyond_publication_bound(
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
 
 
-@pytest.mark.parametrize("stage", ["repair_start", "slot_reset"])
 async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_retries(
-    handler, db, tmp_path, stage,
+    handler, db, tmp_path,
 ):
     env = await ordinary_pool_repair(handler, db, tmp_path)
-    operation = (handler.orchestrator._hierarchy_repair_start if stage == "repair_start"
-                 else handler.orchestrator._worktree_slots.return_value.reset_slot_for_task)
+    operation = handler.orchestrator._hierarchy_repair_start
     operation.side_effect = BranchLockTimeout(env.target, 150)
     result = await settled_claim(env.handler, {"next": True})
     assert result["result"] == "no_ready_work", result
@@ -770,6 +786,101 @@ async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_r
     assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
     assert (await env.locks.get(env.target)).fence == env.lease.fence
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+
+
+async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp_path, monkeypatch):
+    from src.integration import lock as lock_module
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    exclusion = lock_module.BranchLock.exclusion
+    inside = False
+
+    @asynccontextmanager
+    async def observed_exclusion(lock, fence, **kwargs):
+        nonlocal inside
+        async with exclusion(lock, fence, **kwargs) as row:
+            inside = True
+            try:
+                yield row
+            finally:
+                inside = False
+
+    monkeypatch.setattr(lock_module.BranchLock, "exclusion", observed_exclusion)
+    slots = handler.orchestrator._worktree_slots()
+    resolve_origin = handler.orchestrator._hierarchy_origin_and_fence
+
+    async def private_stack_origin(*args, **kwargs):
+        origin, fence, role = await resolve_origin(*args, **kwargs)
+        origin["stack_store"] = "/private/stack"
+        origin["stack_repair_inputs"] = {"store": "/private/repair", "heads": ["c" * 40]}
+        return origin, fence, role
+
+    async def import_private_stack(*args, **kwargs):
+        assert not inside
+
+    handler.orchestrator._hierarchy_origin_and_fence = private_stack_origin
+    handler.orchestrator.git._arun = AsyncMock(side_effect=import_private_stack)
+
+    async def slow_fetch(*args, **kwargs):
+        assert not inside
+        assert handler.orchestrator.git._arun.await_count == 2
+        # Exceed the real 30s fence deadline without shortening SQL lock budgets.
+        await asyncio.sleep(40)
+        assert not inside
+
+    async def reset(*args, **kwargs):
+        assert inside
+        assert kwargs["fetch_origin"] is False
+        return env.target.branch
+
+    slots.prefetch_slot_for_task.side_effect = slow_fetch
+    slots.reset_slot_for_task.side_effect = reset
+    result = await settled_claim(env.handler, {"next": True}, timeout=60)
+    assert result["result"] == "claimed", result
+    slots.prefetch_slot_for_task.assert_awaited_once()
+    slots.reset_slot_for_task.assert_awaited_once()
+
+
+async def test_repeated_slot_fence_timeout_reaches_recovery_incident(handler, db, tmp_path):
+    await mktask(db, "t1", profile_id="worker")
+    slots = handler.orchestrator._worktree_slots()
+    slots.reset_slot_for_task.side_effect = BranchLockTimeout(
+        BranchKey(repository_id="repo", branch="aq/t1"), 30,
+    )
+    for attempt in range(1, 4):
+        sid, _ = await pool_session(db, tmp_path, f"s{attempt}", f"agent-{attempt}")
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+        assert result["result"] == "drain_requested", result
+        failure = await db.get_task_meta("t1", "slot_reset_failure")
+        assert failure["attempt"] == attempt
+        assert failure["error_type"] == "BranchLockTimeout"
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") == attempt
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+    assert slots.reset_slot_for_task.await_count == 3
+    assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+    # The normal recovery scan must see the exhausted preparation, even when
+    # the worker's execution retry_count is still zero.
+    await db.queue_task_recovery_notifications()
+    incident = await db.get_task_meta("t1", "supervisor_recovery_incident")
+    assert incident["reason"] == "slot_reset_failed"
+
+
+async def test_attached_slot_fence_timeout_records_failure_instead_of_silent_retry(
+    handler, db, tmp_path,
+):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    slots = handler.orchestrator._worktree_slots()
+    slots.reset_slot_for_task.side_effect = BranchLockTimeout(env.target, 30)
+    handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(return_value=False)
+    result = await settled_claim(env.handler, {"next": True})
+    assert result["result"] == "prepare_failed", result
+    slots.reset_slot_for_task.assert_awaited_once()
+    failure = await db.get_task_meta(env.task_id, "prepare_failure")
+    assert (failure["disposition"], failure["error_type"]) == ("retained", "BranchLockTimeout")
+    held = await db.get_session(env.sid)
+    assert held.claim_phase == "preparing"
+    assert held.claim_refusal["count"] == 1
+    assert (await env.locks.get(env.target)).fence == env.lease.fence
 
 
 @pytest.mark.parametrize("error", [TimeoutError("git import timeout"), RuntimeError("broken")])
@@ -1015,7 +1126,7 @@ async def test_conflicting_batch_publishes_before_real_repair_claim(
         assert (await db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
 
 
-async def settled_claim(handler, args):
+async def settled_claim(handler, args, *, timeout=10):
     """Await the invoked preparation and return its settled outcome.
 
     Real Git tests assert final ownership or recovery. A no-wait HTTP response
@@ -1033,7 +1144,7 @@ async def settled_claim(handler, args):
            result["task_id"], result["claim_epoch"])
     preparation = handler.orchestrator.claim_preparations.get(key)
     if preparation is not None:
-        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=timeout)
     else:
         # Completion can remove the live job while the progress response is
         # returning. Only the matching generation's cached outcome may settle it.
@@ -1414,7 +1525,12 @@ class TestClaim:
         assert await db.get_task_meta("t1", "claim_preparation_failure") is None
         assert (await db.get_task_meta("t1", "slot_reset_failure"))["reason"] == reason
         session = await db.get_session(sid)
-        assert session.claim_failure_reason == session.claim_refusal["reason"] == reason
+        assert session.claim_failure_reason == reason
+        if isinstance(error, TimeoutError):
+            assert result["result"] == "drain_requested"
+            assert session.claim_refusal is None  # a new slot replaces this session
+        else:
+            assert session.claim_refusal["reason"] == reason
         payloads = [c.args[1] for c in emit.call_args_list if c.args[0] == "pool.prepare_failed"]
         assert payloads[0]["reason"] == reason
 
@@ -1455,13 +1571,64 @@ class TestClaim:
 
         result = await settled_claim(scoped(handler, sid), {"next": True})
 
-        assert result["result"] == "prepare_failed"
+        assert result["result"] == "drain_requested"
         assert_one_reason(
             result, await db.get_session(sid), await db.get_task_meta("t1", "prepare_failure"),
             events, stage="ensure_slot_checkout", error_type="TimeoutError",
         )
         slots.ensure_slot_checkout.assert_awaited_once()
         slots.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("prior", [0, 2])
+    @pytest.mark.parametrize("failure_kind", ["timeout", "wrapped", "busy"])
+    async def test_contained_reset_error_retries_in_another_slot_until_budget_exhausted(
+        self, handler, db, tmp_path, prior, failure_kind,
+    ):
+        import errno
+
+        from src.git.manager import GitError
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        next_sid, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        if prior:
+            await db.set_task_meta("t1", "claim_prepare_backoff_attempts", prior)
+        error = TimeoutError("contained reset deadline")
+        if failure_kind == "busy":
+            error = OSError(errno.EBUSY, "checkout busy")
+        elif failure_kind == "wrapped":
+            outer = GitError("git reset timed out")
+            outer.__cause__ = error
+            error = outer
+        slots = handler.orchestrator._worktree_slots.return_value
+        slots.reset_slot_for_task.side_effect = error
+
+        refused = await settled_claim(scoped(handler, sid), {"next": True})
+
+        assert refused["result"] == "drain_requested"
+        assert "quarantined" in refused["instructions"]
+        assert (await db.get_session(sid)).desired_state == "stopped"
+        assert not (await db.get_workspace("ws-agent-1")).enabled
+        assert (await db.get_task_meta("t1", "prepare_failure"))["reason"] == refused["reason"]
+        assert not (wd / ".aq" / "claim.json").exists()
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") == prior + 1
+        if prior == 2:
+            assert (await db.get_task("t1")).status == TaskStatus.BLOCKED
+            assert await db.get_task_meta("t1", "needs_attention") == "slot_reset_failed"
+            return
+        assert (await db.get_task("t1")).status == TaskStatus.READY
+        assert not await db.get_task_meta("t1", "needs_attention")
+        assert not await db.get_task_meta("t1", "supervisor_recovery_incident")
+        assert (await db.get_task_meta("t1", "slot_reset_failure"))["retry"] == "automatic_fresh_slot"
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+        slots.reset_slot_for_task.side_effect = None
+
+        claimed = await settled_claim(scoped(handler, next_sid), {"next": True})
+
+        assert claimed["result"] == "claimed"
+        assert claimed["task"]["id"] == "t1"
+        assert not await db.get_task_meta("t1", "slot_reset_failure")
+        assert not await db.get_task_meta("t1", "claim_prepare_backoff_attempts")
 
     @pytest.mark.parametrize("poisoned", [True, False])
     async def test_a_slot_contradicting_its_sentinel_releases_its_own_lock(
@@ -3680,7 +3847,7 @@ class TestClaim:
             caplog.clear()
             with caplog.at_level("WARNING", logger="src.commands.claim_commands"):
                 result = await settled_claim(scoped(handler, sid), {"next": True})
-            assert result["result"] == "prepare_failed"
+            assert result["result"] == "drain_requested"
             ladder = await db.get_task_meta("t1", "slot_reset_failure")
             record = await db.get_task_meta("t1", "prepare_failure")
             reason = assert_one_reason(
@@ -3696,7 +3863,7 @@ class TestClaim:
             assert any(reason in r.getMessage() for r in caplog.records)
             # Budgets are untouched: the same three-step ladder, then BLOCKED.
             assert ladder["attempt"] == record["attempt"] == attempt
-            assert ladder["retry"] == ("manual" if attempt == 3 else "automatic")
+            assert ladder["retry"] == ("manual" if attempt == 3 else "automatic_fresh_slot")
             assert record["disposition"] == ("blocked" if attempt == 3 else "released")
             assert (record["session_id"], record["claim_epoch"]) == (sid, attempt)
             await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
@@ -3777,28 +3944,85 @@ class TestClaim:
         assert await db.get_task_meta("t1", "slot_reset_failure") is None
         assert session.task_id == "t1"
 
+    @pytest.mark.parametrize("failure", ["write_error", "missing_after_write", "foreign_after_write"])
     async def test_claim_file_write_failure_releases_and_reports(
-        self, handler, db, tmp_path, monkeypatch
+        self, handler, db, tmp_path, monkeypatch, failure
     ):
-        """Any failure after ``record_holder`` committed — including an OSError
-        writing the claim file — must release the claim and leave no claim
-        file behind, same as a slot-reset failure (review finding #1)."""
+        """A marker failure releases preparation and stops the unusable worker.
+
+        A foreign marker observed on readback remains available for recovery.
+        """
         await mktask(db, "t1", profile_id="worker")
         sid, wd = await pool_session(db, tmp_path)
         import src.commands.claim_commands as claim_commands
+        from src.sessions.fake import FakeProvider
+        from src.sessions.provider import SessionSpec
+        from src.claim_file import read_claim_file, write_claim_file
+
+        provider = FakeProvider()
+        handler.orchestrator.session_providers = SimpleNamespace(create=lambda *_: provider)
+        row = await db.get_session(sid)
+        await provider.start(SessionSpec(
+            session_name=row.name, work_dir=str(wd), command=("claude",), instance_token="t",
+        ))
+
+        def write_marker(path, marker):
+            if failure == "write_error":
+                raise OSError("disk full")
+            if failure == "foreign_after_write":
+                write_claim_file(path, {**marker, "session_id": "foreign-session"})
 
         monkeypatch.setattr(
             claim_commands,
             "write_claim_file",
-            MagicMock(side_effect=OSError("disk full")),
+            write_marker,
         )
         res = await settled_claim(scoped(handler, sid), {"next": True})
-        assert res["result"] == "prepare_failed"
-        assert not (wd / ".aq" / "claim.json").exists()
+        assert res["result"] == "drain_requested"
+        if failure == "foreign_after_write":
+            assert read_claim_file(wd)["session_id"] == "foreign-session"
+        else:
+            assert not (wd / ".aq" / "claim.json").exists()
         t = await db.get_task("t1")
         assert (t.status, t.assigned_agent_id) == (TaskStatus.READY, None)
         s = await db.get_session(sid)
         assert (s.claims, s.last_claim_result, s.claim_phase) == (0, "prepare_failed", None)
+        assert (s.state, s.desired_state) == ("stopped", "stopped")
+        assert row.name not in provider.sessions
+        assert await db.get_workspace_for_agent("agent-1") is None
+
+    async def test_claim_file_failure_stops_retained_attached_preparation(
+        self, handler, db, tmp_path, monkeypatch,
+    ):
+        from src.sessions.fake import FakeProvider
+        from src.sessions.provider import SessionSpec
+
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, wd = await pool_session(db, tmp_path)
+        provider = FakeProvider()
+        handler.orchestrator.session_providers = SimpleNamespace(create=lambda *_: provider)
+        row = await db.get_session(sid)
+        await provider.start(SessionSpec(
+            session_name=row.name, work_dir=str(wd), command=("claude",), instance_token="t",
+        ))
+        handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "src.commands.claim_commands.write_claim_file",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+
+        assert result["result"] == "drain_requested"
+        row = await db.get_session(sid)
+        assert (row.state, row.desired_state, row.claim_phase, row.task_id) == (
+            "stopped", "stopped", "preparing", "child",
+        )
+        assert row.name not in provider.sessions
+        assert (await db.get_task("child")).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "child"
+        owner = await ownership.get_owner(fence.target)
+        assert (owner["handoff_state"], owner["session_id"]) == ("attached", sid)
 
     async def test_pool_close_restores_its_slot_before_releasing_claim(
         self, handler, db, tmp_path
@@ -5631,16 +5855,10 @@ async def test_default_stack_claims_retained_cross_epic_or_root_source(
     assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "dependent"
 
 
-async def test_unavailable_stack_evidence_withholds_only_stacked_work(
+async def test_unavailable_stack_evidence_allows_preparation_without_overlay(
     handler, db, tmp_path, development_admission, monkeypatch
 ):
-    """A failed or backed-off fetch is no stack change: eligible roots still claim.
-
-    GitTruth answers every snapshot of a repository with the recorded fetch error
-    until its backoff expires. That is missing evidence, so it proves no stacked
-    prerequisite, but it moved nothing either; refusing the whole project as
-    ``stack_snapshot_changed`` starved every stable root for the backoff.
-    """
+    """A failed fetch supplies no overlay and permits dependent and root claims."""
     from src.git.manager import GitError
     from src.integration.stacked_branches import observe_stacks
 
@@ -5670,8 +5888,7 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     assert await (await observe_stacks(observer, PROJECT_ID)).fresh()
     # Fail exactly the fetch: renaming the remote can instead fail process-group
     # cleanup under CI load, which does not establish GitTruth's fetch backoff.
-    # Restore transport immediately; the recorded backoff must still withhold
-    # stacked work until the fake clock advances.
+    # Restore transport immediately; the recorded backoff still proves no stack.
     failed_fetch = AsyncMock(side_effect=GitError("transport unavailable"))
     with monkeypatch.context() as failure:
         failure.setattr(handler.orchestrator.git, "afetch_origin", failed_fetch)
@@ -5681,40 +5898,35 @@ async def test_unavailable_stack_evidence_withholds_only_stacked_work(
     state = await stack.currentness()
     assert state.state == "unavailable", state
     assert state.reason.startswith("snapshot_git_error:"), state
-    # Activation guards keep refusing the same evidence.
+    # The observation still proves nothing; admission does not assert delivery.
     assert not await stack.fresh()
 
+    # Independent-first admission claims the root before observing dependent
+    # work. Once it is held, the fallback must still prepare the dependent using
+    # unavailable evidence without inventing a stacked overlay.
     result = await settled_claim(scoped(handler, sid), {"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "solo"
     assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "solo"
 
     sid2, work_dir2 = await _cloned_pool_session(db, tmp_path, env, "s2", "agent-2")
-    for args, refused in (({"next": True}, "no_ready_work"),
-                          ({"task_id": "dependent"}, "claim_conflict")):
-        result = await settled_claim(scoped(handler, sid2), args)
-        assert result["result"] == refused, result
-        assert result["reason"] == "stack_snapshot_unavailable", result
-        assert result["stack_evidence"]["state"] == "unavailable"
-        assert result["stack_evidence"]["reason"].startswith("snapshot_git_error:")
-        assert not (work_dir2 / ".aq/claim.json").exists()
-        dependent = await db.get_task("dependent")
-        assert dependent.status is TaskStatus.READY and dependent.claim_epoch == 0
-    assert (await db.get_task("solo")).status is TaskStatus.IN_PROGRESS
-
-    # Fresh evidence after the backoff admits the stacked dependent through the
-    # normal frontier, exactly once.
-    clock[0] += 61
     result = await settled_claim(scoped(handler, sid2), {"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "dependent"
+    assert json.loads((work_dir2 / ".aq/claim.json").read_text())["task_id"] == "dependent"
     origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
-    assert origin["stack_snapshot"]["base_sha"] == env.head
+    assert not origin["stack_snapshot"]
+    assert origin["base_sha"] == env.base
+
+    # Recovery yields real stack proof again without changing the claimed origin.
+    clock[0] += 61
+    recovered = await observe_stacks(observer, PROJECT_ID)
+    assert await recovered.fresh()
+    assert "prerequisite" in recovered.proofs
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/dependent"),
     )
     assert owner["handoff_state"] == "attached" and owner["session_id"] == sid2
-    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "solo"
 
 
 async def test_moving_stack_ref_refuses_after_bounded_reobservation(
@@ -6119,6 +6331,7 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
         db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
         config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
     ))
+    # A completion without retained provenance is unprovable, not unloaded.
     allowed = completion_kind in {"no_change", "contained_empty"}
     assert await db.is_hierarchy_task_runnable("dependent") is allowed
     assert ("dependent" in await db.hierarchy_runnable_task_ids(["dependent"])) is allowed
@@ -6645,6 +6858,82 @@ async def test_slow_frontier_view_fails_closed_within_its_bound(
         assert mode.parent_contained_task_ids == frozenset()
 
 
+@pytest.mark.parametrize("mode", ["development", "hierarchy", "train"])
+@pytest.mark.parametrize("prerequisites", ["wait-for-parent", "stacked"])
+async def test_independent_claim_does_not_observe_unrelated_git_prerequisites(
+    handler, db, tmp_path, monkeypatch, development_admission, mode, prerequisites,
+):
+    """A hanging source view cannot starve an independent root in the same frontier."""
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    env = development_admission
+    await db.update_project(
+        PROJECT_ID, hierarchical_integration_mode=mode,
+        repo_url=str(development_admission.remote),
+        hierarchical_integration_policy={"prerequisite_branches": prerequisites},
+    )
+    await mktask(db, "independent", profile_id="worker", priority=200,
+                 repo_id="repo", branch_name="aq/independent")
+    env.git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/independent")
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-independent", task_id="independent", repository_id="repo",
+            branch_name="aq/independent", parent_repository_id="repo", parent_ref="main",
+            base_sha=env.base, creation_generation=1, reserved=True, materialized=True,
+            created_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="independent", repository_id="repo", branch="aq/independent",
+            checkpoint_sha=env.base, updated_at=time.time(),
+        ))
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/independent"), "independent", "worker",
+    )
+    # The existing dependent has higher priority but requires Git proof. Fail
+    # immediately on observation: this verifies bypass, not a timeout fallback.
+    observer = DeliveryObserver(db, git=handler.orchestrator.git,
+                                truth=GitTruth(handler.orchestrator.git),
+                                data_dir=tmp_path / "prerequisites")
+    observer.prerequisite_view = AsyncMock(side_effect=AssertionError(
+        "independent work waited on unrelated Git"))
+    db.set_prerequisite_observer(observer)
+    snapshot = AsyncMock(side_effect=AssertionError("unrelated source fetched"))
+    monkeypatch.setattr(development_admission.service.delivery_observer, "snapshot", snapshot)
+    sid, work_dir = await _cloned_pool_session(db, tmp_path, env, "s1", "agent-1")
+    handler.orchestrator._worktree_slots = MagicMock(return_value=WorktreeSlotManager(
+        db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    ))
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "independent"
+    assert json.loads((work_dir / ".aq" / "claim.json").read_text())["task_id"] == "independent"
+    observer.prerequisite_view.assert_not_awaited()
+    snapshot.assert_not_awaited()
+    assert (await db.get_task("dependent")).status is TaskStatus.READY
+
+
+async def test_incompatible_independent_work_does_not_hide_delivered_dependent(
+    handler, db, tmp_path, development_admission,
+):
+    env = development_admission
+    await db.create_profile(
+        AgentProfile(id="another-worker", name="Another worker", lifecycle="pool")
+    )
+    await mktask(db, "wrong-profile", profile_id="another-worker")
+    sid, _ = await pool_session(db, tmp_path)
+    worker = scoped(handler, sid)
+    result = await settled_claim(worker, {"next": True})
+    assert result["result"] == "no_ready_work", result
+    assert (await db.get_task("dependent")).status is TaskStatus.READY
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    result = await settled_claim(worker, {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+
+
 def test_claim_request_limit_answers_inside_the_cli_read_timeout():
     from src.cli.client import _COMMAND_TIMEOUTS
     from src.commands import claim_commands
@@ -6829,6 +7118,18 @@ async def test_development_preparation_invalidates_old_admission(
         side_effect=reset
     )
     result = await settled_claim(scoped(handler, sid), {"next": True})
+    if movement == "config":
+        # The changed target invalidates attempt one. Its new unloaded
+        # observation may authorize a fresh preparation, never the old attempt.
+        if result["result"] == "no_ready_work":
+            assert resets == 1
+            result = await settled_claim(scoped(handler, sid), {"next": True})
+        assert result["result"] == "claimed", result
+        assert result["claim_epoch"] == 2
+        assert resets == 2
+        assert (await db.get_session(sid)).claims == 1
+        assert (work_dir / ".aq" / "claim.json").exists()
+        return
     assert result["result"] == "no_ready_work"
     assert (await db.get_session(sid)).claims == 0
     assert (await db.get_session(sid)).claim_phase is None
@@ -6916,7 +7217,7 @@ async def test_development_parallel_claims_remain_exclusive(
     assert sum([(await db.get_session(sid)).claims for sid in [sid1, sid2]]) == 1
 
 
-async def test_development_unknown_git_withholds_only_sensitive_work(
+async def test_development_unknown_git_allows_dependent_preparation(
     handler, db, tmp_path, development_admission
 ):
     from src.git.manager import GitError
@@ -6926,7 +7227,13 @@ async def test_development_unknown_git_withholds_only_sensitive_work(
     await mktask(db, "independent", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["task"]["id"] == "independent"
+    assert result["result"] == "claimed", result
+    # Independent work may take the fast path first; unknown Git must still
+    # allow the dependent through ordinary preparation on the next claim.
+    sid2, _ = await pool_session(db, tmp_path, "unknown-peer", "unknown-agent")
+    peer = await settled_claim(scoped(handler, sid2), {"next": True})
+    assert peer["result"] == "claimed", peer
+    assert {result["task"]["id"], peer["task"]["id"]} == {"dependent", "independent"}
 
 
 async def test_development_parallel_claims_can_skip_locked_peer(
@@ -7110,7 +7417,10 @@ async def test_suspended_held_claim_is_preserved_and_requires_ack_before_close(
     await mktask(db, "held", profile_id="worker")
     sid, work_dir = await pool_session(db, tmp_path)
     worker = scoped(handler, sid)
-    claim = await worker._cmd_task_claim({"next": True})
+    # Exercise the progress response without depending on preparation speed.
+    with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0):
+        claim = await settled_claim(worker, {"next": True})
+    assert claim["result"] == "claimed", claim
     before = (work_dir / ".aq" / "claim.json").read_bytes()
     await db.transition_task("held", status, force=True)
     refused = await worker._cmd_task_claim({"next": True})
@@ -7620,7 +7930,7 @@ async def pull_request_admission(handler, db, development_admission, monkeypatch
 
 @pytest.mark.parametrize("merged", [False, True])
 @pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED])
-async def test_pr_explain_reports_unobserved_containment_as_unknown(
+async def test_pr_explain_allows_unobserved_containment(
     handler, db, pull_request_admission, monkeypatch, merged, status
 ):
     from src.integration.admission import observe_admission
@@ -7649,11 +7959,9 @@ async def test_pr_explain_reports_unobserved_containment_as_unknown(
     assert "pull_request_dependency_delivery" not in {
         reason["code"] for reason in explanation["reasons"]
     }
-    [reason] = [reason for reason in explanation["reasons"]
-                if reason["code"] == "delivery_evidence_unavailable"]
-    assert reason["ref"] == "prerequisite"
-    assert "containment" in reason["detail"] and "unknown" in reason["detail"]
-    assert "cached-only" in reason["detail"]
+    assert "delivery_evidence_unavailable" not in {
+        reason["code"] for reason in explanation["reasons"]
+    }
     if status is TaskStatus.BLOCKED:
         assert any(reason["code"] == "blocked_terminal"
                    and "session_close_hard_failure" in reason["detail"]
@@ -7665,8 +7973,9 @@ async def test_pr_explain_reports_unobserved_containment_as_unknown(
 
 
 @pytest.mark.parametrize("integration_mode", ["pull_request", "direct"])
-async def test_ordinary_child_parent_conflict_blocks_with_valid_claim_response(
-    handler, db, tmp_path, development_admission, integration_mode,
+@pytest.mark.parametrize("is_child", [False, True], ids=["root", "child"])
+async def test_ordinary_branch_conflict_blocks_with_valid_claim_response(
+    handler, db, tmp_path, development_admission, integration_mode, is_child,
 ):
     from src.orchestrator.worktree_manager import WorktreeSlotManager
 
@@ -7674,7 +7983,8 @@ async def test_ordinary_child_parent_conflict_blocks_with_valid_claim_response(
     await db.remove_dependency("dependent", "prerequisite")
     await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo",
                  branch_name="aq/epic")
-    await db.add_dependency("dependent", "epic", "parent-child")
+    if is_child:
+        await db.add_dependency("dependent", "epic", "parent-child")
     await db.update_task("dependent", branch_name="aq/dependent", is_blocked=False)
     await db.update_project(
         PROJECT_ID, hierarchical_integration_mode="disabled",
@@ -7860,7 +8170,7 @@ async def test_pr_stacked_claim_requires_real_remote_and_prepared_ancestry(
 
 
 @pytest.mark.parametrize("state", ["open", "closed", "unknown", "moved", "malformed"])
-async def test_pr_default_requires_current_exact_source_and_known_pr(
+async def test_pr_default_withholds_invalid_source_but_allows_unknown_observation(
     handler, db, tmp_path, pull_request_admission, state
 ):
     from src.integration.admission import observe_admission
@@ -7876,10 +8186,11 @@ async def test_pr_default_requires_current_exact_source_and_known_pr(
     elif state == "malformed":
         env.pull.pop("state")
     batch = await observe_admission(db, ["dependent"], env.service)
-    assert ("dependent" in batch.allowed) == (state == "open")
+    allowed = state in {"open", "unknown"}
+    assert ("dependent" in batch.allowed) == allowed
     ready = await handler.execute("project_ready", {"project_id": PROJECT_ID, "brief": True})
-    assert ("dependent" in {t["id"] for t in ready["ready"]}) == (state == "open")
-    if state == "open":
+    assert ("dependent" in {t["id"] for t in ready["ready"]}) == allowed
+    if allowed:
         from src.orchestrator.worktree_manager import WorktreeSlotManager
 
         sid, work_dir = await pool_session(db, tmp_path)
@@ -8077,7 +8388,9 @@ async def test_pr_project_embedded_repository_has_the_same_source_admission(
     assert (await observe_admission(db, ["dependent"], env.service)).allowed == {"dependent"}
 
 
-async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull_request_admission):
+async def test_pr_missing_current_source_allows_preparation_without_erasing_artifact(
+    db, pull_request_admission,
+):
     from src.integration.admission import observe_admission
     from src.models import TaskCompletion
 
@@ -8092,7 +8405,10 @@ async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull
             completed_at=time.time(),
         )
     )
-    assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+    view = await observe_admission(db, ["dependent"], env.service)
+    assert view.allowed == {"dependent"}
+    assert view.pr.workspace_sources == {}
+    assert view.pr.lock_ids >= {"prerequisite"}
 
 
 @pytest.mark.parametrize('source_status, expected', [

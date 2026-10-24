@@ -60,7 +60,7 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
   // (an integration hold reads PAUSED) stays in the pill's tooltip.
   const pill = statusPillFor({
     status: node.status, display_state: node.display_state, display_reason: node.display_reason,
-    isBlocked: node.is_blocked,
+    isBlocked: node.is_blocked, held_batch: node.held_batch,
     delivery: node.delivery ?? null,
     reviewBlock: reviewWaits.find((wait) => wait.blocking) ?? null,
   });

@@ -1,0 +1,40 @@
+{
+  "shared": {
+    "src/object_loop/artifacts.py::_digest_file": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::_reported": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::_stream": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::_write_object": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::artifact_uri": {
+      "reason": "Content-addressed URI construction used by the shared retained-artifact store."
+    },
+    "src/object_loop/artifacts.py::import from src.jobs.artifacts import atomic_json, open_artifact, read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::metadata": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::parse_uri": {
+      "reason": "Digest validation for content-addressed URIs used by the shared retained-artifact store."
+    },
+    "src/object_loop/artifacts.py::resolve": {
+      "reason": "Digest-validated retained-artifact path resolution used by shared job evidence verification."
+    },
+    "src/object_loop/artifacts.py::retain_document": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::retain_file": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::verify": {
+      "reason": "Re-hashes retained evidence bytes through the shared job artifact reader."
+    }
+  }
+}

@@ -187,6 +187,40 @@ def principal_context(principal: ExecutionPrincipal) -> Iterator[ExecutionPrinci
         _principal_var.reset(token)
 
 
+#: Command-specific authority: capability grants never let a worker release a hold.
+BATCH_RELEASE_KINDS = frozenset({PrincipalKind.LOCAL, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK})
+
+
+async def batch_release_actor(conn, project_id: str) -> str | None:
+    """Admit ingestion policy, the operator, or this project's live supervisor.
+
+    Read the supervisor row on the release transaction and bind its instance;
+    elevation or a caller-supplied profile alone never grants release authority.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import sessions
+
+    principal = current_principal() or TRUSTED_LOCAL
+    if principal.project_id not in (None, project_id):
+        return None
+    if principal.kind in BATCH_RELEASE_KINDS:
+        return principal.describe()
+    if not principal.elevated or principal.project_id != project_id:
+        return None
+    row = (await conn.execute(select(sessions).where(
+        sessions.c.id == principal.session_id,
+    ).with_for_update())).mappings().first()
+    if (row is None or row['project_id'] != project_id
+            or row['profile_id'] != 'supervisor' or row['lifecycle'] != 'named'
+            or row['name'] != f'n-supervisor--{project_id}'
+            or row['state'] not in {'starting', 'running', 'draining'}
+            or row['desired_state'] != 'running'
+            or not matches_session_instance(principal, row['instance_token'])):
+        return None
+    return f"supervisor session:{row['id']}"
+
+
 def check_delegation(parent: CapabilityPolicy, child: CapabilityPolicy) -> str:
     """Empty string when ``child ⊆ parent`` in every namespace; else the reason.
 
@@ -211,6 +245,8 @@ def check_delegation(parent: CapabilityPolicy, child: CapabilityPolicy) -> str:
 
 
 __all__ = [
+    "BATCH_RELEASE_KINDS",
+    "batch_release_actor",
     "ENFORCED_KINDS",
     "ExecutionPrincipal",
     "PrincipalKind",

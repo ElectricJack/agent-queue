@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/repo_queries.py::RepoQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/repo_queries.py::RepoQueryMixin.repair_repository_checkout::e06cce02671ffb96b3d9507ca48c86e43b15de660f24cac8aadf418793926f41": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 82,
+      "owner": "RepoQueryMixin.repair_repository_checkout",
+      "owner_fingerprint": "350136fcb29e62dbfacc0cf13909a058c31d24baa08c0997474511fa0836590f",
+      "reason": "Audits repository checkout repair with before/after paths, repository id, reason and operator; the verified repository identity/CAS authorizes the write."
+    }
+  }
+}

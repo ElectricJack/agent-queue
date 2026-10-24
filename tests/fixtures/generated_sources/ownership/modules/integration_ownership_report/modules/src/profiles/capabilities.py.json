@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/profiles/capabilities.py::AGENT_COMMAND_FALLBACK": {
+      "baseline_span": [
+        218,
+        224
+      ],
+      "landing_span": [
+        218,
+        224
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/profiles/capabilities.py::import from src.api.scope import AGENT_COMMAND_SET": {
+      "baseline_span": [
+        46,
+        47
+      ],
+      "landing_span": [
+        46,
+        47
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

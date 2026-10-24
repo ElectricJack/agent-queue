@@ -9,7 +9,7 @@ Query hook per command) → components and pages.
 
 - **Never call `fetch` directly** for daemon endpoints: import the SDK function from
   `../api/client` or use an existing hook. `legacy-fetch.ts` exists only for the routes
-  the SDK lacks (`/health`, `/ready`, `/plans/{task_id}`); don't reach for it in new code.
+  the SDK lacks (`/health`, `/ready`); don't reach for it in new code.
 - The SDK is generated from the daemon's `/openapi.json`. Refresh it **from the repo
   root** after changing FastAPI routes or response models:
   ```

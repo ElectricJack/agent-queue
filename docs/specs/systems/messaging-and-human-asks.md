@@ -2,13 +2,13 @@
 tags: [spec, system, messaging-and-human-asks]
 system: 9
 status: current
-as_of: 2026-10-20 (dev 22cffd1b7)
+as_of: 2026-10-23 (dev 52d2efe4cb)
 ---
 
 # System 9: messaging-and-human-asks
 
 This is a **current** system spec, not a design record. It describes what the
-code at `dev` 22cffd1b7 does. Where it and the code disagree, the code is
+code at `dev` 52d2efe4cb does. Where it and the code disagree, the code is
 right and this file should be fixed. Some older specs it links to carry the
 `aq:historical` banner: [`../messaging/`](../messaging/README.md),
 [`../design/messaging-rework.md`](../design/messaging-rework.md),
@@ -100,9 +100,10 @@ columns are:
 - **Delivery state.** `delivered_at`, `read_at`, `last_notified_at`,
   `notification_attempts`, `pane_open`, `archive_after_inject` and
   `archived_at`.
-- **`via`.** How the row was consumed: `nudge`, `platform`, `read`, `prime`,
+- **`via`.** How the row was consumed: `platform`, `read`, `prime`,
   `expired-task-notice`, `expired-source-notice` or `transcript_tail`. The
-  column comment in `tables.py` lists an older set.
+  column comment in `tables.py` lists an older set. Nudges record attempts
+  without consuming mail; injection leaves `via` and `read_at` unset.
 
 **Sending.** `_cmd_message_send` (`message_commands.py`) binds the sender to
 the caller's principal, so a worker cannot send as another session (a stale
@@ -169,8 +170,9 @@ asking the agent to run `aq message status <id> --json`. `TmuxProvider.nudge`
 It checks twice that the composer is empty (refusing on an attached client,
 copy mode, an unknown prompt prefix or invalid cursor coordinates), types,
 waits for the text to land, and submits. Each refusal is a named
-`NudgeDeferred` reason (`src/sessions/provider.py`). A confirmed nudge stamps
-the row `via=nudge`. A refused nudge leaves it pending for the next pass. It
+`NudgeDeferred` reason (`src/sessions/provider.py`). A confirmed nudge records
+a notification attempt and leaves the row pending with no consumption stamp.
+A refused nudge also leaves it pending for the next pass. It
 is never typed into a human's draft.
 
 Delivery is **at least once**. A crash after the keystrokes but before the
@@ -191,17 +193,24 @@ anything consequential.
   input goes to `_cmd_supervisor_inbox_reply` (§2.7). A reply in a
   collaboration thread takes its own path. System senders cannot be replied
   to; to answer the system supervisor, send to `session:supervisor-<project>`.
-- **Transcript-tail fallback.** If a nudged agent answers in its terminal
-  instead of replying, `check_reply_timeouts` (`delivery.py`) records the
-  transcript tail as the reply after 120 s × 3.0, with `via=transcript_tail`.
+- **Transcript-tail fallback.** `check_reply_timeouts` (`delivery.py`) recovers
+  only human-origin messages, never agent/system messages or explicit decision
+  kinds. After the default 120-second timeout it selects prose within the
+  correlated window ending at `delivered_at + reply_timeout × 3.0`, refusing
+  overlapping conversations. An atomic insert locks the original so an explicit
+  reply and recovery cannot both win. The receipt uses `via=transcript_tail`.
 - **Collaboration threads** (`collaboration_threads`, `collaboration_members`,
   `collaboration_messages`) carry multi-party discussion. `aq message wait`
-  waits on these threads only.
-- **Durable message waits.** An `agent_waits` row can wait for a reply. The
-  observer (`src/database/queries/agent_wait_queries.py`) writes the result
-  as message `wait:<id>:result`. The verified-waits rework is §6.2.
-- **Close guard.** With `messages.pending_before_close` set, a session cannot
-  close a task while it has unread mail (`src/commands/session_commands.py`).
+  waits on these threads only; it is distinct from durable verified waits.
+- **Durable message waits.** Version-2 registration binds a thread to an exclusive
+  `created_seq` cursor and source authorization (`src/wait_runtime/`). Routine
+  mail is held while waiting; outcome/decision notifications can reach the owner.
+  Acknowledgement delivers held mail atomically. A supervisor answer must reply
+  on the original thread; unrelated guidance cannot satisfy the condition.
+  Human waits require human evidence. See [agent waits](../../guides/agent-waits.md).
+- **Close guard.** `messages.pending_before_close` is a returned error code,
+  not a configuration setting. Closing a session with unread mail is refused
+  (`src/commands/session_commands.py`).
 
 ### 2.5 The external outbox
 
@@ -260,6 +269,16 @@ principal `discord-gateway`:
 
 1. If the destination is in ask **channel mode** (§2.10), every message goes
    to `ask_intake`. There is no fallthrough.
+   A Discord reply reference resolves either an ask binding or a conversation
+   reply's outbound receipt in the observed transport/channel. Conversation
+   replies continue that conversation, preserve the reference in the input and
+   supervisor notice, and bypass inference of a pending ask from words such as
+   “yes”. Destination and conversation audience must still agree. A reply in
+   the parent channel may continue a conversation that retains a bound thread;
+   a reply inside a thread must match that conversation's bound thread.
+   An unresolved reference produces a durable clarification receipt, a supervisor
+   notice and a deduplicated public resend request. A correlation failure keeps
+   the input queued for reconciliation and records the same visible notice.
 2. Otherwise, with conversations off, only escalation thread intake runs.
 3. With conversations on, escalation intake runs first, then
    `classify_conversation`, then `supervisor_inbox_post` (§2.7).
@@ -301,11 +320,20 @@ allowlist.
    `(transport, external_message_id)`. Text is nulled after 30 days.
 3. `src/asks/intake.py` inserts a message `msg-<input_id>` with
    `body_kind=conversation_input`, addressed to the supervisor, or to
-   `conversation-queued` if no supervisor can take it yet. A cycle step
-   (`route_queued_conversation_inputs`) retries the routing.
+   `conversation-queued` only if no addressed supervisor exists. Resolution and
+   notice insertion share the acceptance transaction. A stopped supervisor retains
+   its address and is woken through the named-session delivery path. A cycle step
+   (`route_queued_conversation_inputs`) recovers genuinely unassigned notices.
+   After commit, intake emits `message.sent`; conversation inputs wake the independent
+   delivery service immediately, bypassing its routine delivery interval. Replays
+   repair a missed wake using the original notice and notification deduplication.
+   Another supervisor may inspect the notice but cannot consume it through inbox
+   injection or mark it read.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
-   `outbound_deliveries`.
+   `outbound_deliveries`. For channel and DM conversations, the Discord reply
+   reference is the answered input's `external_message_id`, including follow-up
+   inputs. The conversation's root and destination stay unchanged.
 
 `supervisor_conversations` tracks each conversation. On bot `READY`, a
 backfill reads up to 24 hours or 1000 missed messages
@@ -583,7 +611,9 @@ arrives, the deterministic text goes out.
 Both reports follow one pattern: the daemon reserves the slot, freezes a
 brief of facts and a deterministic **fallback text**, and only then wakes a
 supervisor to author it. The fallback goes out if the supervisor misses the
-deadline. Requests are rows in `supervisor_report_requests` (kind `hourly`,
+deadline; for full-fleet hourly reporting it is only a one-line unavailable
+notice, never a concatenation of the evidence. Requests are rows in
+`supervisor_report_requests` (kind `hourly`,
 `morning` or `digest`), with the frozen brief, its hash and the fallback.
 Supervisor policy (the playbooks, what to write) is
 [supervisors-and-policy](supervisors-and-policy.md). The mechanism is here.
@@ -594,9 +624,27 @@ When a digest window would speak, the digest dispatcher creates an hourly
 request with a 24 KiB brief instead of posting directly (`src/reports/hourly.py`).
 It emits `digest.window_ready`. The `supervisor-hourly-report` playbook calls
 `report_reconcile`, and the supervisor runs `aq report brief` and
-`aq report submit`. Submit rejects URLs, requires evidence references and a
-`delivery:` reference for any claim that something shipped, and caps the
-length. A grace period of 5 minutes and a limit of 12 per day apply.
+`aq report submit`. The brief is input only: bounded facts, counts, links and
+active work, never delivered prose. The durable wake instructs the supervisor
+to write a short first-person developer update in plain English: what changed
+since the last update, highlights, anything blocked or needing Jack, and what
+comes next. It prioritizes meaningful changes and human decisions, combines
+related evidence and omits repeated noise; it does not invent progress or plans
+when evidence is missing.
+The update avoids internal IDs and train, batch or loop jargon unless Jack must
+act on one; a blocker asks the exact question he needs to answer. A window with
+no new facts stays silent even if work is still active.
+Only the submitted narrative becomes the report body, with server-owned links
+and marker. Submit rejects URLs, validates references against the frozen
+brief and requires a `delivery:` reference for any claim that something shipped.
+The enforced 600-character limit includes the server footer and marker. A grace
+period of 5 minutes and a limit of 12 per day apply.
+If a full-fleet hourly author is unavailable, late, capped or busy, the pump
+sends only “No report this hour: the supervisor update is unavailable.” This
+also applies when an authoring activation is missing or disabled. Quiet hours
+still suppress author wakes; they do not enable a fact dump. Feature-off and
+restricted-destination deterministic digests retain their existing behavior.
+Reservations, deadlines, visibility checks and one-post idempotency are unchanged.
 
 **Morning** (`reports.morning`, default off, at 07:00 in `reports.timezone`).
 `MorningDueEmitter` (`src/reports/morning_due.py`) emits `report.morning_due`
@@ -699,7 +747,9 @@ These hold today, and changes to this system must keep them.
    ledger. An unknown application is reconciled, never retried blindly.
 10. **Mode changes are generation compare-and-sets** under an advisory lock.
     A migrated destination never returns to `legacy`, and the compatibility
-    deadline is never extended.
+    deadline is never extended. [Project/configuration fencing](../design/ask-channel-config-fencing.md)
+    requires current ownership for the ask's project and preserves unrelated
+    destinations and legacy rows during configuration reconciliation.
 11. **Escalations outrank everything else**, and the shared rate guard is
     never bypassed.
 12. **Reports have a fallback before an author is woken**, carry no URLs in
@@ -707,30 +757,20 @@ These hold today, and changes to this system must keep them.
 13. **Mechanism here, judgment in playbooks.** Planning, auto-resolve, the
     sweep, the watchdog and the digest are deterministic and make no LLM
     calls.
+14. **One rate tracker and one hourly budget.** Startup configures the shared
+    invalid-request tracker in place so logging and the bot count the same
+    responses. Hourly report submissions use the digest's `MAX_CHARS` budget
+    (600), including the dashboard footer and delivery marker; validation
+    messages derive the limit from that constant. Escalation diagnostics and
+    compatibility refusals both link to `/focus/asks/<id>`.
 
 ## 5. Known gaps
 
-**Probable bugs.**
+**Resolved audit findings.**
 
-- **Discord's internal 429s may go uncounted.** `setup_logging`
-  (`src/logging_config.py`) attaches a `DiscordHTTPLogHandler` bound to the
-  tracker returned by `get_tracker()` at that moment. The bot later calls
-  `configure_tracker` (`src/discord/bot.py`), which replaces the module
-  singleton with a new tracker (`src/discord/rate_guard.py`). The log
-  handler keeps feeding the old one, so the rate guard never sees the 429s
-  that discord.py retries internally.
-- **The hourly report budget disagrees with itself.** `report_submit` checks
-  against the digest `MAX_CHARS` (600), but its error says "exceeds 1,200
-  characters", and the hourly playbook and guide also say 1,200.
-- **`ask_channel_enabled` ignores project and config fingerprint**
-  (`src/database/queries/ask_input_queries.py`). If any project on a
-  destination is in channel mode, every inbound message there goes to ask
-  intake.
-- **A Discord config change permanently retires writers.** Ask delivery
-  reconciliation marks every mode row whose fingerprint no longer matches as
-  `delivery_disabled` and migrated, including rows still in `legacy`.
-- **Ask URLs are inconsistent.** `escalation_commands.py` builds `/asks/<id>`
-  and `_legacy_ask_decision` builds `/focus/asks/<id>`.
+The 429 tracker binding, hourly report budget and ask URL findings are
+corrected by the changes described in §4. Channel admission and configuration
+retirement are corrected by task `amber-torrent-90`.
 
 **Design hazards.**
 
@@ -746,8 +786,9 @@ These hold today, and changes to this system must keep them.
 - **Direct escalation producers lag asks.** Only `escalation_create`
   publishes a `free_text` ask inline. The direct callers in §2.9 wait for
   the reconciler.
-- **Ask roots post without buttons**, and with no public dashboard URL
-  nothing is posted at all. Only a repair case opens.
+- **Ask roots initially post without buttons.** A following delivery edit adds
+  the controls. With no public dashboard URL nothing is posted and a repair
+  case opens; the dashboard remains the decision surface.
 - **Two hourly authoring mechanisms coexist**: the P3
   `supervisor_authored` digest and `reports.hourly`. Nothing reconciles
   them, and the hourly playbook still polls `timer.1m`.
@@ -765,55 +806,32 @@ These hold today, and changes to this system must keep them.
   `src/orchestrator/core.py` are always `None`, and `_task_added_messages`
   is never filled. A comment on `_on_message_sent` in
   `src/messages/delivery.py` describes the old path.
-- The `message_commands.py` docstring says `_cmd_*` returns no `success`
-  key, which contradicts the command contract. `message_queries.py` still
-  mentions SQLite, and "Phase 3" comments remain.
+- `message_queries.py` still mentions SQLite, and "Phase 3" comments remain
+  in the message command module. The command contract returns `success`.
 - `_SURFACES` in the reports code is hard-coded to the agent-queue project.
 
-**Documentation drift.**
+**Documentation audit (2026-10-23).**
 
-- [`../../concepts/messaging.md`](../../concepts/messaging.md) and
-  [`../../reference/modules/communications.md`](../../reference/modules/communications.md)
-  say message delivery runs once per cycle (it is the separate service in
-  §2.3), and their recipient table is wrong about task mail and parking.
-  The docs say inject records `via="inject"`. `communications.md` omits
-  `service.py`, `src/delivery/` and the conversation delivery, backfill and
-  maintenance modules. It says Discord is notification-only and
-  escalation-reply-only, and that controls were retired, although buttons
-  exist.
-- [`../../guides/escalations.md`](../../guides/escalations.md) never
-  mentions asks. It still calls `escalation_get` "the authoritative
-  incident", though the command now points to `aq ask show`. It says "the
-  same six commands", lists seven and the code has eight (`escalation_sweep`
-  is missing). It says the `system` digest category has no producer, though
-  provider availability feeds it. It implies the stateful features run
-  routinely, and it does not describe the supervisor-authored digest, which
-  only [`../config.md`](../config.md) covers.
-- [`../../guides/human-asks-rollout.md`](../../guides/human-asks-rollout.md)
-  names the migration chain 91/92/93. The files are `a00000000096`–`098`,
-  and 091–093 are unrelated revisions. The H08 receipt in
-  [`../../reference/human-asks-implementation.md`](../../reference/human-asks-implementation.md)
-  records the old numbering.
-- [`../../guides/discord-commands.md`](../../guides/discord-commands.md)
-  describes the old thread-based conversations, and
-  [`../../guides/discord-conversations.md`](../../guides/discord-conversations.md)
-  does not mention that ask channel mode takes precedence.
-- There is no operator guide for the morning report.
-- [`../messaging/project-pauses.md`](../messaging/project-pauses.md) has no
-  historical banner, unlike its siblings.
-- The repo copy of the Discord chat-extension design
-  ([`../../superpowers/specs/2026-10-03-discord-supervisor-chat-extension-design.md`](../../superpowers/specs/2026-10-03-discord-supervisor-chat-extension-design.md))
-  says `status: draft`. The vault copy
-  (`2026-10-03-discord-as-a-chat-extension-of-the-supervisor.md`, review
-  `rev-brisk-flare`) is *approved*, and most of it is implemented. Its plan
-  to move the digest into `outbound_deliveries` is not done; the digest uses
-  the shared scheduler but keeps its own table.
-- The messaging-rework docs planned a `packages/aq-discord` package that was
-  never built.
+The messaging overview, escalation and conversation guides, comms skill and module
+catalog now describe independent internal delivery, receipt semantics, active
+holders of task mail, canonical asks and channel ownership. The escalation guide
+covers all eight commands, provider facts, stateful gating and P3 digest authoring.
+The existing report guide now includes morning configuration, preview, authoring
+and receipt diagnosis. Rollout guidance names merged revisions 96–98; historical
+H08 evidence retains its provisional labels with an explicit mapping.
+
+The Discord chat-extension design is marked as a historical snapshot. Its digest
+outbox move is still incomplete, and H09 cleanup must not be described as shipped.
+The pause contract remains current and is indexed separately from obsolete
+platform designs. Installed skills are write-if-absent: shipping an updated
+`aq-comms` source does not refresh an existing installation; operators inspect
+`skills.installed_drift` through the normal reseeding procedure.
 
 ## 6. Planned work
 
-Tasks and reviews were re-queried on 2026-10-20 for this section.
+Task and review statuses in this section are a **2026-10-20 snapshot**, not a
+live queue query. The 2026-10-23 code audit below supersedes its verified-wait
+implementation claims; production ask cutover still needs operator evidence.
 
 ### 6.1 Finishing the ask cutover: `vivid-pinnacle-60`, `calm-grove-14`, `vivid-rapids-36`
 
@@ -857,38 +875,26 @@ legacy ask and escalation records, per Jack's 2026-10-19 reset directive.
   spec, profile and skill drift, and a final live sample of acceptance tests
   A01–A18.
 
-Several §5 gaps (escalation guide drift, the two publishers, the old
-notification queries) close with this work. The ask-specific bugs in §5
-(`ask_channel_enabled`, fingerprint retirement, inconsistent URLs, the
-missing application sweep) are not in any filed task.
+The documentation drift listed in the earlier snapshot was corrected by this audit.
+The two publishers and old notification queries remain cleanup work. Task
+`amber-torrent-90` addresses channel admission and configuration retirement;
+the missing application sweep remains a separate gap. The inconsistent ask URLs
+are corrected by the changes described in §4.
 
-### 6.2 Event-driven hibernation and verified waits: `bold-zenith-11` (IN_PROGRESS)
+### 6.2 Event-driven hibernation and verified waits
 
-Design: `2026-10-13-event-driven-agent-hibernation-and-verified-waits.md`
-(review `rev-bold-pinnacle`, *approved*, revision 2). Implementation plan:
-`…-implementa.md` (review `rev-fleet-orbit`, *approved*, revision 1). Every
-child except `.22` is COMPLETED on the epic branch
-`aq/epic/event-driven-hibernation-and-verified-waits-implementation`, which
-has not reached `dev`. The behaviour belongs to
-[sessions-and-harnesses](sessions-and-harnesses.md) and
-[task-graph](task-graph.md). It changes this system in these ways:
+The verified-waits implementation is present on the audited `dev` baseline in
+`src/wait_runtime/`; it is no longer only an epic-branch proposal. Version-2
+registration, held mail, fenced suspension/checkpoints, outcomes and explicit
+acknowledgement are documented in [agent waits](../../guides/agent-waits.md).
+Legacy registration bodies are refused with `wait.upgrade_required` under the
+normal configuration. Mail and human-wait behavior is described in §2.4; source
+contracts and exact evidence belong to [wait source contracts](../../guides/wait-source-contract.md).
 
-- **`.12` (COMPLETED on the branch): held mail.** A waiting session receives
-  only `wait_outcome`, `wait_suspend` and `wait_decision`. Routine mail is
-  held behind a cursor and arrives with the outcome, so patrol notes,
-  digests and lease expiry no longer cost a waiting agent a turn. Wait
-  escalations go through `escalation_create`, and a third identical
-  registration in the loop window is hibernated with `wait.loop_detected`.
-- **`.18` (COMPLETED on the branch): human waits.** A wait on a review, a
-  task comment or a message thread never times out. It appears as a
-  `waiting_on_you` fact in every daily digest and morning report, and a
-  human wait never holds or wakes a digest window. `wait_lift` lets a
-  supervisor resume the agent; a supervisor's own reply on the thread does
-  not satisfy a human wait.
-- **`.22` (READY): the cutover.** Flips the defaults, refuses v1 wait bodies
-  with `wait.upgrade_required`, ships the doctor checks `waits.schema` and
-  `waits.orphans`, and rewrites the agent-waits and wake-context guides.
-  §2.4's `agent_waits` observer is replaced when this lands.
+The historical epic was `bold-zenith-11`, based on the 2026-10-13 event-driven
+hibernation design (review `rev-bold-pinnacle`) and implementation plan (review
+`rev-fleet-orbit`). This audit does not infer current task states or production
+migration/enablement from the presence of code.
 
 ### 6.3 Morning report on playbook building blocks: `clear-impact-72.5` (READY)
 
@@ -938,3 +944,25 @@ Other open work was checked and does not change this system.
   [`../design/messaging-rework.md`](../design/messaging-rework.md),
   [`../implementation/messaging-rework.md`](../implementation/messaging-rework.md),
   [`../../superpowers/specs/2026-09-08-discord-simplification-implementation.md`](../../superpowers/specs/2026-09-08-discord-simplification-implementation.md).
+
+## Operational escalation lifecycle
+
+Operational wait, continuation, train-stall and delivery-watchdog incidents notify
+the project supervisor first. Reconciliation must not turn them into human-channel
+requests. A supervisor's explicit `escalate_to_human` wait decision authorizes human
+delivery; other unresolved operational incidents can be escalated through the
+supervisor's normal human-question command.
+
+Every periodic auto-resolution pass inspects the complete open set, including old
+incidents. Cancelled gates, terminal/removed batches, settled waits, released
+continuations and completed source tasks retire their incidents with durable source
+evidence and a non-null automatic outcome. Completed tasks alone do not prove that
+delivery reached its target: delivery incidents require their bound containment
+projection to settle. The explicit sweep uses the same source rules and revalidates
+them before applying a saved plan.
+
+Train and admission alarms measure lack of progress, rather than total queue age.
+Active repairs, bounded running visits, deferred retries and recent admissions defer
+alarms. Measured visit duration can increase the train threshold above its floor.
+One batch or active admission-capacity episode produces one supervisor incident,
+regardless of the number of members or waits observing it.

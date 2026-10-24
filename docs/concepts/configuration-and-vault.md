@@ -1,75 +1,34 @@
 # Configuration, the vault, and prompt context
 
-AQ keeps operational settings, human-authored knowledge, and durable runtime records
-in different places. Changing a policy should not mean editing a database row or
-rebuilding an agent prompt by hand.
-
-## Why it exists
-
-An AQ installation needs settings before it can start, such as a PostgreSQL connection
-and a directory for workspaces. It also needs material people revise over time: agent
-profiles, playbooks, project notes, facts, and prompt guidance. The first belongs in
-YAML configuration; the second belongs in the Markdown vault; the database stores
-durable coordination records and projections.
+AQ keeps runtime settings in YAML, authored definitions in a Markdown vault, and
+durable coordination and knowledge records in PostgreSQL. Editing a file affects
+runtime behavior only when its owning loader or watcher consumes it.
 
 ## Vocabulary
 
-* **Configuration** is config.yaml plus its overlays: typed runtime settings loaded
-  by [src/config.py](../../src/config.py).
-* **Vault** is the Obsidian-compatible Markdown tree at
-  ~/.agent-queue/vault/ by default. It is where users author policy and knowledge.
-* **Projection** is a database or search-index representation derived from a vault
-  file; it accelerates runtime work but is not the editable source.
-* **Fact** is a small namespaced key/value entry in a facts.md file.
-* **Prompt context** is the ordered text and tool schema given to an LLM call.
+* **Configuration** is `config.yaml` plus environment/profile overlays, loaded into
+  typed settings by [src/config.py](../../src/config.py).
+* **Vault** is the Obsidian-compatible tree at `~/.agent-queue/vault/` by default.
+  Profiles, classes, harnesses, formulas and other authored definitions live here.
+* **Knowledge record** is database-owned content exposed through AQ knowledge
+  commands. Its Markdown export is a projection; editing that export does not update
+  the record.
+* **Fact** is a namespaced key/value entry in a legacy `facts.md` file. Parsing still
+  works, but the daemon does not connect its legacy KV/indexing service.
+* **Prompt context** is the role, rules, task and authorized context delivered to a
+  session through `aq prime`.
 
-## A realistic example
+## Configuration inputs
 
-Assume the daemon is running, a project named demo exists, and its worker needs to
-know the test command. Put the stable, reviewed fact in the project vault:
+The default configuration location is `~/.agent-queue/config.yaml`. Its adjacent
+`.env` supplies `${NAME}` values and **overrides** an already-set process variable,
+with a warning when values differ. AQ reads base YAML, merges an optional environment
+then profile overlay, substitutes variables, constructs typed settings and validates.
+Mappings merge recursively, lists/scalars replace, and overlay `null` removes a key.
+See the [configuration reference](../reference/configuration.md) for selection order,
+field defaults and reload classification.
 
-~~~text
-~/.agent-queue/vault/projects/demo/facts.md
-
-## Project
-- language: Python 3.12
-- test_command: aq test tests/test_config.py
-~~~
-
-The parser accepts headings as namespaces and the first colon as the key/value divider.
-This is the same small input/output transformation AQ uses:
-
-~~~bash
-python3 - <<'PY'
-from src.facts_parser import parse_facts_file, render_facts_file
-facts = parse_facts_file('## Project\n- language: Python 3.12\n- test_command: aq test tests/test_config.py\n')
-print(facts)
-print(render_facts_file(facts), end='')
-PY
-~~~
-
-~~~text
-{'Project': {'language': 'Python 3.12', 'test_command': 'aq test tests/test_config.py'}}
-## Project
-language: Python 3.12
-test_command: aq test tests/test_config.py
-~~~
-
-With the optional memory service connected, a changed facts file is copied into that
-service's scoped KV store. Without it, the in-tree handler logs the change and leaves
-the Markdown file intact. See [src/facts_handler.py](../../src/facts_handler.py).
-
-## Inputs and outputs
-
-### Configuration inputs
-
-The default configuration location is ~/.agent-queue/config.yaml. Its adjacent .env
-file supplies secret values referenced as ${NAME}; it does not overwrite an environment
-variable already set. AQ then reads base YAML, an optional environment overlay, and an
-optional named profile. The detailed order is in the
-[configuration reference](../reference/configuration.md).
-
-~~~yaml
+```yaml
 data_dir: ~/.agent-queue
 workspace_dir: ~/agent-queue-workspaces
 database:
@@ -77,132 +36,119 @@ database:
 messaging_platform: none
 sessions:
   enabled: true
-~~~
+```
 
-database.url must resolve to a PostgreSQL DSN. workspace_dir must be writable (or have
-a writable parent). These are startup-required settings; changing them in a file does
-not move a running daemon. [src/config.py](../../src/config.py) validates known
-problems together rather than silently selecting a fallback.
+`database.url` must resolve to a PostgreSQL DSN. `workspace_dir` must be writable or
+have a writable parent. Changing these settings does not move a running daemon.
+Use `${VAR}` references for credentials; literal credentials are accepted but redacted
+on configuration API reads.
 
-### Vault inputs
+The watcher notices changes to the base file's mtime. Overlay or `.env` edits alone
+need `aq system reload-config`. Invalid loads retain the current config; restart-only
+changes are reported without replacing those live sections.
 
-data_dir determines the vault root. Startup creation is idempotent: existing user files
-are kept, while missing shipped templates and defaults are copied in.
+## Vault inputs
+
+`data_dir` determines the vault root. Startup creates missing directories and seeds
+shipped definitions. Existing profiles, classes, skills and templates are kept;
+retirement markers prevent intentionally removed profile/class defaults returning.
 
 | Purpose | Default vault path |
 |---|---|
-| System playbooks | vault/system/playbooks/*.md |
-| Global agent profiles | vault/agent-types/&lt;profile&gt;/profile.md |
-| Profile knowledge and facts | vault/agent-types/&lt;profile&gt;/memory/, facts.md |
-| Project knowledge, facts, references, and overrides | vault/projects/&lt;project&gt;/… |
-| Project-specific prompt override | vault/projects/&lt;project&gt;/overrides/&lt;profile&gt;.md |
-| Starter templates and harness descriptions | vault/templates/, vault/harnesses/*.md |
+| Installed system playbook sources | `vault/system/playbooks/*.md` |
+| Global profiles | `vault/agent-types/<profile>/profile.md` |
+| Legacy profile memory and facts | `vault/agent-types/<profile>/memory/`, `facts.md` |
+| Project notes, specs, references and knowledge exports | `vault/projects/<project>/…` |
+| Project prompt override files | `vault/projects/<project>/overrides/<profile>.md` |
+| Templates and harnesses | `vault/templates/`, `vault/harnesses/*.md` |
+| Classes, formulas and reviewed bundles | `vault/intelligence-classes/`, `formulas/`, `reviewed-playbooks/` |
 
-The practical output is Markdown editable with a normal editor or Obsidian. The vault
-watcher notices creations, edits, and deletions after its initial snapshot; each owning
-handler determines whether the edit also produces a projection or summary.
+An absent or empty vault gets initial reviewed playbook installation once, recorded
+in `data_dir/playbook-installation.json`. An existing non-empty vault gets a receipt
+without policy installation or activation. Restart does not restore deleted policy
+or replace active artifacts; import/activation and operator doctor repair are explicit.
 
-### Prompt output
+Three refresh paths differ from ordinary write-if-absent seeding:
 
-PromptBuilder.build() returns one system-prompt string and a list of JSON Schema tool
-definitions. Its implemented order is:
+* Harnesses matching an older shipped hash refresh automatically; custom edits stay.
+  `aq vault reset-harness` explicitly replaces selected harnesses.
+* Supervisor and worker template capability grants merge additively on startup and
+  profile reload, unless `capability_sync: false` opts out.
+* Reviewed bundles can be replaced during initial installation or explicit repair,
+  with backups. They are not refreshed on every restart.
 
-~~~mermaid
-flowchart TD
-  P[profile.md: Role / Rules / Reflection] --> L0[L0 role]
-  O[project override Markdown] --> OV[override]
-  F[facts.md] --> L1F[L1 facts]
-  G[memory/guidance Markdown] --> L1G[L1 guidance]
-  M[optional memory search] --> L2[L2 context]
-  T[src/prompts/*.md] --> I[identity template]
-  C[caller task/project blocks] --> CB[context blocks]
-  L0 --> A[ordered prompt]
-  OV --> A
-  L1F --> A
-  L1G --> A
-  L2 --> A
-  I --> A
-  CB --> A
-  Tools[tool JSON schemas] --> OUT[PromptBuilder.build output]
-  A --> OUT
-~~~
+`aq doctor --check profiles.system_drift` and `skills.installed_drift` identify
+installed content that differs from shipped content. `aq agent profile-reseed
+--profile-id <id> --grants-only` merges grants without replacing operator text.
 
-The override follows the profile role and is therefore more specific project guidance.
-Empty pieces are omitted. Template variables use {{name}}; an unknown variable stays
-visible. Large tier text produces a warning at twice its approximate budget, not a
-silent truncation. See [src/prompt_builder.py](../../src/prompt_builder.py).
+## What edits reach runtime
 
-## State ownership
+The vault watcher takes an initial snapshot, then polls mtime/size and debounces
+changes. Profiles, harnesses, classes, formulas, MCP definitions and workspace kinds
+have live handlers. Project README changes produce deterministic supervisor Markdown.
+Hub pages provide Obsidian navigation; `aq system vault-rebuild-index` rebuilds them,
+and `--with-summaries` uses the direct LLM path for folder summaries.
 
-| State | Canonical owner | Derived/runtime consumers |
-|---|---|---|
-| Runtime settings and overlay selection | YAML and .env beside config.yaml | typed AppConfig, config schema/editor |
-| Profiles, playbooks, knowledge, facts, overrides, harnesses | Vault Markdown | watcher handlers, registries, prompt assembly |
-| Tasks, claims, attempts, integrations | PostgreSQL | dashboard, CLI, orchestrator |
-| Semantic chunks, scoped KV, search results | Optional external aq-memory plugin | L1/L2 prompt inputs and vault projections |
-| Vault hubs and README summaries | Generated Markdown under the vault | Obsidian navigation and supervisor context |
+Facts parsing remains available in [src/facts_parser.py](../../src/facts_parser.py):
 
-In-tree code supports file formats, deterministic fact parsing, vault watching, and
-prompt assembly without a memory plugin. Semantic retrieval, embeddings, and scoped KV
-are optional plugin capabilities. Keep the editable vault file as the policy source.
+```python
+from src.facts_parser import parse_facts_file
+
+parse_facts_file('## Project\n- language: Python 3.12\n')
+# {'Project': {'language': 'Python 3.12'}}
+```
+
+This parser example does not publish context to an agent. The daemon skips the legacy
+`aq-memory` and `memory` plugins regardless of `memory.enabled`. Facts handlers only
+log, and no override indexer is attached. Enabling that flag does not restore facts
+or override ingestion. Use current knowledge-record commands for durable context.
+
+Workspace spec watching is separately gated by `memory.enabled` and
+`spec_watcher_enabled`. When enabled, it creates reference stubs. Optional enrichment
+listens to `workspace.spec.changed`, reads bounded source text and uses a source hash
+so an already-enriched unchanged source can be skipped. It also requires
+`stub_enrichment_enabled` and a usable direct LLM configuration.
+
+## Prompt output
+
+Worker sessions obtain live role, rules, task and authorized knowledge-record context
+through `aq prime`. Legacy L1 facts and L2 retrieval builders return empty text;
+authorized knowledge bundles can still populate the rendered context section.
+
+[src/prompt_builder.py](../../src/prompt_builder.py) retains an older assembler and
+isolated tests. Its `build()` orders role, project override, facts, guidance, retrieval
+context, identity template, caller blocks and tools. It uses lenient `{{name}}`
+substitution and warns at twice approximate tier budgets. That build path has no
+production caller; prime uses its `extract_section` helper.
+
+[src/prompt_manager.py](../../src/prompt_manager.py) serves workspace `prompts/`
+templates through list/read/render commands, with optional strict substitution.
+Task templates use strict variables and prefer a vault copy under `templates/tasks/`
+over the packaged copy. These are separate from session bootstrap prompts.
 
 ## Common failures and recovery
 
 | Symptom | Cause and recovery |
 |---|---|
-| Daemon rejects configuration | Correct every listed validation error, especially database.url or a missing environment variable, then restart. aq system config schema is an operator-facing field/type inspection command. |
-| A changed setting seems ignored | Run aq system reload-config; restart for sections reported as restart-required. See the [reload reference](../reference/configuration.md#reload-and-restart). |
-| A vault edit has no immediate effect | The watcher polls and debounces. Check the vault root and handler path pattern, save again, and allow a polling/debounce cycle. |
-| Facts are absent from semantic retrieval | The external memory plugin may be unavailable. Markdown remains canonical; restore/configure the plugin before expecting KV/search projection. Deleted fact files deliberately retain old KV entries until explicit removal. |
-| An override has no effect | Check projects/&lt;project&gt;/overrides/&lt;profile&gt;.md and the selected profile. Malformed override paths are rejected by the indexer. |
-| A reference stub is stale or unenriched | Confirm its source still exists, then use the operator vault workflow to rebuild/re-enrich it. Missing-source and unchanged-but-unenriched states are distinct. |
-
-## How it works
-
-[src/vault.py](../../src/vault.py) creates, migrates, and seeds vault content.
-[src/vault_manager.py](../../src/vault_manager.py) resolves paths without side effects;
-its explicit ensure_* and register_* methods create directories.
-[src/vault_index.py](../../src/vault_index.py) makes Obsidian hub files, and
-[src/wiki_links.py](../../src/wiki_links.py) parses and resolves their wiki links.
-
-[src/vault_watcher.py](../../src/vault_watcher.py) uses portable mtime/size polling,
-batches matching paths, and flushes after a debounce period (or maximum pending age).
-It differs from [src/file_watcher.py](../../src/file_watcher.py), which watches
-configured workspace files/folders and emits file.changed or folder.changed events.
-
-Facts, overrides, and project READMEs are handler families. Facts parse deterministically;
-overrides can be embedded into project memory when the plugin is installed; a project
-README produces a deterministic supervisor summary. Reference stubs may be enriched by
-a direct LLM call, guarded by a source hash to skip unchanged content. See
-[src/readme_handler.py](../../src/readme_handler.py) and
-[src/reference_stub_enricher.py](../../src/reference_stub_enricher.py).
-
-> **Shipped defaults.** In-tree prompt templates, default playbooks, intelligence
-> classes, profiles, harnesses, and vault templates seed only a missing local copy.
-
-> **Configured local policy.** data_dir, environment/profile overlays, and local vault
-> content are installation choices.
-
-> **Optional compatibility.** database_path is a deprecated alias for database.url;
-> PostgreSQL is required. Legacy Discord per-project-channel YAML is accepted only to
-> warn during migration and cannot restore old channel creation.
-
-> **Proposed work.** This page documents current source behavior. Historical material
-> under docs/specs/ may describe proposals or retired paths, not operating defaults.
-
-## Related pages
-
-* [Configuration reference](../reference/configuration.md) — precedence and reload.
-* [Profiles and intelligence classes](../reference/profiles-and-classes.md) — profile
-  Markdown that supplies role content.
-* [Agents and routing](agents-and-routing.md) — profile and harness selection.
-* [Database data lifecycle](../reference/database/data-lifecycle.md) — durable records
-  that are database state rather than vault content.
+| Configuration is rejected | Correct all listed validation errors, including missing `${VAR}` references and the PostgreSQL DSN. Inspect fields with `aq system config schema`. |
+| A setting seems ignored | Force reload after overlay edits; restart for sections classified as restart-required. YAML agent defaults currently use `agents`, while schema/tuning emit `agents_config`; see the [reference](../reference/configuration.md#top-level-sections). |
+| A profile edit seems ignored | Check the actual `data_dir`, profile identity and watcher path. Allow a polling/debounce cycle. |
+| Facts or an override have no effect | Legacy ingestion is inactive. Changing `memory.enabled` alone cannot enable it. |
+| A knowledge export edit has no effect | Update the database record through knowledge commands; Markdown is its export. |
+| A shipped fix is absent locally | Inspect drift and use the applicable explicit reseed/reset/repair command. Restart preserves customized definitions. |
 
 ## Source and tests
 
-The complete inventory is the [vault module catalog](../reference/modules/vault.md).
-Focused checks: aq test tests/test_config.py tests/test_config_watcher.py,
-aq test tests/test_vault_watcher.py tests/test_facts_handler.py, and
-aq test tests/test_prompt_builder.py tests/test_prompt_manager.py.
+[src/vault.py](../../src/vault.py) creates, migrates and seeds vault content.
+[src/vault_manager.py](../../src/vault_manager.py) resolves paths and explicitly creates
+layout. [src/vault_watcher.py](../../src/vault_watcher.py) dispatches changes from the
+orchestrator tick; its standalone background loop is unused. `FileWatcher`, glossary
+and wiki-link utilities retain isolated coverage but do not provide a live generic
+workspace watch service.
 
+See the [module catalog](../reference/modules/vault.md) and
+[system specification](../specs/systems/configuration-and-vault.md) for source ownership
+and focused tests. Related operating guides cover
+[profiles and classes](../reference/profiles-and-classes.md),
+[worker pools](../guides/worker-pools.md), and
+[portable setup](../specs/portable-config.md).

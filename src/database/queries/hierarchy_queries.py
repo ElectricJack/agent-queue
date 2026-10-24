@@ -363,9 +363,16 @@ class ProjectIntegrationMode:
 
     hierarchical: bool
     integration_repository_id: str | None
-    # Empty means unobserved: only a revalidated Git view may admit prerequisites.
+    # Admission distinguishes unknown observations from proven missing ancestry.
     delivered_prerequisite_ids: frozenset[str] = frozenset()
+    #: No Git view loaded for the project: every delivery predicate admits.
     observation_unavailable: bool = False
+    #: Sources whose Git delivery is unloaded rather than unprovable. They never
+    #: withhold a dependent: it prepares from its origin and merges them itself.
+    unknown_prerequisite_ids: frozenset[str] = frozenset()
+    unknown_default_prerequisite_ids: frozenset[str] = frozenset()
+    #: Cross-epic dependents whose epic containment is unknown, never disproven.
+    unknown_parent_task_ids: frozenset[str] = frozenset()
     cross_epic_prerequisites: str = "default_branch"
     default_prerequisite_ids: frozenset[str] = frozenset()
     #: Dependents whose epic branch already contains every cross-epic source.
@@ -387,6 +394,7 @@ class ProjectIntegrationMode:
         from src.integration.stacked_branches import stacked_policy
 
         return cls(
+            observation_unavailable=True,
             project_id=getattr(project, "id", None),
             train_playbook_id=((getattr(project, "hierarchical_integration_policy", None)
                                 or {}).get("train") or {}).get("playbook_id") or "fast-smooth-train",
@@ -640,7 +648,7 @@ def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = N
     predecessor completes.  In a hierarchy project that is too early: the
     predecessor's source still belongs to its feature branch until delivery
     is proven on their common parent branch. Only the supplied Git view can
-    prove delivery; an absent view leaves affected prerequisites unproven.
+    prove delivery; unknown observations allow preparation to proceed.
 
     *mode*, when supplied, folds the two ``projects`` lookups away exactly as
     in :func:`materialized_origin_when_hierarchical`.
@@ -651,7 +659,12 @@ def _delivered_same_parent_prerequisites(mode: ProjectIntegrationMode | None = N
     prerequisite = tasks.alias("hierarchy_prerequisite_task")
     parent = tasks.alias("hierarchy_prerequisite_parent")
     origin = task_branch_origins.alias("hierarchy_prerequisite_origin")
-    delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids) if mode else false()
+    if mode is None or mode.observation_unavailable:
+        delivered = true()  # Unobserved delivery never withholds preparation.
+    else:
+        delivered = prerequisite.c.id.in_(
+            mode.delivered_prerequisite_ids | mode.unknown_prerequisite_ids
+        )
     if mode is not None and mode.stacked:
         delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
@@ -772,11 +785,14 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
     """Require exact Git delivery of cross-parent sources on the default branch.
 
     Epic containment and refresh batches have their own frontier predicate.
-    With no observation, a completed cross-parent source remains unproven.
+    With no observation, preparation proceeds without asserting delivery.
     """
+    if mode is None or mode.observation_unavailable:
+        return true()
     source, cross_edge = _cross_parent_prerequisites()
-    ids = mode.default_prerequisite_ids if mode else frozenset()
-    if mode is not None and mode.stacked:
+    # Unloaded default-branch evidence counts with proven delivery; neither withholds.
+    ids = mode.default_prerequisite_ids | mode.unknown_default_prerequisite_ids
+    if mode.stacked:
         ids |= mode.stackable_prerequisite_ids
     unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
     return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge.where(unproven)))
@@ -811,8 +827,11 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
     ))
-    ids = mode.parent_contained_task_ids if mode else ()
+    ids = mode.parent_contained_task_ids | mode.unknown_parent_task_ids if mode else ()
     contained = tasks.c.id == any_(literal(sorted(ids), type_=ARRAY(Text))) if ids else false()
+    # Unobserved containment cannot veto; only a proven-stale epic waits for refresh.
+    if mode is None or mode.observation_unavailable:
+        contained = true()
     pending = exists(open_epic_refresh_batches()) | (has_epic & ~contained)
     return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge) & pending)
 
@@ -893,7 +912,7 @@ class HierarchyQueryMixin:
         if hierarchy_modes is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self)
+            hierarchy_modes = await hierarchy_frontier_modes(self, task_ids=task_ids)
         async with self._engine.connect() as conn:
             rows = (
                 (
@@ -925,19 +944,24 @@ class HierarchyQueryMixin:
         from the preserved origin without copying files or merging siblings.
         This uses the same current Git proof as admission,
         including its exact parent tip, rather than historical receipt rows.
-        Stale or unknown proof refuses preparation. ``None`` means no sibling
-        prerequisite needs a head; unobserved siblings cannot pass admission.
+        Stale or negative proof refuses the overlay. Unknown proof returns
+        ``None`` so the agent can prepare from its origin and merge prerequisites.
         """
         dependency = task_dependencies.alias("delivery_head_dependency")
         prerequisite = tasks.alias("delivery_head_prerequisite")
         from src.integration.delivery_observer import prerequisite_observer
+        from src.git.manager import GitError
 
         observer = prerequisite_observer(self)
         if observer is not None:
             task = await self.get_task(task_id)
             if task is None or task.parent_task_id is None:
                 return None
-            view = await observer.prerequisite_view(task.project_id, task_id=task_id)
+            try:
+                view = await observer.prerequisite_view(task.project_id, task_id=task_id)
+            except (TimeoutError, GitError, OSError):
+                # An unloaded view supplies no overlay; the agent merges with Git.
+                return None
             if not await view.fresh():
                 raise ValueError("hierarchy prerequisite target moved during preparation")
             async with self._engine.connect() as conn:
@@ -946,14 +970,16 @@ class HierarchyQueryMixin:
                 ))).mappings().one_or_none()
                 if current is None or current["parent_task_id"] != task.parent_task_id:
                     raise ValueError("hierarchy prerequisite parent changed during preparation")
-                ids = set((await conn.execute(select(prerequisite.c.id).select_from(
+                status = dict((await conn.execute(select(
+                    prerequisite.c.id, prerequisite.c.status).select_from(
                     dependency.join(prerequisite,
                                     prerequisite.c.id == dependency.c.depends_on_task_id),
                 ).where(
                     dependency.c.task_id == task_id,
                     dependency.c.dep_type == DepType.BLOCKS.value,
                     prerequisite.c.parent_task_id == current["parent_task_id"],
-                ))).scalars())
+                ))).all())
+                ids = set(status)
                 if not ids:
                     return None
                 verified = await view.verified_on(conn, ids)
@@ -971,7 +997,12 @@ class HierarchyQueryMixin:
                     or origin["parent_ref"].removeprefix("refs/heads/")
                     != parent_branch.removeprefix("refs/heads/")):
                     raise ValueError("hierarchy prerequisite origin changed during preparation")
-                for tid in ids:
+                # Unknown proof supplies no overlay; an open or negative source refuses.
+                unknown = {
+                    tid for tid in ids if status[tid] == "COMPLETED" and (
+                        verified[tid].unloaded if tid in verified else tid not in view.evidence)
+                }
+                for tid in ids - unknown:
                     proof = verified.get(tid)
                     target = view.targets.get(tid)
                     if (proof is None or not proof.satisfied or target is None
@@ -979,12 +1010,13 @@ class HierarchyQueryMixin:
                         or target.target_ref != "refs/heads/" + parent_branch.removeprefix(
                             "refs/heads/")):
                         raise ValueError("hierarchy prerequisite delivery is not current")
+                if unknown:
+                    return None
                 heads = {proof.target_oid for proof in verified.values()}
             if not await view.fresh() or len(heads) != 1:
                 raise ValueError("hierarchy prerequisite target moved during preparation")
             return heads.pop()
-        # Admission already withholds sibling-dependent work without a Git view.
-        # An ordinary root has no prerequisite overlay to prepare.
+        # Unknown delivery supplies no overlay; preparation uses the normal origin.
         return None
 
     async def mark_container(self, task_id: str, *, conn) -> None:
@@ -1316,6 +1348,7 @@ class HierarchyQueryMixin:
         delivery=None,
         obsolete_integration_delegate: bool = False,
         allow_missing_provenance_reopen: bool = False,
+        preserve_collected_children: bool = False,
     ) -> bool:
         """Fence hierarchy/lifecycle writers; return whether hierarchy delivery applies.
 
@@ -1439,7 +1472,13 @@ class HierarchyQueryMixin:
                     "delivery_unknown", f"{mutation} requires current Git delivery evidence",
                 )
             internal_refs = set()
-            if rollover_operation is not None or recovering_provenance:
+            if (rollover_operation is not None or recovering_provenance
+                    or preserve_collected_children and mutation == "reopen"
+                    and task_row.parent_task_id is None and own_proof is not None
+                    and own_proof.state is DeliveryState.PENDING):
+                # A root PR conflict reworks the aggregate on its existing
+                # branch. Children already collected onto internal branches
+                # keep that delivery; default-branch delivery is still fixed.
                 branches = (await conn.execute(select(tasks.c.branch_name).where(
                     tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
                 ))).scalars()
@@ -1576,6 +1615,7 @@ class HierarchyQueryMixin:
         completed_parent_for_repair: bool = False,
         reject_live_parent: bool = False,
         defer_projection: bool = False,
+        check_ancestor_dependencies: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -1595,6 +1635,13 @@ class HierarchyQueryMixin:
 
         ``defer_projection`` is for a task change set: the caller must
         recompute the final graph and settle both parents before committing.
+
+        ``check_ancestor_dependencies`` runs the graph rule
+        ``dependency_on_ancestor`` on the combined graph: no task in the moved
+        subtree may keep a gating edge onto *parent_id* or its ancestors,
+        because a container settles only after its children.  Operator and
+        worker reparents opt in; creation paths file their edges after the
+        validator already checked them.
         """
         task_row = (
             await conn.execute(
@@ -1675,6 +1722,8 @@ class HierarchyQueryMixin:
                 raise HierarchyError(
                     "cycle", f"{parent_id} already depends on {task_id} through blocking edges"
                 )
+            if check_ancestor_dependencies and old_parent != parent_id:
+                await self._refuse_dependency_on_ancestor(conn, task_id, parent_id)
             depth = await self.structural_depth(parent_id, conn=conn)
             height = await self.subtree_height(task_id, conn=conn)
             if depth + height > MAX_STRUCTURAL_DEPTH:
@@ -1908,6 +1957,46 @@ class HierarchyQueryMixin:
         settle_result = await self.settle_containers({parent_id} | old_parents, conn=conn)
         flipped |= settle_result.flipped
         return flipped, settle_result.settled
+
+    async def _refuse_dependency_on_ancestor(self, conn, task_id: str, parent_id: str) -> None:
+        """Refuse a move leaving *task_id*'s subtree gated on its new ancestors.
+
+        Membership edges (``parent-child``) are the structure itself and are
+        rewritten by the move; every other blocking type is the graph rule
+        ``dependency_on_ancestor`` (``src/task_graph/validator.py``).
+        """
+        from src.models import BLOCKING_DEP_TYPES
+
+        gating = sorted(set(BLOCKING_DEP_TYPES) - {"parent-child"})
+        subtree = self._descendant_cte(task_id)
+        ancestors = self._ancestor_cte(parent_id)
+        rows = (
+            await conn.execute(
+                select(
+                    task_dependencies.c.task_id,
+                    task_dependencies.c.depends_on_task_id,
+                    task_dependencies.c.dep_type,
+                )
+                .where(
+                    task_dependencies.c.task_id.in_(select(subtree.c.id)),
+                    task_dependencies.c.depends_on_task_id.in_(select(ancestors.c.id)),
+                    task_dependencies.c.dep_type.in_(gating),
+                )
+                .order_by(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
+            )
+        ).fetchall()
+        if rows:
+            edges = ", ".join(f"{r.task_id} {r.dep_type} {r.depends_on_task_id}" for r in rows)
+            raise HierarchyError(
+                "dependency_on_ancestor",
+                f"moving {task_id} under {parent_id} would gate it on its own parent chain "
+                f"({edges}); a container settles only after its children — drop the edge first",
+                context={"edges": [
+                    {"task_id": r.task_id, "depends_on": r.depends_on_task_id,
+                     "dep_type": r.dep_type}
+                    for r in rows
+                ]},
+            )
 
     async def _reaches_over_blocking_edges(self, conn, start: str, target: str) -> bool:
         """Is *target* reachable from *start* along blocking edges?

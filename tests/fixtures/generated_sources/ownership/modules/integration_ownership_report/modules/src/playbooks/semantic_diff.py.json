@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/playbooks/semantic_diff.py::DefinitionDiff.integration_policy": {
+      "baseline_span": [
+        56,
+        56
+      ],
+      "landing_span": [
+        56,
+        56
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/playbooks/semantic_diff.py::diff_definitions": {
+      "baseline_span": [
+        83,
+        175
+      ],
+      "landing_span": [
+        83,
+        175
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

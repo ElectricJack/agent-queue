@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/api/models/review.py::PullRequestApproveResponse.integration_flush": {
+      "baseline_span": [
+        107,
+        107
+      ],
+      "landing_span": [
+        107,
+        107
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

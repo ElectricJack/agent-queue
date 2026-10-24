@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/escalation_queries.py::EscalationQueriesMixin._enqueue_initial_escalation_on": {
+      "fingerprint": "3838d351a68b0579c5b3d1110b635824c240e45f558f6638ae3924ef7ea3d95d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

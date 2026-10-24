@@ -19,17 +19,10 @@ restart, or a live observation of the real queue.
 
 ## What selecting `active` actually changes
 
-`integration.git_first` is a **protocol selector for reconciler-owned subjects
-only**. It is not a second activation of root ownership and it is not a new
-mode beside `reconciler_shadow` / `reconciler_active`.
-
-| `git_first` | What runs |
-|---|---|
-| `shadow` (default) | the old subject protocol stays authoritative; one read-only comparison of git-first facts against fetched git is logged per visit. It has no writer, no action port and no policy effect. |
-| `active` | `IntegrationTrain` takes the whole per-project loop. The root, parent and development subject runtimes are not built at all. Only promotion policy events are dispatched from the integration outbox; legacy events and green continuations remain stopped. |
-
-The selector refuses `IntegrationService` a train beside any subject runtime, so
-the two engines can never run concurrently.
+The current train always runs. `integration.git_first` accepts only `active`;
+old `shadow` settings fail validation with a migration message. This historical
+cutover record does not provide an alternate engine or a rollback selector.
+`IntegrationService` refuses a train beside any subject runtime.
 
 Prerequisites, all of which must be true **before** step 4:
 
@@ -240,28 +233,16 @@ SELECT count(*) FROM integration_subject_journal;
 
 Both must be unchanged from immediately before the restart. A pending legacy
 event whose `attempts` moved, or a new subject-journal row, means something is
-still dispatching into an old writer: stop, keep `git_first: shadow`, and report
+still dispatching into an old writer: pause the affected batch and report
 the event id. `tests/test_integration_cutover.py` asserts this against real rows
 across a restart; it is not a substitute for the live check, and the live check
 is not a substitute for the assertion.
 
 ## Rollback
 
-`git_first` is a selector, not an activation: setting it back to `shadow`
-restores the old protocol as authoritative for the next visit. That is the whole
-of the rollback, and it is why the step-3 transfer is safe to keep. Rolling back
-does not un-transfer ownership — `engine-transfer` has no reverse direction, by
-design.
-
-A batch the train froze before the rollback (`target_ref` set on its
-`integration_batches` row) stays where it is and is **inert**: nothing visits it
-again, so the old engine neither reads it as busy nor holds its members out of
-the frontier — those members are re-sealed and delivered by the old protocol as
-usual. Leave the row in place rather than aborting it: `intent = 'aborted'` is
-irreversible, so a hand edit would throw away the frozen inputs a later
-roll-forward could still settle from (a visit treats an already-contained
-candidate as delivered). Its `refs/heads/aq/batches/<digest>` candidate ref is
-left on the remote too; after a rollback nothing publishes or deletes it.
+Trial mode has been removed. Recovery is roll-forward through the current
+runbook’s batch pause, abort and eject controls; preserve the evidence and fix
+through the configured integration owner.
 
 If a cutover produced a wrong publication, do not revert the branch from the
 daemon. Delivery means historical inclusion, so a revert is new work: file a
@@ -275,5 +256,5 @@ task, let the train publish it through the normal path.
   its module.
 - It does not settle the recorded backlog stalls. `s3_settle` is operator
   evidence gathered through the supervisor.
-- It does not remove the selector, the old protocol or any legacy table. Stage 4
-  does that, after this cutover has run.
+- Legacy tables retain historical recovery evidence. Trial mode was removed on
+  2026-10-23; the current runbook supersedes the original activation procedure.

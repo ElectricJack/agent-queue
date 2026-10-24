@@ -26,8 +26,10 @@ from types import SimpleNamespace
 
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies as st
+from sqlalchemy import insert, select
 
 from src.config import ProviderFailoverConfig
+from src.database.tables import continuations, wait_records
 from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus, WorkspaceKind
 from src.providers.availability import AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED
@@ -915,9 +917,56 @@ async def test_blocked_failover_preserves_stop_and_graph_blockers(orch):
     assert audit["reason_code"] == "provider_unavailable"
 
 
+@pytest.mark.parametrize("args", [{}, {"provider": "codex"}, {"task_id": ["pending", "pin"]}])
+async def test_resume_pending_failover_preserves_continuation_and_pins(orch, args):
+    await _task(orch, "pending", "standard-high-codex", status=TaskStatus.RESUME_PENDING)
+    await _task(orch, "pin", "standard-high-codex", status=TaskStatus.RESUME_PENDING, intent=PINNED)
+    await orch.db.update_task("pending", branch_name="aq/pending", retry_count=2)
+    async with orch.db._engine.begin() as conn:
+        await conn.execute(insert(wait_records).values(
+            id="wait", project_id="p-1", owner_kind="task", owner_id="pending", origin="agent",
+            condition_kind="timer", condition={"due_at": 3.0}, source_key="timer:wait",
+            source_generation=1, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="test:timer", verified_at=1.0, created_at=1.0, request_hash="test",
+            outcome="satisfied",
+        ))
+        await conn.execute(insert(continuations).values(
+            id="continuation", task_id="pending", wait_id="wait", suspension_generation=1,
+            facts={"workspace_released_at": 2.0}, branch="aq/pending", saved_head="a" * 40,
+            summary="Continue the checked change", prior_status="IN_PROGRESS", held_cursor_seq=0,
+            resume_state="queued", stopped_at=2.0,
+        ))
+        before = (await conn.execute(select(continuations))).mappings().one()
+        wait_before = (await conn.execute(select(wait_records))).mappings().one()
+    await _codex_down(orch)
+    handler = _handler(orch)
+
+    preview = await handler.execute("provider_reroute", {**args, "dry_run": True})
+    assert [d["task_id"] for d in preview["moved"]] == ["pending"], preview
+    assert {d["task_id"]: d["kind"] for d in preview["held"]} == {"pin": "provider_pinned"}
+    assert (await orch.db.get_task("pending")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="pending") == []
+
+    result = await handler.execute("provider_reroute", args)
+    assert [d["task_id"] for d in result["moved"]] == ["pending"], result
+    assert result["resumed"] == []
+    task = await orch.db.get_task("pending")
+    assert (task.status, task.profile_id, task.branch_name, task.retry_count) == (
+        TaskStatus.RESUME_PENDING, "standard-high-claude", "aq/pending", 2,
+    )
+    pin = await orch.db.get_task("pin")
+    assert (pin.status, pin.profile_id) == (TaskStatus.RESUME_PENDING, "standard-high-codex")
+    [audit] = await orch.db.list_task_reroutes(task_id="pending")
+    assert audit["reason_code"] == "provider_unavailable"
+    async with orch.db._engine.connect() as conn:
+        assert (await conn.execute(select(continuations))).mappings().one() == before
+        assert (await conn.execute(select(wait_records))).mappings().one() == wait_before
+
+
+@pytest.mark.parametrize("status", [TaskStatus.BLOCKED, TaskStatus.RESUME_PENDING])
 @pytest.mark.parametrize("state", ["starting", "running", "draining"])
-async def test_failover_preview_excludes_blocked_tasks_with_live_sessions(orch, state):
-    await _task(orch, "live", "standard-high-codex", status=TaskStatus.BLOCKED)
+async def test_failover_preview_excludes_tasks_with_live_sessions(orch, state, status):
+    await _task(orch, "live", "standard-high-codex", status=status)
     await orch.db.create_session(SessionRecord(
         id="writer", project_id="p-1", task_id="live", profile_id="standard-high-codex",
         harness="codex", provider="fake", name="writer", lifecycle="pool", work_dir="/tmp",
@@ -927,6 +976,44 @@ async def test_failover_preview_excludes_blocked_tasks_with_live_sessions(orch, 
     await _codex_down(orch)
     result = await _handler(orch).execute("provider_reroute", {"dry_run": True})
     assert result["moved"] == result["held"] == result["lost"] == [], result
+
+
+@pytest.mark.parametrize("race", [False, True])
+@pytest.mark.parametrize("owner", ["assignment", "session"])
+async def test_resume_pending_failover_does_not_retarget_reserved_resume(
+    orch, monkeypatch, race, owner,
+):
+    await _task(orch, "pending", "standard-high-codex", status=TaskStatus.RESUME_PENDING)
+    await orch.db.create_agent(Agent(
+        id="resume-agent", name="resume-agent", profile_id="standard-high-codex",
+    ))
+    await _codex_down(orch)
+
+    async def reserve():
+        if owner == "assignment":
+            await orch.db.update_task("pending", assigned_agent_id="resume-agent")
+        else:
+            await orch.db.create_session(SessionRecord(
+                id="writer", project_id="p-1", task_id="pending", profile_id="standard-high-codex",
+                harness="codex", provider="fake", name="writer", lifecycle="pool", work_dir="/tmp",
+                epoch="test", instance_token="exact-token", state="starting", started_at=time.time(),
+            ))
+
+    if race:
+        apply = orch.db.apply_task_reroute
+
+        async def reserve_before_apply(task_id, **kwargs):
+            await reserve()
+            return await apply(task_id, **kwargs)
+
+        monkeypatch.setattr(orch.db, "apply_task_reroute", reserve_before_apply)
+    else:
+        await reserve()
+
+    result = await _handler(orch).execute("provider_reroute", {})
+    assert result["moved"] == [] and result["lost"] == (["pending"] if race else []), result
+    assert (await orch.db.get_task("pending")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="pending") == []
 
 
 async def test_failover_guard_rejects_a_claim_that_wins_after_preview(orch, monkeypatch):

@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/principal.py::batch_release_actor": {
+      "fingerprint": "0152b4bdd98bdd6d02d31fb88b76a349e81416d31d3e0731534e43fe450ef569",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

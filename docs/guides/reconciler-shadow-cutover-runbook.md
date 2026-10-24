@@ -1,10 +1,12 @@
 # Shadow week and the guarded root cutover
 
-> Historical runbook: the old train/development publisher, shadow cutover and
-> rollback controls were removed on 2026-10-04. Commands for those paths below
-> are retained as historical context. Use the [current Subject integration guide](hierarchical-integration-trains.md)
-> for configuration, delivery and recovery. `app-setup`, `app-verify` and
-> `trust-manifest` remain available for App diagnostics.
+<!-- aq:historical -->
+> **Historical procedure.** The development/Subject publishers and runtimes are
+> retired. Commands and defaults below describe their earlier rollout and must
+> not be used as current operating instructions. `git_first: shadow` starts no
+> fallback publisher. Use the [Git-first train runbook](git-first-train-runbook.md)
+> and [current recovery guide](hierarchical-integration-trains.md).
+> `app-setup`, `app-verify` and `trust-manifest` remain available for diagnostics.
 
 The root subject engine ships **off**. `integration.reconciler_shadow` and
 `integration.reconciler_active` both default to `false`, and nothing in this

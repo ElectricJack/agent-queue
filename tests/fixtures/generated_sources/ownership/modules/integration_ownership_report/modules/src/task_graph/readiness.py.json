@@ -1,0 +1,13 @@
+{
+  "shared_definitions": {
+    "src/task_graph/readiness.py::attach_readiness": {
+      "reason": "Attaches the integration-aware load_readiness projection to task rows; the adapter remains charged with its underlying delivery evaluation."
+    },
+    "src/task_graph/readiness.py::delivery_details": {
+      "reason": "Explains failed sibling/default delivery predicates using exact checkpoints, receipt compatibility and observed target refs without weakening failed eligibility."
+    },
+    "src/task_graph/readiness.py::load_readiness": {
+      "reason": "Evaluates READY tasks through cached claim frontier delivery modes shared per project; this exposes integration-aware readiness."
+    }
+  }
+}

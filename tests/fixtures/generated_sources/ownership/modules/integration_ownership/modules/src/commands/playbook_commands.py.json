@@ -1,0 +1,18 @@
+{
+  "generic_dependencies": {
+    "src/commands/playbook_commands.py::PlaybookCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/playbook_commands.py::PlaybookCommandsMixin._cmd_update_playbook_source": {
+      "baseline_span": [
+        408,
+        678
+      ],
+      "landing_span": [
+        408,
+        677
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

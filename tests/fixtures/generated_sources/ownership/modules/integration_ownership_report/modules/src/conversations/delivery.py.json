@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/conversations/delivery.py::DurableConversationOutbox.__init__": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

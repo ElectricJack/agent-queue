@@ -11,11 +11,11 @@ refuse to start?".
 | Page | Covers |
 |---|---|
 | This page | Concepts, layering, transactions, the entity diagrams, write ownership. |
-| [Table families](tables.md) | Every one of the 98 tables, grouped, with its purpose and its invariants. |
-| [Query modules](queries.md) | The 49 query modules — the only code that issues SQL. |
+| [Table families](tables.md) | Selected table families, their purposes and invariants; system specs cover newer domain tables. |
+| [Query modules](queries.md) | Query-layer ownership and transaction patterns. |
 | [Migrations](migrations.md) | Alembic, who may run it, worker databases vs. the operator's, backup and restore. |
 | [Data lifecycle](data-lifecycle.md) | Close, archive, delete, what is retained and what refuses to delete. |
-| [Module catalog](../modules/database.md) | One row per source file in this subsystem. |
+| [Module catalog](../modules/database.md) | Selected source modules and their responsibilities. |
 
 ## Vocabulary
 
@@ -51,11 +51,13 @@ playbook got, what a human was asked, which commit was reviewed. The database
 is where those facts live. Three properties follow from that and explain most
 of the design you will see:
 
-**One writer decides, not many.** Every state change goes through the command
-layer ([`src/commands/`](../../../src/commands/)), which calls one query method,
-which runs one transaction. Two daemons, or a daemon and a restart, racing on
-the same row lose the race explicitly — with a conditional `UPDATE` that matches
-zero rows — rather than silently interleaving.
+**Commands own operational mutations.** User and agent surfaces dispatch
+through [`src/commands/`](../../../src/commands/); domain services and query
+methods implement persistence. A command can make several query calls, and
+multi-row invariants use the domain's transaction boundary. Conditional updates
+and durable reservations make competing attempts observable rather than
+silently treating both as the owner. See [daemon-core](../../specs/systems/daemon-core.md)
+for the command boundary and its current implementation gaps.
 
 **Evidence is append-only; progress is mutable.** A receipt, a review verdict, a
 completion record and a delivered message are written once and never edited.
@@ -74,22 +76,22 @@ schema has fewer foreign keys than you might expect.
 ```mermaid
 flowchart TD
     CLI["aq CLI / MCP tools / REST API / Dashboard"] --> H["CommandHandler<br/>src/commands/"]
-    ORCH["Orchestrator cycle<br/>src/orchestrator/"] --> H
+    ORCH["Orchestrator and domain services"] --> H
+    ORCH --> A
     H --> A["PostgreSQLDatabaseAdapter<br/>src/database/adapters/postgresql.py"]
-    A --> Q["47 query mixins<br/>src/database/queries/*.py"]
+    A --> Q["Query mixins<br/>src/database/queries/*.py"]
     Q --> T["Table definitions<br/>src/database/tables.py"]
     T --> PG[("PostgreSQL")]
     M["Alembic revisions<br/>migrations/versions/"] --> PG
     T -. "autogenerate compares against" .-> M
 ```
 
-The adapter is built by multiple inheritance: it lists 47 query mixins as base
+The adapter is built by multiple inheritance: it lists domain query mixins as base
 classes, so `db.get_task(...)` and `db.record_provider_usage(...)` are both
-methods on the same object even though they live in different files. Two of the
-49 modules — `proposal_queries.py` and `triage_queries.py` — are module-level
-functions taking the adapter as an argument instead, so tests can call them
-without building an adapter subclass. The
-protocol every mixin is expected to satisfy is written out in
+methods on the same object even though they live in different files.
+`proposal_queries.py` and `triage_queries.py` use module-level functions taking
+the adapter as an argument instead, so tests can call them without building an
+adapter subclass. The protocol every mixin is expected to satisfy is written out in
 [`src/database/base.py`](../../../src/database/base.py) as `DatabaseBackend`,
 which is what type checkers see.
 
@@ -232,7 +234,7 @@ erDiagram
     tasks ||--o| task_branch_origins : "branch reservation"
 ```
 
-The integration family is 38 of the 98 tables. It is a control plane for
+The integration family spans many related tables. It is a control plane for
 getting reviewed work onto a branch exactly once, and its shape is dominated by
 that: fence tokens, idempotency keys, pre-write markers and immutable evidence.
 [Table families → Integration](tables.md#integration-and-delivery) walks it.
@@ -383,5 +385,6 @@ server: export `POSTGRES_TEST_DSN` first, and pass `-m migration` (or
 * [Module catalog — database](../modules/database.md)
 * [The `aq` command line](../cli/README.md) — the surface every write goes through
 * [Migration policy guide](../../guides/migrations.md) — who may migrate what, and the incident behind it
-* `docs/concepts/tasks.md` — **planned** (`tasks` ticket): the task lifecycle in prose
-* `docs/concepts/architecture.md` — **planned** (`architecture` ticket): where the database sits in the daemon
+* [Tasks](../../concepts/tasks.md) — the task lifecycle in prose
+* [Architecture](../../concepts/architecture.md) — where the database sits in the daemon
+* [System specs](../../specs/systems/README.md) — current domain ownership and persistence

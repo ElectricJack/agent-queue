@@ -1,0 +1,80 @@
+{
+  "exclusions": {
+    "src/sessions/reconciler.py::_HELD_CLAIM_STATUSES[TaskStatus.ASSIGNED]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/sessions/reconciler.py::_HELD_CLAIM_STATUSES[TaskStatus.IN_PROGRESS]": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "shared_definitions": {
+    "src/sessions/reconciler.py::SessionReconciler._apply_provider_failover": {
+      "baseline_span": [
+        1283,
+        1475
+      ],
+      "landing_span": [
+        1266,
+        1458
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._claim_starting_reconciliation": {
+      "baseline_span": [
+        1040,
+        1085
+      ],
+      "landing_span": [
+        1028,
+        1068
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._hand_back_pool_integration_owner": {
+      "reason": "Reconciler adapter that hands a pool train writer's attached owner back through the existing arelease_integration_writer_for_retry(pool=True) once its WIP is saved clean and pushed; adds no storage, fence semantics or publication authority."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._release_task": {
+      "baseline_span": [
+        2831,
+        2877
+      ],
+      "landing_span": [
+        2814,
+        2860
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._renew_live_session_leases": {
+      "reason": "Reconciler adapter for bounded process-liveness renewal of existing ref leases; no new storage or replay authority."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._step_orphans": {
+      "baseline_span": [
+        2148,
+        2354
+      ],
+      "landing_span": [
+        2131,
+        2337
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._stop_drain_acked_holder": {
+      "baseline_span": [
+        597,
+        616
+      ],
+      "landing_span": [
+        585,
+        604
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._stop_retired_delegate_writer": {
+      "baseline_span": [
+        617,
+        680
+      ],
+      "landing_span": [
+        605,
+        668
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

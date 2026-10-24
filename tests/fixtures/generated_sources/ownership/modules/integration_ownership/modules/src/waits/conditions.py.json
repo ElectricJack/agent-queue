@@ -1,0 +1,8 @@
+{
+  "exclusions": {
+    "src/waits/conditions.py::canonical": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority."
+  },
+  "generic_dependencies": {
+    "src/waits/conditions.py::canonical": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority."
+  }
+}

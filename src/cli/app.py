@@ -449,6 +449,7 @@ from . import vault  # noqa: E402, F401
 from . import agent_surface  # noqa: E402, F401
 from . import formulas as _formulas_cli  # noqa: E402, F401
 from . import pool_provider as _pool_provider_cli  # noqa: E402, F401
+from . import batch as _batch_cli  # noqa: E402, F401
 from . import sessions as _sessions_cli  # noqa: E402, F401
 from . import messages as _messages_cli  # noqa: E402, F401
 from . import message_wait as _message_wait_cli  # noqa: E402, F401

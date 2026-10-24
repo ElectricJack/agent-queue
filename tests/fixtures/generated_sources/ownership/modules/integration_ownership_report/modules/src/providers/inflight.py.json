@@ -1,0 +1,18 @@
+{
+  "exclusions": {
+    "src/providers/inflight.py::Checkpoint.to_dict": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "shared_definitions": {
+    "src/providers/inflight.py::handoff_comment": {
+      "baseline_span": [
+        398,
+        469
+      ],
+      "landing_span": [
+        398,
+        469
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "reconciliation_definitions": {
+    "src/task_graph/batch_retirement.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "fingerprint": "a476ba45a067d489b903d9c04addaca4151deb85521ba70e980708b56f375976",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/batch_retirement.py::import from src.database.tables import agents, archived_tasks, ingest_batch_receipts, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, sessions, task_comments, task_dependencies, task_metadata, tasks, workspaces": {
+      "fingerprint": "2cded14cd2cc957090db116619de022d5884895aed7d75c09a0169a3b579e2e9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/task_graph/batch_retirement.py::prove_retired_on": {
+      "fingerprint": "cd18d62aa94f6e2c48fb1f2b155c4448a5ddb1adca8b62fc4432613b44b9a429",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/build_cache.py::cache_environment": {
+      "fingerprint": "5d53947d0850fa729a260660803b234fda0c5ca04c00cdacd8afde864bc640e1",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/build_cache.py::resolved_cache_settings": {
+      "fingerprint": "f5cd38cb10f14f133bd383720f8f86105d9f248dc0ea707c124816bcd5757202",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

@@ -217,7 +217,7 @@ A draft or closed PR, a changed head, or unavailable evidence hold publication.
 The integration service observes the PR again before its fenced write. Sources:
 [src/commands/promote_commands.py](../../src/commands/promote_commands.py) and
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
-(`StepPullRequestGate`, `PromotionPublisher`).
+(`StepPullRequestGate`, `PromotionVisit`).
 
 One promotion task is open per project, repository and target ref. A chained
 flow legitimately holds one intent per step target. An intent that ends without

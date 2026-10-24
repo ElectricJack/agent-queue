@@ -1,0 +1,94 @@
+[
+  {
+    "name": "queued",
+    "event": {
+      "_event_type": "task.failed",
+      "event_id": "failure-queued",
+      "task_id": "task-1",
+      "project_id": "project-1"
+    },
+    "outcomes": [
+      "queued"
+    ],
+    "terminal": "completed"
+  },
+  {
+    "name": "existing",
+    "event": {
+      "_event_type": "task.failed",
+      "event_id": "failure-existing",
+      "task_id": "task-1",
+      "project_id": "project-1"
+    },
+    "outcomes": [
+      "existing"
+    ],
+    "terminal": "completed"
+  },
+  {
+    "name": "not_actionable",
+    "event": {
+      "_event_type": "task.failed",
+      "event_id": "failure-not_actionable",
+      "task_id": "task-1",
+      "project_id": "project-1"
+    },
+    "outcomes": [
+      "not_actionable"
+    ],
+    "terminal": "completed"
+  },
+  {
+    "name": "retired",
+    "event": {
+      "_event_type": "task.failed",
+      "event_id": "failure-retired",
+      "task_id": "task-1",
+      "project_id": "project-1"
+    },
+    "outcomes": [
+      "retired"
+    ],
+    "terminal": "completed"
+  },
+  {
+    "name": "rejected",
+    "event": {
+      "_event_type": "task.failed",
+      "event_id": "failure-rejected",
+      "task_id": "task-1",
+      "project_id": "project-1"
+    },
+    "outcomes": [
+      "rejected"
+    ],
+    "terminal": "failed"
+  },
+  {
+    "name": "runtime_error",
+    "event": {
+      "_event_type": "task.failed",
+      "event_id": "failure-runtime_error",
+      "task_id": "task-1",
+      "project_id": "project-1"
+    },
+    "outcomes": [
+      "runtime_error"
+    ],
+    "terminal": "failed"
+  },
+  {
+    "name": "failure-generation-replay",
+    "event": {
+      "_event_type": "task.failed",
+      "event_id": "failure-replay",
+      "task_id": "task-1",
+      "project_id": "project-1"
+    },
+    "outcomes": [
+      "queued",
+      "existing"
+    ],
+    "terminal": "completed"
+  }
+]

@@ -24,6 +24,7 @@ from typing import Any
 from starlette.routing import Match, Mount
 
 from src.metrics.perf import PerfRegistry, perf_registry
+from src.logging_config import CorrelationContext
 
 __all__ = ["RouteLatencyMiddleware", "is_event_stream", "route_label"]
 
@@ -216,11 +217,15 @@ class _Probe:
 
     def _log_timing(self, elapsed_ms: float, *, status=None, handshake=False) -> None:
         log = logger.warning if elapsed_ms >= 1000 else logger.debug
-        log(
-            "request timing route=%s status=%s duration_ms=%.1f handshake=%s request_id=%s",
-            self.label, status, elapsed_ms, handshake,
-            (self.scope.get("state") or {}).get("request_id"),
-        )
+        with CorrelationContext(
+            route=self.label, status=status, duration_ms=round(elapsed_ms, 3),
+            handshake=handshake, request_id=(self.scope.get("state") or {}).get("request_id"),
+        ):
+            log(
+                "request timing route=%s status=%s duration_ms=%.1f handshake=%s request_id=%s",
+                self.label, status, elapsed_ms, handshake,
+                (self.scope.get("state") or {}).get("request_id"),
+            )
 
     def _elapsed_ms(self) -> float:
         return (time.perf_counter() - self.started) * 1000.0

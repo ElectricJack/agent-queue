@@ -1,0 +1,9 @@
+{
+  "generic_dependencies": {
+    "src/prime/budgets.py::CONTEXT_BYTES": "Generic worker task-context display budget; the fenced repair snapshot remains outside this budget and is charged independently.",
+    "src/prime/budgets.py::DESCRIPTION_BYTES": "Generic worker task-description display budget; no integration state, storage or authority.",
+    "src/prime/budgets.py::field_page": "Generic character pagination of readable task fields; command scope and integration delivery reads remain charged in the task-show adapter.",
+    "src/prime/budgets.py::task_preview": "Generic bounded task JSON projection; command scope and integration delivery reads remain charged in the task-show adapter.",
+    "src/prime/budgets.py::text_preview": "Generic bounded text display with canonical task-field read pointers; no integration state, storage or authority."
+  }
+}

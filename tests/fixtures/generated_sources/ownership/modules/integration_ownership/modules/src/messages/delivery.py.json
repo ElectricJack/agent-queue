@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/messages/delivery.py::MessageDeliveryEngine": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/messages/delivery.py::_render_nudge": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

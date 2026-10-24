@@ -12,7 +12,7 @@ line up, and which module owns which family.
 ```mermaid
 flowchart LR
   CMD["command<br/>task_show"] --> ROUTE["POST /api/task/show<br/>operationId: task_show"]
-  REQ["input_schema<br/>src/tools"] --> ROUTE
+  REQ["command descriptor / explicit request model"] --> ROUTE
   RESP["TaskShowResponse<br/>src/api/models/task.py"] --> ROUTE
   ROUTE --> SPEC["openapi.json<br/>TaskShowRequest / TaskShowResponse"]
   SPEC --> PY["agent_queue_api_client<br/>models/task_show_response.py"]
@@ -26,7 +26,7 @@ The naming is mechanical, which is what makes the generated clients navigable:
 | Command | `task_show` |
 | Path | `POST /api/task/show` (category, then the command with `_` → `-`) |
 | `operationId` | `task_show` |
-| Request schema | `TaskShowRequest` — generated from the command's JSON input schema by [`_make_input_model`](../../../src/api/codegen.py) |
+| Request schema | `TaskShowRequest` — an explicit request-model override, or generated from the command descriptor's JSON input schema by [`_make_input_model`](../../../src/api/codegen.py) |
 | Response schema | `TaskShowResponse` — a hand-written model in `src/api/models/` |
 | Error schema | `TaskShowResponse422` |
 | Python client | `agent_queue_api_client.api.task.task_show`, models `TaskShowRequest` / `TaskShowResponse` |
@@ -44,39 +44,58 @@ because they return an unstructured dictionary on purpose.
 
 ## What is in each module
 
-The count columns are from the modules at the commit this page was written
-against; regenerate rather than trusting them
-(`grep -c '^class ' src/api/models/*.py`).
+The table groups models by source module. For the current registry, use
+`_category_modules()` in `src/api/models/__init__.py`; file and class counts
+change whenever the public contract grows.
 
-| Module | Family | Models | Registered commands |
-|---|---|---|---|
-| [`task.py`](../../../src/api/models/task.py) | Tasks, comments, gates, dependencies, claims, batches | 78 | 55 |
-| [`playbook_v2.py`](../../../src/api/models/playbook_v2.py) | The V2 semantic-graph surface: definitions, proposals, validation, runs | 66 | 14 |
-| [`playbook.py`](../../../src/api/models/playbook.py) | Playbook listing, health, artefacts, run history | 36 | 14 |
-| [`system.py`](../../../src/api/models/system.py) | Config, schema, logs, events, costs, doctor, integration control | 35 | 24 |
-| [`agent.py`](../../../src/api/models/agent.py) | Agents, profiles, sessions-as-agents, questions, pools | 33 | 28 |
-| [`git.py`](../../../src/api/models/git.py) | Status, diff, log, branch, push, PR, merge | 24 | 22 |
-| [`project.py`](../../../src/api/models/project.py) | Projects, workspaces, workspace kinds, constraints | 20 | 18 |
-| [`graph_layout.py`](../../../src/api/models/graph_layout.py) | Requests *and* responses for the spatial layout routes | 19 | 0 (used directly by hand-written routes) |
-| [`metrics.py`](../../../src/api/models/metrics.py) | One fleet metrics sample and a series of them | 14 | 0 (used directly by `GET /api/metrics/series`) |
-| [`files.py`](../../../src/api/models/files.py) | Read, write, edit, glob, grep, notes | 13 | 11 |
-| [`memory.py`](../../../src/api/models/memory.py) | Semantic memory search, save, profiles | 13 | 11 |
-| [`plugin.py`](../../../src/api/models/plugin.py) | Plugin list, install, enable, config | 12 | 11 |
-| [`project_onboarding.py`](../../../src/api/models/project_onboarding.py) | Root browsing, GitHub discovery, the onboarding saga | 12 | 7 |
-| [`session.py`](../../../src/api/models/session.py) | Session listing, logs, input, lifecycle | 12 | 11 |
-| [`escalation.py`](../../../src/api/models/escalation.py) | Human escalations and their replies | 11 | 6 |
-| [`mcp.py`](../../../src/api/models/mcp.py) | MCP server registry and tool catalog | 8 | 7 |
-| [`digest.py`](../../../src/api/models/digest.py) | Digest preview and schedule health | 7 | 2 |
-| [`gate.py`](../../../src/api/models/gate.py) | Human and routing gates | 6 | 4 |
-| [`graph.py`](../../../src/api/models/graph.py) | The aggregate project-graph read | 6 | 2 |
-| [`message.py`](../../../src/api/models/message.py) | Inbox, send, reply, threads | 5 | 4 |
-| [`__init__.py`](../../../src/api/models/__init__.py) | `ErrorResponse`, `TaskRef`, `TaskBrief`, and the registry | 3 | — |
-| [`provider.py`](../../../src/api/models/provider.py) | Provider quota as each provider reports it | 2 | 0 (used directly by `GET /api/providers/usage`) |
-| [`discord.py`](../../../src/api/models/discord.py) | Channel housekeeping | 1 | 1 |
+| Module | Family |
+|---|---|
+| [`__init__.py`](../../../src/api/models/__init__.py) | `ErrorResponse`, `TaskRef`, `TaskBrief`, and the registry |
+| [`agent.py`](../../../src/api/models/agent.py) | Agents, profiles, sessions-as-agents, questions, pools |
+| [`ask.py`](../../../src/api/models/ask.py) | Versioned source decisions and durable application results |
+| [`collaboration.py`](../../../src/api/models/collaboration.py) | Shared collaboration request and response contracts |
+| [`cron.py`](../../../src/api/models/cron.py) | Recurring prompt schedules |
+| [`dashboard.py`](../../../src/api/models/dashboard.py) | Durable dashboard state documents and revision conflicts |
+| [`decision.py`](../../../src/api/models/decision.py) | Operator decision records and history |
+| [`delivery_latency.py`](../../../src/api/models/delivery_latency.py) | Computed delivery latency report and time breakdown |
+| [`digest.py`](../../../src/api/models/digest.py) | Digest preview and schedule health |
+| [`discord.py`](../../../src/api/models/discord.py) | Channel housekeeping |
+| [`escalation.py`](../../../src/api/models/escalation.py) | Human escalations and their replies |
+| [`files.py`](../../../src/api/models/files.py) | Read, write, edit, glob, grep, notes |
+| [`gate.py`](../../../src/api/models/gate.py) | Human and routing gates |
+| [`git.py`](../../../src/api/models/git.py) | Status, diff, log, branch, push, PR, merge |
+| [`graph.py`](../../../src/api/models/graph.py) | The aggregate project-graph read |
+| [`graph_layout.py`](../../../src/api/models/graph_layout.py) | Requests *and* responses for the spatial layout routes |
+| [`integration.py`](../../../src/api/models/integration.py) | Author-assisted integration close continuations |
+| [`job.py`](../../../src/api/models/job.py) | Managed job request, result, logs, cancellation and retention contracts |
+| [`knowledge.py`](../../../src/api/models/knowledge.py) | Knowledge records and their stable result envelopes |
+| [`mcp.py`](../../../src/api/models/mcp.py) | MCP server registry and tool catalog |
+| [`memory.py`](../../../src/api/models/memory.py) | Semantic memory search, save, profiles |
+| [`message.py`](../../../src/api/models/message.py) | Inbox, send, reply, threads |
+| [`metrics.py`](../../../src/api/models/metrics.py) | One fleet metrics sample and a series of them |
+| [`object_loop.py`](../../../src/api/models/object_loop.py) | Durable object evaluation results |
+| [`operator.py`](../../../src/api/models/operator.py) | Scoped operator execution, preflight and audit references |
+| [`playbook.py`](../../../src/api/models/playbook.py) | Playbook listing, health, artefacts, run history |
+| [`playbook_v2.py`](../../../src/api/models/playbook_v2.py) | The V2 semantic-graph surface: definitions, proposals, validation, runs |
+| [`plugin.py`](../../../src/api/models/plugin.py) | Plugin list, install, enable, config |
+| [`policy.py`](../../../src/api/models/policy.py) | Policy profile preview, placement, import and export receipts |
+| [`project.py`](../../../src/api/models/project.py) | Projects, workspaces, workspace kinds, constraints |
+| [`project_onboarding.py`](../../../src/api/models/project_onboarding.py) | Root browsing, GitHub discovery, the onboarding saga |
+| [`provider.py`](../../../src/api/models/provider.py) | Provider quota as each provider reports it |
+| [`records.py`](../../../src/api/models/records.py) | Record reads, search, links and capabilities |
+| [`report.py`](../../../src/api/models/report.py) | Supervisor report reconciliation and retrieval |
+| [`review.py`](../../../src/api/models/review.py) | Document review submission, revisions and refusals |
+| [`session.py`](../../../src/api/models/session.py) | Session listing, logs, input, lifecycle |
+| [`supervisor_inbox.py`](../../../src/api/models/supervisor_inbox.py) | Global supervisor conversation history, status and explicit replies |
+| [`system.py`](../../../src/api/models/system.py) | Config, schema, logs, events, costs, doctor, integration control |
+| [`task.py`](../../../src/api/models/task.py) | Tasks, comments, gates, dependencies, claims, batches |
+| [`test_selection.py`](../../../src/api/models/test_selection.py) | Explicit smart test selection reports |
+| [`wait.py`](../../../src/api/models/wait.py) | Wait request overrides, receipts and persisted explanations |
 
-Four modules register nothing: their models belong to hand-written routes
-rather than to a command, so they reach the schema through the route's
-`response_model` instead of through the registry.
+`graph_layout.py` and `metrics.py` are consumed directly by resource routes;
+`delivery_latency.py` supplies report shapes used directly by `metrics.py`.
+Category modules can also export `REQUEST_MODELS` for explicit nested input
+validation, aggregated by `get_all_request_models()`.
 
 ## Conventions inside the models
 
@@ -86,9 +105,11 @@ rather than to a command, so they reach the schema through the route's
   The metrics models state this rule explicitly and follow it field by field.
 * **Errors are separate schemas.** Every generated route declares a `422`
   alongside its success model, so the generated clients can parse a failure
-  rather than throw. `escalation_*` and `digest_*` routes declare
-  `EscalationErrorResponse`, which keeps the structured payload;
-  `edit_intelligence_class` additionally declares a `409` conflict model.
+  rather than throw. Families in `DETAILED_ERROR_COMMANDS` retain structured
+  refusals, including
+  jobs, waits, asks, reviews, knowledge and dashboard state. Command-specific
+  status maps also declare conflicts and other errors; see
+  [error envelopes](conventions.md#the-two-error-envelopes).
 * **Absent versus null.** Responses serialize `None` as `null` by default. One
   command opts out — `playbook_graph_view` is serialized with
   `exclude_none`, because its compiled node details model "not set" as an

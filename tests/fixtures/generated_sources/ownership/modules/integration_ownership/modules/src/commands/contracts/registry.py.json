@@ -1,0 +1,20 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/registry.py::CommandContext": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/registry.py::CommandRegistration": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/contracts/registry.py::ContractRegistry": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/commands/contracts/registry.py::ContractRegistry._ensure_loaded": {
+      "baseline_span": [
+        57,
+        74
+      ],
+      "landing_span": [
+        57,
+        74
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

@@ -16,8 +16,8 @@ screen, and every launch against it fails. Without failover, those tasks retry
 into the dead provider, spend their retry budget and end up paused.
 
 AQ now tracks each provider's **availability** and stops launching against one
-that cannot do work. A shipped playbook then moves waiting work to the same
-intelligence class on a provider that can. Most outages need nothing from you:
+that cannot do work. A shipped playbook then moves waiting work among its
+route candidates on providers that can serve it. Most outages need nothing from you:
 the provider resets and work flows again. This guide is for the ones that do —
 a logged-out CLI, a false alarm, a task you want moved by hand — and for
 checking that the automatic part is actually switched on.
@@ -41,7 +41,8 @@ checking that the automatic part is actually switched on.
   only on role tasks and routes written before mandatory routing. See
   [scheduling](../concepts/scheduling.md#provider-availability-and-failover).
 * **Re-route** — changing a queued task's profile to another of the candidates
-  its router recorded: the same class on another provider. Every automatic move
+  its router recorded: normally the same class on another provider; narrow lanes
+  can map classes explicitly. Every automatic move
   of one outage shares a **batch** id `prb-<provider>-<generation>`; operator
   moves get their own `prf-…` batch.
 * **Probation** — the way back: an unavailable provider becomes `degraded`
@@ -109,7 +110,7 @@ What each state means and what normally ends it:
 | State | Reason codes you will see | What it means | What ends it |
 |---|---|---|---|
 | `available` | — | Healthy. | — |
-| `degraded` | `usage_high`, `model_scope_exhausted`, `suspect_usage`, `suspect_auth`, `probe_not_authenticated`, `rate_limit_exit`, `launch_failures_unattributed`, `recovering` | Still launched against, but **not a failover target**. Usually one signal awaiting corroboration, or usage at or above `provider_failover.usage.degraded_percent` (85 %). `recovering` is probation. | The signal clears, or it trips. |
+| `degraded` | `usage_high`, `model_scope_exhausted`, `suspect_usage`, `suspect_auth`, `probe_not_authenticated`, `rate_limit_exit`, `launch_failures_unattributed`, `recovering` | Still launched against; **not a failover target by default** (`reroute.allow_degraded_target` or an operator force can allow it). Usually one signal awaiting corroboration, or usage at or above `provider_failover.usage.degraded_percent` (85 %). `recovering` is probation. | The signal clears, or it trips. |
 | `exhausted` | `usage_exhausted`, `usage_dialog`, `rate_limited`, `llm_quota`, `canary_failed` | Out of usage: a usage window at or above `usage.exhausted_percent` (99 %), two launches dying on the usage-limit dialog, or two sessions exiting on a rate limit inside `launch.window_seconds`. | The reset time passing (plus `recovery.reset_grace_seconds`), a fresh usage reading below the degraded threshold, or a successful call. While a fresh account-wide reading still stands at or above `usage.exhausted_percent`, only that reading's reset, a fresher lower reading or its going stale ends it: neither a session's call nor the clock does, and a session adopted across a daemon restart is never counted as a launch. |
 | `unauthenticated` | `login_required`, `probe_not_authenticated`, `llm_auth_rejected` | The CLI is logged out: a launch died on its login dialog and the login probe agrees, two launches in a row died on it, or the probe said *not signed in* twice. | A login probe answering *signed in* — every `recovery.auth_probe_interval_seconds` (120 s), or now with `aq provider recheck`. |
 | `failing` | `launch_failures`, `canary_failed` | `launch.generic_failures_to_trip` (5) launches in a row died during startup for a reason AQ cannot name, across two projects or in one where another provider launched fine. | The backoff passing (300 s, doubling on each failed canary up to 3600 s), or a successful call. |
@@ -136,7 +137,11 @@ Under `provider_failover.mode: enforce` (the default):
    rate-limit exit, a usage-limit or login screen) spends no retry. Before its
    workspace is released AQ commits uncommitted work as
    `aq-wip: provider failover checkpoint`, pushes the task branch and leaves a
-   hand-off note that the next worker's `aq prime` shows. A CLI *parked* on its
+   hand-off note that the next worker's `aq prime` shows. For hierarchy/train
+   integration, only the stopped task's own worker/repair branch is saved as
+   `WIP saved by AQ: …`, with a recorded resume point. Another owner's branch
+   is left to integration recovery. The handoff includes a bounded tail of
+   the stopped pane (at most 80 lines / 8 KiB; prime quotes at most 2 KiB). A CLI *parked* on its
    usage-limit screen is stopped by the first stall rung and treated the same
    way ([sessions](../concepts/sessions.md#the-stall-ladder)). If the push
    fails, the task is held in place instead of moved (see
@@ -144,8 +149,8 @@ Under `provider_failover.mode: enforce` (the default):
 4. **The `provider-failover` playbook moves waiting work.** On every state
    change and every five minutes it calls `provider_reroute`, which moves each
    eligible queued task to the **next of its route candidates on an available
-   provider** — the same class on another provider, in the order the router
-   recorded — a pool-width at a time, and records the move on the task (a
+   provider** — normally the same class on another provider, in the order the router
+   recorded (including any explicit narrow-lane class mapping) — a pool-width at a time, and records the move on the task (a
    comment, `rerouted_from`, a `task_reroutes` row). What it will not move, it
    holds with a reason. See the
    [fallback rule](../concepts/scheduling.md#the-fallback-rule).
@@ -163,7 +168,7 @@ Under `provider_failover.mode: enforce` (the default):
    signed in, the provider goes on probation and the next successful launch
    makes it `available`.
 
-The daemon's own direct API calls (playbook `llm` steps, routing) are tracked
+The daemon's own direct API calls (API-transport playbook `llm` steps, routing) are tracked
 under the `llm` key. While it is unavailable they fail fast rather than wait,
 unless you configured a second credential in
 [`llm.fallback`](../reference/configuration.md#llmfallback).
@@ -327,7 +332,9 @@ independently.
 When an outage's end condition is met, the provider becomes `degraded` with
 reason `recovering`. At most one launch is admitted — the canary — until one
 succeeds; a canary that neither succeeds nor fails within ten minutes is
-presumed lost and the next launch may try. The first successful launch makes
+presumed lost and the next launch may try. If its session has already ended
+without provider evidence, the next cycle frees the canary immediately;
+an operator kill does not itself prove recovery. The first successful launch makes
 the provider `available`, its pools size back up, held work launches at once
 and the router routes the tasks it held.
 
@@ -355,6 +362,45 @@ playbooks.reviewed_bundles --fix` re-imports the shipped bundle and re-points
 the activation. Re-routing is also off — by design, and reported as INFO —
 when `provider_failover.mode` is not `enforce` or `reroute.enabled` is false.
 
+## Review provider worker allocation
+
+Availability answers whether a provider can launch. The separate allocation
+controls show and change how much work its profiles may receive:
+
+```bash
+aq pool provider status --provider codex
+# Preview only: max is PER selected profile, not one provider-wide cap.
+aq pool provider preview --provider codex --max 2
+# Review the returned profiles, aggregate ceiling, pins and session actions.
+aq pool provider apply --preview-token <returned-token>
+```
+
+By default preview selects all eligible ordinary workers on that provider.
+`--profiles` narrows it, `--lifecycle pool|task` changes participation, and
+`--min` / `--max N|unbounded` change each selected profile's pool bounds.
+Control, named, read-only, template and malformed profiles are excluded with
+diagnostics. Manual agent definitions are shown but not edited.
+
+`--receive-new-work <project>` sets that project's preferred provider;
+`--clear-new-work <project>` removes the preference. The router uses it as a
+preference among eligible candidates, and apply re-places queued `class_only`
+READY tasks within their recorded candidates. It does not rewrite pins.
+A project supervisor may change only its own preference; global profile
+changes require operator/global authority. Worker tokens cannot preview or apply.
+
+A preview token is single-use, expires after 15 minutes and is lost on daemon
+restart. Apply recomputes the observed fleet state: `preview_stale` returns a
+fresh preview to review instead of applying a changed selection;
+`preview_unknown` requires another preview. Profile-edit failures compensate
+earlier edits and report `rolled_back` or `partial` rather than success.
+A completed apply records `provider.allocation_changed`.
+
+The default drain is `graceful`: busy work finishes. `idle-now` also terminates
+idle excess workers immediately; `interrupt-busy` requires operator scope
+and `--authorize-busy-interrupt` naming exactly the preview's busy session or
+task ids. Pinned READY work left on profiles leaving the pool requires
+`--allow-pinned-wait`. Review these effects in preview before applying.
+
 ## Inputs and outputs
 
 **In:** the providers' own usage readings (the Claude usage probe, Codex
@@ -373,7 +419,7 @@ re-routed tasks, `provider.state_changed` / `provider.reroute_batch` /
 |---|---|---|
 | Provider state, evidence ring, override | The daemon's availability service; overrides by `aq provider set-state` | `provider_availability` table, mirrored in daemon memory |
 | Transition log | Availability service, on every effective change | `provider_availability_transitions` (append-only) |
-| Task intent | Whoever creates or routes the task | `tasks.provider_intent`, audit in `task_metadata` key `provider_intent_audit` |
+| Task intent | Router (`pinned` for hold lanes, `class_only` otherwise); operator route override | `tasks.provider_intent`, audit in `task_metadata` key `provider_intent_audit` |
 | Moves and undos | `provider_reroute` / `provider_reroute_undo` | `task_reroutes`, `tasks.rerouted_from`, a task comment |
 | Hand-off note | The daemon, after a session dies on its provider | `task_metadata` key `provider_failover_handoff`, a task comment |
 | Holds | Nobody — derived on every read | — |

@@ -1,0 +1,62 @@
+{
+  "event": {
+    "type": "timer.15m",
+    "tick_time": "2026-09-28T17:45:00.000000+00:00",
+    "interval": "15m"
+  },
+  "check_summary": "QUILT-HEALTH: KNOWN - coordinator DOWN after one watchdog restart attempt; no new error signatures",
+  "tree": {
+    "artifact_sha256": "sha256:1106457d00ac79ed070ab0ec311c2e671abd9e8f6f24716185de92781e577477",
+    "rules_selected": [
+      "market-hours"
+    ],
+    "paths": [
+      {
+        "rule_id": "market-hours",
+        "nodes": [
+          {
+            "step_id": "market-hours--check",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": "market-hours--read",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--read",
+            "status": "simulated",
+            "outcome": "read",
+            "target": "market-hours--verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--verdict",
+            "status": "resolved",
+            "outcome": "matched",
+            "target": "market-hours--done",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--done",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": null,
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          }
+        ],
+        "status": "resolved",
+        "completed": true,
+        "omitted_frontiers": []
+      }
+    ],
+    "truncated": false,
+    "step_visits": 4
+  }
+}

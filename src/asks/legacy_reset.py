@@ -21,6 +21,7 @@ def selections(project):
     return {
         t.doc_reviews: t.doc_reviews.c.project_id == project,
         t.human_asks: t.human_asks.c.project_id == project,
+        t.ask_decisions: t.ask_decisions.c.ask_id.in_(asks),
         t.escalations: t.escalations.c.project_id == project,
         t.escalation_messages: (
             t.escalation_messages.c.escalation_id.in_(incidents)
@@ -47,6 +48,25 @@ def selections(project):
 
 
 async def discard(handler, conn, project, selected, rows, mode, stamp, evidence):
+    # Dispatch success does not mean an ingestion worker has finished reading
+    # its approved packet. Keep accepted work intact even after a fresh preview;
+    # the reset is not authority to withdraw an approval or abandon application.
+    accepted = {row["ask_id"] for row in rows["ask_decisions"]}
+    protected = tuple(
+        row["id"]
+        for row in rows["human_asks"]
+        if row["id"] in accepted
+        and (
+            row["decision_state"] == "approved"
+            or row["application_state"] in {"applying", "applied", "unknown"}
+        )
+    )
+    if protected:
+        raise AskError(
+            "ask.reset_active_decision",
+            "Reset would discard accepted or applied work; nothing was discarded",
+            fields=protected,
+        )
     kept = [
         r["id"]
         for r in rows["doc_reviews"]
@@ -55,8 +75,8 @@ async def discard(handler, conn, project, selected, rows, mode, stamp, evidence)
         and not r["pending_decision_id"]
     ]
     obsolete = {"legacy_discarded": True, "reset_sha256": evidence}
-    # Immutable decision packets remain obsolete behind their discarded ask. No
-    # approval/application is rewritten and no historical payload is copied to an audit.
+    # Immutable packets remain behind discarded asks. Accepted/applied work was
+    # refused above, and no historical payload is copied to an audit.
     for row in rows["human_asks"]:
         values = dict(
             context=obsolete,
@@ -86,6 +106,7 @@ async def discard(handler, conn, project, selected, rows, mode, stamp, evidence)
     await conn.execute(
         update(t.escalation_actions)
         .where(selected[t.escalation_actions])
+        .where(t.escalation_actions.c.status != "succeeded")
         .values(
             status="cancelled",
             outcome="legacy_discarded",

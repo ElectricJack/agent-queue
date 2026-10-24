@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/message_wait.py::register_message_wait_contract": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

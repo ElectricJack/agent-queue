@@ -635,6 +635,7 @@ from .get_task_response_422 import GetTaskResponse422
 from .get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
 from .get_task_response_children_type_0 import GetTaskResponseChildrenType0
 from .get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
+from .get_task_response_delivery_condition_type_0 import GetTaskResponseDeliveryConditionType0
 from .get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
 from .get_task_response_display_state_type_0 import GetTaskResponseDisplayStateType0
 from .get_task_response_parent_type_0 import GetTaskResponseParentType0
@@ -747,6 +748,9 @@ from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
 from .grid_position_dto import GridPositionDTO
+from .held_batch_summary import HeldBatchSummary
+from .held_batch_summary_lineage import HeldBatchSummaryLineage
+from .held_batch_summary_state import HeldBatchSummaryState
 from .hierarchy_refusal_response import HierarchyRefusalResponse
 from .histogram import Histogram
 from .host_perf import HostPerf
@@ -764,6 +768,17 @@ from .import_profile_response_422 import ImportProfileResponse422
 from .import_request import ImportRequest
 from .import_request_selections import ImportRequestSelections
 from .import_request_values import ImportRequestValues
+from .ingest_batch_detail import IngestBatchDetail
+from .ingest_batch_detail_check_results_type_0 import IngestBatchDetailCheckResultsType0
+from .ingest_batch_detail_diff_type_0 import IngestBatchDetailDiffType0
+from .ingest_batch_detail_lineage import IngestBatchDetailLineage
+from .ingest_batch_detail_members import IngestBatchDetailMembers
+from .ingest_batch_detail_membership_item import IngestBatchDetailMembershipItem
+from .ingest_batch_detail_receipts_item import IngestBatchDetailReceiptsItem
+from .ingest_batch_detail_release_receipt_type_0 import IngestBatchDetailReleaseReceiptType0
+from .ingest_batch_detail_section_verdicts import IngestBatchDetailSectionVerdicts
+from .ingest_batch_detail_state import IngestBatchDetailState
+from .ingest_batch_detail_structural_findings_item import IngestBatchDetailStructuralFindingsItem
 from .inspect_playbook_run_request import InspectPlaybookRunRequest
 from .inspect_playbook_run_response import InspectPlaybookRunResponse
 from .inspect_playbook_run_response_422 import InspectPlaybookRunResponse422
@@ -1116,6 +1131,12 @@ from .onboard_project_response_source_type import OnboardProjectResponseSourceTy
 from .onboarding_error_info import OnboardingErrorInfo
 from .onboarding_error_info_details import OnboardingErrorInfoDetails
 from .onboarding_error_info_field_errors_item import OnboardingErrorInfoFieldErrorsItem
+from .operation_perf import OperationPerf
+from .operation_perf_outcomes import OperationPerfOutcomes
+from .operational_retention_request import OperationalRetentionRequest
+from .operational_retention_response import OperationalRetentionResponse
+from .operational_retention_response_422 import OperationalRetentionResponse422
+from .operational_retention_response_counts_type_0 import OperationalRetentionResponseCountsType0
 from .operator_decision_dto import OperatorDecisionDTO
 from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .operator_decision_record import OperatorDecisionRecord
@@ -1153,6 +1174,7 @@ from .pending_pull_request_ci_status import PendingPullRequestCiStatus
 from .pending_pull_request_review_decision import PendingPullRequestReviewDecision
 from .pending_pull_requests_response import PendingPullRequestsResponse
 from .perf_metrics import PerfMetrics
+from .perf_metrics_operations import PerfMetricsOperations
 from .perf_sampler_cost import PerfSamplerCost
 from .phase_create_request import PhaseCreateRequest
 from .phase_create_response import PhaseCreateResponse
@@ -1166,6 +1188,7 @@ from .phase_list_response_422 import PhaseListResponse422
 from .phase_ref import PhaseRef
 from .phase_summary import PhaseSummary
 from .placeholder import Placeholder
+from .plan_content_response import PlanContentResponse
 from .playbook_activate_request import PlaybookActivateRequest
 from .playbook_activate_response_422 import PlaybookActivateResponse422
 from .playbook_activation_health_request import PlaybookActivationHealthRequest
@@ -1306,6 +1329,9 @@ from .policy_export_response_422 import PolicyExportResponse422
 from .policy_export_warning import PolicyExportWarning
 from .policy_file_preview import PolicyFilePreview
 from .policy_review_receipt import PolicyReviewReceipt
+from .pool_delete_request import PoolDeleteRequest
+from .pool_delete_response import PoolDeleteResponse
+from .pool_delete_response_422 import PoolDeleteResponse422
 from .pool_gauges import PoolGauges
 from .pool_instance_status import PoolInstanceStatus
 from .pool_policy import PoolPolicy
@@ -1514,6 +1540,9 @@ from .read_prompt_request import ReadPromptRequest
 from .read_prompt_response import ReadPromptResponse
 from .read_prompt_response_422 import ReadPromptResponse422
 from .ready_task import ReadyTask
+from .rebind_workspace_request import RebindWorkspaceRequest
+from .rebind_workspace_response import RebindWorkspaceResponse
+from .rebind_workspace_response_422 import RebindWorkspaceResponse422
 from .receipt_dto import ReceiptDTO
 from .receipt_dto_step_kind import ReceiptDTOStepKind
 from .record_capabilities_request import RecordCapabilitiesRequest
@@ -1714,6 +1743,18 @@ from .sampler_metrics import SamplerMetrics
 from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
 from .scan_stub_staleness_response_422 import ScanStubStalenessResponse422
+from .schedule_cancel_response_422 import ScheduleCancelResponse422
+from .schedule_get_response_422 import ScheduleGetResponse422
+from .schedule_list_args import ScheduleListArgs
+from .schedule_list_args_state_type_0 import ScheduleListArgsStateType0
+from .schedule_list_response import ScheduleListResponse
+from .schedule_list_response_422 import ScheduleListResponse422
+from .schedule_list_response_schedules_item import ScheduleListResponseSchedulesItem
+from .schedule_pointer_args import SchedulePointerArgs
+from .schedule_register_args import ScheduleRegisterArgs
+from .schedule_register_response_422 import ScheduleRegisterResponse422
+from .schedule_response import ScheduleResponse
+from .schedule_response_schedule_type_0 import ScheduleResponseScheduleType0
 from .scoped_conftest import ScopedConftest
 from .script_execution_dto import ScriptExecutionDTO
 from .script_execution_dto_output_refs import ScriptExecutionDTOOutputRefs
@@ -1828,6 +1869,13 @@ from .source_scan import SourceScan
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .spec_ingest_legacy_adopt_request import SpecIngestLegacyAdoptRequest
+from .spec_ingest_legacy_adopt_response import SpecIngestLegacyAdoptResponse
+from .spec_ingest_legacy_adopt_response_422 import SpecIngestLegacyAdoptResponse422
+from .spec_ingest_legacy_adopt_response_diff_type_0 import SpecIngestLegacyAdoptResponseDiffType0
+from .spec_ingest_legacy_adopt_response_lineage_type_0 import SpecIngestLegacyAdoptResponseLineageType0
+from .spec_ingest_legacy_adopt_response_members_type_0 import SpecIngestLegacyAdoptResponseMembersType0
+from .spec_ingest_legacy_adopt_response_release_receipt_type_0 import SpecIngestLegacyAdoptResponseReleaseReceiptType0
 from .spec_ingest_legacy_inventory_request import SpecIngestLegacyInventoryRequest
 from .spec_ingest_legacy_inventory_response import SpecIngestLegacyInventoryResponse
 from .spec_ingest_legacy_inventory_response_422 import SpecIngestLegacyInventoryResponse422
@@ -1898,9 +1946,27 @@ from .task_batch_commit_response_skipped_operations_item import TaskBatchCommitR
 from .task_batch_discard_request import TaskBatchDiscardRequest
 from .task_batch_discard_response_422 import TaskBatchDiscardResponse422
 from .task_batch_propose_request import TaskBatchProposeRequest
+from .task_batch_propose_request_no_op_type_0 import TaskBatchProposeRequestNoOpType0
 from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
 from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
+from .task_batch_propose_response_lineage_type_0 import TaskBatchProposeResponseLineageType0
+from .task_batch_propose_response_members_type_0 import TaskBatchProposeResponseMembersType0
+from .task_batch_propose_response_release_receipt_type_0 import TaskBatchProposeResponseReleaseReceiptType0
+from .task_batch_propose_response_status_type_0 import TaskBatchProposeResponseStatusType0
+from .task_batch_release_request import TaskBatchReleaseRequest
+from .task_batch_release_response import TaskBatchReleaseResponse
+from .task_batch_release_response_422 import TaskBatchReleaseResponse422
+from .task_batch_release_response_release_receipt import TaskBatchReleaseResponseReleaseReceipt
+from .task_batch_retire_request import TaskBatchRetireRequest
+from .task_batch_retire_response import TaskBatchRetireResponse
+from .task_batch_retire_response_422 import TaskBatchRetireResponse422
+from .task_batch_review_record_request import TaskBatchReviewRecordRequest
+from .task_batch_review_record_request_section_verdicts import TaskBatchReviewRecordRequestSectionVerdicts
+from .task_batch_review_record_response import TaskBatchReviewRecordResponse
+from .task_batch_review_record_response_422 import TaskBatchReviewRecordResponse422
+from .task_batch_review_record_response_receipt import TaskBatchReviewRecordResponseReceipt
+from .task_batch_review_record_response_state import TaskBatchReviewRecordResponseState
 from .task_batch_update_request import TaskBatchUpdateRequest
 from .task_batch_update_request_payload_type_0 import TaskBatchUpdateRequestPayloadType0
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
@@ -1943,6 +2009,7 @@ from .task_detail import TaskDetail
 from .task_detail_child_state_counts_type_0 import TaskDetailChildStateCountsType0
 from .task_detail_children_type_0 import TaskDetailChildrenType0
 from .task_detail_deliverables_item import TaskDetailDeliverablesItem
+from .task_detail_delivery_condition_type_0 import TaskDetailDeliveryConditionType0
 from .task_detail_descendant_state_counts_type_0 import TaskDetailDescendantStateCountsType0
 from .task_detail_display_state_type_0 import TaskDetailDisplayStateType0
 from .task_detail_parent_type_0 import TaskDetailParentType0
@@ -1985,6 +2052,7 @@ from .task_set_response_child_state_counts_type_0 import TaskSetResponseChildSta
 from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
 from .task_set_response_context_item import TaskSetResponseContextItem
 from .task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
+from .task_set_response_delivery_condition_type_0 import TaskSetResponseDeliveryConditionType0
 from .task_set_response_descendant_state_counts_type_0 import TaskSetResponseDescendantStateCountsType0
 from .task_set_response_display_state_type_0 import TaskSetResponseDisplayStateType0
 from .task_set_response_fidelity_type_0 import TaskSetResponseFidelityType0
@@ -2000,6 +2068,7 @@ from .task_show_response_child_state_counts_type_0 import TaskShowResponseChildS
 from .task_show_response_children_type_0 import TaskShowResponseChildrenType0
 from .task_show_response_context_item import TaskShowResponseContextItem
 from .task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+from .task_show_response_delivery_condition_type_0 import TaskShowResponseDeliveryConditionType0
 from .task_show_response_descendant_state_counts_type_0 import TaskShowResponseDescendantStateCountsType0
 from .task_show_response_display_state_type_0 import TaskShowResponseDisplayStateType0
 from .task_show_response_fidelity_type_0 import TaskShowResponseFidelityType0
@@ -2007,6 +2076,12 @@ from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_show_response_route_type_0 import TaskShowResponseRouteType0
 from .task_show_response_status import TaskShowResponseStatus
+from .task_split_request import TaskSplitRequest
+from .task_split_request_moved import TaskSplitRequestMoved
+from .task_split_response import TaskSplitResponse
+from .task_split_response_422 import TaskSplitResponse422
+from .task_split_response_impact_type_0 import TaskSplitResponseImpactType0
+from .task_split_response_owner_type_0 import TaskSplitResponseOwnerType0
 from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
@@ -2843,6 +2918,7 @@ __all__ = (
     "GetTaskResponseChildrenType0",
     "GetTaskResponseChildStateCountsType0",
     "GetTaskResponseDeliverablesItem",
+    "GetTaskResponseDeliveryConditionType0",
     "GetTaskResponseDescendantStateCountsType0",
     "GetTaskResponseDisplayStateType0",
     "GetTaskResponseParentType0",
@@ -2955,6 +3031,9 @@ __all__ = (
     "GrepResponse",
     "GrepResponse422",
     "GridPositionDTO",
+    "HeldBatchSummary",
+    "HeldBatchSummaryLineage",
+    "HeldBatchSummaryState",
     "HierarchyRefusalResponse",
     "Histogram",
     "HostPerf",
@@ -2972,6 +3051,17 @@ __all__ = (
     "ImportRequest",
     "ImportRequestSelections",
     "ImportRequestValues",
+    "IngestBatchDetail",
+    "IngestBatchDetailCheckResultsType0",
+    "IngestBatchDetailDiffType0",
+    "IngestBatchDetailLineage",
+    "IngestBatchDetailMembers",
+    "IngestBatchDetailMembershipItem",
+    "IngestBatchDetailReceiptsItem",
+    "IngestBatchDetailReleaseReceiptType0",
+    "IngestBatchDetailSectionVerdicts",
+    "IngestBatchDetailState",
+    "IngestBatchDetailStructuralFindingsItem",
     "InspectPlaybookRunRequest",
     "InspectPlaybookRunResponse",
     "InspectPlaybookRunResponse422",
@@ -3322,6 +3412,12 @@ __all__ = (
     "OnboardProjectResponse",
     "OnboardProjectResponse422",
     "OnboardProjectResponseSourceType",
+    "OperationalRetentionRequest",
+    "OperationalRetentionResponse",
+    "OperationalRetentionResponse422",
+    "OperationalRetentionResponseCountsType0",
+    "OperationPerf",
+    "OperationPerfOutcomes",
     "OperatorDecisionDTO",
     "OperatorDecisionDTOOptionsItem",
     "OperatorDecisionRecord",
@@ -3359,6 +3455,7 @@ __all__ = (
     "PendingPullRequestReviewDecision",
     "PendingPullRequestsResponse",
     "PerfMetrics",
+    "PerfMetricsOperations",
     "PerfSamplerCost",
     "PhaseCreateRequest",
     "PhaseCreateResponse",
@@ -3372,6 +3469,7 @@ __all__ = (
     "PhaseRef",
     "PhaseSummary",
     "Placeholder",
+    "PlanContentResponse",
     "PlaybookActivateRequest",
     "PlaybookActivateResponse422",
     "PlaybookActivationHealthRequest",
@@ -3512,6 +3610,9 @@ __all__ = (
     "PolicyExportWarning",
     "PolicyFilePreview",
     "PolicyReviewReceipt",
+    "PoolDeleteRequest",
+    "PoolDeleteResponse",
+    "PoolDeleteResponse422",
     "PoolGauges",
     "PoolInstanceStatus",
     "PoolPolicy",
@@ -3716,6 +3817,9 @@ __all__ = (
     "ReadPromptResponse",
     "ReadPromptResponse422",
     "ReadyTask",
+    "RebindWorkspaceRequest",
+    "RebindWorkspaceResponse",
+    "RebindWorkspaceResponse422",
     "ReceiptDTO",
     "ReceiptDTOStepKind",
     "RecordCapabilitiesRequest",
@@ -3916,6 +4020,18 @@ __all__ = (
     "ScanStubStalenessRequest",
     "ScanStubStalenessResponse",
     "ScanStubStalenessResponse422",
+    "ScheduleCancelResponse422",
+    "ScheduleGetResponse422",
+    "ScheduleListArgs",
+    "ScheduleListArgsStateType0",
+    "ScheduleListResponse",
+    "ScheduleListResponse422",
+    "ScheduleListResponseSchedulesItem",
+    "SchedulePointerArgs",
+    "ScheduleRegisterArgs",
+    "ScheduleRegisterResponse422",
+    "ScheduleResponse",
+    "ScheduleResponseScheduleType0",
     "ScopedConftest",
     "ScriptExecutionDTO",
     "ScriptExecutionDTOOutputRefs",
@@ -4030,6 +4146,13 @@ __all__ = (
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "SpecIngestLegacyAdoptRequest",
+    "SpecIngestLegacyAdoptResponse",
+    "SpecIngestLegacyAdoptResponse422",
+    "SpecIngestLegacyAdoptResponseDiffType0",
+    "SpecIngestLegacyAdoptResponseLineageType0",
+    "SpecIngestLegacyAdoptResponseMembersType0",
+    "SpecIngestLegacyAdoptResponseReleaseReceiptType0",
     "SpecIngestLegacyInventoryRequest",
     "SpecIngestLegacyInventoryResponse",
     "SpecIngestLegacyInventoryResponse422",
@@ -4098,9 +4221,27 @@ __all__ = (
     "TaskBatchDiscardRequest",
     "TaskBatchDiscardResponse422",
     "TaskBatchProposeRequest",
+    "TaskBatchProposeRequestNoOpType0",
     "TaskBatchProposeResponse",
     "TaskBatchProposeResponse422",
     "TaskBatchProposeResponseDiffType0",
+    "TaskBatchProposeResponseLineageType0",
+    "TaskBatchProposeResponseMembersType0",
+    "TaskBatchProposeResponseReleaseReceiptType0",
+    "TaskBatchProposeResponseStatusType0",
+    "TaskBatchReleaseRequest",
+    "TaskBatchReleaseResponse",
+    "TaskBatchReleaseResponse422",
+    "TaskBatchReleaseResponseReleaseReceipt",
+    "TaskBatchRetireRequest",
+    "TaskBatchRetireResponse",
+    "TaskBatchRetireResponse422",
+    "TaskBatchReviewRecordRequest",
+    "TaskBatchReviewRecordRequestSectionVerdicts",
+    "TaskBatchReviewRecordResponse",
+    "TaskBatchReviewRecordResponse422",
+    "TaskBatchReviewRecordResponseReceipt",
+    "TaskBatchReviewRecordResponseState",
     "TaskBatchUpdateRequest",
     "TaskBatchUpdateRequestPayloadType0",
     "TaskBatchUpdateResponse422",
@@ -4143,6 +4284,7 @@ __all__ = (
     "TaskDetailChildrenType0",
     "TaskDetailChildStateCountsType0",
     "TaskDetailDeliverablesItem",
+    "TaskDetailDeliveryConditionType0",
     "TaskDetailDescendantStateCountsType0",
     "TaskDetailDisplayStateType0",
     "TaskDetailParentType0",
@@ -4185,6 +4327,7 @@ __all__ = (
     "TaskSetResponseChildStateCountsType0",
     "TaskSetResponseContextItem",
     "TaskSetResponseDeliverablesItem",
+    "TaskSetResponseDeliveryConditionType0",
     "TaskSetResponseDescendantStateCountsType0",
     "TaskSetResponseDisplayStateType0",
     "TaskSetResponseFidelityType0",
@@ -4200,6 +4343,7 @@ __all__ = (
     "TaskShowResponseChildStateCountsType0",
     "TaskShowResponseContextItem",
     "TaskShowResponseDeliverablesItem",
+    "TaskShowResponseDeliveryConditionType0",
     "TaskShowResponseDescendantStateCountsType0",
     "TaskShowResponseDisplayStateType0",
     "TaskShowResponseFidelityType0",
@@ -4207,6 +4351,12 @@ __all__ = (
     "TaskShowResponseProvenanceItem",
     "TaskShowResponseRouteType0",
     "TaskShowResponseStatus",
+    "TaskSplitRequest",
+    "TaskSplitRequestMoved",
+    "TaskSplitResponse",
+    "TaskSplitResponse422",
+    "TaskSplitResponseImpactType0",
+    "TaskSplitResponseOwnerType0",
     "TaskStatusSummary",
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",

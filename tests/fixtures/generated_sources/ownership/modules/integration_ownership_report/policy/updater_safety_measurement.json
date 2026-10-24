@@ -1,0 +1,28 @@
+{
+  "updater_safety_measurement": {
+    "authority": "size-cap-delegation-2026-10-23",
+    "dev_revision": "e7989d1aa62381a607aab67d8ce245a955ed904e",
+    "measured_engine_lines": 85316,
+    "measured_groups": {
+      "companions": 11127,
+      "engine": 85316,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1042,
+      "shared": 61976,
+      "ui": 262
+    },
+    "measured_owned_total": 160849,
+    "measured_table_count": 45,
+    "owned_delta": -30,
+    "previous_measurement": {
+      "measured_engine_lines": 85316,
+      "measured_owned_total": 160879,
+      "measured_source_revision": "b65c4f58866c1569e7ed73cb3a9d306f3060e1f0",
+      "measured_table_count": 45
+    },
+    "reason": "Exact downward re-record after the guarded updater removes 30 owned lines. Fixed baseline, landing snapshot, ownership classifications and storage dispositions are unchanged.",
+    "source_revision": "24794f2e55b12368c4616f5accfffe1a3c34d847",
+    "task_id": "prime-grove-46"
+  }
+}

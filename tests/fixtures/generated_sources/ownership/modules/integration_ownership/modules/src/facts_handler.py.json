@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/facts_handler.py::register_facts_handlers": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "shared": {
+    "src/prompts/reviewed_playbooks/default-assignment-routing/source.md::## Routing policy": {
+      "baseline_span": [
+        83,
+        167
+      ],
+      "landing_span": [
+        83,
+        167
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "exclusions": {
+    "src/metrics/sampler.py::_GRAPHED_STATUSES['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/metrics/sampler.py::_GRAPHED_STATUSES['PAUSED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/metrics/sampler.py::_GRAPHED_STATUSES['READY']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

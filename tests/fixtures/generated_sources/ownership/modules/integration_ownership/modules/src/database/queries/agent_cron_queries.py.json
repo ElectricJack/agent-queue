@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/database/queries/agent_cron_queries.py::AgentCronQueriesMixin.reconcile_agent_cron": "Recurring prompt coalescing and message transport diagnostics; last_delivery_status describes terminal submission, not code integration."
+  }
+}

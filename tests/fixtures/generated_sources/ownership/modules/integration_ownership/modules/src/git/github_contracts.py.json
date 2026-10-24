@@ -1,0 +1,14 @@
+{
+  "generic_dependencies": {
+    "src/git/github_contracts.py::GitHubAccessError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/github_contracts.py::GitHubCredentialIdentity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/github_contracts.py::GitHubCredentialMode": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/github_contracts.py::GitHubRepositoryBinding": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/github_contracts.py::credential_identity_from_client": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/git/github_contracts.py::rate_limit_cause": {
+      "reason": "Preserves GitHub rate-limit identity and retry timing across wrapped failures in promotion admission and train observation."
+    }
+  }
+}

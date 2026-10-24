@@ -1,0 +1,12 @@
+{
+  "reconciliation_definitions": {
+    "src/waits/adapters/base.py::fields": {
+      "fingerprint": "f7b56f319fde43b844893f65881eed6bccb7178de27d094ccb1248f8725ee77d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/adapters/base.py::string": {
+      "fingerprint": "40121e68125f379002c8c18d02e129ea26a5bbb2a385ce712f86add95d01bbfc",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

@@ -284,6 +284,20 @@ describe("toFlowElements", () => {
     expect((next.nodes[0]!.data as { task: unknown }).task).toMatchObject({ claim_readiness });
   });
 
+  it("passes canonical batch membership to cards and repaints on release", () => {
+    const held_batch = { batch_id: "batch", state: "reviewing", structure_revision: 2,
+      source: "spec:approved", lineage: { lineage_kind: "none" } };
+    const tiles = { nodes: [n("a", "card", 0, 0, { status: "DEFINED", agg_children: 0, held_batch })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1 };
+    const wire = (value: unknown) => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(value)) as never);
+    const first = toFlowElements(wire(tiles), ctx);
+    expect((first.nodes[0]!.data as { task: unknown }).task).toMatchObject({ held_batch });
+    const released = { ...held_batch, state: "released" };
+    const next = toFlowElements(wire({ ...tiles, nodes: [{ ...tiles.nodes[0], held_batch: released }] }), ctx, first.cache);
+    expect(next.nodes[0]).not.toBe(first.nodes[0]);
+    expect((next.nodes[0]!.data as { task: unknown }).task).toMatchObject({ held_batch: released });
+  });
+
   it("rebuilds a card when descendant activity changes while lifecycle stays IN_PROGRESS", () => {
     const tiles = {
       nodes: [n("a", "collapsed", 0, 0, { status: "IN_PROGRESS", display_state: "waiting", child_state_counts: { waiting: 2 } })],

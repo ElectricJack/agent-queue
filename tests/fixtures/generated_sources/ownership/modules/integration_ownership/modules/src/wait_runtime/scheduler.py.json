@@ -1,0 +1,109 @@
+{
+  "exclusions": {
+    "src/wait_runtime/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/wait_runtime/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "shared": {
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.__init__": {
+      "landing_span": [
+        41,
+        46
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService._sync_owner": {
+      "reason": "Per-owner reconciliation extracted from the charged scheduler sync; retains integration admission and branch-owner authority, so remains charged without changing the cap."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.authorize": {
+      "landing_span": [
+        47,
+        52
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked": {
+      "landing_span": [
+        217,
+        292
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.sync": {
+      "landing_span": [
+        53,
+        182
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::close_row": {
+      "landing_span": [
+        27,
+        37
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::import from src.integration.stacked_branches import shared_stack_inputs": {
+      "landing_span": [
+        21,
+        21
+      ],
+      "reason": "Scheduler-pass stack input scope; charged under the exact solid-impact-56 footprint amendment approved by msg-ab86b9766c2f42b9ba4920aba585b577."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from": {
+      "landing_span": [
+        22,
+        22
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.registry import build_registry": {
+      "landing_span": [
+        23,
+        23
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.reservations import SchedulerPolicy, enabled": {
+      "landing_span": [
+        24,
+        24
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    },
+    "src/wait_runtime/scheduler.py::scheduler_tick": {
+      "landing_span": [
+        292,
+        314
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  },
+  "storage_sinks": {
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 277,
+      "owner": "SchedulerWaitService.deadline",
+      "owner_fingerprint": "f1022096d1e79be84d5287104e90d38b0e5701433470e2d6c8f9e91145746115",
+      "reason": "Wait escalation audit event in the existing event stream; no ref replay or duplicate integration journal."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 391,
+      "owner": "SchedulerWaitService.deadline_locked",
+      "owner_fingerprint": "867ec467bcfec5cfbdec320789066ee6eb6fa0374b71a7f417ccdddda49aa0aa",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    }
+  }
+}

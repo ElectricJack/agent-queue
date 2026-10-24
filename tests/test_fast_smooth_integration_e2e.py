@@ -243,12 +243,17 @@ async def test_conflicted_author_restart_rechecks_fix_against_moved_parent(
 
 
 @pytest.mark.parametrize("budget", ["time", "rounds"])
+@pytest.mark.parametrize("live_fixer", [{"repair_policy": {
+    "primary_seconds": 1800, "primary_attempts": 3, "debug_intelligence_class": "deep-high",
+}}], indirect=True)
 async def test_fixer_budget_restart_escalates_once_without_refiling_or_waking(
     db, live_fixer, budget, record_property,
 ):
     """Exercise the implemented batch-family budget, not per-group fan-out."""
     service, runtime, orch, row, _, source, _ = live_fixer
     original = (await db.get_integration_batch("real"))["fixer_state"]
+    assert original["deadline"] == original["created_at"] + 1800
+    assert original["max_rounds"] == 3
     provider = orch.session_providers.create("fake")
     heads = [source]
     principal = principal_for(row)

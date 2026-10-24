@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/ingestion.py::attach_ingestion": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/ingestion.py::load_ingestion": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/ingestion.py::merge_ingestion": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

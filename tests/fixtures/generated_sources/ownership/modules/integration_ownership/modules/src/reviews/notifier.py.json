@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/reviews/notifier.py::ReviewNotifier": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

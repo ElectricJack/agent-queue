@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/commands/message_wait_commands.py::MessageWaitCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/message_wait_commands.py::MessageWaitCommandsMixin._cmd_message_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_wait_commands.py::import from src.collaboration import CollaborationError, WAIT_REASONS, is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

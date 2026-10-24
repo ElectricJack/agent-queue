@@ -98,14 +98,14 @@ class WaitV2CommandsMixin:
         async with engine.connect() as conn:
             return await mutation_fence(conn, name, principal)
 
-    async def wait_reroute_target(self, project_id, target):
+    async def wait_reroute_target(self, project_id, target, *, conn=None):
         """Keep routing policy and command dependencies out of the waits package."""
-        if not self._validate_routing_class(target):
+        if conn is None and not self._validate_routing_class(target):
             return {"class_hint": target}, None
         from src.commands.routing_commands import validate_route_preference
 
         (preference, mode), error = await validate_route_preference(
-            self, project_id, target, "strict",
+            self, project_id, target, "strict", conn=conn,
         )
         return {"prefer_target": preference, "prefer_mode": mode}, error
 

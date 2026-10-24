@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/prime/renderer.py::PrimeRenderer.render_for_task": {
+      "baseline_span": [
+        66,
+        221
+      ],
+      "landing_span": [
+        66,
+        221
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

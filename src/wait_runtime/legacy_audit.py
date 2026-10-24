@@ -7,11 +7,14 @@ from sqlalchemy import select, update
 from src.database.tables import events, wait_deadlines, wait_records
 
 
-async def audit_scheduler_age(conn, project_id, *, now, deadline_seconds):
-    rows = (await conn.execute(select(wait_records).where(
+async def audit_scheduler_age(conn, project_id, *, now, deadline_seconds, task_id=None):
+    query = select(wait_records).where(
         wait_records.c.project_id == project_id, wait_records.c.origin == 'scheduler',
-        wait_records.c.outcome == 'pending',
-    ).order_by(wait_records.c.id).with_for_update())).mappings().all()
+        wait_records.c.owner_kind == 'scheduler', wait_records.c.outcome == 'pending',
+    )
+    if task_id is not None:
+        query = query.where(wait_records.c.owner_id == task_id)
+    rows = (await conn.execute(query.order_by(wait_records.c.id).with_for_update())).mappings().all()
     for row in rows:
         inputs = dict(row['decision_inputs'] or {})
         if 'legacy_audit' in inputs:

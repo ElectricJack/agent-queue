@@ -1,0 +1,28 @@
+{
+  "task_create_retained_base_measurement": {
+    "authorized_engine_delta": 4,
+    "authorized_owned_delta": 26,
+    "authorized_shared_delta": 22,
+    "authorized_table_delta": 0,
+    "decision_message_id": "msg-9f16388d39524c8b9a33d6796b88d1fb",
+    "measured_engine_lines": 85521,
+    "measured_owned_total": 161137,
+    "measured_source_revision": "1f0633050802438db6ef954c43d6d0eb2ce0edf3",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "original_task_base_engine_lines": 85468,
+    "original_task_base_owned_total": 161053,
+    "original_task_engine_lines": 85472,
+    "original_task_owned_total": 161079,
+    "original_task_source_revision": "8e4e71b34b5c03b191b392a9d8f28176d177dd82",
+    "previous_engine_lines": 85517,
+    "previous_owned_total": 161111,
+    "previous_source_revision": "4a0c4e38ab979a1664586d47d16404b48def4089",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1891",
+    "reason": "Explicit supervisor approval of the exact retained Git filing resolver footprint; compose the unchanged +26 owned/+4 engine grant on dev, preserving historical grants.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "sound-forge-62"
+  }
+}

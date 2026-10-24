@@ -12,8 +12,9 @@ Two of the four shipped playbooks retain reviewer-approved deterministic
 semantic bodies, without an LLM:
 
 * ``default-pipeline`` — a reviewer-authored deterministic graph
-  (``_default_pipeline_body``): three single-command rules whose refusals
-  reach a ``failed`` terminal, the commit rule filtered to approved human gates.
+  (``_default_pipeline_body``): five single-command rules whose refusals
+  reach a ``failed`` terminal, the commit rule filtered to approved human gates
+  and the release rule ending ``completed`` on a ``needs_scope`` refusal.
 * ``default-assignment-routing`` — the routing semantic body
   (``_default_assignment_routing_body``): plan with ``task_route_plan`` over
   the source's ``## Routing policy`` block, passed verbatim as a string
@@ -80,6 +81,7 @@ SHIPPED = {
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
+    "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
     "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
@@ -190,13 +192,19 @@ def _rebased_recorded_body(
 def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
     """The reviewer-authored deterministic graph for ``default-pipeline``.
 
-    Three rules of one command step each.  The success outcomes the prose names
+    Five rules of one command step each.  The success outcomes the prose names
     reach the rule's ``completed`` terminal; ``rejected``, ``runtime_error`` and
     the commit's ``not_approved`` reach a distinct ``failed`` terminal, so a
     refused step never reads as a finished run.  The commit rule dispatches
     only for an approved human gate that names a proposal, and hands the gate
     and project to ``task_batch_commit`` so the command re-checks the exact
     decision (policy-simplification task agile-glacier.2).
+
+    Held spec-ingest batches (``nimble-lantern-37.2``): ``batch.held`` assigns
+    the fidelity reviewer, and ``batch.receipt_recorded`` releases exactly the
+    attested revision and digest.  A release refused ``needs_scope`` is a batch
+    waiting on its scope ask, not a broken run: a decision over the saved
+    result ends it ``completed`` without release; every other refusal fails.
     """
     index = ProseIndex(source, source.vault_path)
     terminal_ref = _source_ref_for_heading(source, "## Failure handling")
@@ -221,6 +229,8 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         successes: tuple[str, ...],
         failures: tuple[str, ...] = ("rejected", "runtime_error"),
         guard: dict[str, Any] | None = None,
+        save_result_as: str | None = None,
+        routes: dict[str, str] | None = None,
     ) -> None:
         entry, done, failed = f"{rule}--{title}", f"{rule}--done", f"{rule}--failed"
         declared: dict[str, Any] = {
@@ -232,11 +242,14 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         rules.append(declared)
         transitions = {name: done for name in successes}
         transitions.update({name: failed for name in failures})
+        transitions.update(routes or {})
         steps[entry] = {
             "type": "command", "rule": rule, "title": title,
             "source": index.step_ref(rule, 1), "command": command,
             "inputs": inputs, "transitions": transitions,
         }
+        if save_result_as is not None:
+            steps[entry]["save_result_as"] = save_result_as
         steps[done] = _terminal(rule, "completed", terminal_ref)
         steps[failed] = _terminal(rule, "failed", terminal_ref)
 
@@ -252,6 +265,48 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         },
         ("created", "reused"),
     )
+    add(
+        "fidelity-review-on-held",
+        {"event_type": "batch.held"},
+        "assign_fidelity_reviewer",
+        "ensure_fidelity_review",
+        {
+            "project_id": event("project_id"),
+            "batch_id": event("batch_id"),
+            "structure_revision": event("structure_revision"),
+        },
+        ("created", "reused"),
+    )
+    release, refused = "release-on-receipt", "release-on-receipt--refused"
+    add(
+        release,
+        {"event_type": "batch.receipt_recorded"},
+        "release_batch",
+        "task_batch_release",
+        {
+            "batch_id": event("batch_id"),
+            "expected_revision": event("structure_revision"),
+            "expected_digest": event("structure_digest"),
+            "project_id": event("project_id"),
+        },
+        ("released", "already_released"),
+        failures=("runtime_error",),
+        save_result_as="release",
+        routes={"error": refused},
+    )
+    steps[refused] = {
+        "type": "decision", "rule": release, "title": "refused",
+        "source": index.step_ref(release, 2),
+        "cases": [{
+            "when": {
+                "type": "comparison", "op": "eq",
+                "left": {"type": "binding_ref", "binding": "release", "path": "error_code"},
+                "right": lit("needs_scope"),
+            },
+            "goto": f"{release}--done",
+        }],
+        "default": f"{release}--failed",
+    }
     add(
         "proposal-ready-gate",
         {"event_type": "proposal.ready"},
@@ -418,20 +473,25 @@ def _object_loop_body(source: PlaybookSource) -> dict[str, Any]:
         artifact = {"type": "context_ref", "path": "artifact_sha256"}
         command("read", "object_loop_inputs", {"project_id": lit("matter-engine-cpp"),
                                                "limit": lit(32)}, "starts", "inputs")
-        foreach("starts", bound("inputs", "starts"), "start", "start-check", "loops")
-        decision("start-check", [({"type": "bool", "op": "and", "operands": [
-            truth(item("proposal_approved", "start")),
-            compare(item("policy_artifact", "start"), "eq", artifact),
-        ]}, "start")], "starts")
+        foreach("starts", {
+            "type": "filter", "collection": bound("inputs", "starts"),
+            "item_binding": "start",
+            "predicate": {"type": "bool", "op": "and", "operands": [
+                truth(item("proposal_approved", "start")),
+                compare(item("policy_artifact", "start"), "eq", artifact),
+            ]},
+        }, "start", "start", "loops")
         command("start", "object_loop_start", {
             key: item("request." + key, "start") for key in ObjectLoopStartArgs.model_fields
         }, "start-reconcile", "started")
         command("start-reconcile", "object_loop_reconcile", {
             "project_id": lit("matter-engine-cpp"), "object_id": bound("started", "object_id"),
         }, "starts")
-        foreach("loops", bound("inputs", "loops"), "object", "policy", "done")
-        decision("policy", [(compare(item("policy_artifact"), "eq", artifact), "choose")],
-                 "loops")
+        foreach("loops", {
+            "type": "filter", "collection": bound("inputs", "loops"),
+            "item_binding": "object",
+            "predicate": compare(item("policy_artifact"), "eq", artifact),
+        }, "object", "choose", "done")
         decision("choose", [
             (compare(item("state.status"), "eq", lit("stopped")), "reconcile"),
             (compare(item("elapsed_seconds"), "gte", lit(86400)), "deadline"),

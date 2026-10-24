@@ -1,0 +1,12 @@
+{
+  "repair_identity_measurement": {
+    "authority": "size-cap-delegation-2026-10-23; operator decision 6679052c on sharp-cascade-53",
+    "base_revision": "dd95038cca3fef9aae70eb0092079fe24d52a062",
+    "measured_engine_lines": 85489,
+    "measured_owned_total": 161074,
+    "measured_table_count": 45,
+    "pr_url": "https://github.com/ElectricJack/agent-queue/pull/1817",
+    "source_revision": "24d081eecf0c00a912a064e37ba616334382e263",
+    "task_id": "stark-beacon-94"
+  }
+}

@@ -36,7 +36,7 @@ from src.database.queries.result_queries import (
 from src.database.queries.task_queries import StaleClaim
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 from src.git.manager import GitError
-from src.models import TaskCompletion, TaskStatus
+from src.models import ProjectStatus, TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -826,6 +826,18 @@ class SessionCommandsMixin:
             "n-supervisor--" + session.project_id
         ):
             project = await self.db.get_project(session.project_id)
+            if (project is not None and project.status == ProjectStatus.PAUSED):
+                # A paused project's supervisor must not be woken; resume it
+                # with `aq project resume <project>` instead.
+                return {
+                    "success": False,
+                    "error": (
+                        f"project '{session.project_id}' is paused; resume the project "
+                        f"with `aq project resume {session.project_id}` to restart its "
+                        f"supervisor"
+                    ),
+                    "session_id": session.id,
+                }
             if project is not None and not project.supervisor_enabled:
                 # supervisor_enabled is the authority: its messages route to
                 # supervisor-global and nothing may mark its session wanted.
@@ -1302,8 +1314,12 @@ class SessionCommandsMixin:
 
         if outcome == "pass":
             response = await self.db.get_task_meta(task.id, "review_response")
-            if response and not await self.db.has_review_response_submission(
-                task.id, response["review_id"], response["revision"]
+            if (
+                response
+                and response.get("task_kind") != "followup"
+                and not await self.db.has_review_response_submission(
+                    task.id, response["review_id"], response["revision"]
+                )
             ):
                 return {
                     "success": False,

@@ -10,6 +10,7 @@ tombstone file covered here is what makes the deletion stick.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,13 @@ def test_retiring_several_ids_accumulates(data_dir):
         "worker-fast-medium-claude",
         "worker-deep-high-claude",
     }
+
+
+def test_concurrent_pool_retirements_preserve_every_id(data_dir):
+    ids = {f"pool-{i}" for i in range(20)}
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        assert all(workers.map(lambda pid: retire_default(data_dir, pid), ids))
+    assert retired_default_ids(data_dir) == ids
 
 
 def test_a_reason_is_optional(data_dir):

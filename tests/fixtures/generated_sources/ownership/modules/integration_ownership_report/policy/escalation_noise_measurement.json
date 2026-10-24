@@ -1,0 +1,25 @@
+{
+  "escalation_noise_measurement": {
+    "authority": "msg-08efc39cceeb430cafb8636f1acb85f1",
+    "delegation": "size-cap-delegation-2026-10-23",
+    "measured_engine_lines": 85320,
+    "measured_owned_total": 161023,
+    "measured_table_count": 45,
+    "merged_measurement": {
+      "authority": "size-cap-delegation-2026-10-23",
+      "authorized_engine_delta": 4,
+      "authorized_owned_delta": 186,
+      "base_revision": "dae4a86819d8c4ed6ec70d0d9349f3895f284c4d",
+      "measured_engine_lines": 85548,
+      "measured_owned_total": 161399,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1858",
+      "source_revision": "22683db44827d0807102f18d46df95081153e4fb"
+    },
+    "operator_decision": "6679052c",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1858",
+    "source_revision": "a68665e4afde3be9a0aba0d9dec50e61e632be84",
+    "task_id": "keen-forge-77"
+  }
+}

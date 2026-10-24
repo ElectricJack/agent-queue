@@ -1,0 +1,15 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/object-loop/artifact.json": {
+      "previous_sha256": "f83489a7c46bfa11eaaaa3bc98e642f25452a302909de97a680378118d966f1c",
+      "sha256": "ecedcd7f954c072a56cbb90396e79842284ad844dc0586ee79b3d886882af573"
+    },
+    "tests/fixtures/playbooks/v2/object-loop/traces.json": {
+      "previous_sha256": "a9c804055a8b7cfa59c8a04d19a9205ce7d4b037197ee07904d338af1fa95e81",
+      "sha256": "5bce9bc182b4eb81b7cd6e62d0bd56302c41fa095bcc345d03e917a4dca5b72e"
+    }
+  },
+  "reason": "fair-cascade-93 replaces repeated object-loop eligibility decisions with bounded collection filters and refreshes its recorded command traces. Only the object-loop artifact and traces change; command contracts, diagnostics and other legacy artifacts remain pinned. tests/test_object_loop_playbook.py verifies exact command replay against the supervisor-supplied historical artifact.",
+  "source_base": "feeb89e65e4bb5e2a4a2033fa32f967d1f66fce9",
+  "source_commit": "82e5fd1af6c71c732b4ed78d0c96904e63be1094"
+}

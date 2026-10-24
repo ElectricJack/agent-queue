@@ -1,0 +1,26 @@
+{
+  "restart_hold_repair_merge_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 19,
+    "authorized_shared_delta": 19,
+    "authorized_table_delta": 0,
+    "decision_message_id": "msg-76ff7843e72d451b9017a0b4db30c970",
+    "measured_engine_lines": 85010,
+    "measured_owned_total": 161217,
+    "measured_source_revision": "a36c389c39a33ff60bffa98cc019591298bdcfa9",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85010,
+    "previous_measurement_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+    "previous_owned_total": 161198,
+    "previous_recorded_owned_cap": 161213,
+    "previous_source_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1900",
+    "reason": "Compose the unchanged approved +19 restart hold repair grant on current dev for PR #1900. Preserve every historical grant and frozen batch measurement.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "root_task_id": "prime-crest-79",
+    "task_id": "fair-flare-10"
+  }
+}

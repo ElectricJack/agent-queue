@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/jobs/artifacts.py::job_directory": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/jobs/artifacts.py::atomic_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/artifacts.py::open_artifact": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/artifacts.py::read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    }
+  }
+}

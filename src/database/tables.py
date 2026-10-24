@@ -1248,6 +1248,19 @@ transcript_usage_calls = Table(
         "AND cache_read_tokens >= 0 AND cache_write_tokens >= 0",
         name="ck_transcript_usage_calls_nonnegative",
     ),
+    Index("idx_transcript_usage_calls_updated", "updated_at", "usage_key"),
+)
+
+# Permanent exact membership fence: batches replace old per-call counter rows.
+transcript_usage_fences = Table(
+    "transcript_usage_fences",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("usage_keys", JSONB, nullable=False),
+    Column("archived_at", Float, nullable=False),
+    Column("archive_path", Text, nullable=False),
+    Index("idx_transcript_usage_fences_keys", "usage_keys", postgresql_using="gin",
+          postgresql_ops={"usage_keys": "jsonb_path_ops"}),
 )
 
 benchmark_stage_spans = Table(
@@ -4084,7 +4097,7 @@ integration_candidate_resolutions = Table(
     Column("operation_id", Text, nullable=False),
     Column("operation_episode_id", Text, nullable=False),
     Column("stage_ordinal", Integer, nullable=False),
-    Column("stage_deadline_at", Float, nullable=False),
+    Column("stage_deadline_at", Float, nullable=True),
     Column("project_id", Text, nullable=False),
     Column("repair_task_id", Text, nullable=False),
     Column("repair_session_id", Text, nullable=False),
@@ -5488,8 +5501,8 @@ integration_subjects = Table(
         "AND budget_deadline_at IS NULL AND budget_attempt_limit IS NULL "
         "AND budget_attempts = 0) OR "
         "(budget_ordinal IS NOT NULL AND budget_ordinal >= 0 AND budget_class IS NOT NULL "
-        "AND budget_started_at IS NOT NULL AND budget_deadline_at IS NOT NULL "
-        "AND budget_deadline_at >= budget_started_at)",
+        "AND budget_started_at IS NOT NULL "
+        "AND (budget_deadline_at IS NULL OR budget_deadline_at >= budget_started_at))",
         name="ck_integration_subjects_budget",
     ),
     CheckConstraint(
@@ -7756,4 +7769,31 @@ integration_close_attempts = Table(
     CheckConstraint("state IN ('preparing','needs_author','checking','publish_uncertain',"
                     "'finished','deferred','cancelled')", name="ck_integration_close_state"),
     CheckConstraint("version >= 0 AND attempts >= 0", name="ck_integration_close_counters"),
+)
+
+# Project-owned one-shot notices persist independently of sessions and task claims.
+project_schedules = Table(
+    "project_schedules",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("due_at", Float, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("cancelled_at", Float),
+    Column("fired_at", Float),
+    Column("message_id", Text),
+    UniqueConstraint("project_id", "idempotency_key", name="uq_project_schedules_key"),
+    CheckConstraint(
+        "(state = 'pending' AND cancelled_at IS NULL AND fired_at IS NULL AND message_id IS NULL) "
+        "OR (state = 'cancelled' AND cancelled_at IS NOT NULL AND fired_at IS NULL "
+        "AND message_id IS NULL) OR (state = 'fired' AND cancelled_at IS NULL "
+        "AND fired_at IS NOT NULL AND message_id IS NOT NULL)",
+        name="ck_project_schedules_receipt",
+    ),
+    Index("idx_project_schedules_due", "due_at", "id",
+          postgresql_where=text("state = 'pending'")),
+    Index("idx_project_schedules_project", "project_id", "due_at", "id"),
 )

@@ -309,6 +309,19 @@ class RegistryContractLookup:
             registry = CONTRACTS
         self._registry = registry
 
+    def required_features(self, name: str) -> tuple[str, ...]:
+        """Compatibility metadata without constructing schemas/fingerprints.
+
+        Execution checks this for every referenced command on each artifact
+        load. The full validation projection below is intentionally separate.
+        Read the current registration on every call so plugin reloads apply.
+        """
+        registration = self._registry.get(name)
+        if registration is None:
+            return ()
+        return (("generated_commands_v1",)
+                if registration.contract.execution.schema_generation == 2 else ())
+
     def get(self, name: str) -> ContractInfo | None:
         registration = self._registry.get(name)
         if registration is None:

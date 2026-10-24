@@ -1,0 +1,17 @@
+{
+  "generic_dependencies": {
+    "src/notifications/events.py::AgentQuestionEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::ChainStuckEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::MergeConflictEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::PushFailedEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::StuckDefinedTaskEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskAddedEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskBlockedEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskCompletedEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskFailedEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskStartedEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskStoppedEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskThreadCloseEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/notifications/events.py::TaskThreadOpenEvent": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

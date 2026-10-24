@@ -1,0 +1,20 @@
+{
+  "shared": {
+    "src/git/github_activity.py::check_background_budget": {
+      "baseline_span": null,
+      "landing_span": [
+        118,
+        124
+      ],
+      "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23."
+    },
+    "src/git/github_activity.py::github_component": {
+      "baseline_span": null,
+      "landing_span": [
+        18,
+        28
+      ],
+      "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23."
+    }
+  }
+}

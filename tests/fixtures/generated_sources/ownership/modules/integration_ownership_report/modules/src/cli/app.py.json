@@ -1,0 +1,15 @@
+{
+  "shared_definitions": {
+    "src/cli/app.py::import from . import integration as _integration_cli": {
+      "baseline_span": [
+        465,
+        465
+      ],
+      "landing_span": [
+        464,
+        464
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

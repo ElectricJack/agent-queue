@@ -142,12 +142,24 @@ def _install_run_env(monkeypatch, config, adapter):
         def __init__(self, orchestrator, cfg):
             pass
 
+    class FakeProjectScheduleService:
+        def __init__(self, handler):
+            assert isinstance(handler, FakeCommandHandler)
+
+        async def run(self):
+            events.append("schedules.start")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("schedules.stop")
+
     monkeypatch.setattr(main_mod, "load_config", lambda path, profile=None: config)
     monkeypatch.setattr(main_mod, "setup_logging", lambda *a, **kw: None)
     monkeypatch.setattr(main_mod, "Orchestrator", FakeOrchestrator)
     monkeypatch.setattr(main_mod, "create_messaging_adapter", lambda cfg, orch: adapter)
     monkeypatch.setattr(main_mod, "default_registry", lambda config=None: object())
     monkeypatch.setattr("src.commands.handler.CommandHandler", FakeCommandHandler)
+    monkeypatch.setattr("src.project_schedules.ProjectScheduleService", FakeProjectScheduleService)
     return events, state
 
 
@@ -158,6 +170,7 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     degrades messaging instead of tearing the daemon down; shutdown closes
     the adapter and the orchestrator."""
     config = _postgres_config(tmp_path)
+    config.messages.enabled = False
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
     monkeypatch.setenv("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "parent-compact-value")
     monkeypatch.setenv("AQ_FUTURE_CONTROL", "parent-aq-value")
@@ -176,6 +189,8 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     assert state["cycles"] == 1
     assert events_ref.index("first_cycle") < events_ref.index("adapter.close")
     assert "orch.shutdown" in events_ref
+    assert events_ref.index("schedules.start") < events_ref.index("schedules.stop")
+    assert events_ref.index("schedules.stop") < events_ref.index("orch.shutdown")
     assert "CLAUDE_CODE_SESSION_ID" not in os.environ
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in os.environ
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" in caplog.text

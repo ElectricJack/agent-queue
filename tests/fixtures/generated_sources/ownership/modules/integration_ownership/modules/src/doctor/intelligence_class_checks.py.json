@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/intelligence_class_checks.py::intelligence_class_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

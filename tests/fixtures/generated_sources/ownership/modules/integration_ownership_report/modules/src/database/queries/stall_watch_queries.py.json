@@ -1,0 +1,7 @@
+{
+  "shared_definitions": {
+    "src/database/queries/stall_watch_queries.py::_META_KEYS['integration_retirement']": {
+      "reason": "Read-only stall-watch selector for the existing integration retirement hold. Suppresses notifications for intentionally retiring work; adds no storage, lifecycle transition or publication authority."
+    }
+  }
+}

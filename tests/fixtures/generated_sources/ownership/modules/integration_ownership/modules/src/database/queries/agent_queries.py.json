@@ -1,0 +1,16 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/agent_queries.py::AgentQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/agent_queries.py::AgentQueryMixin._assign_task_to_agent::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 311,
+      "owner": "AgentQueryMixin._assign_task_to_agent",
+      "owner_fingerprint": "da575fdf8c9ff837671c82b71ba78a83aa7f9c4483a4603a108a9f6cfe3bfd02",
+      "reason": "Inserts task_assigned with task, project, agent and timestamp after guarded assignment; it is worker lifecycle audit, not integration state."
+    }
+  }
+}

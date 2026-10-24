@@ -19,8 +19,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import integration_batch_members, integration_batches, messages, sessions, tasks
-from src.git.manager import is_valid_git_oid
+from src.git.manager import GitError, is_valid_git_oid, safe_git_detail
 from src.integration.batches import candidate_ref
+from src.integration.models import repair_deadline, repair_deadline_due
 from src.integration.lock import BranchLock
 from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
 from src.waits.sources import execute_batch_mutation, insert_message_with_source_event
@@ -57,7 +58,7 @@ class BatchFixerService:
         await insert_message_with_source_event(conn, insert(messages).values(
             id="msg-fixer-" + identity, project_id=batch["project_id"],
             from_kind="system", from_id="integration-train", to_kind="session",
-            to_id=(f"supervisor-{batch['project_id']}" if supervisor else state["session_name"]),
+            to_id=(f"supervisor-{batch['project_id']}" if supervisor else state["session_id"]),
             subject=f"Batch fixer: {batch['id']}", body=body,
             thread_id="batch-fixer-" + batch["id"], priority=100 if supervisor else 50,
             created_at=self.clock(), archive_after_inject=1, body_kind="integration_fixer",
@@ -205,8 +206,9 @@ class BatchFixerService:
                     if authorize is None or not await authorize():
                         return {"success": True, "outcome": "withdrawn"}
                     bound = dict(owner["fixer_state"])
-                    if (bound.get("blocker") or self.clock() >= bound["deadline"]
-                            or len(bound["red_keys"]) >= bound["max_rounds"]):
+                    if (bound.get("blocker") or repair_deadline_due(bound["deadline"], self.clock())
+                            or (bound["max_rounds"]
+                                and len(bound["red_keys"]) >= bound["max_rounds"])):
                         from src.integration.fixer_batches import defer_on
 
                         reason = bound.get("blocker") or "fixer family budget exhausted"
@@ -259,10 +261,10 @@ class BatchFixerService:
                     "starting_sha": head_sha, "head_sha": head_sha, "red_heads": [head_sha],
                     "red_keys": [evidence_key], "failure_evidence": evidence,
                     "created_at": now, "launch_started_at": now,
-                    "deadline": now + (policy.primary_seconds if policy else 1800),
-                    "budget_seconds": policy.primary_seconds if policy else 1800,
+                    "deadline": repair_deadline(now, policy.primary_seconds if policy else 0),
+                    "budget_seconds": policy.primary_seconds if policy else 0,
                     "revisit_seconds": policy.deferred_revisit_seconds if policy else 300,
-                    "max_rounds": min(3, policy.primary_attempts) if policy else 3,
+                    "max_rounds": policy.primary_attempts if policy else 0,
                     "brief": brief, "sync_default_branch": sync_default_branch,
                     "members": [{"task_id": m["task_id"], "source_sha": m["source_sha"],
                                  "source_base_sha": m["source_base_sha"]} for m in members],
@@ -277,7 +279,8 @@ class BatchFixerService:
                 if state["status"] == "waiting_capacity":  # Nothing binds the id: dash legacy hex.
                     state.update(status="launching", session_id=str(UUID(state["session_id"])),
                                  launch_started_at=self.clock(),
-                                 deadline=self.clock() + state["budget_seconds"], brief=brief,
+                                 deadline=repair_deadline(self.clock(), state["budget_seconds"]),
+                                 brief=brief,
                                  starting_sha=head_sha, head_sha=head_sha, red_heads=[head_sha],
                                  red_keys=[evidence_key], failure_evidence=evidence)
                     launch = state
@@ -304,8 +307,10 @@ class BatchFixerService:
                     state["failure_evidence"] = evidence
                     state["head_sha"] = head_sha
                     state["brief"] = brief
-                    if not state.get("blocker") and self.clock() < state["deadline"] \
-                            and len(state["red_heads"]) <= state["max_rounds"]:
+                    if (not state.get("blocker")
+                            and not repair_deadline_due(state["deadline"], self.clock())
+                            and (not state["max_rounds"]
+                                 or len(state["red_heads"]) <= state["max_rounds"])):
                         await self._message(conn, batch, state, "red:" + evidence_key, (
                             f"The batch is red at {head_sha}. Continue in the same checkout "
                             f"on {target_ref}; preserve all frozen members.\n{brief}\n"
@@ -313,9 +318,9 @@ class BatchFixerService:
                             "Commit fixes, run aq integration batch-fix --action push, "
                             "then end your turn for the next CI observation."
                         ))
-                if self.clock() >= state["deadline"]:
+                if repair_deadline_due(state["deadline"], self.clock()):
                     return await self._block(conn, batch, state, "fixer time budget exhausted")
-                if len(state["red_heads"]) > state["max_rounds"]:
+                if state["max_rounds"] and len(state["red_heads"]) > state["max_rounds"]:
                     return await self._block(conn, batch, state, "fixer CI round budget exhausted")
                 await self._write(conn, batch_id, state)
         if legacy:
@@ -476,7 +481,20 @@ class BatchFixerService:
         deferred = (batch["fixer_queue"] or {}).get("status") in {"deferred", "companion"}
         if state["status"] != "active" or (batch["intent"] != "open" and not deferred):
             return {"success": False, "outcome": "held"}
-        return await self.runtime.push(batch, session)
+        try:
+            return await self.runtime.push(batch, session)
+        except GitError as exc:
+            async with self.db.immediate() as conn:
+                current = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == batch["id"],
+                ).with_for_update())).mappings().one()
+                bound = dict(current["fixer_state"] or {})
+                if (bound.get("session_id") == session.id
+                        and bound.get("instance_token") == session.instance_token):
+                    await self._block(
+                        conn, current, bound, f"push failed: {safe_git_detail(str(exc), limit=4608)}",
+                    )
+            raise
 
 
 def split_members(members, attributed_members, dependencies):

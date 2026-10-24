@@ -7,6 +7,6 @@ export default function ReviewsInbox() {
     <h1 className="text-xl font-semibold">Reviews</h1>
     <PullRequestsSection />
     <h2 className="text-lg font-semibold">Document reviews</h2>
-    <AskInbox sourceKind="review" />
+    <AskInbox sourceKind="review" newestFirst />
   </div>;
 }

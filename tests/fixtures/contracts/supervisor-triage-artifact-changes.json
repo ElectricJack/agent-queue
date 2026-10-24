@@ -1,0 +1,11 @@
+{
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/supervisor-failure-triage/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/v2/supervisor-failure-triage-equivalence/baseline-artifact.json",
+      "previous_sha256": "6e21cb2f908e13e8cb637c95a653c35e8dc691a22c8428f649e249f8f7d7f241",
+      "sha256": "77510a1d3fdc19f5ca0561d9ba68175cd4a33405a8b7afbd819e8887800c7e75"
+    }
+  },
+  "reason": "swift-harbor-34 declares the existing task_failure_triage_notify capability explicitly and documents primitive selection. The artifact binds that declaration in trusted_execution; source hash, locations and compilation metadata change while rules, steps and command contracts remain equivalent. Chain this intentional port after the frozen main-refresh evidence and preserve its exact prior artifact for the old/new engine scenarios. Historical golden evidence is unchanged.",
+  "source_commit": "c5c093fc1abef2d3c14a9d57a0d9124bf95adf41"
+}

@@ -1,0 +1,28 @@
+{
+  "github_background_budget_measurement": {
+    "authority": "msg-a337e2c905ce4f5c8a236344a4e25211",
+    "authorized_engine_delta": 82,
+    "authorized_owned_delta": 103,
+    "base_revision": "e7989d1aa62381a607aab67d8ce245a955ed904e",
+    "charged_deltas": {
+      "src/commands/integration_commands.py": 3,
+      "src/git/github_activity.py": 18,
+      "src/integration/github_review_poll.py": 43,
+      "src/integration/pr_cleanup.py": 30,
+      "src/integration/pr_delivery.py": 9
+    },
+    "grant_source_message_id": "msg-330ea2478c724381acbb5512fc99e4b5",
+    "live_api_launches_per_minute": 206,
+    "live_check_run_reads_per_minute": 91,
+    "live_review_reads_per_minute": 83,
+    "live_snapshot_sha256": "4cf00bfb8c425ace07212f8ff33d38f5eb28709e079781810eb241c3d974e6c2",
+    "measured_engine_lines": 85398,
+    "measured_owned_total": 160982,
+    "measured_table_count": 45,
+    "post_delivery_followup": "Supervisor collects two hourly caller windows via aq integration status agent-queue --control-only (github.api_calls_per_hour); accepted in msg-78d52ce2244446e3b5f45549aaa713de.",
+    "reason": "GitHub caller diagnostics, shared background quota reserve and inventory reuse; exact supervisor grant under size-cap-delegation-2026-10-23.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "source_revision": "f12a1f07560d3d0cd6458c078007bda21eca8080",
+    "task_id": "prime-impact-40"
+  }
+}

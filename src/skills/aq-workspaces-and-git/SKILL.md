@@ -47,7 +47,7 @@ git branch --show-current
 
 ## Updating your task branch
 
-Use `aq git pull --branch main` (or the required dependency branch) to bring
+Use `aq git pull --branch <project-default-or-dependency>` to bring
 remote changes into your assigned worktree using daemon-managed credentials.
 The current checkout must still be your live task branch. This updates your
 branch locally; publication remains the guarded `aq git push` workflow.
@@ -107,8 +107,8 @@ Integration and anyone auditing the task read the branch from
 
 ## Stacked branches
 
-Branch from the default branch (`main`). Stack on a prerequisite task's
-branch **only** when the work genuinely cannot build or run without it:
+Use the prepared task branch and its configured project baseline. Stack on a
+prerequisite task's branch **only** when the work cannot build or run without it:
 declare the dependency on that task and say so in your close summary.
 
 Delivery to the default branch belongs to the project's configured
@@ -165,7 +165,8 @@ These are operator reads: a plain worker or reviewer token gets
 ```bash
 aq project list-workspaces --project-id <pid>     # all workspaces + lock holders
 aq project workspace-doctor --project-id <pid>    # check locks + git health
-aq project workspace-reap --project-id <pid>      # (elevated) cull dead worktrees
+aq project workspace-reap --workspace-id <slot-id>  # (elevated) reap one retired slot
+aq project workspace-reap --all-retired --project-id <pid>  # deliberate retired-slot sweep
 ```
 
 There is no per-workspace show command — `list-workspaces` is the detail
@@ -175,6 +176,19 @@ was proven, and `timeout` / `not_started` / `unknown` / `unverified` mean *not
 known* — never "stale" or "free". `--no-git` skips the checkout probes. Decide
 reaps and releases with `workspace-doctor` / `workspace-reap`, not from a
 partial listing.
+
+Recovery controls have separate ownership proofs:
+
+```bash
+aq project workspace-retire-claim --workspace-id <slot-id>
+aq project workspace-clear-sentinel --workspace-id <slot-id>
+```
+
+The first retires a leftover claim only when the slot is unlocked, its holder
+has let go and no live session works there. The second clears a terminal/gone
+task's sentinel only with no task lock, claim, live claiming session,
+integration owner or job pin, a clean tree and published HEAD. A worker reports
+the blocker to its supervisor; it never removes these files itself.
 
 ## Release + attach
 

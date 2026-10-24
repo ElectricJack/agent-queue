@@ -175,7 +175,7 @@ async def _snapshot_on(db, conn, owner: dict, reservation_id: str, *, now: float
         or stage["writer_kind"] != "repair_delegate"
         or stage["state"] not in {"active", "awaiting_completion"}
         or stage["deadline_at"] != reservation["stage_deadline_at"]
-        or float(stage["deadline_at"]) <= now
+        or (stage["deadline_at"] is not None and float(stage["deadline_at"]) <= now)
         or subject.get("kind") != "batch"
         or subject.get("revision") != reservation["revision"]
         or subject.get("candidate_sha")

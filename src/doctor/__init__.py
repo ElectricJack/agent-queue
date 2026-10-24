@@ -19,6 +19,7 @@ from src.doctor.escalation_checks import escalation_checks
 from src.doctor.formula_checks import formula_checks
 from src.doctor.git_checks import git_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
+from src.doctor.ingestion_checks import ingestion_checks
 from src.doctor.integration_checks import integration_checks
 from src.doctor.intelligence_class_checks import intelligence_class_checks
 from src.doctor.models import (
@@ -67,6 +68,7 @@ __all__ = [
     "formula_checks",
     "git_checks",
     "integration_checks",
+    "ingestion_checks",
     "intelligence_class_checks",
     "perf_checks",
     "playbook_v2_checks",
@@ -95,6 +97,8 @@ def default_registry() -> DoctorRegistry:
     for check in builtin_checks():
         registry.register(check)
     for check in hierarchy_checks():
+        registry.register(check)
+    for check in ingestion_checks():
         registry.register(check)
     for check in pool_checks():
         registry.register(check)

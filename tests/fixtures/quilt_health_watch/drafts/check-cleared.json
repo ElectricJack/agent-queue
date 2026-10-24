@@ -1,0 +1,62 @@
+{
+  "scan_id": "6fa3735f8343",
+  "checked_at": "2026-09-26T16:41:19.991097+00:00",
+  "verdict": "CLEARED",
+  "verdict_line": "QUILT-HEALTH: CLEARED - coordinator ok; Trader1 online; 3/3 deployments running; no new error signatures; cleared: coordinator_down",
+  "coordinator": {
+    "healthy": true,
+    "watchdog_attempted": false,
+    "watchdog_exit": null
+  },
+  "watchdog_log": {
+    "restarts_since_last": 0,
+    "restarts_last_hour": 0,
+    "failed_restarts_since_last": 0
+  },
+  "workers": [
+    {
+      "name": "Trader1",
+      "status": "online",
+      "last_heartbeat": "2026-09-26T16:40:50Z"
+    }
+  ],
+  "deployments": [
+    {
+      "id": "70d6b269",
+      "algorithm": "alpha-picks-rebalancer",
+      "account": "Alpaca Personal",
+      "worker": "Trader1",
+      "status": "running"
+    },
+    {
+      "id": "e06b037c",
+      "algorithm": "alpha-picks-rebalancer",
+      "account": "Tradier Rollover IRA",
+      "worker": "Trader1",
+      "status": "running"
+    },
+    {
+      "id": "4c81384e",
+      "algorithm": "rates-trend",
+      "account": "Tradier Personal",
+      "worker": "Trader1",
+      "status": "running"
+    }
+  ],
+  "fleet_error": null,
+  "conditions": {
+    "current": [],
+    "new": [],
+    "reminders": [],
+    "cleared": [
+      "coordinator_down"
+    ]
+  },
+  "errors": {
+    "scanned_bytes": 861,
+    "skipped_bytes": 0,
+    "to_file": [],
+    "known": []
+  },
+  "notes": []
+}

@@ -1,0 +1,26 @@
+{
+  "shared_definitions": {
+    "src/commands/system_commands.py::SystemCommandsMixin._cmd_get_config": {
+      "baseline_span": [
+        279,
+        334
+      ],
+      "landing_span": [
+        279,
+        334
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/commands/system_commands.py::SystemCommandsMixin._cmd_update_config": {
+      "baseline_span": [
+        404,
+        530
+      ],
+      "landing_span": [
+        404,
+        530
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

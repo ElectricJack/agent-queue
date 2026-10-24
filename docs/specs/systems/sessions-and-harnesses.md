@@ -163,6 +163,10 @@ the provider. `default_session_registry` wraps every provider's `start` with
 committed flock registration")` outside `launch_session`. Callers are task execution,
 pools, the message lens (supervisor cold starts) and the agent terminals endpoint. A
 launch that dies is recorded as `stopped` with reason `startup_exit`.
+If cancellation interrupts failed-launch cleanup, it propagates to the caller;
+the `starting` registration remains available for reconciliation until process
+termination is proved. Cancellation must not become a retryable launch error
+that keeps a background consumer running during shutdown.
 
 **Starting tmux.** `TmuxProvider.start` (`src/sessions/tmux.py`) runs `tmux new-session -d`
 with `exec /usr/bin/env -i` and only the spec's environment, stores a few harness hints in

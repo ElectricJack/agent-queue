@@ -1,0 +1,23 @@
+{
+  "obsolete_child_measurement": {
+    "authorized_engine_delta": 366,
+    "authorized_owned_delta": 430,
+    "authorized_table_delta": 0,
+    "decision_id": "size-cap-delegation-2026-10-23",
+    "decision_message_id": "msg-efc241b8ddbb4c1fb63a41f5fe3f0d90",
+    "grant_delivery_message_id": "msg-21f0bc97741343c39d69d7c5c7b97400",
+    "measured_engine_lines": 85376,
+    "measured_owned_total": 161647,
+    "measured_source_revision": "9c830f717be72274fb8af1521941c52927af541b",
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85010,
+    "previous_owned_total": 161217,
+    "previous_source_revision": "de9a68b81cfcabe55ca5ce527a933891d36c8a1d",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1789",
+    "reason": "Compose the reviewed obsolete-child disposition with current dev using a plain merge. Exact merged measurement pre-approved under size-cap-delegation-2026-10-23; preserve all historical grants and strict Git ancestry.",
+    "task_id": "fair-flare-67"
+  }
+}

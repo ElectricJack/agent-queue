@@ -1,0 +1,18 @@
+{
+  "shared_definitions": {
+    "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
+      "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
+    },
+    "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._github_client": {
+      "baseline_span": [
+        174,
+        187
+      ],
+      "landing_span": [
+        174,
+        187
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

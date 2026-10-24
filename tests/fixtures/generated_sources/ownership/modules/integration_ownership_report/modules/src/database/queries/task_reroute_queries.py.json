@@ -1,0 +1,32 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/task_reroute_queries.py::import from src.database.queries.claim_queries import _frontier_predicates, pool_primary_kind, route_claimable_in": {
+      "fingerprint": "37b68547ef12452f4c71df04a75b299b02a84849dcc27daff67de21ac53152bd",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/database/queries/task_reroute_queries.py::TaskRerouteQueryMixin.list_spill_candidates": {
+      "baseline_span": [
+        382,
+        431
+      ],
+      "landing_span": [
+        382,
+        431
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/database/queries/task_reroute_queries.py::import from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in": {
+      "baseline_span": [
+        23,
+        23
+      ],
+      "landing_span": [
+        23,
+        23
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

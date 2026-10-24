@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/cli/styles.py::STATUS_ICONS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/styles.py::STATUS_STYLES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/styles.py::TASK_TYPES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/cli/styles.py::TASK_TYPE_ICONS": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

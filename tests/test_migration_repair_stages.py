@@ -24,6 +24,10 @@ def _assert_schema(connection) -> None:
         "retained_handoff",
     } <= columns.keys()
     assert columns["intelligence_class"]["nullable"]
+    assert columns["deadline_at"]["nullable"]
+    reservations = {column["name"]: column for column in
+                    schema.get_columns("integration_candidate_resolutions")}
+    assert reservations["stage_deadline_at"]["nullable"]
     unique_names = {
         constraint["name"]
         for constraint in schema.get_unique_constraints("integration_repair_stages")

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/review_checks.py::review_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

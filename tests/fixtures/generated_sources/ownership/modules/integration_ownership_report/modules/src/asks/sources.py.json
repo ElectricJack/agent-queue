@@ -1,0 +1,60 @@
+{
+  "shared_definitions": {
+    "src/asks/sources.py::IntegrationAdapter": {
+      "landing_span": [
+        456,
+        534
+      ],
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts."
+    },
+    "src/asks/sources.py::IntegrationAdapter.apply_on": {
+      "landing_span": [
+        517,
+        534
+      ],
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts."
+    },
+    "src/asks/sources.py::IntegrationAdapter.read": {
+      "landing_span": [
+        460,
+        485
+      ],
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts."
+    },
+    "src/asks/sources.py::IntegrationAdapter.snapshot": {
+      "landing_span": [
+        486,
+        516
+      ],
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts."
+    },
+    "src/asks/sources.py::IntegrationAdapter.source_kind": {
+      "landing_span": [
+        459,
+        459
+      ],
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts."
+    },
+    "src/asks/sources.py::authorize_source": {
+      "landing_span": [
+        66,
+        151
+      ],
+      "reason": "Human source authorization includes exact integration gate/escalation binding and application authority."
+    },
+    "src/asks/sources.py::import from src.database.tables import gates, integration_subjects, task_gates, task_proposals, tasks": {
+      "landing_span": [
+        26,
+        32
+      ],
+      "reason": "Integration subject table import used by the human-decision adapter."
+    },
+    "src/asks/sources.py::source_adapters": {
+      "landing_span": [
+        877,
+        889
+      ],
+      "reason": "Static adapter registration includes the integration human-decision adapter."
+    }
+  }
+}

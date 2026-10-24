@@ -1,0 +1,54 @@
+{
+  "source_base": "fb3fc288453c5aa1be82373860968afd62453f73",
+  "review_notes": [
+    "restart_task adds optional override_hold and reason. Decided holds refuse ordinary restarts. Overrides require local operator/live global-supervisor authority, exact-hold fencing and audited actor/reason; undecided incidents retain ordinary restart semantics."
+  ],
+  "previous_cli_catalogue_sha256": "27eea7007f305f62593d9c853a144d1cbd21a3894cccc032106de692d8566dc8",
+  "cli_catalogue_sha256": "5b8593f569bb3b48c36e035b0033197417906fbab1de3cf8fb1beb5147b5dfde",
+  "transport_definitions": {
+    "restart_task": {
+      "previous_sha256": "685dd6974d5505df7cda5cad2cea941e5056e271d849c2a531fdda805244e5af",
+      "sha256": "624d14fe70bef94cab6e64f1b8fd1decb6cddb05975baeefe4060dcd0bac86d1",
+      "previous_definition": {
+        "name": "restart_task",
+        "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "Task ID to restart"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      },
+      "definition": {
+        "name": "restart_task",
+        "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "Task ID to restart"
+            },
+            "override_hold": {
+              "type": "boolean",
+              "description": "Explicitly release the recovery hold (operator/global supervisor only)"
+            },
+            "reason": {
+              "type": "string",
+              "description": "Required reason for overriding a recovery hold"
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    }
+  }
+}

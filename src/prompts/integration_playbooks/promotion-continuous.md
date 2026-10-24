@@ -4,82 +4,69 @@ name: Promotion continuous
 version: 1
 scope: system
 enabled: false
-triggers:
-  - promotion.source_settled
-  - promotion.request_due
-  - promotion.hotfix_completed
-  - promotion.intent_due
-  - promotion.delivered
+required_capabilities: [integration_promotion_policy_input, promote_request, promote_cancel,
+  integration_promotion_publish, integration_backmerge_source, message_send]
+triggers: [promotion.source_settled, promotion.request_due, promotion.hotfix_completed,
+  promotion.intent_due, promotion.delivered]
 ---
 
 # Promotion continuous
 
-The stored step `type` binds this reviewed policy to its project. Import and
-activation are separate operator actions; the shipped policy is disabled.
-The event's `event.project_id`, `event.step_id`, `event.batch_id`,
-`event.from_task` and `event.notes_reviewed` identify durable server facts.
-No branch name or SHA is authored in this policy.
-Command argument names are `project_id`, `step_id`, `batch_id`, `from_task`,
-`source_sha`, `request_id`, `notes_reviewed`, `to_kind`, `to_id`, `from_kind`,
-`from_id` and `body`. The result binding is `input.policy`.
+The stored step `type` binds policy to its project; only operators import or activate it.
+Use server facts: `event.project_id`, `event.step_id`, `event.batch_id`, `event.from_task`,
+`event.notes_reviewed`. Never author branches or SHAs.
+Save typed `integration_promotion_policy_input` as `input`; command outcomes control the graph.
+Read `input.policy`: `policy.backmerge_pending`, `policy.newer_source`,
+`policy.active_request_id`, `policy.source_sha`. Test the first three with `exists` in `truthy` mode.
+Inputs: `step_id`, `source_sha`, `notes_reviewed`, `from_task` and `batch_id`.
 
 ## Rule: advance-source
 
-On `promotion.source_settled`, continuous steps read
-`integration_promotion_policy_input`, wait when `policy.backmerge_pending`,
-and notify the operator with `message_send`. Request steps wait for an explicit
-`promotion.request_due` or hotfix completion. A continuous step with a newer
-source cancels its outstanding `policy.active_request_id` using `promote_cancel`
-and requests `policy.source_sha` through `promote_request`; a same-head intent
-waits. Cancellation refusal preserves the existing intent and notifies.
+On `promotion.source_settled`, read `integration_promotion_policy_input`; backmerge debt notifies.
+A continuous step with `policy.newer_source` cancels
+`policy.active_request_id` as `request_id` with `promote_cancel`, then `policy.source_sha` with
+`promote_request`. Otherwise an active same-head intent waits; absent one, request.
+Cancellation refusal notifies. Request steps wait for `promotion.request_due` or hotfix completion.
 
 ## Rule: explicit-request
 
-On `promotion.request_due`, read `integration_promotion_policy_input`; outstanding
-backmerge debt waits and notifies. A current intent waits. Otherwise run
-`promote_request` with the source returned by the mechanism and the explicit
-`event.notes_reviewed` acknowledgement. The input bindings are `input.policy`
-and `requested.batch_id`; a refusal notifies once for this durable event.
+On `promotion.request_due`, read `integration_promotion_policy_input`; debt notifies, active intents wait.
+Otherwise `promote_request` uses `policy.source_sha` and `event.notes_reviewed`; refusals notify.
 
 ## Rule: hotfix-completed
 
 On `promotion.hotfix_completed`, use `event.from_task` with
-`integration_promotion_policy_input` and `promote_request`. Notes still need an
-explicit review acknowledgement. A held or refused hotfix notifies the operator;
-publication always follows the step PR gate.
+`integration_promotion_policy_input` and `promote_request`. Notes need explicit review;
+a held or refused hotfix notifies. Publication follows the step PR gate.
 
 ## Rule: visit-intent
 
-On `promotion.intent_due`, run `integration_promotion_publish` for
-`event.batch_id`. That mechanism builds, gates, attests and publishes in order;
-a waiting check ends this run and the train reobserves exact evidence. A held
-intent, red checks, tag conflict or diverged target notifies with `message_send`.
-No playbook supplies approvals or bypasses a gate.
+On `promotion.intent_due`, run `integration_promotion_publish` for `event.batch_id`.
+The mechanism builds, gates, attests and publishes; waiting checks end this event so
+the train reobserves exact evidence. Held intents, red checks, tag conflicts or divergent
+targets notify. No playbook supplies approvals or bypasses gates.
 
 ## Rule: backmerge-delivered
 
-On `promotion.delivered`, run `integration_backmerge_source`. It observes the
-published head and each lower branch, retaining independent new batches and PR
-gates or recording the configured disabled backmerge debt. No frozen member is
-appended or rewritten.
+On `promotion.delivered`, run `integration_backmerge_source`: observe the published head
+and lower branches, retaining independent batches/PR gates or configured disabled backmerge
+debt. Never append or rewrite frozen members; the server owns backmerge debt and replay.
 
 ## Supervisor controls
 
-Inspect `promote_status` and `promote_list`. Use `promote_prepare` for a version
-bump and notes, `promote_hotfix` for an urgent fix, and `promote_cancel` to
-supersede an unpublished request. An operator uses `promote_approve` for a held
-step. A tag conflict or divergent backmerge requires inspection and an ordinary
-repair; the operator cancels and re-requests only after the repaired source
-contains all owed heads. Intents beyond request_ttl remain visible in status.
+Inspect `promote_status`/`promote_list`; use `promote_prepare` for versions/notes,
+`promote_hotfix` for urgent fixes, `promote_cancel` to supersede unpublished requests,
+and operator `promote_approve` for held steps. Repair tag conflicts/divergent backmerges
+before re-requesting; include all owed heads. Expired request_ttl intents stay visible.
 
 ## Failure handling
 
-Migration refusals (`migrations_not_additive`, `migration_range_invalid`, and
-`breaking_migration_override_forbidden`) notify the operator once and end the
-run. These policies never set `allow_breaking_migration`, retry a refused
-request, or authorize an override; that decision belongs to the local operator.
-
-Every missing fact, daemon refusal, and runtime error ends visibly failed or
-waits and notifies once per event. Message delivery is `message_send` to the
-operator user; durable command replay prevents duplicate messages for that event.
-Publication and target movement remain server-owned mechanisms.
+Migration refusals (`migrations_not_additive`, `migration_range_invalid`,
+`breaking_migration_override_forbidden`) notify once and end. Never set
+`allow_breaking_migration`, retry refusals or authorize overrides; those are operator decisions.
+Other refusals notify; command `runtime_error` ends failed directly. Successful outcomes
+advance, except publication `held`/`unknown` notify; `testing` ends completed for reobservation.
+Notifications use `message_send`: `to_kind` = `user`, `to_id` = `user`, `from_kind` = `system`,
+`from_id` = `promotion-continuous`, `project_id` = `event.project_id`, with `body`:
+"Promotion needs operator attention. Inspect aq promote status; use prepare, approve or cancel after resolving the named hold."
+Notify once per event with durable replay deduplication: `queued` completes; `rejected`/`runtime_error` fail.

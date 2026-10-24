@@ -1,0 +1,20 @@
+{
+  "reconciliation_definitions": {
+    "src/projects/relocation.py::ProjectRelocation._fences": {
+      "fingerprint": "2f12c2f012d049c1bde4f2a8d2b07ac504fc60b94b0a9bb755751f81a692222b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/relocation.py::ProjectRelocation.apply": {
+      "fingerprint": "2bc6761df7123ba1e40d1776a139d157aae04b31823b5e404c83f76e80c376ae",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/relocation.py::import from src.database.tables import integration_branch_owners, jobs, job_workspace_pins, project_integration_leases, projects, repos, sessions, tasks, workspaces": {
+      "fingerprint": "3956e0bfb8bae13e8ec3a724a481ed2355ca35c3f7dbe442c65f332784afe336",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/projects/relocation.py::import from src.jobs.artifacts import atomic_json, read_json": {
+      "fingerprint": "568b9a05cdb236f57597ac641dc97b7af95e411cd4b70bbdb8aa1011cc806e1f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

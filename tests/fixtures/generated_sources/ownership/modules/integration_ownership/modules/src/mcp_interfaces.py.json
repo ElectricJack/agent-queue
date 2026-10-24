@@ -1,0 +1,21 @@
+{
+  "generic_dependencies": {
+    "src/mcp_interfaces.py::agent_to_dict": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/mcp_interfaces.py::profile_to_dict": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/mcp_interfaces.py::project_to_dict": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/mcp_interfaces.py::workspace_to_dict": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/mcp_interfaces.py::task_to_dict": {
+      "baseline_span": [
+        29,
+        59
+      ],
+      "landing_span": [
+        29,
+        59
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

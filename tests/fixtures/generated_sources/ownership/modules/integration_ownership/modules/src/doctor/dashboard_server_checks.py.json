@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/dashboard_server_checks.py::dashboard_server_checks": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

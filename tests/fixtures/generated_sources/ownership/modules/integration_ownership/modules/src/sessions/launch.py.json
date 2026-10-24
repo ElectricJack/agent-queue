@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/sessions/launch.py::SessionLaunchUncertain": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/launch.py::launch_in_progress": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/sessions/launch.py::launch_session": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

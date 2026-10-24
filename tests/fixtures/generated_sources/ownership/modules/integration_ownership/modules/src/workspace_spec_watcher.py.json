@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/workspace_spec_watcher.py::WorkspaceSpecWatcher": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

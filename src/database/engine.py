@@ -27,6 +27,7 @@ from src.database.schema_key import (
     schema_key,
 )
 from src.database.tables import projects, repos
+from src.logging_config import CorrelationContext
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +125,14 @@ class ObservedQueuePool(AsyncAdaptedQueuePool):
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             perf_registry().observe_pool_wait(elapsed_ms)
             if elapsed_ms >= 1000:
-                logger.warning(
-                    "database pool wait duration_ms=%.1f checked_out=%s size=%s overflow=%s",
-                    elapsed_ms, self.checkedout(), self.size(), self.overflow(),
-                )
+                with CorrelationContext(
+                    operation="db.pool_wait", duration_ms=round(elapsed_ms, 3),
+                    checked_out=self.checkedout(), pool_size=self.size(), overflow=self.overflow(),
+                ):
+                    logger.warning(
+                        "database pool wait duration_ms=%.1f checked_out=%s size=%s overflow=%s",
+                        elapsed_ms, self.checkedout(), self.size(), self.overflow(),
+                    )
 
 
 def _install_query_observer(engine: AsyncEngine) -> None:
@@ -160,9 +165,12 @@ def _install_query_observer(engine: AsyncEngine) -> None:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             perf_registry().observe_query(elapsed_ms)
             if elapsed_ms >= 1000:
-                logger.warning(
-                    "database query duration_ms=%.1f failed=%s", elapsed_ms, failed,
-                )
+                with CorrelationContext(
+                    operation="db.query", duration_ms=round(elapsed_ms, 3), failed=failed,
+                ):
+                    logger.warning(
+                        "database query duration_ms=%.1f failed=%s", elapsed_ms, failed,
+                    )
 
 
 def create_postgres_engine(

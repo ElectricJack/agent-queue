@@ -24,7 +24,8 @@ class FlockCommandsMixin:
         if project_id and await self.db.get_project(project_id) is None:
             return {"success": False, "error": f"Project '{project_id}' not found"}
         agents = await self.db.list_agents()
-        records = await self.db.list_sessions()
+        include_stopped = bool(args.get("include_stopped"))
+        records = await self.db.list_flock_sessions(include_stopped=include_stopped)
         active_tasks = await self.db.list_tasks(statuses={
             TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
             TaskStatus.WAITING_INPUT, TaskStatus.WAITING,
@@ -33,7 +34,6 @@ class FlockCommandsMixin:
             self.orchestrator, project_id=project_id,
             agents=agents, sessions=records, tasks=active_tasks,
         )
-        include_stopped = bool(args.get("include_stopped"))
         # Only hydrate history referenced by a visible session. Never read
         # the task backlog just to render the flock.
         visible = [record for record in records if (

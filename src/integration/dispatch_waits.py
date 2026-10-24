@@ -26,6 +26,7 @@ class DispatchWaits:
             watcher = CheckWatcher(self.db, self.commit, orch.git,
                 checks=self.checks, repository=self.repository,
                 clock=clock)
+            orch.wait_ci_watcher = watcher
             orch.wait_ci_reader = watcher.read
             orch.wait_ci_lock_source = watcher.lock_source
             service = getattr(orch, "wait_service", None)

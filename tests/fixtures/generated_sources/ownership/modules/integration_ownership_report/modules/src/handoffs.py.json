@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/handoffs.py::LIST_FIELDS['completed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

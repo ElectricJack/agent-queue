@@ -1,6 +1,6 @@
 # System spec: api-and-clients
 
-Status: describes the system as of 2026-10-20 (base `22cffd1b7`). This is system 14 of the
+Status: audited against `origin/dev` on 2026-10-22 (base `52d2efe4c`). This is system 14 of the
 eighteen in the agent-queue system inventory (vault
 `projects/agent-queue/specs/2026-10-20-agent-queue-system-inventory.md`, review
 `rev-bright-rapids`, approved at revision 1 when this was written). It explains what the
@@ -24,11 +24,11 @@ generated from it. It gives every out-of-process caller one door:
 
 - **One process, one port.** A FastAPI application on `127.0.0.1:8081` serves every route,
   stream and the OpenAPI schema.
-- **Commands are endpoints.** Almost every route is generated from a `CommandHandler`
-  command, so adding a command adds a typed route without hand-writing one.
-- **Identity on every request.** A request without a bearer token is the trusted local
-  operator; a request with an agent session's token is scoped to that session's task and
-  project. The same scope check runs whichever route the call takes.
+- **Commands are endpoints.** Categorized commands with public descriptors generate typed
+  routes unless explicitly excluded, sharing the command handler with the CLI.
+- **Identity on every request.** HTTP resolves the local operator or a session token before
+  dispatch, with route-specific resource and viewer checks. WebSocket handshakes resolve
+  scopes separately; event filtering has the gaps described in section 5.
 - **A schema the clients are built from.** `openapi.json` is generated offline from the
   app, and the Python client (`packages/aq-client/`) and TypeScript client
   (`packages/aq-ts-client/`) are generated from that file and never hand-edited.
@@ -39,13 +39,13 @@ generated from it. It gives every out-of-process caller one door:
 
 | Term | Meaning |
 |---|---|
-| **Command** | A `CommandHandler` method (`src/commands/`). Every state change in Agent Queue is one. Commands return `{"success": bool, ...}` or `{"error": ...}` dicts. |
-| **Generated command route** | `POST /api/{category}/{command}`, built at startup from the tool definitions. Its OpenAPI `operationId` is the command name. |
+| **Command** | A `CommandHandler` method (`src/commands/`). Domain operations enter through this layer. Commands return `{"success": bool, ...}` or `{"error": ...}` dicts. |
+| **Generated command route** | `POST /api/{category}/{command}`, built at startup from the normalized command descriptors. Its OpenAPI `operationId` is the command name. |
 | **Hand-written route** | A route whose shape is not a command call: a path parameter, a file body, HTML, server-sent events. |
 | **`/api/execute`** | The generic route the CLI uses: `{"command", "args"}` in, `{"ok", "result" \| "error", "details"}` out. |
 | **Request scope** | `RequestScope` (`src/api/auth.py`): who the caller is. `local` (no token) or `session` (a valid agent token). |
 | **Session token** | An `aqs_`-prefixed bearer token minted when a session starts, stored hashed, revoked when it ends. |
-| **Elevated** | A session scope that may run any command (supervisors), still fenced to its project when it has one. |
+| **Elevated** | A supervisor session scope that skips the worker allowlist, while retaining project, capability and operator-only restrictions. |
 | **Response model** | A Pydantic model in `src/api/models/` that a generated route answers with, and the schema name a client sees. |
 | **Generated artifacts** | `openapi.json`, `packages/aq-client/` and its boilerplate digests; the TypeScript client's sources are regenerated locally and not tracked. |
 
@@ -85,30 +85,31 @@ flowchart LR
 
 ### 2.3 Three families of routes
 
-`openapi.json` at this base has 480 paths, 483 operations and 1,202 component schemas.
+Route and schema counts change as command contracts grow; the API overview includes a
+command to count the committed schema.
 The [API overview](../../reference/api/README.md#the-three-families-of-routes) describes the
 families; in short:
 
 1. **Generated command routes.** `build_category_routers`
-   ([`src/api/codegen.py`](../../../src/api/codegen.py)) walks every tool definition
-   (`src/tools/`, the auto-discovered commands from `src/mcp_registration.py`, and internal
-   plugin tools), groups them by category, and emits `POST /api/{category}/{command}`. The
-   body model is the command's hand-written request model if one exists in
-   `src/api/models/`, otherwise one built from the tool's JSON schema (`_make_input_model`).
+   ([`src/api/codegen.py`](../../../src/api/codegen.py)) walks `command_snapshot()`
+   from `src/commands/command_inventory.py`, groups the descriptors by category, and emits
+   `POST /api/{category}/{command}`. The body model is the command's hand-written request model if one exists in
+   `src/api/models/`, otherwise one built from the descriptor's JSON schema (`_make_input_model`).
    The response model comes from the registry in `src/api/models/__init__.py`. Commands in
    `API_EXCLUDED` (internal reconcilers, `run_command`, `message_send`, the ask intake and a
-   few others) get no route. These routes carry the 39 OpenAPI tags; `task` alone has 74
-   operations.
+   few others) get no route. Categories become OpenAPI tags.
 2. **Hand-written resource routes**, each in its own module under `src/api/`: health and
    readiness (`health.py`, including `GET /plans/{task_id}` as HTML), messages, task and
    workspace files, task and review attachments, the task graph and its layout
    (`graph.py`, `graph_layout.py`), metrics, providers, pull requests, proposals and
    batches (`routers/proposals.py`), and `GET /api/tools`. They are included before the
-   generated routers so a concrete path wins over a generated one. About 52 operations have
+   generated routers so a concrete path wins over a generated one. Some resource operations have
    no tag.
-3. **Streams**, which are not in OpenAPI: the event WebSocket `/ws/events`, the terminal
-   WebSockets `/ws/terminal/{session_id}` (and its `/input` twin), and three server-sent
-   event endpoints (session output, pane snapshots, managed-job console streams). See
+3. **Streams**: the event WebSocket `/ws/events`, the terminal
+   WebSockets `/ws/terminal/{session_id}` (and its `/input` twin), and server-sent
+   event endpoints for session output, pane snapshots and managed-job consoles. SSE HTTP
+   routes and the terminal HTTP access probe are in OpenAPI; WebSockets and the
+   streaming frame protocols are not. See
    [streaming](../../reference/api/events.md).
 
 Beside these sits **`POST /api/execute`** ([`src/api/execute.py`](../../../src/api/execute.py)),
@@ -184,9 +185,10 @@ box and the wrong one for anything shared (section 5).
 A generated route answers 200 with its response model when the command succeeds. When the
 command returns `{"error": ...}`, the route answers with the status from the `ERROR_STATUS`
 map (422 by default). Most commands' error bodies are reduced to `{"error": "<message>"}`;
-a short list keeps the full structured payload (`DETAILED_ERROR_COMMANDS`, routing
+listed families keep the full structured payload (`DETAILED_ERROR_COMMANDS`, routing
 refusals, hierarchy refusals, ask, job, escalation and supervisor-inbox errors, and a 409
-for `edit_intelligence_class`), each with its own error model in OpenAPI. A body that fails
+for intelligence-class changes, dashboard revision conflicts and other mapped refusals), each with
+its own error model in OpenAPI. A body that fails
 validation is FastAPI's 422 `{"detail": [...]}`. An unhandled exception is an opaque 500
 ([`src/api/errors.py`](../../../src/api/errors.py)).
 
@@ -214,23 +216,30 @@ scope handling (`src/mcp_registration.py`, [`docs/specs/mcp-server.md`](../mcp-s
 
 ### 2.8 Streams
 
-`/ws/events` ([`src/api/websocket.py`](../../../src/api/websocket.py)) subscribes to the
-event bus's `notify.*` events and forwards them to every connected client. Each frame
-carries a sequence number and a daemon epoch (regenerated on every start), so a client that
-reconnects with `after_seq` is replayed the persisted events it missed, in pages of 500,
-before live streaming resumes; a changed epoch tells it to discard its sequence. Frames are
-filtered per scope: a session sees only its own project's events, metrics ticks go only to
-local and elevated scopes, and some events are reduced to identifiers so the browser
-refetches the authorized detail. Each client has a 1,000-frame queue that drops its oldest
-frame when full, so a slow client loses events rather than slowing the daemon.
+`/ws/events` ([`src/api/websocket.py`](../../../src/api/websocket.py)) forwards the
+prefixes documented in [events.md](../../reference/api/events.md). Persisted events carry
+a sequence id; live frames can have `seq: null`. Reconnect with `after_seq` replays stored
+events in pages of 500 before queued live events. A new daemon epoch tells the client to
+discard its cursor. Each client has a 1,000-frame queue that drops its oldest frame when
+full. Consumers must treat frames as invalidation hints and refetch state.
+
+Metrics, pool, provider, dashboard-state and question events have explicit scope filters
+or projections. Other forwarded families do not have a general project/task filter;
+section 5 records this isolation gap rather than promising project-only delivery.
 
 The terminal WebSocket ([`terminal_stream.py`](../../../src/api/terminal_stream.py)) attaches
-a disposable tmux client to an existing session; it never launches an agent, and it checks
-origin (`api_auth.trusted_dashboard_origins` for non-same-origin dashboards), credentials,
-operator viewer, loopback, session generation and a connection limit. The SSE endpoints
-(`sessions.py`, `pane_stream.py`, `streams.py`) are bounded viewers over session output,
-pane snapshots and managed-job consoles. The event schemas are documented by hand in
-[events.md](../../reference/api/events.md) because none of this is in OpenAPI.
+a disposable tmux client to an existing session. It checks credentials, loopback, origin,
+session generation and connection limits. The same path offers an HTTP access probe; an
+input-only socket supports phone controls. Operator host shells share the terminal
+transport but have separate, config-gated lifecycle routes in `host_shell.py`, rejecting
+all bearer tokens and recording audit events.
+
+Session and pane SSE (`sessions.py`, `pane_stream.py`) view transcripts or live screens.
+Console streams (`streams.py`) submit managed jobs using finite command presets; admission
+requires the job feature, a held task and its exact workspace root. Job rows and retained
+output survive viewer eviction. Output uses resumable byte cursors; expired output answers
+410, while disconnecting a viewer does not cancel a job. Limits on viewers, concurrent
+starts and output retention are documented in [streaming](../../reference/api/events.md).
 
 ### 2.9 The schema and the clients
 
@@ -239,16 +248,17 @@ The pipeline is described in full in [codegen.md](../../contributing/codegen.md)
 1. `python -m src.api.spec` ([`src/api/spec.py`](../../../src/api/spec.py)) builds the app
    offline, without a database, and writes `openapi.json`.
 2. `scripts/regenerate-api-client.sh --offline` runs a pinned `openapi-python-client`
-   (config `scripts/openapi-python-client.yaml`) into `packages/aq-client/` (2,607 tracked
-   files) and checks the hand-maintained boilerplate against
+   (config `scripts/openapi-python-client.yaml`) into `packages/aq-client/` and records generator
+   boilerplate digests in
    `scripts/aq-client-boilerplate.sha256`. `--install` re-points the shared venv and is
    refused from a worker slot.
 3. `scripts/regenerate-ts-client.sh --from-file` runs a pinned `@hey-api/openapi-ts` into
-   `packages/aq-ts-client/src/`. Only `index.ts` and `package.json` are tracked; the
-   dashboard's `predev`, `prebuild` and `pretypecheck` scripts regenerate the rest.
-4. `scripts/regenerate-generated.sh` runs every generator in the repository in dependency
-   order (selection catalogue, CLI inventory, configuration and playbook schemas, command
-   catalogue, `openapi.json`, the Python client and its digests). `--check` is the drift
+   `packages/aq-ts-client/src/`. Only `package.json` and `tsconfig.json` are tracked; all
+   generated source, including `index.ts`, is ignored. The dashboard's `predev`, `prebuild` and `pretypecheck`
+   scripts regenerate the rest.
+4. `scripts/regenerate-generated.sh` coordinates the repository generators, running independent
+   work concurrently and respecting dependencies (selection catalogue, CLI inventory,
+   configuration and playbook schemas, command catalogue, `openapi.json`, the Python client and its digests). `--check` is the drift
    check, and `.gitattributes` marks these paths `merge=aq-generated` so a conflict is
    resolved by regenerating, never by hand. The integration train does the same at merge
    time.
@@ -265,6 +275,7 @@ The system owns little persistent state:
 |---|---|---|
 | `api_session_tokens` (`src/database/tables.py`, queries in `src/database/queries/api_session_token_queries.py`) | Token hash, session id, launch instance token, task, project, elevated flag, created, expires, revoked. | Minted at session start; revoked at session close; expired rows pruned by the orchestrator. |
 | `SessionTokenStore` caches | Validated scopes by hash; rejected-token tombstones; bounded auth-health and failure diagnostics. | In process memory; lost on restart. |
+| Managed-job console viewers | Bounded metadata/output caches in `streams.py`; job records and retained output belong to the managed-job service. | Viewer memory is disposable; durable job/output retention is separate. |
 | `WebSocketManager` | Connected clients and their frame queues. | In memory. Replay reads the `events` table, owned by daemon-core. |
 | `openapi.json`, `packages/aq-client/` | The schema and the Python client. | Tracked in git, regenerated. |
 
@@ -294,7 +305,7 @@ categorized command has a response model), `test_regenerate_api_client_script.py
 | 8. playbooks | Playbook commands are generated routes; the playbook graph view excludes nulls from its response. |
 | 9. messaging-and-human-asks | Messages have hand-written routes; ask intake and `message_send` are excluded from HTTP and reach the daemon by other paths. Question events are reduced to identifiers on `/ws/events`. |
 | 10. supervisors-and-policy | Supervisor sessions hold elevated tokens; operator-only commands are refused to them in `scope.py`. |
-| 11. reviews-and-knowledge | Review and knowledge commands, review attachments, and the operator-viewer gate on approvals. The held-batch endpoint (section 6) shows that system's batches. |
+| 11. reviews-and-knowledge | Review and knowledge commands, review attachments, and the operator-viewer gate on approvals. The batch-detail endpoint shows that system's batches. |
 | 12. providers | `providers.py` serves availability and usage; the token store's first-seen hook feeds launch evidence to provider availability. |
 | 13. configuration-and-vault | `mcp_server`, `api_auth` and `dashboard_server` config sections; config editing commands are routes. |
 | 15. dashboard | The main consumer: `@aq/ts-client`, `/ws/events`, terminals. The dashboard server proxies this API and asserts the viewer verdict. |
@@ -310,19 +321,21 @@ response models' shapes as published, the schema and the generated clients.
 
 ## 4. Principles and invariants
 
-- **Every route ends at `CommandHandler`.** No route writes state any other way; hand-written
-  routes either call commands or read. A new capability is a command first, a route second.
+- **Domain mutations use `CommandHandler`.** New domain capabilities start as commands.
+  Transport-owned state has explicit exceptions: token caches, console viewers,
+  host-shell lifecycle auditing and PR inbox cache refreshes.
 - **Generated, never hand-edited.** `openapi.json` and `packages/aq-client/` come from the
   scripts; a merge conflict in them is resolved by regenerating. The TypeScript client's
   sources are not tracked at all.
 - **One exclusion set per surface, enforced on every path into it.** `API_EXCLUDED` blocks
   both the typed route and `/api/execute`, so the generic route is not a back door.
-- **Callers cannot claim identity.** `_`-prefixed and server-owned arguments are stripped
-  before the server-derived `_scope` is injected; derived profile identity comes from the
+- **Callers cannot claim identity.** Both command routes strip `_`-prefixed arguments;
+  typed routes also strip server-owned keys before `_scope` is injected; derived profile identity comes from the
   live session row, never the token or the body.
-- **Scope at the edge, capability in the command layer.** The HTTP edge decides which task
-  and project a token may touch; the command layer decides which commands its profile may
-  run. Elevation widens the first, never the second.
+- **Scope at the edge, capability in the command layer.** HTTP routes check which task
+  and project a token may touch; event sockets currently filter only listed families.
+  The command layer decides which commands its profile may run. Elevation widens the first, never
+  the second.
 - **Tokens are hashed and short-lived.** Plaintext lives only in the session's environment;
   diagnostics never hold it.
 - **The daemon serves no UI.** The dashboard is a separate process that proxies the API.
@@ -333,29 +346,17 @@ response models' shapes as published, the schema and the generated clients.
 
 ## 5. Known gaps
 
-### Documentation drift
+### Documentation audit
 
-- [`docs/reference/api/README.md`](../../reference/api/README.md) lists two "known defects"
-  that are fixed at this base: `/api/metrics/series?step=1m` (the model's `total` is now a
-  float) and `/plans/{task_id}` rejecting dotted ids (`health.py`'s pattern now accepts
-  them). Its per-category route table predates several categories; regenerate it from
-  `openapi.json` tags rather than hand-maintaining it. It names the token table `api_tokens`;
-  the table is `api_session_tokens`.
-- File counts disagree: `python-client.md` says 1,439 files, `codegen.md` 1,442, and
-  `modules/api.md` attributes 1,442 to the TypeScript package. `packages/aq-client/` has
-  2,607 tracked files and `packages/aq-ts-client/` two.
-- [`docs/reference/modules/api.md`](../../reference/modules/api.md) omits fourteen of the
-  thirty-eight modules in `src/api/models/` (among them `collaboration`, `cron`,
-  `decision`, `job`, `knowledge`, `review`, `supervisor_inbox` and `wait`) and six
-  `src/api/` modules (`health_monitor.py`, `host_shell.py`, `perf_middleware.py`,
-  `pull_requests.py`, `review_attachments.py`, `target_scope.py`).
-- `codegen.md`'s diagram draws `aq-client → aq CLI`; the CLI uses `/api/execute`.
-  `docs/specs/design/aq-surface.md` says the Python client "continues to serve the
-  dashboard" and that the Discord adapter uses REST; the dashboard uses the TypeScript
-  client and Discord calls `CommandHandler` in-process.
-- `src/embedded_mcp.py`'s docstring lists `/docs`, but the app disables the docs UI.
-- The inventory's purpose line for this system (MCP reaches the daemon through the API)
-  is corrected in section 2.7.
+The 2026-10-22 audit refreshed the API reference, model/module catalogue and codegen guide.
+It removed obsolete defects for dotted plan ids and rolled-up metrics totals, replaced
+moving counts with source commands, corrected token storage and client ownership, and
+covered current routes, error families, managed jobs and socket controls. Earlier design
+specs (`design/aq-surface.md`, `mcp-server.md`, `tiered-tools.md`) are explicitly historical;
+the current reference describes their implemented successors.
+
+One source-docstring discrepancy remains outside this documentation-only change:
+`src/embedded_mcp.py` lists `/docs`, while `create_app()` disables the docs UI.
 
 ### Behaviour
 
@@ -386,51 +387,41 @@ response models' shapes as published, the schema and the generated clients.
   the transport package.
 - **No API versioning.** The app reports version `0.1.1` and the schema changes with every
   command change; clients are regenerated in the same commit rather than versioned.
-- **Streams are outside the schema.** Event payloads and the terminal protocol are
-  documented by hand, so the TypeScript event types in the dashboard are hand-written and
-  can drift from the daemon's events.
+- **Streaming frames need a separate contract.** SSE routes are in OpenAPI, but their
+  frame formats and WebSocket protocols are documented by hand, so dashboard event types
+  can drift from daemon events.
+- **Event isolation is incomplete.** `WebSocketManager._on_event` and the replay loop
+  filter specific event families, but do not constrain other task/message frames to a
+  session's project or held task. The stored scope alone does not provide that isolation.
+- **Event handshake differs from HTTP auth.** `WebSocketManager.handle` validates bearer
+  tokens but does not apply HTTP middleware's loopback restriction on global-admin tokens
+  or the terminal service's origin checks. These are code follow-ups, not changes made by
+  this documentation audit.
 
-## 6. Planned work
+## 6. Implementation and rollout context
 
-Re-queried from the operator database on 2026-10-20; only open work that changes this
-system is listed.
+The previous version recorded open task statuses on 2026-10-20. Those statuses are a
+historical snapshot, not evidence of what is absent from this checkout. At the audited base:
 
-- **Held ingestion P6 — `calm-orbit-69` (in progress).** Implements §10 of the vault spec
-  `projects/agent-queue/specs/2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md`
-  (review `rev-agile-beacon`, revision 1, approved). Leaf L6.1 (`calm-orbit-69.1`,
-  completed) adds `held_batch` to `TaskDetail`, held fields to `TaskBatchProposeResponse`, a
-  new `IngestBatchDetail` model and `GET /api/projects/{project_id}/batches/{batch_id}` in
-  `src/api/routers/proposals.py`, with both clients regenerated. It is on the epic branch
-  `aq/epic/held-ingestion-p6-api-dashboard-cli-design-10`, not yet on main. L6.2
-  (completed) teaches the dashboard the four `batch.*` WebSocket events. L6.3
-  (`calm-orbit-69.3`, defined) adds `aq batch …`, doctor checks and MCP tools, which reach
-  the daemon through `/api/execute` and the command registry, not new routes. The same
-  spec's L2.1 adds the fidelity reviewer's batch commands to `src/api/scope.py`. See the
-  reviews-and-knowledge system spec.
-- **Event-driven hibernation and verified waits — `bold-zenith-11` (in progress).** Vault
-  spec `projects/agent-queue/specs/2026-10-13-event-driven-agent-hibernation-and-verified-waits-implementa.md`
-  (review `rev-fleet-orbit`, revision 1, approved). All but one leaf is complete on
-  `aq/epic/event-driven-hibernation-and-verified-waits-implementation`, which adds seven
-  generated routes under `/api/wait/` (`explain`, `graph`, `checkpoint`, `ack`, `decide`,
-  `lift`, `legacy-bridge`), the matching models in `src/api/models/wait.py`, a `waits` group
-  in the metrics model, new task statuses in the task models, and session-scoped wait verbs
-  in `AGENT_COMMAND_SET`. The remaining leaf, `bold-zenith-11.22` (ready), flips the
-  defaults and refuses v1 wait bodies, which changes those request models' accepted shape.
-- **Fast smooth integration — `stark-willow-95` (in progress).** Vault spec
-  `projects/agent-queue/specs/2026-10-12-fast-smooth-integration.md` (review
-  `rev-fair-lantern`; tasks filed from approved revision 2, revision 3 in review). Leaf
-  `stark-willow-95.4` (ready) extends `src/api/metrics.py` and `src/api/models/metrics.py`
-  with delivery latency and its time breakdown; `stark-willow-95.5` (defined) consumes it
-  in the dashboard through the generated client.
-- **Distributed worker nodes (in review, no tasks filed).** Vault spec
-  `projects/agent-queue/specs/2026-10-06-distributed-worker-nodes.md` (review
-  `rev-eager-quest`, revision 2, in review). It requires a node gateway that authenticates
-  every request, loopback included, and states that the current missing-bearer local scope
-  must not be relied on. If approved, it is the change that would retire "loopback means
-  operator" and make `require_session_token` real, and it moves terminal attachment to the
-  owning node.
+- **Held ingestion:** batch detail is served by
+  `GET /api/projects/{project_id}/batches/{batch_id}` in `routers/proposals.py`, with held
+  ingestion and fidelity-review models. Related design:
+`projects/agent-queue/specs/2026-10-14-spec-ingestion-held-batches-and-fidelity-review-before-relea.md`
+  in the operator vault.
+- **Verified waits:** the wait model registry and generated command descriptors include
+  the V2 wait surface; internal wait dispatch/reconciliation commands stay excluded from
+  HTTP. Related design:
+`projects/agent-queue/specs/2026-10-13-event-driven-agent-hibernation-and-verified-waits-implementa.md`.
+- **Delivery latency:** `metrics.py` serves `GET /api/metrics/delivery-latency` using the
+  dedicated `models/delivery_latency.py` report shapes. Related design:
+  `projects/agent-queue/specs/2026-10-12-fast-smooth-integration.md`.
+- **Distributed nodes:** the design at
+  `projects/agent-queue/specs/2026-10-06-distributed-worker-nodes.md` proposes authenticated
+  node gateways and terminal attachment on the owning node. This API remains a local
+  deployment surface; that proposal does not establish current implementation or approval.
 
-No open task addresses the behaviour gaps in section 5 other than the last.
+Feature presence here does not establish operator enablement or a task's current status.
+The owning system specs describe policy and rollout.
 
 ## 7. Related documents and source
 

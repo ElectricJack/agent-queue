@@ -62,6 +62,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "list_workspace_kinds": "project",
     "find_merge_conflict_workspaces": "project",
     "release_workspace": "project",
+    "rebind_workspace": "project",
     "remove_workspace": "project",
     "edit_workspace": "project",
     "queue_sync_workspaces": "project",
@@ -225,6 +226,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_task_tree": "task",
     "task_children": "task",
     "task_progress": "task",
+    "task_split": "task",
     "reparent_task": "task",
     "get_task_dependencies": "task",
     "task_deps": "task",
@@ -298,6 +300,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "claude_usage": "system",
     "get_chat_analyzer_metrics": "system",
     "reload_config": "system",
+    "operational_retention": "system",
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",
@@ -445,6 +448,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_rename": "pool",
+    "pool_delete": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",
@@ -1130,7 +1134,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "hierarchical_integration_mode": {
                     "type": "string",
                     "enum": ["disabled", "observe", "hierarchy", "train", "development"],
-                    "description": "LOCAL-only integration mode for new reconciler subjects.",
+                    "description": "LOCAL-only integration delivery mode for the Git-first train.",
                 },
                 "promotion_flow": {
                     "type": ["array", "object", "null"],
@@ -1470,7 +1474,10 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "reparent_task",
         "description": (
             "Move a task under another container (parent_id) or to the root (root=true). "
-            "Ids never change."
+            "Ids never change. In hierarchical projects the move is an integration "
+            "hierarchy mutation: live, owned or code-carrying work answers "
+            "needs_quiescence with its owner and safe continuation, and the optional "
+            "expected_*_generation fences refuse a stale parent."
         ),
         "input_schema": {
             "type": "object",
@@ -1478,6 +1485,14 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string"},
                 "parent_id": {"type": "string"},
                 "root": {"type": "boolean", "default": False},
+                "expected_old_generation": {
+                    "type": "integer",
+                    "description": "Hierarchical projects: the old parent's integration generation.",
+                },
+                "expected_new_generation": {
+                    "type": "integer",
+                    "description": "Hierarchical projects: the new parent's integration generation.",
+                },
             },
             "required": ["task_id"],
         },
@@ -2357,13 +2372,28 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "release_workspace",
-        "description": "Force-release a stuck workspace lock. Use when a workspace is locked by a dead agent or stale task.",
+        "description": "Release a stuck workspace after checking claim, session, integration and job ownership.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "workspace_id": {"type": "string", "description": "Workspace ID to release"},
+                "force": {"type": "boolean", "description": "Override only the exact named task protection"},
+                "task_id": {"type": "string", "description": "Exact protected task; required with force"},
             },
             "required": ["workspace_id"],
+        },
+    },
+    {
+        "name": "rebind_workspace",
+        "description": "Restore workspace lock columns from an existing coherent active pool claim.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace to re-bind"},
+                "task_id": {"type": "string", "description": "Task holding the active claim"},
+                "session_id": {"type": "string", "description": "Session holding that exact claim"},
+            },
+            "required": ["workspace_id", "task_id", "session_id"],
         },
     },
     {
@@ -2821,11 +2851,13 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "restart_task",
-        "description": "Reset a completed, failed, or blocked task back to READY so it gets picked up by an agent again.",
+        "description": "Reset a completed, failed, or blocked task to READY. Recovery holds require override_hold, a reason and operator/global-supervisor authority; the release is audited.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to restart"},
+                "override_hold": {"type": "boolean", "description": "Explicitly release the recovery hold (operator/global supervisor only)"},
+                "reason": {"type": "string", "description": "Required reason for overriding a recovery hold"},
             },
             "required": ["task_id"],
         },
@@ -4012,6 +4044,16 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "operational_retention",
+        "description": "Archive and collect one bounded batch of old operational records.",
+        "input_schema": {"type": "object", "properties": {
+            "dry_run": {"type": "boolean", "default": False,
+                        "description": "Count eligible records without archiving or deletion."},
+            "batch_size": {"type": "integer", "minimum": 1, "maximum": 1000,
+                           "default": 1000},
+        }},
+    },
+    {
         "name": "reload_config",
         "description": (
             "Manually trigger a config hot-reload from disk. Returns a summary "
@@ -4141,8 +4183,8 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "update_and_restart",
         "description": (
-            "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream "
-            "and restart even when already current. With a release or branch selector, run shared "
+            "Update and restart the daemon. Requires deploy.tag_glob or deploy.track_branch; "
+            "otherwise refuses with operator configuration guidance. Run shared "
             "preflight and launch the operator updater; returns pid, log, selector and commit, "
             "or up_to_date without restarting. Read the log for the final outcome. "
             "Use wait_for_tasks=true to let running tasks finish before restarting; "
@@ -5143,8 +5185,10 @@ _ALL_TOOL_DEFINITIONS = [
             "concurrently with per-check timeouts; a check that crashes or "
             "times out reports 'error' rather than hanging the command.  "
             "Pass fix=true to apply the fix of each failing fixable check and "
-            "re-run it (fixes are idempotent and only touch derived state — "
-            "WAL, expired log dirs — never tasks, vault files or branches).  "
+            "re-run it. Fixes are idempotent; ingestion.legacy_proposals may "
+            "materialize an uncommitted proposal into held work only with "
+            "immutable approval authority. Pass leave_gated=true to retain "
+            "the legacy approval path. Other checks repair derived state. "
             "The returned exit_code is 2 when any check errored, 1 when any "
             "warned, otherwise 0."
         ),
@@ -5154,6 +5198,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "fix": {
                     "type": "boolean",
                     "description": "Apply fixes for failing fixable checks, then re-run them.",
+                },
+                "leave_gated": {
+                    "type": "boolean",
+                    "description": "Leave legacy spec proposals on their existing human gate.",
                 },
                 "checks": {
                     "type": "array",
@@ -6907,6 +6955,8 @@ _ALL_TOOL_DEFINITIONS = [
             "for fidelity review and returns batch_id, revision, digest and members. "
             "task_batch_commit refuses held batches; authorized release is separate. "
             "Design approval creates an already released epic and authoring leaf. "
+            "For an already delivered design, explicit no_op records delivered evidence "
+            "without creating work; only its live ingester may settle an empty change set. "
             "Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance."
         ),
         "input_schema": {
@@ -6927,6 +6977,20 @@ _ALL_TOOL_DEFINITIONS = [
                 "dry_run": {
                     "type": "boolean",
                     "description": "Validate and return the diff without storing a proposal.",
+                },
+                "no_op": {
+                    "type": "object",
+                    "description": "Design-ingest settlement when every approved goal is already delivered; requires no change operations.",
+                    "properties": {
+                        "reason": {"type": "string", "minLength": 1},
+                        "delivered_evidence": {
+                            "type": "array", "minItems": 1,
+                            "items": {"type": "string", "minLength": 1},
+                            "description": "Merged PR or commit citations checked by the ingester.",
+                        },
+                    },
+                    "required": ["reason", "delivered_evidence"],
+                    "additionalProperties": False,
                 },
                 "edits": {
                     "type": "array",
@@ -7377,6 +7441,31 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
+        },
+    },
+    {
+        "name": "pool_delete",
+        "description": (
+            "Delete a global worker pool, stop its sessions through guarded teardown and "
+            "return routed tasks to their router. Running work is interrupted. Retires the "
+            "profile so install/update cannot recreate it. Backs `aq pool delete`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Pool profile ID to delete."},
+                "depth": {
+                    "type": "string",
+                    "enum": ["profile", "directory"],
+                    "default": "profile",
+                    "description": (
+                        "profile removes profile.md and preserves other vault content; "
+                        "directory removes the entire profile directory. Both retire the pool."
+                    ),
+                },
+                "reason": {"type": "string", "description": "Optional retirement reason."},
+            },
+            "required": ["profile_id"],
         },
     },
     {
@@ -9446,6 +9535,11 @@ from src.commands.contracts.builtin import (  # noqa: E402
     EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
 )
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchReleaseArgs as _TaskBatchReleaseArgs,
+    TaskBatchRetireArgs as _TaskBatchRetireArgs,
+    TaskBatchReviewRecordArgs as _TaskBatchReviewRecordArgs,
+)
 
 for _definition in _ALL_TOOL_DEFINITIONS:
     if _definition["name"] == "task_batch_update":
@@ -9455,8 +9549,22 @@ _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
     "batch_reconcile": "task", "ensure_fidelity_review": "task",
+    "spec_ingest_legacy_adopt": "task", "task_batch_review_record": "task",
+    "task_batch_release": "task", "task_batch_retire": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
+    {"name": "task_batch_review_record",
+     "description": "Attest every mapped section and whole-batch intent on the exact held graph; "
+                    "only the live assigned fidelity reviewer.",
+     "input_schema": _TaskBatchReviewRecordArgs.model_json_schema()},
+    {"name": "task_batch_release",
+     "description": "Verify source approval, the live graph and its fidelity receipt, then "
+                    "release a held batch; service, project supervisor or operator only.",
+     "input_schema": _TaskBatchReleaseArgs.model_json_schema()},
+    {"name": "task_batch_retire",
+     "description": "Retire a held batch whose members and reviewer are already retired, "
+                    "retaining its receipts; service, project supervisor or operator only.",
+     "input_schema": _TaskBatchRetireArgs.model_json_schema()},
     {"name": "ensure_spec_ingest",
      "description": "Ensure one role task per applied approval decision, including archived receipts.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
@@ -9478,6 +9586,14 @@ _ALL_TOOL_DEFINITIONS.extend([
                       "properties": {"project_id": {"type": "string"},
                                      "after_id": {"type": "string"}},
                       "required": ["project_id"]}},
+    {"name": "spec_ingest_legacy_adopt",
+     "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+     "input_schema": {"type": "object", "additionalProperties": False,
+                      "properties": {"proposal_id": {"type": "string"},
+                                     "decision_id": {"type": "string"},
+                                     "packet_sha256": {"type": "string"},
+                                     "leave_gated": {"type": "boolean"}},
+                      "required": ["proposal_id"]}},
 ])
 
 
@@ -9502,3 +9618,26 @@ _ALL_TOOL_DEFINITIONS.append({
         "properties": {"operation_id": {"type": "string"}},
     },
 })
+
+
+# Public one-shot schedules use the same schemas as their typed contracts.
+from src.commands.contracts.schedule import (  # noqa: E402
+    ScheduleRegisterArgs, SchedulePointerArgs, ScheduleListArgs,
+)
+
+for _name, _args, _description in (
+    ("schedule_register", ScheduleRegisterArgs,
+     "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker."),
+    ("schedule_get", SchedulePointerArgs, "Read a project schedule and its firing/cancellation receipt."),
+    ("schedule_list", ScheduleListArgs, "List project-owned one-shot notifications and due times."),
+    ("schedule_cancel", SchedulePointerArgs, "Cancel a pending project notification schedule."),
+):
+    _TOOL_CATEGORIES[_name] = "schedule"
+    _ALL_TOOL_DEFINITIONS.append({
+        "name": _name, "description": _description, "input_schema": _args.model_json_schema(),
+    })
+
+_FALLBACK_INPUT_SCHEMAS["reconcile_project_schedules"] = {
+    "type": "object", "properties": {"now": {"type": "number"}},
+    "required": ["now"], "additionalProperties": False,
+}

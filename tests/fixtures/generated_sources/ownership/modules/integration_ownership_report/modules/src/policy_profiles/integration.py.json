@@ -1,0 +1,22 @@
+{
+  "shared_definitions": {
+    "src/policy_profiles/integration.py::defaults": {
+      "reason": "Builds integration repository, parent/root check and CI-command template defaults from IntegrationSettings."
+    },
+    "src/policy_profiles/integration.py::import from src.integration.models import HierarchicalIntegrationPolicy": {
+      "reason": "Imports the integration policy schema used to validate exported and imported parent/root boundary settings."
+    },
+    "src/policy_profiles/integration.py::import from src.policy_profiles.models import IntegrationSettings": {
+      "reason": "Imports the portable integration-settings payload used by this integration-specific configuration adapter."
+    },
+    "src/policy_profiles/integration.py::portable": {
+      "reason": "Replaces integration repository identities, boundary check fields and CI commands with target-install placeholders."
+    },
+    "src/policy_profiles/integration.py::settings": {
+      "reason": "Exports live integration policy, repository, engine and flow after removing installation-local routes and task grants; development policies are withheld."
+    },
+    "src/policy_profiles/integration.py::updates": {
+      "reason": "Validates engine/default-branch compatibility and restores reviewed target-local routes and grants before producing integration configuration changes."
+    }
+  }
+}

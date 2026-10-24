@@ -1,0 +1,14 @@
+{
+  "shared_definitions": {
+    "src/commands/workspace_cutover.py::cutover": {
+      "baseline_span": null,
+      "landing_span": null,
+      "reason": "Workspace base cutover reads active integration owners to retain writer-bound sources; counted alongside its ordinary workspace state changes."
+    },
+    "src/commands/workspace_cutover.py::import from src.database.tables import integration_branch_owners, sessions, workspaces": {
+      "baseline_span": null,
+      "landing_span": null,
+      "reason": "Integration table imports used by shared workspace/claim ownership guards."
+    }
+  }
+}

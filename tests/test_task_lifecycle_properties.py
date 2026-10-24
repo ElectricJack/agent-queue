@@ -275,6 +275,8 @@ async def test_generated_new_attempts_supersede_recovery_holds(env, operation, r
             {
                 "task_id": tid,
                 "feedback": "Cause diagnosed; start a fresh attempt",
+                "override_hold": True,
+                "reason": "Cause diagnosed; start a fresh attempt",
             },
         )
         assert "error" not in result, result

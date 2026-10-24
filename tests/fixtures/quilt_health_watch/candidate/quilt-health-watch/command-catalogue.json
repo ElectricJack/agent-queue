@@ -1,0 +1,518 @@
+{
+  "create_task": {
+    "available": true,
+    "caller_requirements": [
+      "original_principal",
+      "resource_audit_required"
+    ],
+    "capability": "create_task",
+    "denial_reason": null,
+    "denied": false,
+    "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/create_task.md",
+    "effect_class": "destructive",
+    "execution_available": true,
+    "idempotency_key_field": null,
+    "idempotency_mechanism": "none",
+    "name": "create_task",
+    "origin": "handler",
+    "parameters_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "affinity_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affinity Agent Id"
+        },
+        "affinity_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Affinity Reason"
+        },
+        "container": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Container"
+        },
+        "dedup_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dedup Key"
+        },
+        "depends_on": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depends On"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "discovered_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Discovered From"
+        },
+        "integration_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Integration Mode"
+        },
+        "intelligence_class": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intelligence Class"
+        },
+        "labels": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Labels"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Id"
+        },
+        "parent_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Key"
+        },
+        "parent_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Title"
+        },
+        "pin": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pin"
+        },
+        "prefer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prefer"
+        },
+        "prefer_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prefer Mode"
+        },
+        "preferred_workspace_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preferred Workspace Id"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Priority"
+        },
+        "profile_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile Id"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "provider_intent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Intent"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "requires_kinds": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requires Kinds"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Root"
+        },
+        "task_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Type"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "workspace_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Mode"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "CreateTaskArgs",
+      "type": "object"
+    },
+    "plugin": null,
+    "preview_available": false,
+    "receipt_projection": [],
+    "result_mode": "typed",
+    "retry_safe": false,
+    "schema_quality": "typed",
+    "schema_source": "typed_contract",
+    "sensitivity": "protected",
+    "summary": "Create a new task, without checking whether a similar one exists.",
+    "timeout_seconds": null,
+    "title": "Create a task"
+  },
+  "get_task": {
+    "available": true,
+    "caller_requirements": [
+      "original_principal",
+      "resource_audit_required"
+    ],
+    "capability": "get_task",
+    "denial_reason": null,
+    "denied": false,
+    "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/get_task.md",
+    "effect_class": "read",
+    "execution_available": true,
+    "idempotency_key_field": null,
+    "idempotency_mechanism": "natural",
+    "name": "get_task",
+    "origin": "handler",
+    "parameters_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "title": "GetTaskArgs",
+      "type": "object"
+    },
+    "plugin": null,
+    "preview_available": false,
+    "receipt_projection": [],
+    "result_mode": "typed",
+    "retry_safe": true,
+    "schema_quality": "typed",
+    "schema_source": "typed_contract",
+    "sensitivity": "protected",
+    "summary": "Read one task and its completion record.",
+    "timeout_seconds": null,
+    "title": "Read a task"
+  },
+  "message_send": {
+    "available": true,
+    "caller_requirements": [
+      "original_principal",
+      "project_resources",
+      "handler_gates"
+    ],
+    "capability": "message_send",
+    "denial_reason": null,
+    "denied": false,
+    "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/message_send.md",
+    "effect_class": "destructive",
+    "execution_available": true,
+    "idempotency_key_field": null,
+    "idempotency_mechanism": "none",
+    "name": "message_send",
+    "origin": "handler",
+    "parameters_schema": {
+      "additionalProperties": false,
+      "description": "``message_send`` as a playbook step: queue one message on the substrate.\n\n``from_kind`` defaults to ``system`` because a playbook is not a user and\nnot a session; ``from_id`` names the playbook so the recipient can tell\nan automated escalation from a human's note.",
+      "properties": {
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "from_id": {
+          "title": "From Id",
+          "type": "string"
+        },
+        "from_kind": {
+          "default": "system",
+          "title": "From Kind",
+          "type": "string"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Priority"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thread Id"
+        },
+        "to_id": {
+          "title": "To Id",
+          "type": "string"
+        },
+        "to_kind": {
+          "title": "To Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to_kind",
+        "to_id",
+        "body",
+        "from_id"
+      ],
+      "title": "MessageSendArgs",
+      "type": "object"
+    },
+    "plugin": null,
+    "preview_available": false,
+    "receipt_projection": [],
+    "result_mode": "typed",
+    "retry_safe": false,
+    "schema_quality": "typed",
+    "schema_source": "typed_contract",
+    "sensitivity": "protected",
+    "summary": "Queue one message to a session, task, profile, or user; delivery is asynchronous.",
+    "timeout_seconds": null,
+    "title": "Send a message"
+  }
+}

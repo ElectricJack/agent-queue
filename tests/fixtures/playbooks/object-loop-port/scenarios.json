@@ -1,0 +1,1332 @@
+{
+  "installed_artifact_sha256": "e1630040e3ffaebb52ba917826bfdf1755e05d20410e2690d5b500bc31fec27a",
+  "installed_source_sha256": "3c447d950409d6f03ef2f9de5d86a3ebdbf721b8d760ea845eae507fdcc758c5",
+  "provenance": "Supervisor msg-1ff809ccc0204d72a920e2ff8302f241 read-only snapshot; scenarios are synthetic command-boundary cases, not renderer evidence. $POLICY and $POLICY_HEX refer only to the artifact being exercised. Existing loops require explicit policy migration.",
+  "scenarios": [
+    {
+      "name": "empty",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": []
+          },
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "input-refused",
+      "completed": false,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": []
+          },
+          "outcome": "rejected"
+        }
+      ]
+    },
+    {
+      "name": "approved-start",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [
+              {
+                "proposal_approved": true,
+                "policy_artifact": "$POLICY",
+                "request": {
+                  "project_id": "p",
+                  "epic_task_id": "epic",
+                  "object_id": "rock",
+                  "attempt_id": "attempt-1",
+                  "incumbent_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "incumbent_artifact": null,
+                  "incumbent_capture_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "reference_kind": "calibrated",
+                  "reference_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "rig_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "scorer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "render_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "policy_sha256": "$POLICY_HEX",
+                  "brief_review_id": "brief-review",
+                  "brief_review_revision": 1,
+                  "brief_review_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "mandatory_views": [
+                    "front"
+                  ],
+                  "limits": {
+                    "usd": 3.0,
+                    "calls": 3,
+                    "bakes": 3,
+                    "active_seconds": 30.0
+                  },
+                  "final_reserve": {
+                    "usd": 1.0,
+                    "calls": 1,
+                    "bakes": 1,
+                    "active_seconds": 10.0
+                  },
+                  "score_reservation": {
+                    "usd": 0.0,
+                    "calls": 0,
+                    "bakes": 0,
+                    "active_seconds": 0.0
+                  },
+                  "noise_band": 0.01,
+                  "max_rounds": 8,
+                  "max_repair_rounds": 2,
+                  "max_plateau_rounds": 3,
+                  "variants": [
+                    {
+                      "variant_id": "a",
+                      "title": "a",
+                      "hypothesis": "try a change",
+                      "reservation": {
+                        "usd": 1.0,
+                        "calls": 1,
+                        "bakes": 1,
+                        "active_seconds": 10.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "loops": []
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_start",
+          "args": {
+            "project_id": "p",
+            "epic_task_id": "epic",
+            "object_id": "rock",
+            "attempt_id": "attempt-1",
+            "incumbent_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "incumbent_artifact": null,
+            "incumbent_capture_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reference_kind": "calibrated",
+            "reference_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "rig_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scorer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "render_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "policy_sha256": "$POLICY_HEX",
+            "brief_review_id": "brief-review",
+            "brief_review_revision": 1,
+            "brief_review_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "mandatory_views": [
+              "front"
+            ],
+            "limits": {
+              "usd": 3.0,
+              "calls": 3,
+              "bakes": 3,
+              "active_seconds": 30.0
+            },
+            "final_reserve": {
+              "usd": 1.0,
+              "calls": 1,
+              "bakes": 1,
+              "active_seconds": 10.0
+            },
+            "score_reservation": {
+              "usd": 0.0,
+              "calls": 0,
+              "bakes": 0,
+              "active_seconds": 0.0
+            },
+            "noise_band": 0.01,
+            "max_rounds": 8,
+            "max_repair_rounds": 2,
+            "max_plateau_rounds": 3,
+            "variants": [
+              {
+                "variant_id": "a",
+                "title": "a",
+                "hypothesis": "try a change",
+                "reservation": {
+                  "usd": 1.0,
+                  "calls": 1,
+                  "bakes": 1,
+                  "active_seconds": 10.0
+                }
+              }
+            ]
+          },
+          "value": {
+            "object_id": "rock"
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "unapproved-start",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [
+              {
+                "proposal_approved": false,
+                "policy_artifact": "$POLICY",
+                "request": {
+                  "project_id": "p",
+                  "epic_task_id": "epic",
+                  "object_id": "rock",
+                  "attempt_id": "attempt-1",
+                  "incumbent_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "incumbent_artifact": null,
+                  "incumbent_capture_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "reference_kind": "calibrated",
+                  "reference_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "rig_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "scorer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "render_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "policy_sha256": "$POLICY_HEX",
+                  "brief_review_id": "brief-review",
+                  "brief_review_revision": 1,
+                  "brief_review_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "mandatory_views": [
+                    "front"
+                  ],
+                  "limits": {
+                    "usd": 3.0,
+                    "calls": 3,
+                    "bakes": 3,
+                    "active_seconds": 30.0
+                  },
+                  "final_reserve": {
+                    "usd": 1.0,
+                    "calls": 1,
+                    "bakes": 1,
+                    "active_seconds": 10.0
+                  },
+                  "score_reservation": {
+                    "usd": 0.0,
+                    "calls": 0,
+                    "bakes": 0,
+                    "active_seconds": 0.0
+                  },
+                  "noise_band": 0.01,
+                  "max_rounds": 8,
+                  "max_repair_rounds": 2,
+                  "max_plateau_rounds": 3,
+                  "variants": [
+                    {
+                      "variant_id": "a",
+                      "title": "a",
+                      "hypothesis": "try a change",
+                      "reservation": {
+                        "usd": 1.0,
+                        "calls": 1,
+                        "bakes": 1,
+                        "active_seconds": 10.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "loops": []
+          },
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "foreign-policy-start",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [
+              {
+                "proposal_approved": true,
+                "policy_artifact": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "request": {
+                  "project_id": "p",
+                  "epic_task_id": "epic",
+                  "object_id": "rock",
+                  "attempt_id": "attempt-1",
+                  "incumbent_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "incumbent_artifact": null,
+                  "incumbent_capture_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "reference_kind": "calibrated",
+                  "reference_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "rig_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "scorer_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "render_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "policy_sha256": "$POLICY_HEX",
+                  "brief_review_id": "brief-review",
+                  "brief_review_revision": 1,
+                  "brief_review_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "mandatory_views": [
+                    "front"
+                  ],
+                  "limits": {
+                    "usd": 3.0,
+                    "calls": 3,
+                    "bakes": 3,
+                    "active_seconds": 30.0
+                  },
+                  "final_reserve": {
+                    "usd": 1.0,
+                    "calls": 1,
+                    "bakes": 1,
+                    "active_seconds": 10.0
+                  },
+                  "score_reservation": {
+                    "usd": 0.0,
+                    "calls": 0,
+                    "bakes": 0,
+                    "active_seconds": 0.0
+                  },
+                  "noise_band": 0.01,
+                  "max_rounds": 8,
+                  "max_repair_rounds": 2,
+                  "max_plateau_rounds": 3,
+                  "variants": [
+                    {
+                      "variant_id": "a",
+                      "title": "a",
+                      "hypothesis": "try a change",
+                      "reservation": {
+                        "usd": 1.0,
+                        "calls": 1,
+                        "bakes": 1,
+                        "active_seconds": 10.0
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "loops": []
+          },
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "foreign-policy-loop",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null
+              }
+            ]
+          },
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "waiting-before-deadline",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 86399,
+                "scorer_failed": false,
+                "score": null
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "deadline-equality",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 86400,
+                "scorer_failed": false,
+                "score": null
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 3,
+            "stop_reason": "object wall deadline reached"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "stopped-before-deadline-check",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "stopped"
+                },
+                "elapsed_seconds": 86401,
+                "scorer_failed": false,
+                "score": null
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "exhausted-scorer",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": true,
+                "score": null
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_score_record",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 3,
+            "score_task_id": "score-rock",
+            "action": "stop",
+            "receipts": [],
+            "stop_reason": "scorer exhausted; retained incumbent; quality unavailable"
+          },
+          "value": {},
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "checkpoint-rejected",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "checkpoint": {
+                    "review_id": "checkpoint"
+                  }
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null,
+                "review_state": "rejected"
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_checkpoint_read",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {
+            "version": 4,
+            "approved": false
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 3,
+            "stop_reason": "checkpoint not accepted; evidence retained"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "checkpoint-withdrawn",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "checkpoint": {
+                    "review_id": "checkpoint"
+                  }
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null,
+                "review_state": "withdrawn"
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_checkpoint_read",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {
+            "version": 4,
+            "approved": false
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 3,
+            "stop_reason": "checkpoint not accepted; evidence retained"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "checkpoint-changes_requested",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "checkpoint": {
+                    "review_id": "checkpoint"
+                  }
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null,
+                "review_state": "changes_requested"
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_checkpoint_read",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {
+            "version": 4,
+            "approved": false
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 3,
+            "stop_reason": "checkpoint not accepted; evidence retained"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "checkpoint-held",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "checkpoint": {
+                    "review_id": "checkpoint"
+                  }
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null,
+                "review_state": "pending",
+                "next_variants": []
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_checkpoint_read",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {
+            "version": 4,
+            "approved": false
+          },
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "checkpoint-approved",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "checkpoint": {
+                    "review_id": "checkpoint"
+                  }
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null,
+                "review_state": "approved",
+                "next_variants": [
+                  {
+                    "variant_id": "next",
+                    "title": "next",
+                    "hypothesis": "try a change",
+                    "reservation": {
+                      "usd": 1.0,
+                      "calls": 1,
+                      "bakes": 1,
+                      "active_seconds": 10.0
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_checkpoint_read",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {
+            "version": 4,
+            "approved": true
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 4,
+            "next_variants": [
+              {
+                "variant_id": "next",
+                "title": "next",
+                "hypothesis": "try a change",
+                "reservation": {
+                  "usd": 1.0,
+                  "calls": 1,
+                  "bakes": 1,
+                  "active_seconds": 10.0
+                }
+              }
+            ]
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "checkpoint-continuation-refused",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "checkpoint": {
+                    "review_id": "checkpoint"
+                  }
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null,
+                "review_state": "approved",
+                "next_variants": [
+                  {
+                    "variant_id": "next",
+                    "title": "next",
+                    "hypothesis": "try a change",
+                    "reservation": {
+                      "usd": 1.0,
+                      "calls": 1,
+                      "bakes": 1,
+                      "active_seconds": 10.0
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_checkpoint_read",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {
+            "version": 4,
+            "approved": true
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 4,
+            "next_variants": [
+              {
+                "variant_id": "next",
+                "title": "next",
+                "hypothesis": "try a change",
+                "reservation": {
+                  "usd": 1.0,
+                  "calls": 1,
+                  "bakes": 1,
+                  "active_seconds": 10.0
+                }
+              }
+            ]
+          },
+          "value": {},
+          "outcome": "rejected"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock",
+            "expected_version": 4,
+            "stop_reason": "checkpoint continuation refused by limits"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "score-accepted",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": {
+                  "object_id": "rock",
+                  "project_id": "matter-engine-cpp",
+                  "expected_version": 3,
+                  "score_task_id": "score-rock",
+                  "receipts": [],
+                  "spent": null,
+                  "action": "continue",
+                  "next_variants": [
+                    {
+                      "variant_id": "next",
+                      "title": "next",
+                      "hypothesis": "try a change",
+                      "reservation": {
+                        "usd": 1.0,
+                        "calls": 1,
+                        "bakes": 1,
+                        "active_seconds": 10.0
+                      }
+                    }
+                  ],
+                  "stop_reason": null,
+                  "review_id": null,
+                  "review_revision": null,
+                  "review_sha256": null
+                }
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_score_record",
+          "args": {
+            "object_id": "rock",
+            "project_id": "matter-engine-cpp",
+            "expected_version": 3,
+            "score_task_id": "score-rock",
+            "receipts": [],
+            "spent": null,
+            "action": "continue",
+            "next_variants": [
+              {
+                "variant_id": "next",
+                "title": "next",
+                "hypothesis": "try a change",
+                "reservation": {
+                  "usd": 1.0,
+                  "calls": 1,
+                  "bakes": 1,
+                  "active_seconds": 10.0
+                }
+              }
+            ],
+            "stop_reason": null,
+            "review_id": null,
+            "review_revision": null,
+            "review_sha256": null
+          },
+          "value": {},
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "score-continue-refused",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": {
+                  "object_id": "rock",
+                  "project_id": "matter-engine-cpp",
+                  "expected_version": 3,
+                  "score_task_id": "score-rock",
+                  "receipts": [],
+                  "spent": null,
+                  "action": "continue",
+                  "next_variants": [
+                    {
+                      "variant_id": "next",
+                      "title": "next",
+                      "hypothesis": "try a change",
+                      "reservation": {
+                        "usd": 1.0,
+                        "calls": 1,
+                        "bakes": 1,
+                        "active_seconds": 10.0
+                      }
+                    }
+                  ],
+                  "stop_reason": null,
+                  "review_id": null,
+                  "review_revision": null,
+                  "review_sha256": null
+                }
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_score_record",
+          "args": {
+            "object_id": "rock",
+            "project_id": "matter-engine-cpp",
+            "expected_version": 3,
+            "score_task_id": "score-rock",
+            "receipts": [],
+            "spent": null,
+            "action": "continue",
+            "next_variants": [
+              {
+                "variant_id": "next",
+                "title": "next",
+                "hypothesis": "try a change",
+                "reservation": {
+                  "usd": 1.0,
+                  "calls": 1,
+                  "bakes": 1,
+                  "active_seconds": 10.0
+                }
+              }
+            ],
+            "stop_reason": null,
+            "review_id": null,
+            "review_revision": null,
+            "review_sha256": null
+          },
+          "value": {},
+          "outcome": "rejected"
+        },
+        {
+          "command": "object_score_record",
+          "args": {
+            "object_id": "rock",
+            "project_id": "matter-engine-cpp",
+            "expected_version": 3,
+            "score_task_id": "score-rock",
+            "receipts": [],
+            "spent": null,
+            "action": "stop",
+            "next_variants": [],
+            "stop_reason": "continuation refused by score or budget contract; retained verified result",
+            "review_id": null,
+            "review_revision": null,
+            "review_sha256": null
+          },
+          "value": {},
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    },
+    {
+      "name": "score-stop-refused",
+      "completed": false,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": {
+                  "object_id": "rock",
+                  "project_id": "matter-engine-cpp",
+                  "expected_version": 3,
+                  "score_task_id": "score-rock",
+                  "receipts": [],
+                  "spent": null,
+                  "action": "stop",
+                  "next_variants": [
+                    {
+                      "variant_id": "next",
+                      "title": "next",
+                      "hypothesis": "try a change",
+                      "reservation": {
+                        "usd": 1.0,
+                        "calls": 1,
+                        "bakes": 1,
+                        "active_seconds": 10.0
+                      }
+                    }
+                  ],
+                  "stop_reason": null,
+                  "review_id": null,
+                  "review_revision": null,
+                  "review_sha256": null
+                }
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_score_record",
+          "args": {
+            "object_id": "rock",
+            "project_id": "matter-engine-cpp",
+            "expected_version": 3,
+            "score_task_id": "score-rock",
+            "receipts": [],
+            "spent": null,
+            "action": "stop",
+            "next_variants": [
+              {
+                "variant_id": "next",
+                "title": "next",
+                "hypothesis": "try a change",
+                "reservation": {
+                  "usd": 1.0,
+                  "calls": 1,
+                  "bakes": 1,
+                  "active_seconds": 10.0
+                }
+              }
+            ],
+            "stop_reason": null,
+            "review_id": null,
+            "review_revision": null,
+            "review_sha256": null
+          },
+          "value": {},
+          "outcome": "rejected"
+        }
+      ]
+    },
+    {
+      "name": "mixed-loop-policies",
+      "completed": true,
+      "calls": [
+        {
+          "command": "object_loop_inputs",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "limit": 32
+          },
+          "value": {
+            "starts": [],
+            "loops": [
+              {
+                "object_id": "rock",
+                "policy_artifact": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null
+              },
+              {
+                "object_id": "rock",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null
+              },
+              {
+                "object_id": "stone",
+                "policy_artifact": "$POLICY",
+                "version": 3,
+                "state": {
+                  "status": "active",
+                  "score_task_id": "score-rock",
+                  "checkpoint": null
+                },
+                "elapsed_seconds": 10,
+                "scorer_failed": false,
+                "score": null
+              }
+            ]
+          },
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "rock"
+          },
+          "value": {},
+          "outcome": "completed"
+        },
+        {
+          "command": "object_loop_reconcile",
+          "args": {
+            "project_id": "matter-engine-cpp",
+            "object_id": "stone"
+          },
+          "value": {},
+          "outcome": "completed"
+        }
+      ]
+    }
+  ]
+}

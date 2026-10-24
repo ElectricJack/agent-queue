@@ -1,0 +1,747 @@
+[
+  {
+    "id": "timer.15m-12:59:59",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-01-03T12:59:59+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [],
+    "messages": []
+  },
+  {
+    "id": "timer.1h-12:59:59",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-01-03T12:59:59+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": []
+  },
+  {
+    "id": "timer.15m-13:00:00",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-01-03T13:00:00+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": []
+  },
+  {
+    "id": "timer.1h-13:00:00",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-01-03T13:00:00+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [],
+    "messages": []
+  },
+  {
+    "id": "timer.15m-21:29:59",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-01-03T21:29:59+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": []
+  },
+  {
+    "id": "timer.1h-21:29:59",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-01-03T21:29:59+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [],
+    "messages": []
+  },
+  {
+    "id": "timer.15m-21:30:00",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-01-03T21:30:00+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [],
+    "messages": []
+  },
+  {
+    "id": "timer.1h-21:30:00",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-01-03T21:30:00+00:00"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": []
+  },
+  {
+    "id": "pre-market-null",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": null,
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "no-verdict"
+    ],
+    "failed": true
+  },
+  {
+    "id": "pre-market-empty",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "no-verdict"
+    ],
+    "failed": true
+  },
+  {
+    "id": "pre-market-alert-over-ok",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK / QUILT-HEALTH: ALERT",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "alert"
+    ],
+    "failed": false
+  },
+  {
+    "id": "pre-market-clear-over-known",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: KNOWN / QUILT-HEALTH: CLEARED",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "all-clear"
+    ],
+    "failed": false
+  },
+  {
+    "id": "pre-market-alert-over-clear",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: CLEARED / QUILT-HEALTH: ALERT",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "alert"
+    ],
+    "failed": false
+  },
+  {
+    "id": "pre-market-read-rejected",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "read": "rejected"
+  },
+  {
+    "id": "pre-market-read-runtime-error",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "read": "runtime_error"
+  },
+  {
+    "id": "pre-market-failed",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "failed"
+  },
+  {
+    "id": "pre-market-timed_out",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "timed_out"
+  },
+  {
+    "id": "pre-market-cancelled",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "cancelled"
+  },
+  {
+    "id": "pre-market-runtime_error",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "runtime_error"
+  },
+  {
+    "id": "pre-market-contract_violation",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "contract_violation"
+  },
+  {
+    "id": "pre-market-input_resolution_failed",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "input_resolution_failed"
+  },
+  {
+    "id": "pre-market-state_limit_exceeded",
+    "event": {
+      "type": "cron.03:00",
+      "tick_time": "2026-07-06T10:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "pre-market"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "state_limit_exceeded"
+  },
+  {
+    "id": "market-hours-null",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": null,
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "no-verdict"
+    ],
+    "failed": true
+  },
+  {
+    "id": "market-hours-empty",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "no-verdict"
+    ],
+    "failed": true
+  },
+  {
+    "id": "market-hours-alert-over-ok",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK / QUILT-HEALTH: ALERT",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "alert"
+    ],
+    "failed": false
+  },
+  {
+    "id": "market-hours-clear-over-known",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: KNOWN / QUILT-HEALTH: CLEARED",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "all-clear"
+    ],
+    "failed": false
+  },
+  {
+    "id": "market-hours-alert-over-clear",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: CLEARED / QUILT-HEALTH: ALERT",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "alert"
+    ],
+    "failed": false
+  },
+  {
+    "id": "market-hours-read-rejected",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "read": "rejected"
+  },
+  {
+    "id": "market-hours-read-runtime-error",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "read": "runtime_error"
+  },
+  {
+    "id": "market-hours-failed",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "failed"
+  },
+  {
+    "id": "market-hours-timed_out",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "timed_out"
+  },
+  {
+    "id": "market-hours-cancelled",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "cancelled"
+  },
+  {
+    "id": "market-hours-runtime_error",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "runtime_error"
+  },
+  {
+    "id": "market-hours-contract_violation",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "contract_violation"
+  },
+  {
+    "id": "market-hours-input_resolution_failed",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "input_resolution_failed"
+  },
+  {
+    "id": "market-hours-state_limit_exceeded",
+    "event": {
+      "type": "timer.15m",
+      "tick_time": "2026-07-06T17:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "market-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "state_limit_exceeded"
+  },
+  {
+    "id": "off-hours-null",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": null,
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "no-verdict"
+    ],
+    "failed": true
+  },
+  {
+    "id": "off-hours-empty",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "no-verdict"
+    ],
+    "failed": true
+  },
+  {
+    "id": "off-hours-alert-over-ok",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK / QUILT-HEALTH: ALERT",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "alert"
+    ],
+    "failed": false
+  },
+  {
+    "id": "off-hours-clear-over-known",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: KNOWN / QUILT-HEALTH: CLEARED",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "all-clear"
+    ],
+    "failed": false
+  },
+  {
+    "id": "off-hours-alert-over-clear",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: CLEARED / QUILT-HEALTH: ALERT",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "alert"
+    ],
+    "failed": false
+  },
+  {
+    "id": "off-hours-read-rejected",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "read": "rejected"
+  },
+  {
+    "id": "off-hours-read-runtime-error",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "read": "runtime_error"
+  },
+  {
+    "id": "off-hours-failed",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "failed"
+  },
+  {
+    "id": "off-hours-timed_out",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "timed_out"
+  },
+  {
+    "id": "off-hours-cancelled",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "cancelled"
+  },
+  {
+    "id": "off-hours-runtime_error",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "runtime_error"
+  },
+  {
+    "id": "off-hours-contract_violation",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "contract_violation"
+  },
+  {
+    "id": "off-hours-input_resolution_failed",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "input_resolution_failed"
+  },
+  {
+    "id": "off-hours-state_limit_exceeded",
+    "event": {
+      "type": "timer.1h",
+      "tick_time": "2026-07-06T05:00:00Z"
+    },
+    "summary": "QUILT-HEALTH: OK",
+    "rules": [
+      "off-hours"
+    ],
+    "messages": [
+      "incomplete"
+    ],
+    "failed": true,
+    "check": "state_limit_exceeded"
+  }
+]

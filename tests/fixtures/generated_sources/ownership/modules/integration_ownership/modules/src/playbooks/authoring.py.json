@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/playbooks/authoring.py::PlaybookSource": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/authoring.py::SourceError": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

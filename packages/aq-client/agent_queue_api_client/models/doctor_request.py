@@ -16,10 +16,12 @@ class DoctorRequest:
     """
     Attributes:
         fix (bool | None | Unset): Apply fixes for failing fixable checks, then re-run them.
+        leave_gated (bool | None | Unset): Leave legacy spec proposals on their existing human gate.
         checks (list[Any] | None | Unset): Restrict the run to these check ids (e.g. 'db.migrations', 'vault.parse').
     """
 
     fix: bool | None | Unset = UNSET
+    leave_gated: bool | None | Unset = UNSET
     checks: list[Any] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -29,6 +31,12 @@ class DoctorRequest:
             fix = UNSET
         else:
             fix = self.fix
+
+        leave_gated: bool | None | Unset
+        if isinstance(self.leave_gated, Unset):
+            leave_gated = UNSET
+        else:
+            leave_gated = self.leave_gated
 
         checks: list[Any] | None | Unset
         if isinstance(self.checks, Unset):
@@ -44,6 +52,8 @@ class DoctorRequest:
         field_dict.update({})
         if fix is not UNSET:
             field_dict["fix"] = fix
+        if leave_gated is not UNSET:
+            field_dict["leave_gated"] = leave_gated
         if checks is not UNSET:
             field_dict["checks"] = checks
 
@@ -61,6 +71,15 @@ class DoctorRequest:
             return cast(bool | None | Unset, data)
 
         fix = _parse_fix(d.pop("fix", UNSET))
+
+        def _parse_leave_gated(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        leave_gated = _parse_leave_gated(d.pop("leave_gated", UNSET))
 
         def _parse_checks(data: object) -> list[Any] | None | Unset:
             if data is None:
@@ -81,6 +100,7 @@ class DoctorRequest:
 
         doctor_request = cls(
             fix=fix,
+            leave_gated=leave_gated,
             checks=checks,
         )
 

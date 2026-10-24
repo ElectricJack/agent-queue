@@ -566,3 +566,78 @@ async def test_roster_does_not_resolve_retired_classes_or_live_launch_settings(h
     assert rows["live"]["intelligence_class"] == "retired-class"
     assert rows["retired"]["model"] is None
     assert rows["retired"]["intelligence_class"] == "standard-medium"
+
+
+async def test_default_flock_prunes_irrelevant_history_without_changing_output(handler, monkeypatch):
+    """Historical parents and native starts survive; ordinary stopped history does not."""
+    import time
+    from dataclasses import asdict
+    from sqlalchemy import insert
+    from src.database.tables import sessions as session_table
+    from src.models import AgentState, SessionRecord, Task, TaskStatus
+
+    await handler.db.create_project(Project(id="p", name="Project"))
+    for aid in ("parent", "child", "idle"):
+        await handler.db.create_agent(Agent(id=aid, name=aid, profile_id="coder"))
+    await handler.db.create_task(Task(
+        id="delegated", project_id="p", title="Active child", description="work",
+        status=TaskStatus.IN_PROGRESS, assigned_agent_id="child",
+        created_by_kind="session", created_by_id="history-3",
+    ))
+    await handler.db.create_task(Task(
+        id="done", project_id="p", title="Old task", description="done",
+        status=TaskStatus.COMPLETED,
+    ))
+    await handler.db.update_agent("child", state=AgentState.BUSY, current_task_id="delegated")
+    await handler.db.update_agent("idle", current_task_id="done")
+    common = dict(project_id="p", profile_id="coder", harness="codex", provider="tmux",
+                  lifecycle="task", work_dir="/tmp", epoch="e", instance_token="t")
+    history = [SessionRecord(
+        id=f"history-{i}", name=f"history-{i}", agent_id="parent", state="stopped",
+        started_at=i + 1, **common,
+    ) for i in range(2000)]
+    extra = [
+        SessionRecord(id="child-live", name="child-live", agent_id="child", task_id="delegated",
+                      state="running", started_at=3000, **common),
+        SessionRecord(id="parent-sleep", name="parent-sleep", agent_id="parent",
+                      state="sleeping", started_at=3001, **common),
+        SessionRecord(id="idle-old", name="idle-old", agent_id="idle", task_id="done",
+                      state="quarantined", started_at=1, **common),
+        SessionRecord(id="idle-new", name="idle-new", agent_id="idle",
+                      state="stopped", started_at=3002, **common),
+        SessionRecord(id="unlinked", name="unlinked", task_id="done",
+                      state="stopped", started_at=3003, **common),
+    ]
+    async with handler.db._engine.begin() as conn:
+        await conn.execute(insert(session_table), [asdict(s) for s in [*history, *extra]])
+    await handler.db.record_subagent_event(
+        session_id="history-1", harness="codex", event="start", subagent_id="native",
+    )
+    started = time.perf_counter()
+    full = await handler.db.list_sessions()
+    before = time.perf_counter() - started
+    started = time.perf_counter()
+    selected = await handler.db.list_flock_sessions()
+    after = time.perf_counter() - started
+    assert {s.id for s in selected} == {
+        "history-1", "history-3", "child-live", "parent-sleep", "idle-old", "unlinked",
+    }
+    assert await handler.db.list_flock_sessions(include_stopped=True) == full
+    print(f"flock hydration: {len(full)} -> {len(selected)} rows; "
+          f"{before * 1000:.2f} -> {after * 1000:.2f} ms")
+
+    # Freeze the presentation clock; both reads must produce the same full response.
+    monkeypatch.setattr(time, "time", lambda: 10000.0)
+    optimized = await handler._cmd_list_agents({})
+
+    async def original(**kwargs):
+        return full
+
+    monkeypatch.setattr(handler.db, "list_flock_sessions", original)
+    baseline = await handler._cmd_list_agents({})
+    assert optimized == baseline
+    parent = next(row for row in optimized["agents"] if row["id"] == "parent")
+    assert parent["aq_subagent_count"] == 1
+    assert parent["subagents_spawned_total"] == 1
+    idle = next(row for row in optimized["agents"] if row["id"] == "idle")
+    assert idle["session_state"] == "stopped"  # legacy unlinked current-task candidate wins

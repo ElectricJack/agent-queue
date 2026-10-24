@@ -1,0 +1,40 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin.list_pending_integration_events": {
+      "baseline_span": [
+        2036,
+        2078
+      ],
+      "landing_span": [
+        1991,
+        2033
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin.retain_integration_event": {
+      "baseline_span": [
+        1744,
+        1848
+      ],
+      "landing_span": [
+        1699,
+        1803
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  },
+  "storage_sinks": {
+    "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin._record_snapshot_conflict::189143d8a6f1c20202a529c8f5ae4a36eb1d1e483934ef105f4dadda34b94115": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 498,
+      "owner": "PlaybookRunQueryMixin._record_snapshot_conflict",
+      "owner_fingerprint": "de1f8f60a2528faab08afcafda4052c13a99ceb94913db43e1a690ad78a66901",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

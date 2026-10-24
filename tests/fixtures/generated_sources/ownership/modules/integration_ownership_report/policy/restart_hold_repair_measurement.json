@@ -1,0 +1,24 @@
+{
+  "restart_hold_repair_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 19,
+    "authorized_shared_delta": 19,
+    "authorized_table_delta": 0,
+    "decision_message_id": "msg-76ff7843e72d451b9017a0b4db30c970",
+    "implementation_message_id": "msg-9a7a03cd",
+    "measured_engine_lines": 85543,
+    "measured_owned_total": 161181,
+    "measured_source_revision": "10af37472a90cd488707c483047c9c97e2f7a5db",
+    "measured_table_count": 45,
+    "previous_engine_lines": 85543,
+    "previous_measurement_revision": "73e99672d2447c44ef6a71d43a0187f2d16630af",
+    "previous_owned_total": 161162,
+    "previous_source_revision": "c177d24e86d25fde7804131c94bfd637b0eb540a",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1759",
+    "reason": "Exact project supervisor grant for the PR1759 merge repair under size-cap-delegation-2026-10-23, with explicit delegation to record the approved grant. Preserve recovery holds through dev's manual-pause Resume path until the authorized restart READY transaction. Keep the historical frozen-batch measurements; engine and table counts remain unchanged.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "root_task_id": "prime-crest-79",
+    "task_id": "fair-flare-10"
+  }
+}

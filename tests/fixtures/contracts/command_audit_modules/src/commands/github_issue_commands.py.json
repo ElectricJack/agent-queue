@@ -1,0 +1,174 @@
+{
+  "github_issue_close_rejected": {
+    "argument_reads_diagnostic_only": [
+      "review_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/github_issue_commands.py:GitHubIssueCommandsMixin._cmd_github_issue_close_rejected",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'closed', 'number': number}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:30306e373455d8c6a8c32cc6f417b27179aef7d67658defe9cbd3958a445cfa6",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_github_issue_triage.py"
+    ]
+  },
+  "github_issue_fix_approved": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "review_id",
+      "revision"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/github_issue_commands.py:GitHubIssueCommandsMixin._cmd_github_issue_fix_approved",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'ignored'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'ignored'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'reused', 'task_id': existing_id}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': created.get('error', 'fix task filing failed')}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'created', 'task_id': created['task_id']}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:a3c5e238df322af61cc73ac99749b6a71399e1dd1ce4889012492967a5f33b59",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "github_issue_rejection": {
+    "argument_reads_diagnostic_only": [
+      "project_id",
+      "review_id",
+      "revision"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/github_issue_commands.py:GitHubIssueCommandsMixin._cmd_github_issue_rejection",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'ignored'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'ignored'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'ignored'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'outcome': 'closed', 'number': number}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:6e986ef47cb894241fd1b085f2b5ae5ab4708ced4fb6720593fa00fa5c5abe8f",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "github_issue_triage": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/github_issue_commands.py:GitHubIssueCommandsMixin._cmd_github_issue_triage",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': created.get('error', 'task filing failed')}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'filed': filed, 'recovered': recovered, 'remaining_capacity': max(0, DAILY_CAP - created_today)}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:c13a1b9299650abcc136447ab61f3d4aa317a9f4416db35ee20a7c52f351480e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_repair_workspace_checkout": {
+      "fingerprint": "4461797f531af83aaa0958457cd9cf83ec6a9fadb4ef5bd949dc586139315ce9",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_workspace_cutover": {
+      "baseline_span": null,
+      "landing_span": null,
+      "reason": "Command adapter for the reviewed workspace cutover transaction, including integration-owner guards; no independent mutation authority."
+    }
+  }
+}

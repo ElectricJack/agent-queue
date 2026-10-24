@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/formulas.py::FormulaRegistry": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/formulas.py::load_from_vault": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/formulas.py::parse_formula": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/formulas.py::register_formula_handlers": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

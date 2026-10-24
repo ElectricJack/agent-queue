@@ -21,6 +21,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.integration.row_query import select_row
 from src.models import TaskStatus
 
 
@@ -39,11 +40,7 @@ class CollectingParentRecovery:
         def guarded(statement):
             return statement.with_for_update() if lock else statement
 
-        parent = (
-            (await conn.execute(select(tasks).where(tasks.c.id == task_id)))
-            .mappings()
-            .one_or_none()
-        )
+        parent = await select_row(conn, tasks, tasks.c.id == task_id)
         if parent is None:
             return {"outcome": "not_found", "task_id": task_id}
         base = {
@@ -87,16 +84,11 @@ class CollectingParentRecovery:
         }
         if parent["status"] != "BLOCKED" or parent["assigned_agent_id"] is not None:
             return refused("the parent is not an unassigned BLOCKED collector")
-        repo = (
-            (
-                await conn.execute(
-                    select(repos).where(
-                        repos.c.id == parent["repo_id"], repos.c.project_id == parent["project_id"]
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
+        repo = await select_row(
+            conn,
+            repos,
+            repos.c.id == parent['repo_id'],
+            repos.c.project_id == parent['project_id'],
         )
         if (
             repo is None
@@ -107,18 +99,12 @@ class CollectingParentRecovery:
             or parent["branch_name"].removeprefix("refs/heads/") == repo["default_branch"]
         ):
             return refused("the parent's canonical integration branch identity is inconsistent")
-        episode = (
-            (
-                await conn.execute(
-                    select(integration_parent_episodes).where(
-                        integration_parent_episodes.c.id == checkpoint["episode_id"],
-                        integration_parent_episodes.c.parent_task_id == task_id,
-                        integration_parent_episodes.c.repository_id == repo["id"],
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
+        episode = await select_row(
+            conn,
+            integration_parent_episodes,
+            integration_parent_episodes.c.id == checkpoint['episode_id'],
+            integration_parent_episodes.c.parent_task_id == task_id,
+            integration_parent_episodes.c.repository_id == repo['id'],
         )
         operation = (
             (

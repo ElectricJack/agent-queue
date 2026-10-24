@@ -1,0 +1,226 @@
+{
+  "advance_workflow_stage": {
+    "argument_reads_diagnostic_only": [
+      "stage_name",
+      "task_ids",
+      "workflow_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/workflow_commands.py:WorkflowCommandsMixin._cmd_advance_workflow_stage",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'workflow_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'stage_name is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workflow '{workflow_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Cannot advance workflow in status '{workflow.status}'. Workflow must be running or paused.\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'workflow_id': workflow_id, 'previous_stage': workflow.current_stage, 'current_stage': stage_name, 'stage_count': len(stages), 'new_task_ids': new_task_ids}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:8fd5f2da067be8cc8b16a35bc3b83836ca85b328bd4fe4ad82db7188ea1f454e",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "create_workflow": {
+    "argument_reads_diagnostic_only": [
+      "current_stage",
+      "playbook_id",
+      "playbook_run_id",
+      "project_id",
+      "workflow_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/workflow_commands.py:WorkflowCommandsMixin._cmd_create_workflow",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'workflow_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'playbook_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'playbook_run_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'workflow_id': workflow_id, 'status': workflow.status}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:d6d1af3297a31ace64f1e268e5f340767ae47aea0d01ac070bf9e4a98a54aec9",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "get_workflow": {
+    "argument_reads_diagnostic_only": [
+      "workflow_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/workflow_commands.py:WorkflowCommandsMixin._cmd_get_workflow",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'workflow_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workflow '{workflow_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'workflow_id': workflow.workflow_id, 'playbook_id': workflow.playbook_id, 'playbook_run_id': workflow.playbook_run_id, 'project_id': workflow.project_id, 'status': workflow.status, 'current_stage': workflow.current_stage, 'task_ids': workflow.task_ids, 'agent_affinity': workflow.agent_affinity, 'stages': workflow.stages, 'created_at': workflow.created_at, 'completed_at': workflow.completed_at}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:5e2e259d90a02b5cf0e7a8657963d844d97298ceba6219531e0407bdf0046499",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "list_workflows": {
+    "argument_reads_diagnostic_only": [
+      "limit",
+      "playbook_id",
+      "project_id",
+      "status"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/workflow_commands.py:WorkflowCommandsMixin._cmd_list_workflows",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'workflows': [{'workflow_id': w.workflow_id, 'playbook_id': w.playbook_id, 'project_id': w.project_id, 'status': w.status, 'current_stage': w.current_stage, 'task_count': len(w.task_ids), 'stage_count': len(w.stages), 'created_at': w.created_at, 'completed_at': w.completed_at} for w in workflows], 'count': len(workflows)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7df25985c829cefee525777e9e76f384290b8a18bf49fc03ef8c93dc48780b62",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "workflow_pipeline_view": {
+    "argument_reads_diagnostic_only": [
+      "direction",
+      "include_affinity",
+      "include_task_details",
+      "workflow_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/workflow_commands.py:WorkflowCommandsMixin._cmd_workflow_pipeline_view",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'workflow_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Workflow '{workflow_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"Invalid direction '{direction}'. Valid: LR, TD\"}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{**result, 'success': True}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:1e55cd32a43e01b21699a7d696b4ba585ff38df91b48cbc4530e04fc5dd715bd",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  }
+}

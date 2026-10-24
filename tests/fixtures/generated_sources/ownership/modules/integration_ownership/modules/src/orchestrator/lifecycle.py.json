@@ -1,0 +1,18 @@
+{
+  "shared": {
+    "src/orchestrator/lifecycle.py::LifecycleMixin.reevaluate_frontier_rejections": {
+      "reason": "READY frontier lifecycle advisory evaluates shared integration admission predicates; it cannot publish refs or change delivery state."
+    },
+    "src/orchestrator/lifecycle.py::LifecycleMixin.retry_obsolete_cleanup": {
+      "baseline_span": [
+        217,
+        230
+      ],
+      "landing_span": [
+        217,
+        230
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

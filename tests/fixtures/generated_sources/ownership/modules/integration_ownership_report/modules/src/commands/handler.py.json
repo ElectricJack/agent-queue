@@ -1,0 +1,29 @@
+{
+  "shared_definitions": {
+    "src/commands/handler.py::CommandHandler.<header>": {
+      "baseline_span": [
+        346,
+        404
+      ],
+      "landing_span": [
+        346,
+        404
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/handler.py::CommandHandler.execute": {
+      "reason": "Shared dispatch boundary applies durable holds to integration commands before mutation."
+    },
+    "src/commands/handler.py::import from src.commands.integration_commands import IntegrationCommandsMixin": {
+      "baseline_span": [
+        78,
+        78
+      ],
+      "landing_span": [
+        78,
+        78
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

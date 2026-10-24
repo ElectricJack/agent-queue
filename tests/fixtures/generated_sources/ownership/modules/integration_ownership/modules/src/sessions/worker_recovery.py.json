@@ -1,0 +1,19 @@
+{
+  "generic_dependencies": {
+    "src/sessions/worker_recovery.py::CONTINUATION_KEY": "Generic worker recovery observation metadata key; no integration lifecycle or replay authority.",
+    "src/sessions/worker_recovery.py::STREAK_KEY": "Generic consecutive worker-failure metadata key; no integration lifecycle or replay authority.",
+    "src/sessions/worker_recovery.py::record_failure": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/worker_recovery.py::save_continuation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "storage_sinks": {
+    "src/sessions/worker_recovery.py::prepare_guarded_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 304,
+      "owner": "prepare_guarded_recovery",
+      "owner_fingerprint": "001b9fe77f07c2555eec510d1804540fbccf64361f136ef7c2ff1b8ea07dc934",
+      "reason": "Removes only the failed worker native resume key under exact task epoch/session instance/failure-record guards; ordinary continuation state, no ref replay or integration lifecycle authority."
+    }
+  }
+}

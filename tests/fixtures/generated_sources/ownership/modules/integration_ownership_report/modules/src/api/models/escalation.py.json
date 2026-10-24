@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/api/models/escalation.py::EscalationRecord.delivery_statuses": "Discord escalation transport receipts, unrelated to code delivery."
+  }
+}

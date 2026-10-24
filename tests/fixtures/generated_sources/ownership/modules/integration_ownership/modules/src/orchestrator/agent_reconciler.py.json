@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/agent_reconciler.py::AgentReconciler": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/asks/models.py::digest": "Generic canonical JSON hashing for all ask sources; no integration state, policy or ref authority. Integration adapters remain independently charged."
+  }
+}

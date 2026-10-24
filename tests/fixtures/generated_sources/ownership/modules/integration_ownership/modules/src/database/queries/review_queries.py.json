@@ -1,0 +1,25 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/review_queries.py::ReviewQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/review_queries.py::ReviewQueriesMixin.set_review_gate_state::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 120,
+      "owner": "ReviewQueriesMixin.set_review_gate_state",
+      "owner_fingerprint": "cb2bc3795aa538cc5c2769ce40f9314f04fd023027f4932f336975582291269c",
+      "reason": "Clears only needs_attention=review_withdrawn after reopening when no other withdrawn review holds the task; ordinary approval recovery state with no OIDs, ref replay authority or duplicate integration lifecycle."
+    },
+    "src/database/queries/review_queries.py::ReviewQueriesMixin.set_review_gate_state::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "call": "pg_insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 108,
+      "owner": "ReviewQueriesMixin.set_review_gate_state",
+      "owner_fingerprint": "cb2bc3795aa538cc5c2769ce40f9314f04fd023027f4932f336975582291269c",
+      "reason": "Flags dependent tasks with needs_attention=review_withdrawn on withdrawal while preserving existing attention reasons; ordinary approval recovery state with no OIDs, ref replay authority or duplicate integration lifecycle."
+    }
+  }
+}

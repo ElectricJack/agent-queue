@@ -1,0 +1,15 @@
+{
+  "generic_dependencies": {
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_workspace_doctor": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/worktree_commands.py::import from src.models import KIND_MODE_WORKTREE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/worktree_commands.py::import from src.workspace_registration import path_is_missing, workspace_missing_detail": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  },
+  "shared": {
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_workspace_cutover": {
+      "baseline_span": null,
+      "landing_span": null,
+      "reason": "Command adapter for the reviewed workspace cutover transaction, including integration-owner guards; no independent mutation authority."
+    }
+  }
+}

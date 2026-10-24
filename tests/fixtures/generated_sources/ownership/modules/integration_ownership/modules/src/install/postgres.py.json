@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/install/postgres.py::CONFIG_HEADER": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/install/postgres.py::backup_path_for": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

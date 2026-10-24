@@ -3702,8 +3702,8 @@ async def test_terminal_children_require_complete_contiguous_receipt_chain(db):
     assert [row["source_task_id"] for row in ready["receipts"]] == children
 
 
-async def test_status_uses_current_receipt_among_multiple_historical_deliveries(db):
-    _hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+async def test_readiness_uses_current_receipt_among_multiple_historical_deliveries(db):
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
     child_id = children[0]
     async with db.immediate() as conn:
         await conn.execute(
@@ -3728,13 +3728,10 @@ async def test_status_uses_current_receipt_among_multiple_historical_deliveries(
         )
     await _code_receipt(db, child_id, "a" * 40, "d" * 40)
 
-    projection = await IntegrationStatusService(db).task_blockers("parent")
-
-    assert projection is not None
-    assert projection["parent_readiness"]["operation_id"] == checkpointed["operation_id"]
-    assert "missing_receipt" not in {
-        blocker["code"] for blocker in projection["blockers"]
-    }
+    projection = await hierarchy.readiness("parent")
+    assert projection["operation_id"] == checkpointed["operation_id"]
+    assert projection["outcome"] == "ready"
+    assert [receipt["source_task_id"] for receipt in projection["receipts"]] == children
 
 
 @pytest.mark.parametrize(
@@ -3746,104 +3743,44 @@ async def test_status_uses_current_receipt_among_multiple_historical_deliveries(
         {"parent_operation_id": None, "parent_episode_id": None},
     ],
 )
-async def test_status_rejects_receipt_not_applicable_to_current_parent_context(
+async def test_readiness_rejects_receipt_not_applicable_to_current_parent_context(
     db, invalid_values
 ):
-    _hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
     child_id = children[0]
     await _code_receipt(db, child_id, "a" * 40, "d" * 40, **invalid_values)
 
-    projection = await IntegrationStatusService(db).task_blockers("parent")
-
-    assert projection is not None
-    assert "missing_receipt" in {
-        blocker["code"] for blocker in projection["blockers"]
-    }
+    projection = await hierarchy.readiness("parent")
+    assert projection["outcome"] == "waiting"
+    assert {blocker["task_id"] for blocker in projection["blockers"]} == {child_id}
 
 
-async def test_status_blocks_failed_child_without_current_disposition_receipt(db):
-    _hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+async def test_readiness_blocks_failed_child_without_current_disposition_receipt(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
     async with db.immediate() as conn:
         await conn.execute(
             update(tasks).where(tasks.c.id == children[0]).values(status="FAILED")
         )
 
-    projection = await IntegrationStatusService(db).task_blockers("parent")
-
-    assert projection is not None
-    blocker = next(item for item in projection["blockers"] if item["code"] == "missing_receipt")
-    assert blocker["cause"] == "failed_child"
+    projection = await hierarchy.readiness("parent")
+    assert projection["outcome"] == "failed"
+    assert projection["blockers"] == [{"task_id": children[0], "reason": "failed_child"}]
 
 
-@pytest.mark.parametrize(
-    "ordinal,attempts,expected_limit",
-    [(0, 2, 2), (1, 1, 1)],
-)
-async def test_status_uses_typed_limit_for_current_repair_stage(
-    db, ordinal, attempts, expected_limit
-):
-    _hierarchy, checkpointed, _children = await _parent_tree(db, children=1)
-    policy = _boundary().repair.model_dump(mode="json")
-    policy["primary_attempts"] = 2
-    policy["debug_attempts"] = 1
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(integration_repair_operations)
-            .where(integration_repair_operations.c.id == checkpointed["operation_id"])
-            .values(active_stage=ordinal)
-        )
-        await conn.execute(
-            insert(integration_repair_stages).values(
-                operation_id=checkpointed["operation_id"],
-                ordinal=ordinal,
-                policy=policy,
-                intelligence_class="medium",
-                profile_id="integrator",
-                starting_sha="a" * 40,
-                started_at=1.0,
-                deadline_at=100.0,
-                attempts=attempts,
-                state="active",
-            )
-        )
-
-    projection = await IntegrationStatusService(db, clock=lambda: 50.0).task_blockers(
-        "parent"
-    )
-
-    assert projection is not None
-    blocker = next(item for item in projection["blockers"] if item["code"] == "budget_exhausted")
-    assert blocker["cause"] == "attempts"
-    assert blocker["stage"] == ordinal
-    assert blocker["limit"] == expected_limit
-
-
-async def test_parent_current_stage_remains_deadline_bound_while_awaiting_completion(db):
+async def test_train_status_ignores_retired_subject_repair_stages(db):
     _hierarchy, checkpointed, _children = await _parent_tree(db, children=1)
     async with db.immediate() as conn:
-        await conn.execute(
-            insert(integration_repair_stages).values(
-                operation_id=checkpointed["operation_id"],
-                ordinal=0,
-                policy=_boundary().repair.model_dump(mode="json"),
-                intelligence_class="medium",
-                profile_id="integrator",
-                starting_sha="a" * 40,
-                started_at=1.0,
-                deadline_at=100.0,
-                attempts=1,
-                state="awaiting_completion",
-            )
-        )
-
-    projection = await IntegrationStatusService(db, clock=lambda: 101.0).task_blockers(
-        "parent"
-    )
-
-    assert projection is not None
-    blocker = next(item for item in projection["blockers"] if item["code"] == "budget_exhausted")
-    assert blocker["cause"] == "deadline"
-    assert blocker["deadline_at"] == 100.0
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id=checkpointed["operation_id"], ordinal=0,
+            policy=_boundary().repair.model_dump(mode="json"),
+            intelligence_class="medium", profile_id="integrator",
+            starting_sha="a" * 40, started_at=1.0, deadline_at=2.0,
+            attempts=100, state="awaiting_completion",
+        ))
+    projection = await IntegrationStatusService(db, clock=lambda: 101.0).task_blockers("parent")
+    assert projection["projection_kind"] == "train"
+    assert "repair" not in projection and "parent_readiness" not in projection
+    assert projection["blockers"] == []
 
 
 @pytest.mark.parametrize("policy", ["block", "ask"])
@@ -3995,7 +3932,10 @@ async def test_disposition_revision_supersedes_only_changed_child(db):
     assert "missing_receipt" not in {item["code"] for item in status["blockers"]}
 
 
-async def test_record_noop_command_binds_review_close_and_exact_child_head(db):
+@pytest.mark.parametrize("supervisor_project", ["local", "p", None])
+async def test_record_noop_command_binds_review_close_and_exact_child_head(
+    db, monkeypatch, supervisor_project,
+):
     hierarchy, _checkpointed, children = await _parent_tree(db)
     reviewer_id = children[0]
     await _code_receipt(db, children[1], "a" * 40, "d" * 40)
@@ -4078,77 +4018,83 @@ async def test_record_noop_command_binds_review_close_and_exact_child_head(db):
     assert denied["outcome"] == "unauthorized"
     assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
 
-    stale = await handler._cmd_integration_record_noop(args | {"expected_head_sha": "b" * 40})
-    assert stale["outcome"] == "stale_head"
-    recorded = await handler._cmd_integration_record_noop(args)
-    assert recorded["outcome"] == "recorded"
-    assert recorded["reviewed_tree_sha"] == "c" * 40
-    assert (await handler._cmd_integration_record_noop(args))["receipt_id"] == recorded["receipt_id"]
-    projection = await hierarchy.readiness("parent")
-    assert projection["outcome"] == "ready"
-    receipt = next(row for row in projection["receipts"] if row["source_task_id"] == reviewer_id)
-    assert receipt["verification_evidence"]["review_evidence_id"] == "approved-review"
-    assert receipt["resolution_evidence"]["completion_id"] == "noop-close-1"
+    from unittest.mock import AsyncMock
 
-    await db.save_task_completion(
-        TaskCompletion(
-            id="noop-close-2", task_id=reviewer_id, outcome="pass", work_outcome="no-op",
-            branch=reviewer.branch_name, completed_at=3.0,
+    principal = None
+    if supervisor_project != "local":
+        monkeypatch.setattr(db, "get_session", AsyncMock(return_value=SimpleNamespace(
+            id="supervisor-1", profile_id="supervisor", lifecycle="named", state="running",
+            desired_state="running", project_id=supervisor_project,
+        )))
+        principal = ExecutionPrincipal(
+            kind=PrincipalKind.SESSION, session_id="supervisor-1", profile_id="supervisor",
+            project_id=supervisor_project, elevated=True,
+            policy=CapabilityPolicy.from_namespaces(
+                aq_commands=frozenset({"integration_record_noop"}),
+            ),
         )
-    )
-    revised = await handler._cmd_integration_record_noop(args)
-    assert revised["revision"] == 1
-    assert revised["receipt_id"] != recorded["receipt_id"]
-    assert (await hierarchy.readiness("parent"))["outcome"] == "ready"
+    with principal_context(principal):
+        stale = await handler._cmd_integration_record_noop(args | {"expected_head_sha": "b" * 40})
+        assert stale["outcome"] == "stale_head"
+        recorded = await handler._cmd_integration_record_noop(args)
+        assert recorded["outcome"] == "recorded"
+        assert recorded["reviewed_tree_sha"] == "c" * 40
+        assert (await handler._cmd_integration_record_noop(args))["receipt_id"] == recorded["receipt_id"]
+        projection = await hierarchy.readiness("parent")
+        assert projection["outcome"] == "ready"
+        receipt = next(row for row in projection["receipts"] if row["source_task_id"] == reviewer_id)
+        assert receipt["verification_evidence"]["review_evidence_id"] == "approved-review"
+        assert receipt["resolution_evidence"]["completion_id"] == "noop-close-1"
+
+        await db.save_task_completion(
+            TaskCompletion(
+                id="noop-close-2", task_id=reviewer_id, outcome="pass", work_outcome="no-op",
+                branch=reviewer.branch_name, completed_at=3.0,
+            )
+        )
+        revised = await handler._cmd_integration_record_noop(args)
+        assert revised["revision"] == 1
+        assert revised["receipt_id"] != recorded["receipt_id"]
+        assert (await hierarchy.readiness("parent"))["outcome"] == "ready"
 
 
-async def test_record_noop_refuses_an_elevated_supervisor_session(db):
-    """A no-code receipt is an operator control, so no session may record one.
-
-    ``integration_record_noop`` is deliberately absent from
-    ``_SUPERVISOR_REDRIVE_CAPABILITIES``: even a live, elevated supervisor
-    session carrying a granting policy is refused, before the child is checked.
-    That is why the guide and the supervisor profile hand the command to a
-    local operator instead of telling a session to run it.
-    """
-    from src.commands.integration_commands import _SUPERVISOR_REDRIVE_CAPABILITIES
+@pytest.mark.parametrize(
+    "project_id,state,lifecycle,profile_id,elevated,exists",
+    [
+        ("other", "running", "named", "supervisor", True, True),
+        ("p", "stopped", "named", "supervisor", True, True),
+        ("p", "running", "pool", "supervisor", True, True),
+        ("p", "running", "named", "worker", True, True),
+        ("p", "running", "named", "supervisor", False, True),
+        ("p", "running", "named", "supervisor", True, False),
+    ],
+)
+async def test_record_noop_refuses_unauthorized_supervisor_sessions(
+    db, monkeypatch, project_id, state, lifecycle, profile_id, elevated, exists,
+):
+    from unittest.mock import AsyncMock
 
     hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
-    child_id = children[0]
-    child = await db.get_task(child_id)
-    await db.save_task_completion(
-        TaskCompletion(
-            id="supervisor-noop", task_id=child_id, outcome="pass", work_outcome="no-op",
-            branch=child.branch_name, completed_at=2.0,
-        )
-    )
-
-    class Handler(IntegrationCommandsMixin):
-        orchestrator = SimpleNamespace(hierarchy_integration=hierarchy)
-
-    handler = Handler()
+    handler = IntegrationCommandsMixin()
     handler.db = db
-    supervisor = ExecutionPrincipal(
-        kind=PrincipalKind.SESSION,
-        session_id="supervisor-1",
-        profile_id="supervisor",
-        project_id="p",
-        elevated=True,
+    monkeypatch.setattr(db, "get_session", AsyncMock(return_value=SimpleNamespace(
+        id="supervisor-1", profile_id=profile_id, lifecycle=lifecycle, state=state,
+        desired_state="running", project_id=project_id,
+    ) if exists else None))
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, session_id="supervisor-1", profile_id="supervisor",
+        project_id=project_id, elevated=elevated,
         policy=CapabilityPolicy.from_namespaces(
-            aq_commands=frozenset({"integration_record_noop"})
+            aq_commands=frozenset({"integration_record_noop"}),
         ),
     )
-    with principal_context(supervisor):
-        refused = await handler._cmd_integration_record_noop(
-            {"child_task_id": child_id, "expected_head_sha": "b" * 40}
-        )
-
+    with principal_context(principal):
+        refused = await handler._cmd_integration_record_noop({
+            "child_task_id": children[0], "expected_head_sha": "b" * 40,
+        })
     assert refused == {
-        "success": False,
-        "outcome": "unauthorized",
-        "error": "caller cannot dispose this child",
+        "success": False, "outcome": "unauthorized", "error": "caller cannot dispose this child",
     }
-    assert "integration_record_noop" not in _SUPERVISOR_REDRIVE_CAPABILITIES
     assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
 
 
@@ -4315,11 +4261,8 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db, tmp_pa
     assert verifier_is_terminal is True
     completed_status = await IntegrationStatusService(db).task_blockers("parent")
     assert completed_status is not None
-    assert completed_status["parent_readiness"]["operation_id"] == checkpointed["operation_id"]
-    assert "missing_receipt" not in {
-        item["code"] for item in completed_status["blockers"]
-    }
-    assert completed_status["repair"] == []
+    assert completed_status["projection_kind"] == "train"
+    assert "parent_readiness" not in completed_status and "repair" not in completed_status
     async with db._engine.connect() as conn:
         completion = (
             await conn.execute(select(integration_parent_operation_completions))

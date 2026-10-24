@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/knowledge/imports/compatibility.py::CompatibilityFence.__init__": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  }
+}

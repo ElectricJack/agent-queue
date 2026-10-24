@@ -1,0 +1,130 @@
+{
+  "event": {
+    "type": "timer.15m",
+    "tick_time": "2026-09-28T18:15:00.000000+00:00",
+    "interval": "15m"
+  },
+  "check_summary": "Checked everything, looks fine to me.",
+  "tree": {
+    "artifact_sha256": "sha256:1106457d00ac79ed070ab0ec311c2e671abd9e8f6f24716185de92781e577477",
+    "rules_selected": [
+      "market-hours"
+    ],
+    "paths": [
+      {
+        "rule_id": "market-hours",
+        "nodes": [
+          {
+            "step_id": "market-hours--check",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": "market-hours--read",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--read",
+            "status": "simulated",
+            "outcome": "read",
+            "target": "market-hours--verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--verdict",
+            "status": "resolved",
+            "outcome": "default",
+            "target": "market-hours--no-verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--no-verdict",
+            "status": "unresolved",
+            "outcome": "queued",
+            "target": "market-hours--failed",
+            "reason": "no preview adapter",
+            "possible_outcomes": [
+              "queued",
+              "rejected"
+            ],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--failed",
+            "status": "resolved",
+            "outcome": "failed",
+            "target": null,
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          }
+        ],
+        "status": "unresolved",
+        "completed": false,
+        "omitted_frontiers": []
+      },
+      {
+        "rule_id": "market-hours",
+        "nodes": [
+          {
+            "step_id": "market-hours--check",
+            "status": "resolved",
+            "outcome": "completed",
+            "target": "market-hours--read",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--read",
+            "status": "simulated",
+            "outcome": "read",
+            "target": "market-hours--verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--verdict",
+            "status": "resolved",
+            "outcome": "default",
+            "target": "market-hours--no-verdict",
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--no-verdict",
+            "status": "unresolved",
+            "outcome": "rejected",
+            "target": "market-hours--failed",
+            "reason": "no preview adapter",
+            "possible_outcomes": [
+              "queued",
+              "rejected"
+            ],
+            "rule_id": null
+          },
+          {
+            "step_id": "market-hours--failed",
+            "status": "resolved",
+            "outcome": "failed",
+            "target": null,
+            "reason": null,
+            "possible_outcomes": [],
+            "rule_id": null
+          }
+        ],
+        "status": "unresolved",
+        "completed": false,
+        "omitted_frontiers": []
+      }
+    ],
+    "truncated": false,
+    "step_visits": 6
+  }
+}

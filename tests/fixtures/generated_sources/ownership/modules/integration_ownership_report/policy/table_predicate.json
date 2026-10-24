@@ -1,0 +1,14 @@
+{
+  "table_predicate": {
+    "extra_names": [
+      "task_delivery_receipts",
+      "task_branch_origins",
+      "task_integration_checkpoints",
+      "epic_dependencies",
+      "project_integration_schedules",
+      "project_integration_leases"
+    ],
+    "method": "AST Table call literal SQL names; aliases and declarations in other production files count, including non-prefixed tables used by owned code.",
+    "prefix": "integration_"
+  }
+}

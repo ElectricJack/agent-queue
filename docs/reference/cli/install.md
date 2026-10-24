@@ -14,8 +14,9 @@ identity](#git-commit-identity-configgit-identity). Install it on the daemon
 host before using those features; [GitHub configuration](../configuration.md#github-credentials)
 explains the two alternative credential setups.
 
-It is the only `aq` command that expects **no running daemon** — it runs the
-engine in-process and talks to nothing over the network.
+It can run without a running daemon. The engine runs in-process; individual
+steps can download packages, probe PostgreSQL and HTTP endpoints, or guide
+provider authentication.
 
 It is also the whole newcomer path, not only its first half: prerequisites,
 PostgreSQL, the agent CLIs and their logins, the configuration, the daemon and
@@ -862,6 +863,20 @@ database is unreachable until a new password is stored.
 An unsupported host exits `12` and changes nothing. The full matrix, including
 its explicit boundaries, is [the installation and onboarding
 contract](../../plans/install-onboarding/contract.md).
+
+## Playbook private-value key provisioning
+
+When `playbooks.enabled` is explicitly true and neither private-value key
+setting exists, `config.defaults` generates a fresh 32-byte key. It stores
+base64 key material in the config directory's mode-0600 `.env` before writing
+`playbooks.private_value_active_key_id` and `private_value_key_env` in config.
+The environment variable has an `AQ_PLAYBOOK_PRIVATE_VALUE_KEY_` prefix and a
+unique identifier. Install state does not contain the key material.
+
+Rerunning install preserves configured keys. It does not rotate a key or
+replace a missing historical key: `config.check` reports invalid key storage,
+and `aq doctor --check playbooks.private_value_key` diagnoses it after startup.
+Preserve the referenced `.env` material with your private-value recovery data.
 
 ## Related pages
 

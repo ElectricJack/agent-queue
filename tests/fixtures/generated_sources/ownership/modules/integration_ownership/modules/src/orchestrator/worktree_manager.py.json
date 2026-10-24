@@ -1,0 +1,57 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/worktree_manager.py::BRANCH_PREFIX": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._recover_abandoned_merge": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._run_setup": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.ensure_slot_checkout": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::import from src.claim_timing import claim_phase, timed_claim_phase": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::resolve_managed_exclude_path": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::task_branch_name": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "baseline_span": null,
+      "landing_span": [
+        634,
+        648
+      ],
+      "reason": "Read-only integration owner and managed job pin probe fences missing-slot recreation. Attached/pending ownership prevents removal of its Git registration; no lifecycle, storage or ref write."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_is_live": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.prune_branches": {
+      "landing_span": [
+        1396,
+        1488
+      ],
+      "reason": "Prunes only Git-proven merged task branches, protecting globally live branch references and attached worktrees while retaining unique failed-task work."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reap_slot": {
+      "reason": "Fresh transaction/generation/cap, retained integration owner/session/job pin, claim, process-liveness, sentinel/repository and cleanliness guards for retired inventory deletion. PostgreSQL deletion precedes non-forcing Git removal and successful commit precedes the reaped event; no ref publication/replay or duplicate integration lifecycle authority."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reset_slot_for_task": {
+      "reason": "Slot preparation resumes owner-recovery snapshots onto the task branch before a stopped writer restarts; merges proven progress, never publishes or resets it."
+    }
+  },
+  "storage_sinks": {
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.salvage_unpushed::39c8c5fd2f7fa8b54898dd6cb1999b004c7cf6a99d2f282e814193892fd931d6": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1321,
+      "owner": "WorktreeSlotManager.salvage_unpushed",
+      "owner_fingerprint": "6d25279c3cd8c5994d0425cf1574138adb7a650cf9b2f51706abaa2ecfa8ebfc",
+      "reason": "Stores UNMERGED_COMMIT_META for salvaged unpublished work; the commit locator preserves recoverable source and is not a landing receipt or ref replay intent."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.salvage_unpushed::4cc30f7e759a600a581444d95407de46d426cbab0d1c90b5734f19340805f5a0": {
+      "call": "set_task_meta",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 1319,
+      "owner": "WorktreeSlotManager.salvage_unpushed",
+      "owner_fingerprint": "6d25279c3cd8c5994d0425cf1574138adb7a650cf9b2f51706abaa2ecfa8ebfc",
+      "reason": "Stores UNMERGED_BRANCH_META naming the salvage branch; the recovery hint does not confer ownership or authorize cleanup/publication."
+    }
+  }
+}

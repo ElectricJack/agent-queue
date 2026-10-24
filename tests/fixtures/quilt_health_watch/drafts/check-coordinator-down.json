@@ -1,0 +1,38 @@
+{
+  "scan_id": "95a8904e4bf5",
+  "checked_at": "2026-09-26T16:38:56.092200+00:00",
+  "verdict": "ALERT",
+  "verdict_line": "QUILT-HEALTH: ALERT - coordinator DOWN after one watchdog restart attempt; no new error signatures",
+  "coordinator": {
+    "healthy": false,
+    "watchdog_attempted": true,
+    "watchdog_exit": 1
+  },
+  "watchdog_log": {
+    "restarts_since_last": 0,
+    "restarts_last_hour": 0,
+    "failed_restarts_since_last": 0
+  },
+  "workers": [],
+  "deployments": [],
+  "fleet_error": null,
+  "conditions": {
+    "current": [
+      "coordinator_down"
+    ],
+    "new": [
+      "coordinator_down"
+    ],
+    "reminders": [],
+    "cleared": []
+  },
+  "errors": {
+    "scanned_bytes": 0,
+    "skipped_bytes": 0,
+    "to_file": [],
+    "known": []
+  },
+  "notes": [
+    "first run: coord.log scanning starts at its current end"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 427,
+      "owner": "ProviderUsageQueryMixin.record_probe_health",
+      "owner_fingerprint": "28672c6e41bd8e0845b813b7ada8a4cebdb8526c0acb2c3677ce07c54b66c8cf",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b": {
+      "call": "update",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 430,
+      "owner": "ProviderUsageQueryMixin.record_probe_health",
+      "owner_fingerprint": "28672c6e41bd8e0845b813b7ada8a4cebdb8526c0acb2c3677ce07c54b66c8cf",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    }
+  }
+}

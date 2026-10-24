@@ -1,0 +1,10 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/dependency_queries.py::DependencyQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "shared": {
+    "src/database/queries/dependency_queries.py::DependencyQueryMixin._guard_dependency_target": {
+      "reason": "Worker dependency admission locks the hierarchy and uses the integration-owned container predicate to reject scheduling edges onto containers before writing an edge."
+    }
+  }
+}

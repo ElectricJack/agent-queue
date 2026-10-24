@@ -1,0 +1,41 @@
+{
+  "batch_fixer_launch_recovery_measurement": {
+    "authority": "msg-1984d09ec70e479c9d0cc14c57e828c3",
+    "authorized_engine_delta": 65,
+    "authorized_owned_delta": 65,
+    "decision_message_id": "msg-1984d09ec70e479c9d0cc14c57e828c3",
+    "delegation_thread": "size-cap-delegation-2026-10-23",
+    "grant_delivery_message_id": "msg-1984d09ec70e479c9d0cc14c57e828c3",
+    "measured_engine_lines": 85381,
+    "measured_owned_total": 160944,
+    "measured_table_count": 45,
+    "merge_remeasurement": {
+      "authority": "msg-00b0e08117cc479c9a4a0b36fc5a30d0",
+      "authorized_engine_delta": 65,
+      "authorized_owned_delta": 65,
+      "delegation_thread": "size-cap-delegation-2026-10-23",
+      "measured_engine_lines": 85381,
+      "measured_owned_total": 160944,
+      "measured_source_revision": "efd690243cecfafedfeaf81c829d86255cabd620",
+      "measured_table_count": 45,
+      "merged_dev_engine_lines": 85316,
+      "merged_dev_owned_total": 160879,
+      "merged_dev_revision": "4e50c276fca68cbe92ba4fc704363ec6026db7dc",
+      "merged_dev_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_owned_total": 160944,
+      "previous_source_revision": "974e10dcf94ad95f98c14fbc3d7171072e644da2",
+      "reason": "Plain merge of PR1877 preparation diagnostics from dev; combined totals remain unchanged and this task retains its approved 65-line delta. Project grant requires re-recording against the combined total when dev advances.",
+      "task_id": "agile-beacon-80"
+    },
+    "operator_decision": "6679052c",
+    "previous_engine_lines": 85316,
+    "previous_owned_total": 160837,
+    "project_grant_message_id": "msg-00b0e08117cc479c9a4a0b36fc5a30d0",
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1820",
+    "reason": "Bounded retry of provably unlaunched batch fixers and recovery of expired legacy family owners; global supervisor approved the exact +65-line exception under the project supervisor delegation.",
+    "referenced_decision": "msg-00b0e081",
+    "source_revision": "efd690243cecfafedfeaf81c829d86255cabd620",
+    "task_id": "agile-beacon-80"
+  }
+}

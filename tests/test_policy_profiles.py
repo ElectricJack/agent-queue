@@ -18,7 +18,9 @@ from src.event_bus import EventBus
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.database.tables import projects
 from src.policy_profiles.archive import files, pack, read_bundle, write_bundle
-from src.policy_profiles.models import Bundle, PlaybookPolicy, PromotionPolicy, TemplatePolicy
+from src.policy_profiles.models import (
+    Bundle, IntegrationSettings, PlaybookPolicy, PromotionPolicy, TemplatePolicy,
+)
 from src.policy_profiles.service import item
 from src.profiles.sync import sync_profile_text_to_db
 from tests.test_review_commands import decide
@@ -302,6 +304,70 @@ def simple_bundle(*entries, placeholders=()):
         items=list(entries),
         placeholders=list(placeholders),
     )
+
+
+@pytest.mark.parametrize("mode", ["disabled", "observe", "hierarchy", "train", "development"])
+def test_integration_settings_modes_validate_and_roundtrip(mode):
+    payload = IntegrationSettings(
+        engine="active", hierarchical_integration_mode=mode, default_branch="main",
+    )
+    bundle = simple_bundle(item("integration", "project", payload))
+    assert Bundle.model_validate_json(bundle.model_dump_json()) == bundle
+    assert read_bundle(pack(bundle)) == bundle
+    assert read_bundle(pack(bundle)).items[0].payload.hierarchical_integration_mode == mode
+
+
+def test_integration_settings_rejects_unknown_mode():
+    with pytest.raises(ValidationError, match="hierarchical_integration_mode"):
+        IntegrationSettings(
+            engine="active", hierarchical_integration_mode="unknown", default_branch="main",
+        )
+
+
+async def test_apply_development_mode_matches_project_configuration(env):
+    from types import SimpleNamespace
+
+    handler, _, _ = env
+    handler.config.integration.git_first = "active"
+    handler.orchestrator.integration_service = SimpleNamespace(
+        delivery_modes=lambda: {"development"},
+    )
+    for pid in ("source", "target"):
+        await handler.db.create_repo(RepoConfig(
+            id=pid + "-repo", project_id=pid, source_type=RepoSourceType.CLONE,
+            url=f"https://github.com/acme/{pid}.git", default_branch="main",
+        ))
+        await handler.db.update_project(pid, integration_repository_id=pid + "-repo")
+    payload = IntegrationSettings(
+        engine="active", hierarchical_integration_mode="development", default_branch="main",
+        integration_repository_id="{{integration_repository}}",
+    )
+    from src.policy_profiles.models import Placeholder
+
+    bundle = simple_bundle(
+        item("integration", "project", payload),
+        placeholders=[Placeholder(name="integration_repository", description="Target repository")],
+    )
+    args, data = await preview(handler, read_bundle(pack(bundle)).model_dump(mode="json"))
+    acknowledge(args, data, overwrite=True)
+    result = await handler.execute("policy_apply", args)
+    assert result["success"], result
+    assert result["configured_integration"] == ["integration_settings:project:integration"]
+    direct = await handler.execute("edit_project", {
+        "project_id": "source", "hierarchical_integration_mode": "development",
+        "integration_mode": "pull_request", "integration_repository_id": "source-repo",
+        "promotion_flow": None, "expected_integration_generation": 0,
+    })
+    assert direct["outcome"] == "configured", direct
+    source, target = await handler.db.get_project("source"), await handler.db.get_project("target")
+    assert target.hierarchical_integration_mode == "development"
+    assert target.integration_repository_id == "target-repo"
+    for field in (
+        "hierarchical_integration_mode", "hierarchical_integration_desired_mode",
+        "hierarchical_integration_draining", "hierarchical_integration_generation",
+        "hierarchical_integration_policy", "integration_mode",
+    ):
+        assert getattr(target, field) == getattr(source, field), field
 
 
 async def train_pair(handler):

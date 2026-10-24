@@ -1103,6 +1103,40 @@ class TestInboxMailboxFence:
 
 
 class TestStatusMailboxFence:
+    @pytest.mark.parametrize("lifecycle", ["named", "pool", "task"])
+    @pytest.mark.parametrize("own_name", [True, False])
+    async def test_session_name_mailbox_requires_own_named_session(
+        self, setup, lifecycle, own_name,
+    ):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-1", project_id="p1", profile_id="worker", harness="codex",
+            provider="fake", name="n-reader", lifecycle=lifecycle, work_dir="/tmp",
+            epoch="test", instance_token="reader-token", started_at=1, state="running",
+        ))
+        await db.create_session(SessionRecord(
+            id="sess-other", project_id="p1", profile_id="worker", harness="codex",
+            provider="fake", name="n-other", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="other-token", started_at=1, state="running",
+        ))
+        target = "n-reader" if own_name else "n-other"
+        sent = await handler._cmd_message_send(_send_args(to_id=target))
+        scope = _session_scope(task_id=None)
+        result = await _execute_as(
+            handler, "message_status", {"message_id": sent["message_id"]}, scope,
+        )
+        inbox = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": target, "inject": True,
+        }, scope)
+        if lifecycle == "named" and own_name:
+            assert result["state"] == "acknowledged"
+            assert "error" not in inbox, inbox
+        else:
+            assert "not found" in result["error"]
+            assert "out of scope" in inbox["error"]
+            stored = await db.get_message(sent["message_id"])
+            assert stored.delivered_at is None and stored.read_at is None
+
     async def test_pool_worker_reads_a_nudged_message_to_its_claimed_task(self, setup):
         """The nudge marks the row delivered, so ``inbox`` no longer lists it.
 

@@ -1,0 +1,17 @@
+{
+  "exclusions": {
+    "src/agent_waits.py::TERMINAL_TASK_STATUSES['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/agent_waits.py::WAIT_STATES['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/agent_waits.py::WAIT_STATES['cancelled']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/agent_waits.py::WAIT_STATES['expired']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "shared_definitions": {
+    "src/agent_waits.py::AgentWaitReconciler.tick": {
+      "landing_span": [
+        195,
+        207
+      ],
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
+    }
+  }
+}

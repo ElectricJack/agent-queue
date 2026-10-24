@@ -1,0 +1,5 @@
+{
+  "exclusions": {
+    "src/playbooks/script_policy.py::MIB": "Generic byte-unit constant for script capture limits; its same-shaped AST is not relocated integration logic."
+  }
+}

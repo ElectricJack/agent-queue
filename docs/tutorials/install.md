@@ -11,6 +11,14 @@ reuses what this machine needs, writes a configuration tuned for this box,
 starts the daemon and tells you where your data lives. Rerunning it is how you
 resume, repair and add things later.
 
+The installed dashboard runs in its own process (`aq dashboard`, default port
+8082), separate from the daemon API on port 8081. The installer builds and starts
+it without adding a UI host to the daemon. `aq dashboard status` reports its PID;
+`aq dashboard restart` restarts it independently. Contributor checkouts use a
+separate Vite process on port 5173. Dashboard API requests still use the daemon's
+normal API; static assets and browser rendering do not run there. See the
+[process boundary](../specs/dashboard-server.md#current-process-boundary-2026-10-23).
+
 ## Why this exists
 
 AQ keeps work separated: you supply a repository and a task, then AQ assigns a
@@ -372,7 +380,11 @@ What the watchdog does, and what it never does:
   while the watchdog's own start is still running wins: that start checks
   again just before it spawns the daemon, and `aq stop` waits for it.
 - **It does not race a start or a deploy**: while `aq start` holds
-  `daemon.lock` or `aq update` holds `update.lock`, it waits.
+  `daemon.lock`, or an `update.lock` younger than two hours exists, it waits.
+  An older update marker no longer blocks recovery.
+- **Changed watchdog code reloads**: the foreground service exits with code
+  75 when its source changes, allowing the service manager to start the new
+  code.
 - **Down is confirmed**: two checks in a row must find no daemon (the boot
   check skips this). It then waits up to three minutes for PostgreSQL before
   running `aq start`, which also backs up the database first when a migration
@@ -495,7 +507,7 @@ software unless an explicit uninstall scope says otherwise.
 | --- | --- | --- |
 | Interrupted install or a completed login | `aq install` | Revalidates completed steps and resumes at the first unsatisfied one. |
 | A host changed in a way the normal checks cannot verify | `aq install --repair` | Reconciles the recorded installation; does not delete resources. |
-| Get the latest AQ | `aq update` | Stops the dashboard server and then the daemon (running agents keep running), fast-forwards the checkout, then runs the rest from the new code in a fresh process: reinstalls dependencies and rebuilds the dashboard when they changed, and starts the daemon and the dashboard server again, checking the daemon's `/health` and that the dashboard server answers with this install's bundle. Backs up the database first when the update has migrations, refuses local edits or commits, and rolls back if anything fails — including an error the updater did not expect. `aq update --check` only reports. |
+| Get the latest AQ | `aq update` | Stops the dashboard server and then the daemon (running agents keep running), fast-forwards the checkout, then runs the rest from the new code in a fresh process: reinstalls dependencies and rebuilds the dashboard when they changed, and starts the daemon and the dashboard server again, checking the daemon's `/health` and that the dashboard server answers with this install's bundle. Backs up the database first when the update has migrations, refuses local edits or commits, and rolls back failures before migrations. If migrations may have run, it keeps the newer checkout and records a recovery hold for the operator. `aq update --check` only reports. |
 | Update AQ and make the version transition resumable | `aq install --upgrade` | Performs repair plus records an upgrade transaction before changing steps. |
 | Inspect removal without changing anything | `aq uninstall --dry-run` | Shows what AQ owns, keeps, or leaves for manual removal. |
 | Remove AQ runtime but keep data | `aq uninstall` | Stops AQ and removes its runtime records; configuration, data, and database stay. |

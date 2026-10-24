@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/task_graph/validator.py::resolve_spec_path_checked": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/validator.py::task_and_ancestors": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

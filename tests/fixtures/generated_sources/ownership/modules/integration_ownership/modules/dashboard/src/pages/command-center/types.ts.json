@@ -1,0 +1,15 @@
+{
+  "shared": {
+    "dashboard/src/pages/command-center/types.ts::export interface TaskNodeData extends Record<string, unknown> {": {
+      "baseline_span": [
+        47,
+        68
+      ],
+      "landing_span": [
+        47,
+        68
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

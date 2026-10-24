@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/waits/source_sql.py::_SEQUENCE_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/source_sql.py::task_transition_statement": "Generic guarded task/dependency source outbox CTE, used by all task status writers; writes only ordinary task state and universal wait evidence, with no integration policy or ref replay authority. Integration-specific callers remain charged."
+  }
+}

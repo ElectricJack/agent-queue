@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/release.py::release_outstanding_request_on::277a9f66fd761af4f384602e8ee18db1170e7d23206e47d04f056a534dfe1f85": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 329,
+      "owner": "release_outstanding_request_on",
+      "owner_fingerprint": "c63303570fe0ecd35599a12d5e747c8175b598c1f2fad7b616839657328d550c",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/prime.py::sections": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

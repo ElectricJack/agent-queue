@@ -1,0 +1,8 @@
+{
+  "reconciliation_definitions": {
+    "src/jobs/workspace.py::candidate_workspace": {
+      "fingerprint": "e31e98e366e8d849337be99228b5f8c22adc9861cbc9c6d566dd1f6013bfa40d",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

@@ -285,7 +285,9 @@ async def build_integration_delivery_summary(db: Any, task: Any) -> str:
 async def build_review_revision_summary(db: Any, task: Any) -> str:
     """Keep revision publication instructions visible even in bounded prime."""
     response = await db.get_task_meta(task.id, "review_response")
-    return review_revision_guidance(response) if response else ""
+    if not response or response.get("task_kind") == "followup":
+        return ""
+    return review_revision_guidance(response)
 
 
 async def build_review_deliverable_summary(db: Any, task: Any) -> str:
@@ -1047,7 +1049,7 @@ def build_completion_protocol_section(
             if regenerate else ""
         )
         body = body[:start] + ("## Development delivery\n\n"
-            "Commit locally and publish your task branch with `aq git push`, run focused local checks, "
+            "Commit locally, follow the final submission steps below, "
             "and close with actual evidence. "
             "Ordinary commits and merges are accepted; no squash, PR, hosted CI, or parent verifier is required. "
             "The daemon collects completed source branches and publishes validated batches to main. "

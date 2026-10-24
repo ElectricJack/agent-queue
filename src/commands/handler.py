@@ -48,6 +48,7 @@ from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
 from src.commands.wait_v2_commands import WaitV2CommandsMixin
 from src.commands.cron_commands import CronCommandsMixin
+from src.commands.schedule_commands import ScheduleCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
 from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
@@ -60,6 +61,7 @@ from src.commands.operator_commands import OperatorCommandsMixin
 from src.commands.operator_authority import bind_operator_dispatch, operator_grant_var
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
+from src.commands.task_split_commands import TaskSplitCommandsMixin
 from src.commands.routing_commands import RoutingCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.task_subtask_commands import TaskSubtaskCommandsMixin
@@ -374,6 +376,7 @@ class CommandHandler(
     PolicyCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
+    TaskSplitCommandsMixin,
     RoutingCommandsMixin,
     TaskCommentCommandsMixin,
     TaskSubtaskCommandsMixin,
@@ -417,6 +420,7 @@ class CommandHandler(
     WaitCommandsMixin,
     WaitV2CommandsMixin,
     CronCommandsMixin,
+    ScheduleCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
     CollaborationLifecycleMixin,

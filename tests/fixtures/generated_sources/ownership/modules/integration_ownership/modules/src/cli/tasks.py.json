@@ -1,0 +1,37 @@
+{
+  "shared": {
+    "src/cli/tasks.py::task_create": {
+      "baseline_span": [
+        201,
+        496
+      ],
+      "landing_span": [
+        201,
+        496
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/cli/tasks.py::task_select": {
+      "baseline_span": [
+        598,
+        643
+      ],
+      "landing_span": [
+        598,
+        643
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    },
+    "src/cli/tasks.py::task_show": {
+      "baseline_span": [
+        711,
+        762
+      ],
+      "landing_span": [
+        711,
+        762
+      ],
+      "reason": "Imports or references an explicitly owned integration primitive."
+    }
+  }
+}

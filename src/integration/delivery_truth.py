@@ -50,6 +50,11 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 #: has no exact source retained in git. Unknown, never delivered or empty.
 MISSING_PROVENANCE = "missing_git_provenance"
 INVALID_PARENT_COMPLETION = "invalid_parent_completion"
+#: Unknown answers about the source itself, unlike an unloaded observation: Git
+#: cannot name the exact artifact, so admission withholds its dependents.
+UNPROVABLE_SOURCE_REASONS = frozenset({MISSING_PROVENANCE, INVALID_PARENT_COMPLETION,
+    "parent_provenance_mismatch", "parent_adoption_provenance_mismatch",
+    "missing_or_ambiguous_source", "scope_mismatch"})
 PARENT_ADOPTION_EVENT = "integration.parent_adopted"
 
 #: Task metadata recording that a generation's delivery is not owed to one
@@ -260,6 +265,11 @@ class DeliveryEvidence:
             DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED,
             DeliveryState.NOT_APPLICABLE,
         }
+
+    @property
+    def unloaded(self):
+        """Unknown only because Git has not been observed; never an admission veto."""
+        return self.state is DeliveryState.UNKNOWN and self.reason not in UNPROVABLE_SOURCE_REASONS
 
 
 @dataclass(frozen=True)
