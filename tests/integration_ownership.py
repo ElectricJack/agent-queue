@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2215,
+ 'authorized_owned_delta': 2222,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1076,7 +1076,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82504,
- 'measured_owned_total': 157714,
+ 'measured_owned_total': 157721,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1108,6 +1108,66 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'supersedes_decision_message_id': 'msg-8a308cadb20142e38c2692c762734e85',
      'task_id': 'swift-forge-67',
      'thread_id': 'swift-forge-67-ci-size'},
+ 'review_followup_composition': {'authorized_engine_delta': 0,
+     'authorized_owned_delta': 4,
+     'authorized_shared_owned_delta': 4,
+     'authorized_table_delta': 0,
+     'charged_file': 'src/commands/session_commands.py',
+     'dev_source_revision': 'b4171631c2780f3ca52132324266a31fb1065be4',
+     'operator_decision': '6679052c',
+     'previous_measured_engine_lines': 82504,
+     'previous_measured_owned_total': 157711,
+     'previous_measured_table_count': 45,
+     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1921',
+     'reason': 'Exact supervisor-approved +4 shared owned lines for the post-approval follow-up '
+               'task close guard, authorized in amber-journey-18 reopen feedback at 2026-10-24 '
+               '20:58Z. Preserve original baselines, historical grants and ownership '
+               'classifications, with zero remaining headroom and no new storage category.',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'source_revision': '9f4d979c54865bdaf06d85c036796f64b803991c',
+     'task_id': 'amber-journey-18'},
+ 'wait_listener_fence_inherited_composition': {'authorized_engine_delta': 0,
+      'authorized_owned_delta': 3,
+      'authorized_shared_owned_delta': 3,
+      'authorized_table_delta': 0,
+      'charged_files': {'src/wait_runtime/resume.py': 3},
+      'dev_source_revision': 'c08d949a113a04b4160100655f70ff907edd04c6',
+      'operator_decision': '6679052c',
+      'previous_measured_engine_lines': 82504,
+      'previous_measured_owned_total': 157718,
+      'previous_measured_table_count': 45,
+      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1957',
+      'reason': 'Exact supervisor-approved +3 shared owned lines from keen-dune-16 / PR 1957 '
+                '(wait listener fence release and startup resume recovery), hand-landed on dev '
+                'without re-recording; re-recorded while hand-landing PR 1921. Preserve the '
+                'separately approved PR 1921 +4 and PR 1955 +3 compositions, original baselines, '
+                'historical grants and ownership classifications, with zero remaining headroom '
+                'and no new storage category.',
+      'referenced_decision': 'size-cap-delegation-2026-10-23',
+      'repair_task_id': 'amber-journey-18',
+      'source_revision': '42cc80377e3ca9d0bba7658d4afe958332a74e2d',
+      'task_id': 'keen-dune-16'},
+ 'wait_resume_inherited_composition': {'authorized_engine_delta': 0,
+      'authorized_owned_delta': 3,
+      'authorized_shared_owned_delta': 3,
+      'authorized_table_delta': 0,
+      'charged_file': 'src/wait_runtime/resume.py',
+      'decision_message_id': 'msg-fb9bbab03e48428d866eb4d239bc8ef6',
+      'dev_source_revision': 'ab14a935bc4ca9402fdbd519b651b1847943584d',
+      'operator_decision': '6679052c',
+      'previous_measured_engine_lines': 82504,
+      'previous_measured_owned_total': 157715,
+      'previous_measured_table_count': 45,
+      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1955',
+      'reason': 'Exact supervisor-approved +3 inherited shared owned lines from fleet-zenith-14 / '
+                'PR 1955 after merging current dev into PR 1921. Preserve the separately approved '
+                '+4 review-followup composition, original baselines, historical grants and '
+                'ownership classifications, with zero remaining headroom and no new storage '
+                'category.',
+      'referenced_decision': 'size-cap-delegation-2026-10-23',
+      'repair_task_id': 'amber-journey-18',
+      'task_id': 'fleet-zenith-14',
+      'thread_id': 'amber-journey-18-epoch4-size'},
  'source_ci_repair_composition': {'authorized_engine_delta': 46,
                                   'authorized_owned_delta': 46,
                                   'merged_pull_request': 1917,
