@@ -305,7 +305,7 @@ async def _client(db):
 
 
 @contextmanager
-def _count_round_trips(db):
+def _count_round_trips(db, *, trace=None):
     """Statements *and* pooled transactions for the enclosed requests.
 
     Statements come from ``before_cursor_execute`` (what
@@ -321,6 +321,8 @@ def _count_round_trips(db):
 
     def _statement(conn, cursor, statement, parameters, context, executemany):
         counts["statements"] += 1
+        if trace is not None:
+            trace.append((statement, dict(context.compiled_parameters[0])))
 
     def _checkout(dbapi_connection, record, proxy):
         counts["transactions"] += 1
@@ -1142,7 +1144,8 @@ async def test_active_tiles_profile_and_query_budget(any_db, tmp_path, monkeypat
             assert response.status_code == 200, response.text
             assert len(response.json()["nodes"]) == 8
         profiler = cProfile.Profile()
-        with profiler, _count_round_trips(db) as counts:
+        trace = []
+        with profiler, _count_round_trips(db, trace=trace) as counts:
             assert (await ac.post(TILES, json=payload)).status_code == 200
         for call in db._admission_reader.await_args_list:
             assert set(call.args[0]) == {f"task-{n}" for n in range(8)}
@@ -1156,9 +1159,22 @@ async def test_active_tiles_profile_and_query_budget(any_db, tmp_path, monkeypat
     # (net +4 there). SQL tracing confirms IN-scoped reads, never per-card I/O;
     # scoped required_projects read also adds one hierarchy checkout.
     # No-network assertions still guard provider I/O.
+    # Held-batch badges add one membership SELECT and checkout, including for
+    # released members whose task hold has cleared. Pin that read to the eight
+    # visible ids so it cannot grow into per-card or project-wide enrichment.
+    membership_reads = [
+        (sql, params) for sql, params in trace
+        if "FROM ingest_batches JOIN ingest_batch_members" in sql
+    ]
+    assert len(membership_reads) == 1
+    sql, params = membership_reads[0]
+    assert "WHERE ingest_batch_members.task_id IN (" in sql
+    assert {value for key, value in params.items() if key.startswith("task_id_")} == {
+        f"task-{n}" for n in range(8)
+    }
     statements, transactions = {
-        "disabled": (66, 18), "development": (70, 19),
-        "hierarchy": (91, 28), "train": (91, 28),
+        "disabled": (67, 19), "development": (71, 20),
+        "hierarchy": (92, 29), "train": (92, 29),
     }[mode]
     assert counts["statements"] <= statements
     assert counts["transactions"] <= transactions
