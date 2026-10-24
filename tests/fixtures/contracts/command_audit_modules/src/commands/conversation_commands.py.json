@@ -262,7 +262,7 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+    "source_digest": "sha256:6a00315773a676d08cf8af34d8dbe78708f0478f2369cb207e9b80c8e6e17545",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

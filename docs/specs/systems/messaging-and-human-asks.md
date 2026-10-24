@@ -314,7 +314,9 @@ allowlist.
    (`route_queued_conversation_inputs`) retries the routing.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
-   `outbound_deliveries`.
+   `outbound_deliveries`. For channel and DM conversations, the Discord reply
+   reference is the answered input's `external_message_id`, including follow-up
+   inputs. The conversation's root and destination stay unchanged.
 
 `supervisor_conversations` tracks each conversation. On bot `READY`, a
 backfill reads up to 24 hours or 1000 missed messages
