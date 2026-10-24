@@ -310,8 +310,15 @@ allowlist.
    `(transport, external_message_id)`. Text is nulled after 30 days.
 3. `src/asks/intake.py` inserts a message `msg-<input_id>` with
    `body_kind=conversation_input`, addressed to the supervisor, or to
-   `conversation-queued` if no supervisor can take it yet. A cycle step
-   (`route_queued_conversation_inputs`) retries the routing.
+   `conversation-queued` only if no addressed supervisor exists. Resolution and
+   notice insertion share the acceptance transaction. A stopped supervisor retains
+   its address and is woken through the named-session delivery path. A cycle step
+   (`route_queued_conversation_inputs`) recovers genuinely unassigned notices.
+   After commit, intake emits `message.sent`; conversation inputs wake the independent
+   delivery service immediately, bypassing its routine delivery interval. Replays
+   repair a missed wake using the original notice and notification deduplication.
+   Another supervisor may inspect the notice but cannot consume it through inbox
+   injection or mark it read.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
    `outbound_deliveries`.

@@ -525,6 +525,8 @@ async def live_supervisor(db, *, project_id=None, session_id=LAUNCH_UUID, **over
     from src.models import SessionRecord
     from src.profiles.capabilities import CapabilityPolicy
 
+    if project_id:
+        await db.update_project(project_id, supervisor_enabled=True)
     await db.create_session(
         SessionRecord(
             id=session_id,
