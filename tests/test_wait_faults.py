@@ -395,7 +395,10 @@ async def test_matrix_source_resolves_during_stop_never_overlaps_writable_sessio
 
     async def resolve_during_stop():
         await env.db.transition_task("source", TaskStatus.COMPLETED)
-        assert await service.tick()
+        # The explicit driver owns suspension. Drain only source delivery so
+        # background maintenance cannot start a second suspension attempt or
+        # temporarily hold the graph fence before the outcome assertion.
+        assert await service.listener.tick()
         await one_outcome(env, wakes=0)
         assert (await intent(env))["resume_state"] == "sleeping"
         assert (await intent(env))["new_session_id"] is None
@@ -405,13 +408,13 @@ async def test_matrix_source_resolves_during_stop_never_overlaps_writable_sessio
         env, monkeypatch, on_stop=resolve_during_stop)
     assert (await driver.advance(env.wait_id, handler=handler))["parked"]
     assert order == ["stop", "push", "release"]
-    assert await service.tick()
+    assert await service.listener.tick()
     outcome = await one_outcome(env, wakes=0)
     assert (await intent(env))["resume_state"] == "queued"
     assert (await env.db.get_task("owner")).claim_epoch == 2
     live = [r for r in await records(env, sessions) if r["state"] == "running"]
     assert live == []
-    assert await service.tick()
+    assert await service.listener.tick()
     assert await one_outcome(env, wakes=0) == outcome
     assert len(await records(env, continuations)) == 1
 
