@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/wait_runtime/hibernate.py::STOP_PROOF_MAX_ATTEMPTS": {
+      "fingerprint": "ee498b6c81555e6f7f6d2249a0b3211b3ab4ae450eab328566ae93334c541108",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/wait_runtime/hibernate.py::HibernationTransaction._advance_locked": {
       "landing_span": [

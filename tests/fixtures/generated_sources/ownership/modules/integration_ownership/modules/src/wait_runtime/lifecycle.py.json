@@ -55,9 +55,9 @@
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 172,
+      "line": 188,
       "owner": "WaitLifecycle.suspend",
-      "owner_fingerprint": "a73d1f3c6ac312e2b3b5c93467514cf7b3f5993e859f936c215cf078d9201eae",
+      "owner_fingerprint": "29aa5a9de17a64b88e93233b7653acc1e808296edd8862b8a8398664020446c5",
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     }
   }

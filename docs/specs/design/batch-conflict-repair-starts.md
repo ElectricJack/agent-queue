@@ -1,5 +1,11 @@
 # Batch conflict repair starting heads
 
+For new ordinary root/development conflicts, Phase A6 ejects the conflicting
+member and its dependency closure and rebuilds the remainder instead of
+allocating a whole-batch repair. The contract below applies to retained repair
+paths, including existing repair writers and epic collection/refresh; see
+[conflicting completed sources](conflicting-source-batches.md).
+
 Task: `sound-journey-95`. Extends the Git-first train and exact completion
 provenance contracts.
 

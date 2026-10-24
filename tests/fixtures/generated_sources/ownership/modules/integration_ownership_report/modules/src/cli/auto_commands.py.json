@@ -1,4 +1,22 @@
 {
+  "reconciliation_definitions": {
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_delegate_publication']": {
+      "fingerprint": "715f3bd6b29a490eae520d5f9d22235a4050f4d8b65fb86b480d1d141cba2c6b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_fast_forward_pr']": {
+      "fingerprint": "c94cef8f65bf1208508fae7ff7eb814325f1c449dfcfed2b9daef31a94477b25",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_restore_task_origin']": {
+      "fingerprint": "eabb0e552d82f663948fbafa77af9c7e57b39bf2e96d84810a8fc851b0dea440",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_revoke_publication']": {
+      "fingerprint": "efb4ae357bdd1737a1b513e2cc943c4f6a60a95aac874ac98195003ba838998f",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/cli/auto_commands.py::EXCLUDED['integration_reconcile_git_truth']": {
       "reason": "Daemon-only Git-truth reconciliation command registration or transport exclusion."

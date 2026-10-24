@@ -931,6 +931,29 @@ TS_START = re.compile(
 )
 
 
+# Separate operator-approved reconciliation; historical exceptions above remain retired.
+HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
+ 'authorized_owned_delta': 1962,
+ 'expires_at': 's4_modules',
+ 'initial_inventory': '/tmp/smart-nexus-83-live-inventory.json',
+ 'inventory_sha256': '87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416',
+ 'measured_engine_lines': 82374,
+ 'measured_owned_total': 157461,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'original_owned_total_cap': 155499,
+ 'reason': "Separate exact reconciliation of the operator's 2026-10-23 hand integration of "
+           'approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 '
+           'retirement. Preserves the original baseline, every historical grant and retired '
+           "exception; includes this task's check/refusal composition fix. No automatic cap "
+           'growth or new storage category.',
+ 'reconciled_inventory': '/tmp/smart-nexus-83-final-inventory.json',
+ 'remaining_headroom': 0,
+ 'source_revision': 'f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0',
+ 'supervisor_decision_message_id': 'msg-2077aa41ec2c4f8685869fa59596627b',
+ 'task_id': 'smart-nexus-83'}
+
+
 def integration_table(name: str) -> bool:
     return name.startswith("integration_") or name in EXTRA_TABLES
 
@@ -1302,10 +1325,23 @@ def inventory(root: Path, manifest: dict) -> dict:
 
 
 def transition_owned_cap(manifest: dict) -> int:
-    """The original cap; the batch exception is retired and never derived from counts."""
+    """Fixed original cap or the exact separately approved reconciliation."""
     if manifest.get("transition_exception") is not None:
         raise ValueError("unapproved integration transition exception")
+    grant = manifest.get("hand_integration_reconciliation")
+    if grant is not None:
+        if grant != HAND_INTEGRATION_RECONCILIATION:
+            raise ValueError("unapproved hand-integration reconciliation")
+        return HAND_INTEGRATION_RECONCILIATION["measured_owned_total"]
     return BASELINE_OWNED_LINES + REPLACEMENT_ALLOWANCE
+
+
+def transition_engine_cap(manifest: dict) -> int:
+    """The reconciliation has no engine headroom and expires with transition."""
+    transition_owned_cap(manifest)  # validate the same exact approval
+    if manifest.get("hand_integration_reconciliation") is not None:
+        return HAND_INTEGRATION_RECONCILIATION["measured_engine_lines"]
+    return BASELINE_ENGINE_LINES + REPLACEMENT_ALLOWANCE
 
 
 def budget_errors(report: dict, manifest: dict) -> list[str]:
@@ -1313,9 +1349,9 @@ def budget_errors(report: dict, manifest: dict) -> list[str]:
     if phase not in {"transition", "s4_modules", "final"}:
         return [f"unknown budget phase: {phase}"]
     if phase == "transition":
-        engine_cap = BASELINE_ENGINE_LINES + REPLACEMENT_ALLOWANCE
         try:
             total_cap = transition_owned_cap(manifest)
+            engine_cap = transition_engine_cap(manifest)
         except ValueError as exc:
             return [str(exc)]
         table_cap = 45  # replacement reshapes the existing five, adds no table

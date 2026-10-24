@@ -261,27 +261,27 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 3953,
+      "line": 4072,
       "owner": "TaskCommandsMixin._cmd_add_dependency",
-      "owner_fingerprint": "304a86ec2394b330aa6d49c5a0a4c489217994a0ef4df3c611efa9f15f4f0fdc",
+      "owner_fingerprint": "c24d8f9e23cb63fa1fe9c0db25f352448fdf85f6cb19356d1aba8fae6f073f76",
       "reason": "Dependency changes log the caller, reason and edge as ordinary task-graph audit evidence after worker container admission; the event authorizes neither ref replay nor integration publication."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::513842f306aa56e3e63cfa84b52c59c27b3f94d7c784a662f64170e6c03e1d30": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 5261,
+      "line": 5434,
       "owner": "TaskCommandsMixin._cmd_archive_task",
-      "owner_fingerprint": "39932048ab736b36290612ab1b8e5b2310eb3ff5dd149eb466c21c80ab5f1ee6",
+      "owner_fingerprint": "5f99f4ff0559d6d01f0a8a4930449f800ca33235aa82882caee2a70a434de6ca",
       "reason": "Emits task_archived for a guarded child archive after archive/removal checks; it records the action rather than proving landing."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::b611360d398cc725e9ada50f9112d9c7be31f747e1251e86de6d9f03c44ab5f7": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 5193,
+      "line": 5365,
       "owner": "TaskCommandsMixin._cmd_archive_task",
-      "owner_fingerprint": "39932048ab736b36290612ab1b8e5b2310eb3ff5dd149eb466c21c80ab5f1ee6",
+      "owner_fingerprint": "5f99f4ff0559d6d01f0a8a4930449f800ca33235aa82882caee2a70a434de6ca",
       "reason": "Emits task_archived for the requested task after the guarded archive; the event does not bypass integration removal guards."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::c43d1fbacba8bf45fb56f8735c1bd09f0da6f4f40860abee9ff01a8d7b669d4d": {
@@ -297,63 +297,63 @@
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 4199,
+      "line": 4326,
       "owner": "TaskCommandsMixin._cmd_edit_task",
-      "owner_fingerprint": "27552b117016d10cfaadba2f6f91780838d17ae54057167dc24c762871b2974e",
+      "owner_fingerprint": "ac38ba8606da44c879996f47f91c2e0557d7239927a07b09e1c6ea7a9623348c",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_provide_input::0f34c5a5cf7ffa0b7470a2802a0e0a7b49b19ff72d497f0aad42650f0e0ae892": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 5341,
+      "line": 5564,
       "owner": "TaskCommandsMixin._cmd_provide_input",
-      "owner_fingerprint": "93932469ba02b7545e0c058c0459dfc5334e88bbdb2e53f2d7a574baf7cf97aa",
+      "owner_fingerprint": "13fd7f7a031f58b82006d0099726841f1235e6d0f758ce418920fe9f6d14aa53",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_dependency::1a08ef791aced41453b664c03655d329ac97c44ad54bc8079a0e8061b3e7eb93": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 4012,
+      "line": 4133,
       "owner": "TaskCommandsMixin._cmd_remove_dependency",
-      "owner_fingerprint": "8a7d1dccb3b73c545c8f64bbecbffcf8864961501a08ba32c1e5288c7f80c317",
+      "owner_fingerprint": "07083975f1063606902d4c788c394882ebbadd6576dc6510c121ff25cafa48f5",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::223d0f7e6c4889256e3ed2ac86b057584987bd73625610bcb54d446246a0bbcb": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 4929,
+      "line": 5098,
       "owner": "TaskCommandsMixin._cmd_reopen_with_feedback",
-      "owner_fingerprint": "74b89f1ac7453c5c4d2bfbb74777bd0bc096665fe4181756e62f5ea86189e8b2",
+      "owner_fingerprint": "86b8eabb702aaf556974df58d8eabb76fbe88e5d33d5598d9be219920dae92d5",
       "reason": "Audits reopen_with_feedback with bounded feedback text; explicit reopen/transition checks own the state change, not this historical event."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::d0a23678072f424218ac0a4925ebf887c82e58359a4b99b3a16f86a3e1b51529": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 4982,
+      "line": 5151,
       "owner": "TaskCommandsMixin._cmd_reopen_with_feedback",
-      "owner_fingerprint": "74b89f1ac7453c5c4d2bfbb74777bd0bc096665fe4181756e62f5ea86189e8b2",
+      "owner_fingerprint": "86b8eabb702aaf556974df58d8eabb76fbe88e5d33d5598d9be219920dae92d5",
       "reason": "Audits a stale-review cascade as task.transition with reopen_cascade:stale_review; the event records the graph review invalidation."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::0dfb7d71a735cf01bf69eb2924994003433c6ecb4da10f0c4921536d9b0bfd9a": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 3050,
+      "line": 3136,
       "owner": "TaskCommandsMixin._create_task",
-      "owner_fingerprint": "4339f109fa53d3f387e7357db211f228ebf012b83502da833cb5b0922e81abea",
+      "owner_fingerprint": "2aaf7826bce4dca54e0d7d96573f9933c2b68d43aef63700b8d31eb9623a5d7e",
       "reason": "Task label.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::410a02b90473dd130b922788f002d371e50f4de6ba4daff1847591088f3deff6": {
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 3043,
+      "line": 3129,
       "owner": "TaskCommandsMixin._create_task",
-      "owner_fingerprint": "4339f109fa53d3f387e7357db211f228ebf012b83502da833cb5b0922e81abea",
+      "owner_fingerprint": "2aaf7826bce4dca54e0d7d96573f9933c2b68d43aef63700b8d31eb9623a5d7e",
       "reason": "Task dependency.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::40f1ded3b71fdf05bc239a91f7ea3ab1bd5a43a5dea463aa278b1b31a633b1a5": {
@@ -378,9 +378,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 5440,
+      "line": 5669,
       "owner": "TaskCommandsMixin._keep_for_delivery",
-      "owner_fingerprint": "2d41c5fb25e34d552de1c6405473a4f66d5e80b6334612a14a3fc85b8fb71932",
+      "owner_fingerprint": "f81ecfd983ec4f7b748850582cc569a4067af6a860f0a6023dd5897dc891b807",
       "reason": "Operator task.delivery_disposition audit for a deliver decision that archives nothing; records the task identity and how many holders wait, not ref mutation, replay or delivery state."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._record_provider_intent_audit::d55c342bae016aa4ed8e948feac18e0ff6b86b4d10a83c7ff2678652b133c3c5": {
@@ -396,9 +396,9 @@
       "call": "set_task_meta",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 4757,
+      "line": 4943,
       "owner": "TaskCommandsMixin._restart_repair_delegate",
-      "owner_fingerprint": "677d2aa12480eb17e7a752ee18b2d68c18f1465e9ae3cf5c1b7738b568c62401",
+      "owner_fingerprint": "2516f25a4fd9b27a4e0865cd789595bf948230ad1a8e532105eb16a9abf2801b",
       "reason": "Ordinary recovery hold supersession only after a guarded repair-delegate branch handoff succeeds; refused reservation restores the worker failure streak and retains the prior incident. Integration reservation guards remain authoritative; no ref replay or duplicate integration lifecycle storage."
     }
   }

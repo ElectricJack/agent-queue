@@ -1,0 +1,28 @@
+{
+  "reconciliation_definitions": {
+    "src/commands/helpers.py::_collect_tree_tasks": {
+      "fingerprint": "da0416adaf00a6ced6f11eba88de06fd1150df22fbc7d23490662c94375cc883",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::_count_subtree": {
+      "fingerprint": "c227f899e89e61fbe5e3bff649ef46fe518056bbf6d454c0633c936730319ff7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::_count_subtree_by_status": {
+      "fingerprint": "ff6e8a33cad4cedcdb0805447401399ca97b5b5196f2fd7d2b92fe0c590f940b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::_format_task_tree": {
+      "fingerprint": "2244390bb5614739cdde30950b9845a1b1836f993a3db09d2d03ab68fedd9aee",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::format_dependency_list": {
+      "fingerprint": "f3d1132b0f0d8668daf2661dd8b161979e3ba05ce4cb9960a3e1dae460b60257",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/commands/helpers.py::progress_bar": {
+      "fingerprint": "a6d3fb347dd2c5453edc276d07c7a547037fde2c2b26e97964b70972c61e87f6",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

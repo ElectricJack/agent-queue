@@ -1,4 +1,10 @@
 {
+  "reconciliation_definitions": {
+    "src/playbooks/runtime.py::V2PlaybookRuntime._on_event": {
+      "fingerprint": "f5cd9afff4d32f3a89946d84ca262ff2a13426f0e7be214cd6540a7a7d74ea66",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
   "shared_definitions": {
     "src/playbooks/runtime.py::V2PlaybookRuntime.__init__": {
       "baseline_span": [

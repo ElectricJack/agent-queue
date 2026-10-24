@@ -9,6 +9,15 @@
       "owner_fingerprint": "d019774ea7b0d0a843b36570d738acdad1784696d94c8dd363800cf1ec6c00a0",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/commands/integration_commands.py::IntegrationCommandsMixin._reopen_source_ci::99067e5d5da4bc5efd63f84a8dbf3d8a88481ddf555f7b70a646a51fe37b5581": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 974,
+      "owner": "IntegrationCommandsMixin._reopen_source_ci",
+      "owner_fingerprint": "7b9013f11ca0a1bc98a161e362b6f5f2d9286af9327dde60e3d9807664b4369c",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
     "src/commands/integration_commands.py::IntegrationCommandsMixin._reopen_source_ci_once::99067e5d5da4bc5efd63f84a8dbf3d8a88481ddf555f7b70a646a51fe37b5581": {
       "call": "log_event",
       "disposition": "ordinary",
