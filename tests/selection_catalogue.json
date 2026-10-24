@@ -2526,7 +2526,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:4aabc306a1caa4bc0074f5b169aaa59364ffbbfc42fe918b8a625a10406166c5",
+      "digest": "sha256:a626fbb6f7f5177255aac79bc7a93fd641b27236f380a1f23dc7de83bed69233",
       "imports": [
         "src.agent_waits",
         "src.api.auth",
@@ -2551,7 +2551,8 @@
         "src.profiles.parser",
         "src.sessions",
         "src.sessions.fake",
-        "src.sessions.provider"
+        "src.sessions.provider",
+        "src.wait_runtime.cycle"
       ],
       "markers": [
         "parametrize"

@@ -334,7 +334,7 @@ _START_SITES = {
     ("src/discord/adapter.py", "self._bot.start"): 1,
     # Freezes an epic refresh batch (conflicting root PR, collected-epic aggregate
     # readiness); the train visits it without launching an agent.
-    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 2,
+    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
     # Batch fixer reservation hands its launch to DaemonFixerRuntime, whose
     # process start is the launch_session call pinned below.
     ("src/integration/fixers.py", "self.runtime.start"): 1,
