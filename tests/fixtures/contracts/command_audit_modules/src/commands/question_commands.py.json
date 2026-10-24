@@ -1,0 +1,139 @@
+{
+  "question_answer": {
+    "argument_reads_diagnostic_only": [
+      "body",
+      "question_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_question_for_caller": "sha256:58a0f0ac23fec98027ed9ab8b2ca1522f10013e350c8f088e2887774273f38fd",
+      "_question_identity": "sha256:cc91c7f5d127965640fe6cebdaca6ae948c04c83336334fe5c8012f8e98d3132"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/question_commands.py:QuestionCommandsMixin._cmd_question_answer",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "identity"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'direct human question answers are retired; reply to the durable escalation so the owning supervisor can apply verified evidence'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "question"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self.orchestrator.agent_questions.answer(question['id'], args.get('body'), actor=identity['actor'], human=identity['human'])"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:01293c7fa883b4c714c27be9d7e7242f1e3cd2fd45290dd083e4188919e8cad3",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_questions.py"
+    ]
+  },
+  "question_escalate": {
+    "argument_reads_diagnostic_only": [
+      "question_id",
+      "reason"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_question_for_caller": "sha256:58a0f0ac23fec98027ed9ab8b2ca1522f10013e350c8f088e2887774273f38fd",
+      "_question_identity": "sha256:cc91c7f5d127965640fe6cebdaca6ae948c04c83336334fe5c8012f8e98d3132"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/question_commands.py:QuestionCommandsMixin._cmd_question_escalate",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "identity"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "question"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self.orchestrator.agent_questions.escalate(question['id'], args.get('reason'))"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:7744e9b29dab5bc3ab64b718c43c2c795f72e64d6cb9d61ba05bdeb80e1b04e1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "question_list": {
+    "argument_reads_diagnostic_only": [
+      "project_id"
+    ],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_question_identity": "sha256:cc91c7f5d127965640fe6cebdaca6ae948c04c83336334fe5c8012f8e98d3132"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/question_commands.py:QuestionCommandsMixin._cmd_question_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "identity"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'out of scope: question belongs to another project'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'questions': questions, 'count': len(questions)}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:07430681bfd557b9760ee0ac47500d831cbac41e9f31c659282cb5ac840bbc38",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_agent_question_native.py",
+      "tests/test_agent_questions.py"
+    ]
+  }
+}

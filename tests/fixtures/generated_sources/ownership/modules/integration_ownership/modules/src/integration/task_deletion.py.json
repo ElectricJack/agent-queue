@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/task_deletion.py::_audit::fec07cd307548a7652586080b3ff3b391900a557766cc26828e2d8772418767f": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 67,
+      "owner": "_audit",
+      "owner_fingerprint": "e4ccb193370affeea7a8312a49ee692195eb31cf5449318ec1c96296e2bf4a85",
+      "reason": "Confirmed deletion writes immutable operator decision, selected-task snapshots, observed branch tips and cleanup outcomes to audit history. These events never authorize ref replay, publication or integration lifecycle transitions."
+    }
+  }
+}

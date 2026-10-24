@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/task_subtask_queries.py::OPEN_SUBTASK_STATUSES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_subtask_queries.py::SubtasksOpenError": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_subtask_queries.py::TaskSubtaskQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

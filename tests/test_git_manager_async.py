@@ -744,13 +744,13 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_push_moves_only_the_validated_tip(clone, mgr):
+async def test_explicit_lease_push_moves_only_the_resolved_tip(clone, mgr):
     """Replacing the OID refspec with HEAD would permit a post-check rewrite."""
     base = _git(["rev-parse", "main"], cwd=clone)
     _git(["switch", "-c", "delivery/immutable"], cwd=clone)
     tip = _commit_file(clone, "delivery.txt", "candidate\n", "candidate")
 
-    pushed = await mgr.apush_expected_delivery(clone, base, tip, "main", base)
+    pushed = await mgr.apush_validated_ref(clone, tip, "main", expected_old_oid=base)
 
     assert pushed == tip
     assert _git(["rev-parse", "refs/heads/delivery/immutable"], cwd=clone) == tip
@@ -758,20 +758,19 @@ async def test_expected_delivery_push_moves_only_the_validated_tip(clone, mgr):
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_zero_oid_creates_only_once(clone, mgr):
-    base = _git(["rev-parse", "main"], cwd=clone)
+async def test_explicit_zero_lease_creates_only_once(clone, mgr):
     _git(["switch", "-c", "delivery/new"], cwd=clone)
     tip = _commit_file(clone, "new.txt", "candidate", "candidate")
 
-    await mgr.apush_expected_delivery(clone, base, tip, "delivery/new", "0" * 40)
+    await mgr.apush_validated_ref(clone, tip, "delivery/new", expected_old_oid="0" * 40)
     with pytest.raises(GitError, match="expected target"):
-        await mgr.apush_expected_delivery(clone, base, tip, "delivery/new", "0" * 40)
+        await mgr.apush_validated_ref(clone, tip, "delivery/new", expected_old_oid="0" * 40)
 
     assert _git(["ls-remote", "--heads", "origin", "refs/heads/delivery/new"], cwd=clone).split()[0] == tip
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
+async def test_explicit_lease_push_preserves_a_remote_move_after_validation(
     clone, bare_repo, mgr, tmp_path
 ):
     """Dropping the explicit old-OID lease would overwrite a competing push."""
@@ -787,7 +786,7 @@ async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
     _git(["push", "origin", "main"], cwd=competing)
 
     with pytest.raises(GitError, match="expected target"):
-        await mgr.apush_expected_delivery(clone, base, tip, "main", base)
+        await mgr.apush_validated_ref(clone, tip, "main", expected_old_oid=base)
 
     assert _git(["rev-parse", "refs/heads/delivery/candidate"], cwd=clone) == tip
     remote_main = _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone)
@@ -795,11 +794,10 @@ async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
 
 
 @pytest.mark.asyncio
-async def test_expected_delivery_push_rejects_a_divergent_expected_target(
+async def test_explicit_lease_push_rejects_a_divergent_expected_target(
     clone, bare_repo, mgr, tmp_path
 ):
-    """Checking only base-to-tip ancestry would permit a divergent force rewrite."""
-    base = _git(["rev-parse", "main"], cwd=clone)
+    """A lease alone would permit a divergent rewrite; the tip must descend from it."""
     _git(["switch", "-c", "delivery/candidate"], cwd=clone)
     tip = _commit_file(clone, "candidate.txt", "candidate\n", "candidate")
 
@@ -811,7 +809,7 @@ async def test_expected_delivery_push_rejects_a_divergent_expected_target(
     _git(["push", "origin", "main"], cwd=competing)
 
     with pytest.raises(GitError, match="expected target"):
-        await mgr.apush_expected_delivery(clone, base, tip, "main", competing_tip)
+        await mgr.apush_validated_ref(clone, tip, "main", expected_old_oid=competing_tip)
 
     remote_main = _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone)
     assert remote_main.split()[0] == competing_tip

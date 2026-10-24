@@ -1,0 +1,18 @@
+{
+  "generic_dependencies": {
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin._collaboration_members": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin._locked_collaboration": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.accept_collaboration": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.append_collaboration_message": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.close_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.create_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.get_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.get_collaboration_thread_project": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.list_collaboration_threads": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.read_collaboration_messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.remove_collaboration_member": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::import from src.database.queries.message_queries import _new_message_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::import from src.database.tables import archived_tasks, collaboration_members as members, collaboration_messages as links, collaboration_threads as threads, messages, sessions, tasks": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

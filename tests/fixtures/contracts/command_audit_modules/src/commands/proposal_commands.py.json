@@ -1,0 +1,405 @@
+{
+  "task_batch_commit": {
+    "argument_reads_diagnostic_only": [
+      "gate_id",
+      "project_id",
+      "proposal_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_commit",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'proposal_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"proposal '{proposal_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'not_approved': True, 'error': 'proposal belongs to another project'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._change_set_failure(exc, 'task_batch_commit')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'fidelity_review_required', 'error': 'The batch requires fidelity review and authorized release', 'batch_id': proposal_id, 'state': batch['state'], 'reviewer_task_id': batch['reviewer_task_id']}"
+      },
+      {
+        "protocol": "delegated_producer: dictionary expansion retains producer outcome",
+        "return": "{**await self._batch_receipt(conn, batch, replayed=True), 'already_committed': True}"
+      }
+    ],
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "typed",
+    "source_digest": "sha256:e9c53b3c67e287c485c38d3f6546bf4b3653a6ede87275ad80b569e9f0e758a1",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "task_batch_discard": {
+    "argument_reads_diagnostic_only": [
+      "proposal_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_discard",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'proposal_id is required'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"proposal '{proposal_id}' not found\"}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'batch_retire_required', 'error': 'Held batches must be retired, not discarded', 'batch_id': proposal_id, 'state': batch['state']}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'proposal has an approval gate or was already committed or discarded'}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "schema_quality": "declared",
+    "source_digest": "sha256:495af565c53a695b672a53167839d035debfd2883b21d86fd780ed40733558e8",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_proposal_status_event.py",
+      "tests/test_task_batch_commands.py"
+    ]
+  },
+  "task_batch_propose": {
+    "argument_reads_diagnostic_only": [
+      "dry_run",
+      "project_id",
+      "source"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_propose",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'proposal_id': proposal_id, 'diff': payload['diff']}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'project_id and source are required'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**committed, 'diff': payload['diff']}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._change_set_failure(exc)"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'dry_run': True, 'diff': payload['diff']}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._batch_receipt(conn, existing_batch, replayed=True)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'incremental_plan_required', 'error': 'Source changed; use an explicit incremental plan', 'previous_receipt': await self._batch_receipt(conn, prior, replayed=True)}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'committed': True, 'already_committed': True, **existing['receipt']}"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:4cffa4e392d1cde6ec81833558f9561ff4f8876388162b0ff13a3d4ca3901b6b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_integration_hierarchy.py",
+      "tests/test_session_commands.py",
+      "tests/test_task_batch_commands.py"
+    ]
+  },
+  "task_batch_release": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_release",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Batch belongs to another project')"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': str(exc)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**failure, 'error_code': failure.get('code', 'release_failed')}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Only ingestion policy or the project supervisor may release a batch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await batches.release(conn, batch_id, expected_revision=request.expected_revision, expected_digest=request.expected_digest, actor=actor, release_receipt=None)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_held', 'Batch is not held')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('source_diverged', 'Source approval is missing')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('source_diverged', 'Approved source identity changed')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "stale"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('membership', 'Active membership and held tasks differ')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**batches._error(report.hard[0].code, report.hard[0].detail), **report.to_dict()}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('fidelity_review_required', 'Current reviewer must attest the exact revision and digest')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('incomplete_review', 'Every section, reverse coverage and walkthrough requires a passing verdict')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('needs_scope', 'Batch has an unresolved scope question')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "result"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('source_diverged', str(exc))"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:0af3561610b58feae2a62bb7723665d2a3999884a003af7cb9cb18f8ca7dd135",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "task_batch_retire": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_retire",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'batch_id': batch_id, 'state': 'retired', 'already_retired': False}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Batch belongs to another project')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('invalid_arguments', str(exc))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error(exc.code, exc.detail)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "{**failure, 'error_code': failure.get('code', 'retirement_failed')}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('not_authorized', 'Only ingestion policy or the project supervisor may retire a batch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_found', 'Batch not found')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('stale_revision', 'Batch revision changed')"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'batch_id': batch_id, 'state': 'retired', 'already_retired': True}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "batches._error('batch_not_held', 'Only unreleased batches may retire')"
+      }
+    ],
+    "schema_quality": "typed",
+    "source_digest": "sha256:516e5e0b4f15e35de9ca1d8e6dae8c6075ebcdb82157eea8a1e0dd0d1186f4f7",
+    "tests": [
+      "tests/test_task_batch_commands.py",
+      "tests/test_fidelity_review.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "task_batch_update": {
+    "argument_reads_diagnostic_only": [
+      "operations",
+      "payload",
+      "proposal_id"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509"
+    },
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/proposal_commands.py:TaskProposalCommandsMixin._cmd_task_batch_update",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'diff': payload['diff']}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': f\"proposal '{proposal_id}' not found\"}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._update_held_batch(row, args)"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'Legacy ingestion requires reconciliation'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'operations require a held ingestion batch'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._change_set_failure(exc, 'task_batch_update')"
+      }
+    ],
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:c93f0f9e9aab904b979a6b8c6950f573d16b6ffb74f833cc995feeda6ed78ef0",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_task_batch_commands.py"
+    ]
+  }
+}

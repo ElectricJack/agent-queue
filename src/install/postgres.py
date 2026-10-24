@@ -967,6 +967,10 @@ CONFIG_HEADER = """\
 # so a freshly installed machine starts with no messaging platform selected.
 messaging_platform: none
 
+# The Git-first train is the delivery engine; trial mode has been removed.
+integration:
+  git_first: active
+
 # Playbook command cards link to this documentation root. Point private
 # deployments at their mirrored docs site if needed.
 docs:

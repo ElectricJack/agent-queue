@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import and_, case, exists, func, or_, select, tuple_
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
@@ -15,7 +15,6 @@ from src.database.tables import (
     integration_parent_operation_completions,
     integration_parent_verifications,
     integration_repair_operations,
-    integration_review_evidence,
     projects,
     repos,
     task_branch_origins,
@@ -48,10 +47,9 @@ def legacy_batch_row():
     A non-null ``target_ref`` is the Git-first train's additive input/intent
     shape (see ``tables.py``); the legacy rows are the ones
     ``uq_integration_batches_active_project`` makes mutually exclusive per
-    project.  The train alone advances its own rows, so after a rollback to
-    ``integration.git_first: shadow`` nothing visits them again: a leftover
-    train batch must neither read as busy to the legacy engine nor hold its
-    members out of the legacy frontier.
+    project. The train alone advances its own rows; historical maintenance
+    must not treat them as legacy subjects or hold their members out of the
+    current frontier.
     """
     return integration_batches.c.target_ref.is_(None)
 
@@ -249,74 +247,3 @@ class IntegrationTrainQueriesMixin:
             await conn.execute(statement.order_by(tasks.c.id, source_head).limit(limit))
         ).mappings()
         return [dict(row) for row in rows]
-
-    async def delivered_root_task_ids_on(
-        self, conn: AsyncConnection, *, project_id: str, repository_id: str
-    ) -> set[str]:
-        """Return epic ids delivered to this repository's default branch.
-
-        Receipt rows survive task archival, so this read does not join the
-        active tasks table.
-        """
-        rows = await conn.execute(
-            select(task_delivery_receipts.c.source_task_id)
-            .select_from(
-                task_delivery_receipts.join(
-                    repos, repos.c.id == task_delivery_receipts.c.repository_id
-                )
-            )
-            .where(
-                repos.c.id == repository_id,
-                repos.c.project_id == project_id,
-                task_delivery_receipts.c.source_task_id.is_not(None),
-                *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
-            )
-        )
-        return set(rows.scalars().all())
-
-    async def latest_exact_reviews_on(
-        self,
-        conn: AsyncConnection,
-        candidates: list[dict[str, Any]],
-    ) -> dict[tuple[str, str, str, str, int], dict[str, Any]]:
-        keys = {
-            (
-                row["task_id"],
-                row["repository_id"],
-                row["source_base"],
-                row["source_head"],
-                int(row["generation"]),
-            )
-            for row in candidates
-        }
-        if not keys:
-            return {}
-        key_columns = (
-            integration_review_evidence.c.source_task_id,
-            integration_review_evidence.c.repository_id,
-            integration_review_evidence.c.source_base,
-            integration_review_evidence.c.reviewed_head_sha,
-            integration_review_evidence.c.generation,
-        )
-        rows = (
-            await conn.execute(
-                select(integration_review_evidence)
-                .where(tuple_(*key_columns).in_(sorted(keys)))
-                .order_by(
-                    integration_review_evidence.c.created_at.desc(),
-                    integration_review_evidence.c.id.desc(),
-                )
-            )
-        ).mappings()
-        latest: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
-        for row in rows:
-            value = dict(row)
-            key = (
-                value["source_task_id"],
-                value["repository_id"],
-                value["source_base"],
-                value["reviewed_head_sha"],
-                int(value["generation"]),
-            )
-            latest.setdefault(key, value)
-        return latest

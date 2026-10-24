@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/base_workspace.py::base_checkout_refusal": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

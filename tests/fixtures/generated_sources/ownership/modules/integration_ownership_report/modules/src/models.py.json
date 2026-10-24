@@ -1,0 +1,150 @@
+{
+  "exclusions": {
+    "src/models.py::CLAIM_PHASES['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+  },
+  "shared_definitions": {
+    "src/models.py::INTEGRATION_MODES": {
+      "baseline_span": [
+        139,
+        139
+      ],
+      "landing_span": [
+        139,
+        139
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::INTEGRATION_MODE_DIRECT": {
+      "baseline_span": [
+        116,
+        137
+      ],
+      "landing_span": [
+        116,
+        137
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::INTEGRATION_MODE_PULL_REQUEST": {
+      "baseline_span": [
+        138,
+        138
+      ],
+      "landing_span": [
+        138,
+        138
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_desired_mode": {
+      "baseline_span": [
+        423,
+        423
+      ],
+      "landing_span": [
+        423,
+        423
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_draining": {
+      "baseline_span": [
+        424,
+        424
+      ],
+      "landing_span": [
+        424,
+        424
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_generation": {
+      "baseline_span": [
+        425,
+        425
+      ],
+      "landing_span": [
+        425,
+        425
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_mode": {
+      "baseline_span": [
+        418,
+        420
+      ],
+      "landing_span": [
+        418,
+        420
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.hierarchical_integration_policy": {
+      "baseline_span": [
+        422,
+        422
+      ],
+      "landing_span": [
+        422,
+        422
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.integration_mode": {
+      "baseline_span": [
+        415,
+        417
+      ],
+      "landing_span": [
+        415,
+        417
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Project.integration_repository_id": {
+      "baseline_span": [
+        421,
+        421
+      ],
+      "landing_span": [
+        421,
+        421
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::Task.integration_mode": {
+      "baseline_span": [
+        492,
+        496
+      ],
+      "landing_span": [
+        492,
+        496
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::resolve_integration_mode": {
+      "baseline_span": [
+        179,
+        197
+      ],
+      "landing_span": [
+        179,
+        197
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/models.py::resolve_integration_mode_with_source": {
+      "baseline_span": [
+        140,
+        178
+      ],
+      "landing_span": [
+        140,
+        178
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "storage_sinks": {
+    "src/integration/train_sources.py::BackmergeAdmission.author::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "intent",
+      "integration_signal": true,
+      "line": 555,
+      "owner": "BackmergeAdmission.author",
+      "owner_fingerprint": "3c8e1d53a3ce0c19e26f22fab650384d9408088815a1ab0fea84b99ea61633ab",
+      "reason": "Pins an owed backmerge source/base/origin/target and its ordinary source task/completion identity; disabled authorship records only debt and older unfrozen inputs may be superseded. These declarative inputs do not assert remote publication or delivery: authorship, source admission and settlement independently reobserve exact Git refs, ancestry, frozen membership and PR evidence. Private-head creation uses the full forty-zero absent-ref lease; this transport correction adds no metadata or ref replay authority."
+    },
+    "src/integration/train_sources.py::DaemonLanes._epic_completion::1c9a3b6401e74048fbd63d079e3a77b1bf881244a09690c7a2d835a664010768": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 3223,
+      "owner": "DaemonLanes._epic_completion",
+      "owner_fingerprint": "e6dcd7a271a8d75050432a79065b03dadc601e0375f16dc92112ced2dc8b6a29",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1086,
+      "owner": "DatabaseBatches._admission_times",
+      "owner_fingerprint": "7d537e625b8210f6a5552c966e8ff687df46b7361db0d2b391887b064a32e316",
+      "reason": "Inserts the first settling timestamp for an exact currently PR-admitted completion; every visit recomputes Git/PR eligibility, so the timestamp only preserves cadence across restarts."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1074,
+      "owner": "DatabaseBatches._admission_times",
+      "owner_fingerprint": "7d537e625b8210f6a5552c966e8ff687df46b7361db0d2b391887b064a32e316",
+      "reason": "Deletes stale per-target admission timestamps for completions no longer in the eligible set; it removes cadence hints without deciding delivery."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::51be9b5b9698cee60f963e966b52a7527686e8e5a5f266c953c9f4919f14106d": {
+      "call": "update",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1100,
+      "owner": "DatabaseBatches._admission_times",
+      "owner_fingerprint": "7d537e625b8210f6a5552c966e8ff687df46b7361db0d2b391887b064a32e316",
+      "reason": "Refreshes the settling timestamp when an eligible completion identity changes; fresh Git and PR checks establish eligibility independently of the stored hint."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._clear_admissions::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "call": "delete",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1108,
+      "owner": "DatabaseBatches._clear_admissions",
+      "owner_fingerprint": "ec2c3bd2d9989006f8d0c451b0e89bd47fe04da3bf875d848fe1d6b7710b524c",
+      "reason": "Deletes a target's settling hints after batch admission freezes membership; the frozen batch mechanism, not metadata timestamps, owns the admitted set."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._refresh_conflicting_epics::23794b0f2bbfe8599ed5c73366232ec30ac62261b170aa38dfd61beb1d944bf4": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 700,
+      "owner": "DatabaseBatches._refresh_conflicting_epics",
+      "owner_fingerprint": "9d82976066ead4b65a54f90f9d0cc1c69bbe45b3dc8b63c1255f42a48d8512ec",
+      "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._settle_project_delivered::f12935a5a7da1d808ebe870d62412725e218483dee20eff5a7c1e739fe766bfe": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 1290,
+      "owner": "DatabaseBatches._settle_project_delivered",
+      "owner_fingerprint": "3c534a5b4ac17e14e78d61816db2fbfdef9cbfa73519758888c2889b50a3c617",
+      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+    },
+    "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 2626,
+      "owner": "EpicCompletions.settle",
+      "owner_fingerprint": "0f5e369294c266ab7db578f82a207491d28901bb3a944d9cff3d9348d4713601",
+      "reason": "Inserts DEVELOPMENT_COMPLETION_ID_KEY under the hierarchy lock beside the immutable epic completion after readiness recheck; it is an identity locator without ref publication intent."
+    }
+  }
+}

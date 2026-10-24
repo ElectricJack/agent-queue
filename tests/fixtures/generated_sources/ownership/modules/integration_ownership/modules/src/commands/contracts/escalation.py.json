@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/commands/contracts/escalation.py::register_escalation_contracts": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

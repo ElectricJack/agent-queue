@@ -12,6 +12,11 @@ tags: [design, supervisor, sessions, messages, planning, multi-project]
 > see [historical material](../../history/README.md) for how this material is
 > organised.
 
+> **Current implementation:** [Supervisors and policy](../systems/supervisors-and-policy.md)
+> and [Supervisor turn health](../supervisor-turn-health.md). The August design
+> below predates opt-in project supervisors, global-only report authorship,
+> turn-health recovery and instance-fenced restart. It is not an operating guide.
+
 **Status:** Approved direction (2026-08-19), amended by [../messaging/discord](../messaging/discord.md):
 Discord now reaches the supervisor only through durable escalation threads;
 the project-channel chat and task-thread routes described below are retired.
@@ -286,7 +291,10 @@ Concurrent engine passes are skipped while one is in flight.
    message stays pending and retryable. `message_status` is therefore on the agent
    surface (`AGENT_COMMAND_SET`) and granted to every shipped profile that reads its
    own mailbox, and a non-elevated session may read only messages addressed to its
-   own mailboxes (the `message_inbox` mailbox fence). A task comment has no
+   own mailboxes (the `message_inbox` mailbox fence). A named session owns both
+   its UUID and its persisted session name, including task-free batch fixers;
+   reading either address acknowledges the message and ends notification retries.
+   Another session's name grants no mailbox access. A task comment has no
    exception: its notification is the same one-line pointer. Its rendered body (a
    six-line header plus up to 8 KB) used to be typed in directly, and Claude Code
    never shows that verbatim: over 800 characters it collapses to
@@ -333,6 +341,9 @@ spec's activity signal (transcript in-turn state, A.6) through a narrow interfac
 that lands, the engine can only queue and prime-inject — an acceptable degraded mode.
 
 Session recipients may be immutable UUIDs or historical named supervisor addresses.
+System notifications for a batch fixer use its registered AQ session UUID, including
+new CI evidence, rebind requests and green results. Its tmux session name identifies
+the process, rather than the mailbox authorized by its session token.
 A retired UUID is never redirected to a successor with the same name. The global
 supervisor has no project and can receive project-scoped messages without acquiring that
 project as its session scope. Profile recipients remain inbox/prime broadcasts; they do

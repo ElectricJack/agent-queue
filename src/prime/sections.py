@@ -1047,7 +1047,7 @@ def build_completion_protocol_section(
             if regenerate else ""
         )
         body = body[:start] + ("## Development delivery\n\n"
-            "Commit locally and publish your task branch with `aq git push`, run focused local checks, "
+            "Commit locally, follow the final submission steps below, "
             "and close with actual evidence. "
             "Ordinary commits and merges are accepted; no squash, PR, hosted CI, or parent verifier is required. "
             "The daemon collects completed source branches and publishes validated batches to main. "

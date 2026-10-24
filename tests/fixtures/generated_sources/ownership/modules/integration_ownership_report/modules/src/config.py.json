@@ -1,0 +1,103 @@
+{
+  "shared_definitions": {
+    "src/config.py::AppConfig.integration": {
+      "baseline_span": [
+        3843,
+        3843
+      ],
+      "landing_span": [
+        3726,
+        3726
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::AppConfig.validate": {
+      "baseline_span": [
+        3917,
+        4143
+      ],
+      "landing_span": [
+        3800,
+        4026
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::GitHubAppConfig.validate": {
+      "baseline_span": [
+        2355,
+        2378
+      ],
+      "landing_span": [
+        2238,
+        2261
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::IntegrationConfig": {
+      "baseline_span": [
+        2521,
+        2676
+      ],
+      "landing_span": [
+        2404,
+        2559
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::IntegrationConfig.validate": {
+      "baseline_span": [
+        2611,
+        2676
+      ],
+      "landing_span": [
+        2494,
+        2559
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::RESTART_REQUIRED_SECTIONS['integration']": {
+      "baseline_span": [
+        4290,
+        4290
+      ],
+      "landing_span": [
+        4173,
+        4173
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::ScratchProbeConfig.validate": {
+      "baseline_span": [
+        2407,
+        2469
+      ],
+      "landing_span": [
+        2290,
+        2352
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::load_config": {
+      "baseline_span": [
+        4759,
+        5522
+      ],
+      "landing_span": [
+        4642,
+        5379
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/config.py::validate_github_app_raw_config": {
+      "baseline_span": [
+        2470,
+        2520
+      ],
+      "landing_span": [
+        2353,
+        2403
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    }
+  }
+}

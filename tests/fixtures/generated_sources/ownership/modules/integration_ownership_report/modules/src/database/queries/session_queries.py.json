@@ -1,0 +1,44 @@
+{
+  "reconciliation_definitions": {
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs, projects, sessions, subagent_events, task_branch_origins, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "fingerprint": "350f42297ec49afa01935202a592f91ca2df08be7e4aef40c504df7dc995a9d7",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  },
+  "shared_definitions": {
+    "src/database/queries/session_queries.py::SessionQueryMixin.has_supervision_work": {
+      "baseline_span": [
+        516,
+        557
+      ],
+      "landing_span": [
+        483,
+        524
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/session_queries.py::SessionQueryMixin.record_failed_preparation": {
+      "reason": "Fences the exact preparing instance and snapshots matching integration origins, checkpoint and branch owners into diagnostic session evidence."
+    },
+    "src/database/queries/session_queries.py::SessionQueryMixin.touch_session_activity": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs, projects, sessions, task_branch_origins, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Imports integration batches, owner fences, origins and checkpoints for session preparation and lifecycle fencing."
+    },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, playbook_v2_runs, projects, sessions, task_session_attempts, tasks": {
+      "baseline_span": [
+        43,
+        47
+      ],
+      "landing_span": [
+        43,
+        47
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, playbook_v2_runs, projects, sessions, task_session_attempts, tasks, workspaces": {
+      "reason": "Existing integration table import remains charged. The added workspaces table supports instance- and claim-epoch-fenced quarantine after repeated preparation refusals; no ref publication or ownership handoff is added."
+    }
+  }
+}

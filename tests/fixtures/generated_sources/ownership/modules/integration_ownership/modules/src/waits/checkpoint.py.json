@@ -1,0 +1,6 @@
+{
+  "generic_dependencies": {
+    "src/waits/checkpoint.py::collect_checkpoint_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/checkpoint.py::import from src.handoffs import collect_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "exclusion_policy": {
+    "docs": "Prose documentation is excluded; executable playbook source is included.",
+    "generated_artifacts": "Reviewed artifact JSON mirrors charged executable policy sources.",
+    "generic": "Generic SQL, transport, resource jobs, and ordinary task storage stay with their owners.",
+    "migrations/versions": "Historical revisions are provenance; the live guard installer counts.",
+    "packages": "Generated API clients mirror charged API schemas.",
+    "tests": "Fixtures and tests do not ship as production mechanisms."
+  }
+}

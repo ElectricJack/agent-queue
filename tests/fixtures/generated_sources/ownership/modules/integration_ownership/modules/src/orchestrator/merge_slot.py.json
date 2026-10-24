@@ -1,0 +1,8 @@
+{
+  "generic_dependencies": {
+    "src/orchestrator/merge_slot.py::acquire_merge_slot": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/merge_slot.py::break_expired_merge_slots": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/merge_slot.py::release_merge_slot": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/merge_slot.py::renew_merge_slot": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

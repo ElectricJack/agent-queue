@@ -23,9 +23,14 @@ class AtomicJobWait:
     async def prepare(self, conn, values):
         # This must precede every job, workspace and owner row lock. The source
         # watermark was fetched before entering the producer transaction.
-        await lock_graph(conn)
         if self.scope is None:
             raise WaitError("wait.out_of_scope", "submit-with-wait requires a bound owner")
+        from src.waits.loops import prepare_progress
+
+        await prepare_progress(conn, [{"owner_kind": self.scope.owner_kind,
+            "owner_id": self.scope.owner_id, "project_id": self.scope.project_id,
+            "session_id": self.scope.session_id}])
+        await lock_graph(conn)
         scope = await verify_owner(conn, self.scope)
         if (scope.owner_kind != "task" or scope.owner_id != values["task_id"]
                 or scope.project_id != values["project_id"]):

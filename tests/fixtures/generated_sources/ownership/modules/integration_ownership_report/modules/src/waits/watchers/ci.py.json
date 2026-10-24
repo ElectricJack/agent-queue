@@ -1,0 +1,44 @@
+{
+  "reconciliation_definitions": {
+    "src/waits/watchers/ci.py::CheckWatcher._ci": {
+      "fingerprint": "e5897082d82fe42ec7e1d439616c011d0fed719753c39d5926cbb929b87822c8",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.head": {
+      "fingerprint": "a0ce0529a4e3b0524ab2d8ec7b02e59e93975a2b1f563aeaca490c7bba6a3304",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.lock_source": {
+      "fingerprint": "1133c09b2699b4412ebb71f652ca7a4ef1ba9652a1704f63744bde3905a11d81",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.read": {
+      "fingerprint": "4597ec7c2f03e3e87beb417143b70a8c2fdfe52d14a9e52cf7113d316b43fe92",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::CheckWatcher.tick": {
+      "fingerprint": "1c06b3258558732fcc803099bf8399a0468fbe60328ad9367ee4b28dbd22032e",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::TERMINAL": {
+      "fingerprint": "65c4f565e0fb2611cdb857956bd8bf6f59702529ac371ead59557e8d5248e7e4",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.database.tables import integration_check_evidence, repos, wait_records": {
+      "fingerprint": "fd5e88c5e33b2415f6462bf38be0bb4ee8277ec2f83eaeb215aa0266c061177b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.git.github_contracts import GitHubAccessError, rate_limit_cause": {
+      "fingerprint": "70cef043d2c891c35e59b98ffb16d65f4ad981059cb94296b621b2b7c8fb5d52",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.integration.checks import Conclusion, evaluate": {
+      "fingerprint": "6645f103edd952aacbe39942ccd3f4f75b619b18f6f607a5ea2bd2fb57ddd508",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    },
+    "src/waits/watchers/ci.py::import from src.integration.runtime_contracts import HeadIdentity": {
+      "fingerprint": "22e8da93f245e510ec49dd0446faec6f710ed0bc77e49acbe67ebdcc867f794b",
+      "reason": "Reviewed integration reachability already conservatively charged on f564f9e2e; retain exact definition identity without broadening generic shared-module ownership."
+    }
+  }
+}

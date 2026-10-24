@@ -1,0 +1,352 @@
+{
+  "source_base": "908112dce62681fb4761e80a218382c75fc939cf",
+  "source_commit": "f136e4af2c8f05a3d52cce6118fab78e03733a9e",
+  "previous_cli_catalogue_sha256": "c98fef6af2ba4db8c1c07f5e5b35e69242da57d98a02c737b3bc11eebaf946cb",
+  "cli_catalogue_sha256": "2bf8318f4b6b593e4b1575f2b79ec08f3bc85db4b1adaf4ccf176287942bdb0e",
+  "added_commands": {
+    "task_split": {
+      "transport_definition": {
+        "name": "task_split",
+        "description": "Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+        "input_schema": {
+          "$defs": {
+            "TaskSplitMoved": {
+              "additionalProperties": false,
+              "properties": {
+                "title": {
+                  "minLength": 1,
+                  "title": "Title",
+                  "type": "string"
+                },
+                "acceptance": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "title": "Acceptance",
+                  "type": "array"
+                },
+                "placement": {
+                  "description": "Post-delivery operations become a root; finite build work stays beside the source.",
+                  "enum": [
+                    "operational_root",
+                    "child"
+                  ],
+                  "title": "Placement",
+                  "type": "string"
+                },
+                "delivery_targets": {
+                  "description": "Same-project code leaves whose verified delivery gates operational work; include the source.",
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "title": "Delivery Targets",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "title",
+                "acceptance",
+                "placement"
+              ],
+              "title": "TaskSplitMoved",
+              "type": "object"
+            }
+          },
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "minLength": 1,
+              "title": "Task Id",
+              "type": "string"
+            },
+            "retained_acceptance": {
+              "description": "Exact source criteria retained; together with moved.acceptance, an exhaustive partition.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Retained Acceptance",
+              "type": "array"
+            },
+            "moved": {
+              "$ref": "#/$defs/TaskSplitMoved"
+            },
+            "reason": {
+              "minLength": 1,
+              "title": "Reason",
+              "type": "string"
+            },
+            "expected_generation": {
+              "description": "Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0).",
+              "minimum": 0,
+              "title": "Expected Generation",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "task_id",
+            "retained_acceptance",
+            "moved",
+            "reason",
+            "expected_generation"
+          ],
+          "title": "TaskSplitArgs",
+          "type": "object"
+        }
+      },
+      "category": "task",
+      "contract_fingerprint": "sha256:e548d4b22df20165a4baeb4dd49c7ef6cee1e0df65b9a19bce42fab43ca314c7"
+    }
+  },
+  "transport_definitions": {
+    "reparent_task": {
+      "previous": {
+        "name": "reparent_task",
+        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "parent_id": {
+              "type": "string"
+            },
+            "root": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      },
+      "current": {
+        "name": "reparent_task",
+        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "parent_id": {
+              "type": "string"
+            },
+            "root": {
+              "type": "boolean",
+              "default": false
+            },
+            "expected_old_generation": {
+              "type": "integer",
+              "description": "Hierarchical projects: the old parent's integration generation."
+            },
+            "expected_new_generation": {
+              "type": "integer",
+              "description": "Hierarchical projects: the new parent's integration generation."
+            }
+          },
+          "required": [
+            "task_id"
+          ]
+        }
+      }
+    }
+  },
+  "contracts": {
+    "integration_mutate_hierarchy": {
+      "previous_fingerprint": "sha256:7c1b44bdf3e44ae89c749e36eaf42e237adb2b752c589b78ae45debe16fdc1b9",
+      "fingerprint": "sha256:8ba67369409b08fbc38c28674470d9e6031549bb639631c4737907202dbf9c82",
+      "execution": {
+        "schema_generation": 1,
+        "name": "integration_mutate_hierarchy",
+        "args_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "mutation": {
+              "type": "string"
+            },
+            "arguments": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          },
+          "required": [
+            "arguments",
+            "mutation",
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "result_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "task_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "old_parent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "new_parent_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "old_parent_generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "new_parent_generation": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "owner": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "safe_continuation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "outcomes": [
+          {
+            "name": "delivery_target_fixed",
+            "classification": "failure"
+          },
+          {
+            "name": "dependency_on_ancestor",
+            "classification": "failure"
+          },
+          {
+            "name": "invalid",
+            "classification": "failure"
+          },
+          {
+            "name": "needs_quiescence",
+            "classification": "failure"
+          },
+          {
+            "name": "reopen_required",
+            "classification": "failure"
+          },
+          {
+            "name": "sealed",
+            "classification": "failure"
+          },
+          {
+            "name": "stale_parent",
+            "classification": "failure"
+          },
+          {
+            "name": "updated",
+            "classification": "success"
+          }
+        ],
+        "capability": "integration_mutate_hierarchy",
+        "side_effect": "composite",
+        "idempotency": {
+          "mode": "natural",
+          "key_field": null
+        },
+        "retry_safe": true,
+        "timeout_seconds": null,
+        "effects": [
+          {
+            "subject": "task_graph",
+            "when": {
+              "arg_present": null,
+              "arg_equals": null
+            },
+            "kind": "update",
+            "fields_arg": null
+          },
+          {
+            "subject": "branch_ownership",
+            "when": {
+              "arg_present": null,
+              "arg_equals": null
+            },
+            "kind": "update",
+            "fields_arg": null
+          }
+        ],
+        "sensitive_args": [],
+        "sensitive_result_fields": [],
+        "receipt_projection": [
+          "task_id",
+          "old_parent_id",
+          "new_parent_id",
+          "old_parent_generation",
+          "new_parent_generation"
+        ],
+        "supports_preview": false
+      }
+    }
+  },
+  "review_notes": [
+    "Merge reconciliation preserves the epic split command, optional reparent generation fences, and guarded relocation result fields and refusal outcomes. Reversing this exact delta recovers the frozen target-repair catalogue bytes.",
+    "Merged onto dev 94e69a6a6: the recording now follows the PR repair recording. Only the two catalogue hashes changed; the added command, the reparent_task definitions and both contract fingerprints are unchanged."
+  ]
+}

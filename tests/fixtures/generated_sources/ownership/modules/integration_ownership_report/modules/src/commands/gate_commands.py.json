@@ -1,0 +1,22 @@
+{
+  "shared_definitions": {
+    "src/commands/gate_commands.py::GateCommandsMixin._cmd_gate_resolve": {
+      "baseline_span": [
+        164,
+        255
+      ],
+      "landing_span": [
+        164,
+        255
+      ],
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/commands/gate_commands.py::GateCommandsMixin._gate_ask_source": {
+      "landing_span": [
+        19,
+        30
+      ],
+      "reason": "Maps integration subject gates to their exact human source identity."
+    }
+  }
+}

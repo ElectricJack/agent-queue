@@ -1,0 +1,22 @@
+{
+  "workspace_ownership_merge_measurement": {
+    "authorized_engine_delta": -534,
+    "authorized_owned_delta": 129,
+    "authorized_table_delta": 0,
+    "measured_engine_lines": 85010,
+    "measured_owned_total": 161342,
+    "measured_source_revision": "9b8ad6e58179dde7ac486d12d446e116e8120187",
+    "measured_table_count": 45,
+    "merged_dev_revision": "d60c0f238c8205f495a384c0bd77c322a8fc89ac",
+    "operator_decision": "6679052c",
+    "operator_task": "sharp-cascade-53",
+    "previous_engine_lines": 85544,
+    "previous_owned_total": 161213,
+    "previous_source_revision": "4bafa45f1ac0a466eab372c7b6b0b866f67bb832",
+    "previous_table_count": 45,
+    "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1802",
+    "reason": "Exact combined-tree remeasurement after merging origin/dev into PR #1802. Preapproved by size-cap-delegation-2026-10-23, operator decision 6679052c on sharp-cascade-53. Preserve every historical grant and classification; no code trimmed or moved for the count.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "task_id": "nimble-meadow-99"
+  }
+}

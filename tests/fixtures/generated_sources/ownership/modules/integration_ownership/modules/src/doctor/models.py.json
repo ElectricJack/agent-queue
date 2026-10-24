@@ -1,0 +1,10 @@
+{
+  "generic_dependencies": {
+    "src/doctor/models.py::CheckResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::DoctorCheck": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::DoctorContext": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::Severity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::observation_context": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::observation_read_failed": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}

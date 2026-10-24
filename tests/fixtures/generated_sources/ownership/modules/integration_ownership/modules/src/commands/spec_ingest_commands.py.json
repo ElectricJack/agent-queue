@@ -1,0 +1,16 @@
+{
+  "shared": {
+    "src/commands/spec_ingest_commands.py::_batch_recovery_candidates": {
+      "reason": "Selects stale held/released batches using fidelity receipts, reviewer liveness and matching delivered integration outbox events."
+    },
+    "src/commands/spec_ingest_commands.py::_repair_batch_wakeup": {
+      "reason": "Retries exhausted integration outbox transport without replacing frozen delivery pins, or creates a fresh generation after prior acceptance."
+    },
+    "src/commands/spec_ingest_commands.py::import from src.database.tables import archived_tasks, escalation_actions, ingest_batch_receipts, ingest_batches, integration_outbox, tasks": {
+      "reason": "Imports integration_outbox alongside batch tables for recovery wakeup inspection; the complete import span is charged."
+    },
+    "src/commands/spec_ingest_commands.py::import from src.integration.outbox import RETRY_EXHAUSTED_PREFIX, enqueue_batch_event": {
+      "reason": "Imports integration transport retry status and the batch event writer used by ingestion recovery."
+    }
+  }
+}

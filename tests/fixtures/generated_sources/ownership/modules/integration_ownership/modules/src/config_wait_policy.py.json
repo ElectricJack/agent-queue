@@ -1,0 +1,8 @@
+{
+  "exclusions": {
+    "src/config_wait_policy.py::parse_wait_policy": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  },
+  "generic_dependencies": {
+    "src/config_wait_policy.py::parse_wait_policy": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
+  }
+}

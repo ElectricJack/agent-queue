@@ -1,0 +1,13 @@
+{
+  "storage_sinks": {
+    "src/integration/completed_container_recovery.py::CompletedContainerRecovery.run::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": true,
+      "line": 420,
+      "owner": "CompletedContainerRecovery.run",
+      "owner_fingerprint": "e1d260204da20dd44a3bf84ae788412ed502b6970a487c81d5552260f267e1c5",
+      "reason": "Inserts the completed-container checkpoint recovery audit with exact before/after proof after retained-Git verification and CAS; it records the recovery, not future delivery authority."
+    }
+  }
+}

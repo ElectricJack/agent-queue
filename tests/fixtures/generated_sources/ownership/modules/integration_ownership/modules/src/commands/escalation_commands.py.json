@@ -1,0 +1,29 @@
+{
+  "exclusions": {
+    "src/commands/escalation_commands.py::EscalationCommandsMixin._cmd_escalation_list": "Generic escalation list; delivery_status refers to notification delivery.",
+    "src/commands/escalation_commands.py::EscalationCommandsMixin.emit_escalation_delivery_status": "Notification transport delivery event, not code delivery."
+  },
+  "generic_dependencies": {
+    "src/commands/escalation_commands.py::EscalationCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently."
+  },
+  "storage_sinks": {
+    "src/commands/escalation_commands.py::EscalationCommandsMixin._create_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 298,
+      "owner": "EscalationCommandsMixin._create_escalation",
+      "owner_fingerprint": "8643b8689ca9abcc76e861057859b003edc4588297a26812a875b7885a4db171",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/escalation_commands.py::EscalationCommandsMixin._emit_escalation::e567c4df6888253586398ebb135acb235554072114ae8b253509beb96b5d5cc1": {
+      "call": "log_event",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 140,
+      "owner": "EscalationCommandsMixin._emit_escalation",
+      "owner_fingerprint": "ad01a3ebb6553883e642c32e0930c5d1302f3e1474b18ca0c589f923138115ba",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    }
+  }
+}

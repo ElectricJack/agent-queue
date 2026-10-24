@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/object_loop/formulas.py::guard_formula": "Generic dependency; integration-specific definitions in this file are charged independently."
+  }
+}
