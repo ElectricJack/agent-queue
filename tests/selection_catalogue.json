@@ -17897,7 +17897,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:7b4a32a6989e0f5bff2b6f9a019a2d7f6a37a9c71222cd5116693d158eb25b23",
+      "digest": "sha256:b590faf27b3ba17d0dfe956a8392f9e6b7da08d38a1419ff1707c2e1f0b528eb",
       "imports": [
         "src.config",
         "src.doctor",
@@ -17915,7 +17915,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Additive sync of shipped capabilities into the vault supervisor profile."
+      "summary": "Additive sync of shipped capabilities into vault system profiles."
     },
     "tests/test_supervisor_failure_triage.py": {
       "areas": [

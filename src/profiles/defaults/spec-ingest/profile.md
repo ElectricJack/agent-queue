@@ -131,7 +131,10 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
     "task_subtask_add",
     "task_subtask_get",
     "task_subtask_update",
-    "task_subtasks"
+    "task_subtasks",
+    "wait_checkpoint",
+    "wait_get",
+    "wait_register"
   ],
   "plugin_tools": [
     "memory_save",
@@ -147,6 +150,8 @@ The server derives this exception from a live role assignment and an approved
 decision and hash, never mutable frontmatter or caller-provided source text. There is no `create_task` or
 `add_dependency` grant: piecemeal graph publication is forbidden.
 Knowledge read grants support prime's project context and scoped record discovery.
+Wait grants support prime's durable registration, checkpoint and result-consumption
+instructions within the held task and session.
 
 ## MCP Servers
 
@@ -162,11 +167,12 @@ Knowledge read grants support prime's project context and scoped record discover
   A document without implementation grounding gets an implementation-spec
   task, never speculative implementation children.
 - Cycles and dependency edges to containers are bugs; correct them before commit.
-- Shipped profiles are write-if-absent. Existing installs need the operator to
-  reconcile this Role and grant `approved_spec_packet` and `task_batch_commit`, preserving local harness
-  choices (`aq doctor --check profiles.system_drift` and profile reseeding).
-  Add missing knowledge read grants with
+- Shipped profile prose and configuration are write-if-absent. Missing shipped
+  capability grants merge additively on daemon startup and profile reload,
+  preserving local harness choices. `capability_sync: false` opts out; those
+  installs need the operator to reconcile grants with
   `aq agent profile-reseed --profile-id spec-ingest --grants-only`.
+  Use `aq doctor --check profiles.system_drift` to inspect outstanding drift.
 
 ## Reflection
 
