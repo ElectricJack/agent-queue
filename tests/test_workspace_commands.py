@@ -976,14 +976,22 @@ class TestListWorkspacesBoundedDiagnostics:
     async def test_stuck_git_returns_partial_within_deadline(
         self, worktree_handler, monkeypatch
     ):
-        handler, orch, _ = worktree_handler
+        handler, orch, base = worktree_handler
         slot_ws, slot_dir = await _make_slot_for(orch)
-        real = orch.git.aread_status_summary
+        # Read the healthy checkout before the deadline starts: a real Git
+        # subprocess can also exceed 1s on a loaded CI worker.
+        base_status = await orch.git.aread_status_summary(str(base))
+        blocked = asyncio.Event()
+        cancelled = asyncio.Event()
 
         async def _stuck(path, **kw):
             if path == str(slot_dir):
-                await asyncio.sleep(3600)
-            return await real(path, **kw)
+                try:
+                    await blocked.wait()
+                finally:
+                    cancelled.set()
+            assert path == str(base)
+            return base_status
 
         monkeypatch.setattr(orch.git, "aread_status_summary", _stuck)
         started = time.monotonic()
@@ -997,6 +1005,7 @@ class TestListWorkspacesBoundedDiagnostics:
         rows = {r["id"]: r for r in result["workspaces"]}
         slot = rows[slot_ws.id]
         assert slot["git_status"] == "timeout"
+        assert cancelled.is_set()
         assert slot["branch"] is None and slot["dirty"] is None
         # The lock and owner readback survive the stuck probe.
         assert slot["locked_by_task_id"] == "tsk-1"
