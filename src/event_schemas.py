@@ -577,7 +577,7 @@ _CONFIG_SCHEMAS: dict[str, EventSchema] = {
 # ---------------------------------------------------------------------------
 
 _PROFILE_SCHEMAS: dict[str, EventSchema] = {
-    # A synced profile's vault copy (the supervisor by default) gained the
+    # A shipped system profile's vault copy (unless it opted out) gained the
     # shipped ``## Capabilities`` grants it lacked.  ``added`` maps each
     # capability namespace to the appended names; ``trigger`` is ``startup``,
     # ``reload`` or ``doctor``.

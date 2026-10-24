@@ -10,6 +10,16 @@ const node = { id: "e", title: "Epic", status: "IN_PROGRESS", priority: 100, is_
   container_id: null, kind: "container", context_only: false, agg_children: 3, agg_descendants: 5, agg_completed: 2, agg_running: 1, agg_blocked: 0, agg_active: 3 };
 
 describe("ContainerNode", () => {
+  it("shows canonical ingestion hold ahead of activity and delivery", () => {
+    const { container } = render(<ContainerNode id="e" data={{ node: {
+      ...node, display_state: "active", delivery: EPIC.activeIntegration,
+      held_batch: { batch_id: "batch", state: "needs_scope", structure_revision: 2,
+        source: "spec:approved", lineage: { lineage_kind: "none" } },
+    }, projectId: "p1" }} /> as never);
+    expect(screen.getByText("Held for fidelity review")).toBeInTheDocument();
+    expect(container.querySelector(".aq-pulse")).toBeNull();
+  });
+
   it("shows a waiting phase without a running pulse or container lifecycle counts", () => {
     const { container } = render(<ContainerNode id="e" data={{ node: {
       ...node, display_state: "waiting", display_reason: "Needs you: waiting on a decision",

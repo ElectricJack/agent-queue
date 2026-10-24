@@ -5,6 +5,7 @@ import DeleteTaskModal from "../../components/DeleteTaskModal";
 import TaskDisplayStatus from "../../components/TaskDisplayStatus";
 import { useShellPaneStore } from "../../panes/store";
 import { TASK_STATUSES, taskStatusLabel } from "./taskFilters";
+import { isIngestHeld } from "./statusPillModel";
 
 const STATUS_OPTIONS = TASK_STATUSES;
 const SUSPENDED = ["WAITING", "HIBERNATED", "RESUME_PENDING"];
@@ -96,7 +97,7 @@ export function RowActions({ task }: { task: Task }) {
 }
 
 export function InlineStatus({ task }: { task: Task }) {
-  if (task.display_state || (task.claim_readiness && !task.claim_readiness.claimable)) return <TaskDisplayStatus task={task} />;
+  if (isIngestHeld(task.held_batch) || task.display_state || (task.claim_readiness && !task.claim_readiness.claimable)) return <TaskDisplayStatus task={task} />;
   return <LifecycleStatus task={task} />;
 }
 

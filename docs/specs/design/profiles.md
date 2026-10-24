@@ -368,8 +368,8 @@ nor profile reseeding creates agent rows. There is deliberately no
 `aq doctor --fix` for either shape: overwriting
 or merging arbitrary profile content automatically would violate the
 `--fix` safety rules (trust-and-ops §5.4) — the operator invokes that
-repair explicitly. Additive capability sync is the exception, below: the
-supervisor, shipped worker templates and opted-in shipped profiles receive it.
+repair explicitly. Additive capability sync is the exception, below: all
+shipped system profiles receive it unless their vault copy opts out.
 
 #### Shipped capability sync
 
@@ -379,7 +379,11 @@ write-if-absent seeding, though, each control a release granted the shipped
 supervisor (`integration_eject`, `review_dispatch`,
 `integration_release_stale_owners`, …) stayed `capability denied` on an
 existing install until the vault copy was hand-edited. So its grants are kept
-in step automatically (`src/profiles/capability_sync.py`):
+in step automatically (`src/profiles/capability_sync.py`). The same rule applies
+to every shipped system profile, including spec-ingest, final-reviewer, planner,
+playbook-compiler, reviewer and triage: a deployment must not leave their new
+commands denied until an operator manually reseeds each profile. Custom profiles
+and derived worker rungs are not rewritten; rungs inherit their worker template.
 
 - **When.** On daemon start (before the startup profile→DB scan) and every
   time the vault watcher reloads a synced profile or worker template
@@ -398,10 +402,10 @@ in step automatically (`src/profiles/capability_sync.py`):
   merge cannot touch (no `## Capabilities` block, unparseable) is logged as a
   warning and left alone.
 - **Opt-out.** `capability_sync: false` in the vault copy's frontmatter, for
-  an operator who curates the supervisor's grants by hand; the daemon and the
-  doctor fix then never merge. The key also generalises the other way:
-  `capability_sync: true` opts any other shipped profile in to the same
-  merge. `supervisor` and every shipped `worker-*` template are synced by default.
+  an operator who curates a system profile's grants by hand; the daemon and the
+  doctor fix then never merge. All shipped system profiles are synced by default;
+  `capability_sync: true` explicitly enables the same merge. Neither setting
+  makes a custom profile a shipped profile.
 - **Doctor.** `profiles.supervisor_capability_drift` reports the shipped
   grants the vault copy still lacks — `warn` while any are missing (`info`
   when the profile opted out), `ok` when none are — and `--fix` runs the
@@ -412,6 +416,11 @@ in step automatically (`src/profiles/capability_sync.py`):
 Because the operator can no longer remove a *shipped* supervisor grant by
 deleting it from the vault copy (the next reload puts it back), narrowing the
 supervisor is done with the opt-out.
+
+The shipped spec-ingest profile grants `wait_register`, `wait_get` and
+`wait_checkpoint` so an ingestion worker can follow prime's durable wait,
+checkpoint and result-consumption instructions. These remain scoped to its own
+session/task; supervisor wait decisions are not granted.
 
 ---
 

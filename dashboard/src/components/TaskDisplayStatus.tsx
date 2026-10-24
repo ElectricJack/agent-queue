@@ -1,9 +1,14 @@
 import StatusBadge from "./StatusBadge";
+import type { HeldBatchSummary } from "@aq/ts-client";
 import { childCountText, DISPLAY_LABEL, type EpicActivity } from "./epicActivityFormat";
+import { isIngestHeld } from "../pages/command-center/statusPillModel";
 
 /** A task's status badge: a container shows its rolled-up activity instead of
  * the stored lifecycle, which stays in the tooltip. Every list surface uses it. */
-export default function TaskDisplayStatus({ task }: { task: { status?: string | null } & EpicActivity }) {
+export default function TaskDisplayStatus({ task }: { task: { status?: string | null; held_batch?: HeldBatchSummary | null } & EpicActivity }) {
+  if (isIngestHeld(task.held_batch)) return <span title={`Batch ${task.held_batch!.batch_id} · revision ${task.held_batch!.structure_revision} · task status ${task.status}`}>
+    <StatusBadge status="Held for fidelity review" />
+  </span>;
   if (task.status === "READY" && !task.child_state_counts && task.claim_readiness && !task.claim_readiness.claimable) {
     return <span title={`${task.claim_readiness.reason} · task status READY`}>
       <StatusBadge status={task.claim_readiness.label} />
