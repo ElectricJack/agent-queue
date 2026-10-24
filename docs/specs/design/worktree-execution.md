@@ -299,8 +299,16 @@ Contained reset/preflight timeouts and temporary OS contention release the task
 with preparation backoff, quarantine the failing workspace and drain its session,
 allowing another slot to retry automatically. The first two attempts do not set
 `needs_attention=slot_reset_failed` or request supervisor recovery; the third
-exhausts the existing preparation budget. Ownership and cleanup refusals retain
-their existing fences and are never treated as transient reset errors.
+exhausts the existing preparation budget. A branch-fence timeout during slot reset
+uses this same ladder; it must not return `no_ready_work` indefinitely while
+retaining an uncounted preparation. The recovery scan creates a supervisor incident
+for the exhausted, stopped attempt. If ownership cannot be released safely, retain
+the claim and record the preparation failure for supervisor recovery.
+Origin refresh for fenced pool preparation happens before branch mutation exclusion;
+the reset inside exclusion resolves only local refs. Mutable child refs are refreshed
+once before checkpoint planning, while available immutable origins need no fetch.
+Ownership and cleanup refusals retain their existing fences and are never treated
+as transient reset errors.
 After a pool process has stopped and released its ownership, teardown detaches
 a clean idle slot at its current HEAD under the acquisition fences. The local
 branch and sentinel preserve unpublished progress and attribution; dirty trees,

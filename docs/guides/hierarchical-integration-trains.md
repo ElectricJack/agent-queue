@@ -89,7 +89,10 @@ The session uses a retained checkout outside task slots; subsequent red results
 reuse both the session and checkout. It creates no repair task, claim or successor
 repair. The project's reviewed routing policy selects the worker profile. Frozen
 member file ownership and exact failing checks supply the failure groups in its
-input. The fixer commits locally and runs `aq integration batch-fix --action push`;
+input. The startup brief is bounded; the complete frozen input and failure evidence
+are in `.aq/tmp/batch-fixer-input.json` in its checkout. Large session prompts are
+delivered through a local file pointer so they never exceed OS argument limits.
+The fixer commits locally and runs `aq integration batch-fix --action push`;
 this command derives its batch from the authenticated session and can publish
 only that candidate branch. It refuses rewritten history, missing frozen sources,
 changed session identity, withdrawn source authority and disabled integration.

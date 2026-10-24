@@ -5,6 +5,10 @@ See docs/specs/implementation/session-runtime.md §3.4 and §8.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+import sys
 from dataclasses import FrozenInstanceError, asdict, dataclass, replace
 from pathlib import Path
 from typing import ClassVar
@@ -874,12 +878,13 @@ class TestPromptDelivery:
         rel, content = spec.files[0]
         assert rel.startswith(".aq/tmp/") and content == big
 
-    def test_oversized_prompt_argv_stays_small_and_execs_the_harness(self, builder):
+    def test_oversized_prompt_argv_stays_small_and_names_the_file(self, builder):
         big = "x" * 20000
         spec = _build(builder, prompt=big)
         argv = list(spec.command)
-        assert argv[0] == "sh" and argv[1] == "-c"
-        assert "exec" in argv[2]
+        assert argv[0] == "claude"
+        assert spec.files[0][0] in argv[-1]
+        assert "before taking any action" in argv[-1]
         # tmux's new-session command buffer is ~2 KB -- the whole argv must
         # stay far under it however long the prompt gets.
         assert len(" ".join(argv)) < 1024
@@ -888,7 +893,53 @@ class TestPromptDelivery:
     def test_oversized_prompt_under_flag_mode_keeps_the_flag(self, builder):
         harness = replace(CLAUDE, prompt_mode="flag", prompt_flag="--prompt")
         spec = _build(builder, harness=harness, prompt="y" * 5000)
-        assert list(spec.command)[-1] == "--prompt"
+        assert list(spec.command)[-2] == "--prompt"
+        assert spec.files[0][0] in spec.command[-1]
+
+    def test_operator_threshold_cannot_put_multi_megabyte_prompt_in_argv(self, builder):
+        harness = replace(CLAUDE, max_argv_prompt_bytes=10_000_000)
+        spec = _build(builder, harness=harness, prompt="x" * 2_500_000)
+        assert len(spec.command[-1].encode()) < 1024
+        assert len(spec.files[0][1]) == 2_500_000
+
+    @pytest.mark.parametrize("harness_id", ["claude", "codex"])
+    @pytest.mark.parametrize("mode", ["arg", "flag"])
+    async def test_multi_megabyte_named_prompt_executes_without_argv_expansion(
+        self, builder, tmp_path, harness_id, mode,
+    ):
+        # A real exec boundary and a CLI stand-in that reads the file pointer.
+        # No tmux or paid model needed to reproduce MAX_ARG_STRLEN / ARG_MAX.
+        stub = (
+            "import hashlib,json,sys; from pathlib import Path; "
+            "p=json.JSONDecoder().raw_decode(sys.argv[-1].split('UTF-8 file ',1)[1])[0]; "
+            "print(json.dumps({'args':sys.argv[1:],'sha':"
+            "hashlib.sha256(Path(p).read_bytes()).hexdigest()}))"
+        )
+        harness = Harness(id=harness_id, command=sys.executable, args=("-c", stub),
+                          prompt_mode=mode, prompt_flag="--prompt")
+        prompt = "é\n'$HOME; $(touch should-not-exist)\n" * 70_000
+        assert len(prompt.encode()) > 2 * 1024 * 1024
+        spec = builder.build_named_spec(
+            profile=_Profile(id="batch-fixer", harness=harness_id), harness=harness,
+            project_id="proj-1", work_dir=str(tmp_path), session_id="s1",
+            instance_token="t1", prompt=prompt,
+        )
+        for rel, content in spec.files:
+            path = tmp_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        proc = await asyncio.create_subprocess_exec(
+            *spec.command, cwd=tmp_path, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        assert proc.returncode == 0, stderr.decode()
+        result = json.loads(stdout)
+        assert result["sha"] == hashlib.sha256(prompt.encode()).hexdigest()
+        assert len(result["args"][-1].encode()) < 1024
+        if mode == "flag":
+            assert result["args"][-2] == "--prompt"
+        assert not (tmp_path / "should-not-exist").exists()
 
     def test_threshold_is_bytes_not_characters(self, builder):
         """A prompt of multi-byte characters must count as its byte length."""
