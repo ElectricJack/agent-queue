@@ -634,6 +634,28 @@ class WorktreeSlotManager:
         ))
 
     @guard_workspace("slot_ws")
+    async def prefetch_slot_for_task(
+        self, slot_ws: Workspace, *, base_branch: str, preserve_branch: bool = False,
+    ) -> None:
+        """Refresh reset inputs before acquiring the branch mutation fence.
+
+        Exact available origins need no refresh. A preserved child's mutable
+        remote tip does; its later reset resolves and mutates only local refs.
+        Repository serialization still protects the shared object store.
+        """
+        _validate_ref(base_branch, field="base branch")
+        slot_dir = slot_ws.workspace_path
+        if (not preserve_branch and is_valid_git_oid(base_branch)
+                and await self._ref_exists(slot_dir, base_branch)):
+            return
+        base_ws = await self._base_of(slot_ws)
+        await self.git.afetch_origin(
+            base_ws.workspace_path if base_ws else slot_dir,
+            repository_url=await self._repository_url(slot_ws.project_id),
+            all_heads=preserve_branch,
+        )
+
+    @guard_workspace("slot_ws")
     @_slot_reset_timeout
     async def ensure_slot_checkout(
         self, slot_ws: Workspace, task, *, kind=None, recover_merge: bool = True, handoff_sha: str | None = None,
@@ -1142,6 +1164,7 @@ class WorktreeSlotManager:
         kind: WorkspaceKind | None = None,
         operator_handoff: bool = False,
         preserve_branch: bool = False,
+        fetch_origin: bool = True,
     ) -> str:
         """Bring a slot to a pristine per-task state.  Returns the branch.
 
@@ -1150,6 +1173,8 @@ class WorktreeSlotManager:
         ``aq/<task_id>`` (or *resume_branch*) → sentinel → ``worktree.reset``.
         ``preserve_branch`` merges the proven parent into the exact owned
         target, keeping existing child commits instead of resetting its tip.
+        Fenced callers prefetch first and pass ``fetch_origin=False`` so
+        origin acquisition cannot consume the local mutation deadline.
         """
         # ``base_branch`` arrives from task metadata — untrusted text by
         # trust-and-ops §2.2.  Validate here rather than letting an
@@ -1185,7 +1210,7 @@ class WorktreeSlotManager:
             target_branch or resume_branch or getattr(task, "branch_name", None)
             or task_branch_name(task.id)
         )
-        if preserve_branch:
+        if preserve_branch and fetch_origin:
             # A paused child may have only a published owned ref. Refresh it
             # before planning restoration, while the checkout is still intact.
             await self.git.afetch_origin(
@@ -1259,6 +1284,7 @@ class WorktreeSlotManager:
                 base_path, start_point, required=preserve_branch, cwd=str(slot_dir),
                 project_id=slot_ws.project_id,
                 refresh_refs=preserve_branch or target_branch is None,
+                fetch_origin=fetch_origin,
             )
 
             # Hard reset + clean.  The sentinel is exempted so a reset never
@@ -1694,6 +1720,7 @@ class WorktreeSlotManager:
         cwd: str | None = None,
         project_id: str | None = None,
         refresh_refs: bool = False,
+        fetch_origin: bool = True,
     ) -> str:
         """Fetch in the base and return the ref new work should start from.
 
@@ -1711,7 +1738,7 @@ class WorktreeSlotManager:
             return branch
         fetch_failed = False
         try:
-            if await self.git.ahas_remote(base_path):
+            if fetch_origin and await self.git.ahas_remote(base_path):
                 await self.git.afetch_origin(
                     base_path,
                     repository_url=await self._repository_url(project_id),
