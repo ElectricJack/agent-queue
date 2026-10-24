@@ -5591,7 +5591,7 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:c6e314968fa56cfa5afca411b633576783141507f8c18899f61aded3a4a45eeb",
+      "digest": "sha256:b88bba7864b6ddffd78f5b1d76f857fa9dc1d8901a929db63433e4963e45ac9b",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -5599,7 +5599,8 @@
         "src.commands.principal",
         "src.playbooks.definition",
         "src.playbooks.engine",
-        "src.playbooks.executors.base"
+        "src.playbooks.executors.base",
+        "src.playbooks.profiles"
       ],
       "markers": [
         "parametrize"

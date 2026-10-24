@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from src.commands.principal import ExecutionPrincipal
 from src.playbooks.definition import canonical_bytes, load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
+from src.playbooks.profiles import shipped_profile_lookup
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -48,11 +50,22 @@ def test_captured_baseline_and_executable_graph_are_unchanged():
     assert canonical_bytes(before) == BEFORE.read_bytes()
     assert before.source_hash == SCENARIOS["baseline_source_sha256"]
 
+    # The wait lifecycle adds exactly these grants to the delegated profile.
+    # Check that dependency change before normalizing it for graph comparison.
+    policy = shipped_profile_lookup().policy("spec-ingest")
+    added = frozenset({"wait_checkpoint", "wait_get", "wait_register"})
+    assert added <= policy.aq_commands
+    assert after.compiled_against.profiles == {"spec-ingest": policy.fingerprint()}
+    assert before.compiled_against.profiles == {
+        "spec-ingest": replace(policy, aq_commands=policy.aq_commands - added).fingerprint(),
+    }
+
     def executable(artifact):
         body = json.loads(canonical_bytes(artifact))
         # Compilation provenance changes with the source; executable fields do not.
         for field in ("source_hash", "compiled_at", "trusted_execution"):
             body.pop(field, None)
+        body["compiled_against"]["profiles"] = dict(before.compiled_against.profiles)
         for item in [*body["rules"], *body["steps"].values()]:
             item.pop("source")
         return _json_bytes(body)
@@ -64,6 +77,28 @@ def test_captured_baseline_and_executable_graph_are_unchanged():
     assert not after.required_features
     assert not after.trusted_execution.scripts
     assert after.trusted_execution.state_schema_version is None
+
+
+def test_wait_grant_refresh_preserves_the_complete_previous_artifact():
+    evidence = json.loads(Path(
+        "tests/fixtures/contracts/default-pipeline-wait-grants-changes.json"
+    ).read_text())
+    change = evidence["playbook_fixtures"][AFTER.as_posix()]
+    previous_bytes = Path(change["preserved_previous_path"]).read_bytes()
+    assert hashlib.sha256(previous_bytes).hexdigest() == change["previous_sha256"]
+    assert hashlib.sha256(AFTER.read_bytes()).hexdigest() == change["sha256"]
+    previous = json.loads(previous_bytes)
+    current = json.loads(AFTER.read_bytes())
+    grants = evidence["profile_grants"]["spec-ingest"]
+    assert grants["added_aq_commands"] == ["wait_checkpoint", "wait_get", "wait_register"]
+    assert previous["compiled_against"]["profiles"] == {
+        "spec-ingest": grants["previous_fingerprint"],
+    }
+    assert current["compiled_against"]["profiles"] == {"spec-ingest": grants["fingerprint"]}
+    previous["compiled_against"]["profiles"] = current["compiled_against"]["profiles"]
+    previous.pop("compiled_at")
+    current.pop("compiled_at")
+    assert current == previous
 
 
 async def _execute(path, scenario):
