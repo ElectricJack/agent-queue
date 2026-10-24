@@ -6,7 +6,7 @@ def _held_ingestion_pipeline_transport_changes():
 
 def _before_held_ingestion_pipeline_catalogue():
     return _revert_catalogue(
-        json.loads(render_command_catalogue()), _held_ingestion_pipeline_transport_changes(),
+        _before_project_schedules_catalogue(), _held_ingestion_pipeline_transport_changes(),
     )
 
 

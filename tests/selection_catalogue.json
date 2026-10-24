@@ -1175,6 +1175,7 @@
       "modules": [
         "tests/test_project_constraint_enforcement.py",
         "tests/test_project_constraints.py",
+        "tests/test_project_schedules.py",
         "tests/test_schedule.py",
         "tests/test_scheduler.py",
         "tests/test_timer_service.py",
@@ -15129,6 +15130,33 @@
         "parametrize"
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
+    },
+    "tests/test_project_schedules.py": {
+      "areas": [
+        "scheduling"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6b0c5c38d6a00ed1f5303787ca97b29207299252dbaa8d25923f9f4083bf87d8",
+      "imports": [
+        "src.api.codegen",
+        "src.cli.app",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.models",
+        "src.project_schedules",
+        "src.waits.adapters.base",
+        "src.waits.adapters.timer",
+        "src.waits.conditions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Long-horizon notices: durable receipts, cancellation races and scoped commands."
     },
     "tests/test_project_supervisors.py": {
       "areas": [
