@@ -5188,7 +5188,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:a4c9624f198e44ca6fbfd34871ae6f5fe434b387f07d1368c528662b7e840178",
+      "digest": "sha256:0fff545125d8bdcb2c0d32eb99f002c0ea1b26687115ca50be050048242d1f57",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -5200,8 +5200,10 @@
         "src.discord.intake_diagnostics",
         "src.discord.rate_guard",
         "src.escalations.transport",
+        "src.event_bus",
         "src.main",
         "src.messages.delivery",
+        "src.messages.service",
         "src.messages.session_lens",
         "src.models",
         "src.profiles.capabilities"

@@ -536,3 +536,32 @@ async def test_rollback_rejects_already_queued_external_intent(env, monkeypatch)
     assert not result["success"] and result["error_code"] == "ask.channel_disabled", result
     async with db.immediate() as conn:
         assert not await conn.scalar(select(func.count()).select_from(ask_decisions))
+
+
+async def test_ordinary_gateway_input_wakes_addressed_stopped_supervisor_after_commit(
+    env, monkeypatch
+):
+    handler, db = env
+    await enable(handler, monkeypatch)
+    await db.update_project("p", supervisor_enabled=True)
+    await db.update_session("supervisor", state="stopped", desired_state="stopped")
+    wakes = []
+
+    async def committed_event(kind, payload):
+        assert kind == "message.sent"
+        assert payload["to_id"] == "supervisor-p"
+        assert payload["body_kind"] == "conversation_input"
+        notice = await db.get_message(payload["message_id"])
+        item = await db.find_conversation_input_by_supervisor_message(notice.id)
+        assert item["routing_state"] == "conversation"
+        assert item["receipt"]["input_id"] == item["id"]
+        wakes.append(notice.id)
+
+    monkeypatch.setattr(handler, "_emit_message_event", committed_event)
+    accepted = await admit(handler, "Hello supervisor")
+    assert accepted["success"] and accepted["created"]
+    assert wakes == [f"msg-{accepted['input_id']}"]
+    replay = await admit(handler, "Hello supervisor", source="backfill")
+    assert replay["success"] and not replay["created"]
+    assert replay["input_id"] == accepted["input_id"]
+    assert wakes == [f"msg-{accepted['input_id']}"] * 2

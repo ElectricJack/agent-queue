@@ -379,6 +379,23 @@ class ConversationCommandsMixin:
             },
         )
 
+    async def _wake_conversation_input(self, item: dict) -> None:
+        """Publish only committed notice metadata; retries reuse the durable id."""
+        message_id = item.get("supervisor_message_id")
+        notice = await self.db.get_message(message_id) if message_id else None
+        if (notice is None or notice.body_kind != "conversation_input"
+                or notice.to_id == QUEUED_SUPERVISOR_RECIPIENT):
+            return
+        await self._emit_message_event("message.sent", {
+            "message_id": notice.id,
+            "project_id": notice.project_id,
+            "from_kind": notice.from_kind,
+            "from_id": notice.from_id,
+            "to_kind": notice.to_kind,
+            "to_id": notice.to_id,
+            "body_kind": notice.body_kind,
+        })
+
     async def _conversation_post_result(
         self,
         *,
@@ -596,6 +613,7 @@ class ConversationCommandsMixin:
                 or (conversation_id and conversation_id != stored["id"])
             ):
                 return _error("foreign_destination", "replay disagrees with accepted provenance")
+            await self._wake_conversation_input(replay)
             await self._repair_queued_status_line(outbox, stored)
             return await self._conversation_post_result(
                 item=replay,
@@ -618,9 +636,6 @@ class ConversationCommandsMixin:
             )
 
         try:
-            recipient, supervisor_project_id = await self.db.resolve_conversation_supervisor(
-                self.config.discord.project_id
-            )
             accepted = await self.db.accept_conversation_input(
                 **envelope.model_dump(exclude={"mentions_bot", "text", "tag"}),
                 text=text,
@@ -631,8 +646,7 @@ class ConversationCommandsMixin:
                 brief=brief,
                 now=now,
                 enforce_limits=True,
-                supervisor_recipient=recipient or QUEUED_SUPERVISOR_RECIPIENT,
-                supervisor_project_id=supervisor_project_id,
+                resolve_project_id=self.config.discord.project_id,
                 kind=_conversation_kind(
                     direct=direct,
                     in_thread=bool(envelope.external_thread_id),
@@ -662,6 +676,9 @@ class ConversationCommandsMixin:
             return _error("conversation_closed", "conversation is closed; start a new mention")
         except ConversationNotFound:
             return _error("conversation_not_found", "conversation does not exist")
+        await self._wake_conversation_input(accepted["input"])
+        notice = await self.db.get_message(accepted["supervisor_message_id"])
+        recipient = notice.to_id if notice.to_id != QUEUED_SUPERVISOR_RECIPIENT else None
         await self._repair_queued_status_line(
             outbox,
             accepted["conversation"],
