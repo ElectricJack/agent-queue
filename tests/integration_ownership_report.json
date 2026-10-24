@@ -2780,7 +2780,7 @@
   },
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2087,
+    "authorized_owned_delta": 2111,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2847,6 +2847,24 @@
       "source_revision": "5e33516f93715b484eb15c2525d050ac303d5ee4",
       "task_id": "swift-lantern-21"
     },
+    "legacy_bookkeeping_refresh_composition": {
+      "authorized_engine_delta": 24,
+      "authorized_owned_delta": 24,
+      "authorized_table_delta": 0,
+      "charged_file": "src/integration/bookkeeping_guard.py",
+      "decision_message_id": "msg-9de2c6e7e51249babbc2e680b41d185d",
+      "dev_source_revision": "2378cda7eda6ba241bae7a9ab43c70111607199b",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82443,
+      "previous_measured_owned_total": 157549,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1935",
+      "reason": "Exact approved +24 owned and engine lines for inherited legacy bookkeeping evidence. Includes the already landed wise-crest-14 grant; preserves original baselines, historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "8ecfb8e7e384db46a6b203141165c033e58c02e0",
+      "task_id": "solid-dune-53",
+      "thread_id": "solid-dune-53-size-amendment"
+    },
     "legacy_epic_delivery_composition": {
       "authorized_engine_delta": 37,
       "authorized_owned_delta": 37,
@@ -2866,8 +2884,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82480,
-    "measured_owned_total": 157586,
+    "measured_engine_lines": 82504,
+    "measured_owned_total": 157610,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -16150,12 +16168,12 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 82480,
+    "engine_cap": 82504,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2087,
+      "authorized_owned_delta": 2111,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16222,6 +16240,24 @@
         "source_revision": "5e33516f93715b484eb15c2525d050ac303d5ee4",
         "task_id": "swift-lantern-21"
       },
+      "legacy_bookkeeping_refresh_composition": {
+        "authorized_engine_delta": 24,
+        "authorized_owned_delta": 24,
+        "authorized_table_delta": 0,
+        "charged_file": "src/integration/bookkeeping_guard.py",
+        "decision_message_id": "msg-9de2c6e7e51249babbc2e680b41d185d",
+        "dev_source_revision": "2378cda7eda6ba241bae7a9ab43c70111607199b",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82443,
+        "previous_measured_owned_total": 157549,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1935",
+        "reason": "Exact approved +24 owned and engine lines for inherited legacy bookkeeping evidence. Includes the already landed wise-crest-14 grant; preserves original baselines, historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "8ecfb8e7e384db46a6b203141165c033e58c02e0",
+        "task_id": "solid-dune-53",
+        "thread_id": "solid-dune-53-size-amendment"
+      },
       "legacy_epic_delivery_composition": {
         "authorized_engine_delta": 37,
         "authorized_owned_delta": 37,
@@ -16241,8 +16277,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 82480,
-      "measured_owned_total": 157586,
+      "measured_engine_lines": 82504,
+      "measured_owned_total": 157610,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16266,7 +16302,7 @@
       "task_id": "smart-nexus-83"
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157586,
+    "owned_total_cap": 157610,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
