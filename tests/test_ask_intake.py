@@ -11,6 +11,7 @@ from src.asks.intake import clear_intent
 from src.commands.principal import ExecutionPrincipal, principal_context
 from src.database.tables import (
     ask_decisions, ask_reconciliation_cases, conversation_inputs, human_communication_modes,
+    messages, outbound_deliveries, supervisor_conversations,
 )
 from tests.test_ask_discussion import ask_for
 from tests.test_ask_discussion import env as env  # noqa: F401
@@ -241,6 +242,141 @@ async def test_ordinary_shared_input_reuses_addressed_supervisor_reply(env, monk
     )
     assert reply["success"], reply
     assert handler.orchestrator.conversation_outbox.enqueue.await_count == 1
+
+
+async def conversation_reply_receipt(handler, db):
+    from src.conversations.delivery import DurableConversationOutbox
+
+    handler.orchestrator.conversation_outbox = DurableConversationOutbox(db)
+    admitted = await admit(handler, "Interview question, please")
+    conversation_id = admitted["receipt"]["conversation_id"]
+    reply = await _scoped(handler, "supervisor_inbox_reply", {
+        "conversation_id": conversation_id, "input_id": admitted["input_id"],
+        "text": "Question one: shall we continue?", "idempotency_key": "interview-question",
+    }, session_id="supervisor")
+    assert reply["success"], reply
+    reference = str(int(MESSAGE) + 100)
+    async with db.immediate() as conn:
+        await conn.execute(update(outbound_deliveries).where(
+            outbound_deliveries.c.dedup_key == reply["delivery_dedup_key"]
+        ).values(state="sent", external_receipt_id=reference, receipt_confirmed_at=1001))
+    return conversation_id, reference
+
+
+@pytest.mark.parametrize("text", ["Here is my interview answer", "yes", "no"])
+async def test_reply_to_supervisor_receipt_continues_conversation(env, monkeypatch, text):
+    handler, db = env
+    await enable(handler, monkeypatch)
+    conversation_id, reference = await conversation_reply_receipt(handler, db)
+    # A pending ask must not steal a short answer to an ordinary conversation.
+    await ask_for(handler)
+    inbound, _, _ = router(handler, config=handler.config)
+    incoming = message(
+        id=int(MESSAGE) + 1, mention=False, content=text,
+        reference=SimpleNamespace(message_id=int(reference)),
+    )
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID) == "posted:created"
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID, source="backfill") == "posted:replayed"
+    async with db.immediate() as conn:
+        item = (await conn.execute(select(conversation_inputs).where(
+            conversation_inputs.c.external_message_id == str(incoming.id)
+        ))).mappings().one()
+        assert item["conversation_id"] == conversation_id
+        assert item["reference_message_id"] == reference
+        assert item["routing_state"] == "conversation" and item["ask_id"] is None
+        notice = (await conn.execute(select(messages).where(
+            messages.c.id == item["supervisor_message_id"]
+        ))).mappings().one()
+        assert notice["to_id"] == "supervisor-p"
+        assert notice["thread_id"] == f"conversation:{conversation_id}"
+        assert reference in notice["body"] and text in notice["body"]
+        assert await conn.scalar(select(func.count()).select_from(ask_decisions)) == 0
+
+
+@pytest.mark.parametrize("failure", ["missing", "channel", "transport", "guild", "thread", "audience", "closed"])
+async def test_unroutable_reference_has_public_and_supervisor_receipts(env, monkeypatch, failure):
+    from src.conversations.delivery import ConversationDeliveryAdapter
+
+    handler, db = env
+    await enable(handler, monkeypatch)
+    conversation_id, reference = await conversation_reply_receipt(handler, db)
+    async with db.immediate() as conn:
+        if failure in {"channel", "transport"}:
+            await conn.execute(update(outbound_deliveries).values(destination={
+                "transport": "other" if failure == "transport" else "discord",
+                "channel_id": "999999999999999999" if failure == "channel" else CHANNEL,
+            }))
+        elif failure != "missing":
+            changes = {
+                "guild": {"guild_id": "999999999999999999"},
+                "thread": {"external_thread_id": "999999999999999999"},
+                "audience": {"audience": []}, "closed": {"state": "closed"},
+            }
+            await conn.execute(update(supervisor_conversations).where(
+                supervisor_conversations.c.id == conversation_id
+            ).values(**changes[failure]))
+    incoming = message(
+        id=int(MESSAGE) + 1, mention=False, content="My answer",
+        reference=SimpleNamespace(message_id=int(reference) + (failure == "missing")),
+    )
+    inbound, _, _ = router(handler, config=handler.config)
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID) == "posted:created"
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID) == "posted:replayed"
+    async with db.immediate() as conn:
+        item = (await conn.execute(select(conversation_inputs).where(
+            conversation_inputs.c.external_message_id == str(incoming.id)
+        ))).mappings().one()
+        assert item["routing_state"] == "clarification"
+        assert item["receipt"]["error_code"] == "ask.reference_unresolved"
+        rows = (await conn.execute(select(outbound_deliveries).where(
+            outbound_deliveries.c.dedup_key == f"ask-reference:{item['id']}"
+        ))).mappings().all()
+        assert len(rows) == 1
+        assert "resend" in rows[0]["payload"]["text"]
+        assert rows[0]["payload"]["reference_message_id"] == str(incoming.id)
+        assert await conn.scalar(select(func.count()).select_from(messages).where(
+            messages.c.id == f"msg-reference-{item['id']}", messages.c.to_id == "supervisor-p"
+        )) == 1
+    adapter = ConversationDeliveryAdapter(db, SimpleNamespace(), config=handler.config,
+                                          lease_owner="test")
+    adapter.delivery.deliver = AsyncMock(return_value=SimpleNamespace(
+        status="sent", receipt_id="notice-receipt", next_attempt_at=None, last_error=None,
+    ))
+    adapter._finish = AsyncMock()
+    await adapter.deliver(dict(rows[0]))
+    adapter.delivery.deliver.assert_awaited_once()
+    sent = adapter.delivery.deliver.await_args.args[0]
+    assert sent.channel_id == CHANNEL and sent.reference_message_id == str(incoming.id)
+
+
+async def test_reference_correlation_failure_stays_queued_with_durable_notice(env, monkeypatch):
+    from src.asks import intake
+
+    handler, db = env
+    await enable(handler, monkeypatch)
+    _, reference = await conversation_reply_receipt(handler, db)
+    real_bound = intake.bound_ask
+    monkeypatch.setattr(intake, "bound_ask", AsyncMock(side_effect=RuntimeError("lookup failed")))
+    incoming = message(
+        id=int(MESSAGE) + 1, mention=False,
+        reference=SimpleNamespace(message_id=int(reference)),
+    )
+    inbound, _, _ = router(handler, config=handler.config)
+    assert await inbound.route(incoming, bot_user_id=BOT_USER_ID) == "posted:created"
+    async with db.immediate() as conn:
+        item = (await conn.execute(select(conversation_inputs).where(
+            conversation_inputs.c.external_message_id == str(incoming.id)
+        ))).mappings().one()
+        assert item["routing_state"] == "queued"
+        assert item["receipt"]["error_code"] == "ask.correlation_failed"
+        assert await conn.scalar(select(func.count()).select_from(outbound_deliveries).where(
+            outbound_deliveries.c.dedup_key == f"ask-reference:{item['id']}"
+        )) == 1
+    monkeypatch.setattr(intake, "bound_ask", real_bound)
+    result = await handler.execute("ask_reconcile", {"apply": True})
+    assert result["success"] and result["result"]["routed"] == 1, result
+    async with db.immediate() as conn:
+        assert (await db.get_ask_input(item["id"], conn=conn))["routing_state"] == "conversation"
 
 
 @pytest.mark.parametrize(
