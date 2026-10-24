@@ -660,6 +660,7 @@ async def test_reply_live_global_supervisor_is_durable_and_idempotent(env):
         "conversation_id": first["conversation_id"],
         "input_id": first["input_id"],
         "reply_message_id": result["reply_message_id"],
+        "reference_message_id": args()["envelope"]["external_message_id"],
         "text": "Answer from the supervisor" + conversation_marker(result["delivery_dedup_key"]),
     }
     assert result["discord_text_chars"] == len(rows[-1]["payload"]["text"])

@@ -5401,14 +5401,15 @@
         "dashboard-server"
       ],
       "default_arm": true,
-      "digest": "sha256:05ce533824f6cca2682e76c62551d0b64125117adc38131d6bc6bf31591fe845",
+      "digest": "sha256:127932efe08c9b4c55a4b634611fa33332929165001e970cedf4a3ebb9998722",
       "imports": [
         "src.dashboard_server",
         "src.dashboard_server.proxy",
         "src.dashboard_server.relay_stats"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "skip"
       ],
       "summary": "The dashboard server's reverse proxy (docs/specs/dashboard-server.md §2, §7)."
     },
