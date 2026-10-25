@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2401,
+ 'authorized_owned_delta': 2411,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -954,6 +954,25 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'supervisor_decision_comment_id': 'comment-ccb6fb19a24f447c97da075bc800a9a2',
      'task_id': 'wise-crest-14',
      'thread_id': 'wise-crest-14-ci-size'},
+ 'legacy_abandon_keep_branch_composition': {'task_id': 'eager-grove-95',
+     'authorized_owned_delta': 10,
+     'authorized_engine_delta': 10,
+     'authorized_table_delta': 0,
+     'charged_files': {'src/integration/legacy_backfill.py': 10},
+     'decision_message_id': 'msg-42d72c76b0464cf79d519048e57985ac',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'operator_decision': '6679052c',
+     'previous_measured_owned_total': 157793,
+     'previous_measured_engine_lines': 82532,
+     'previous_measured_table_count': 45,
+     'dev_source_revision': '00b7a51cf',
+     'source_revision': '92326912dcff1bed5ca8bd5e7ab7c4f587ec9f5d',
+     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1990',
+     'thread_id': 'eager-grove-95-ci-size-epoch4',
+     'reason': 'Exact supervisor-approved +10 owned/engine lines for explicit keep-branch legacy '
+               'source abandonment after merging current dev. Preserve all historical grants, original '
+               'baselines and ownership classifications, with zero remaining headroom and no new '
+               'tables or storage category.'},
  'expires_at': 's4_modules',
  'held_ingestion_composition': {'authorized_engine_delta': 0,
                                 'authorized_owned_delta': 14,
@@ -1048,8 +1067,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82639,
- 'measured_owned_total': 157900,
+ 'measured_engine_lines': 82649,
+ 'measured_owned_total': 157910,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
