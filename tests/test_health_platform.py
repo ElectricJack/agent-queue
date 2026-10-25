@@ -69,6 +69,7 @@ def _make_orchestrator(**overrides):
     orch._paused = overrides.get("paused", False)
     orch._running_tasks = overrides.get("running_tasks", {})
     orch._notify = overrides.get("notify", None)
+    orch.wait_scheduler_service = None
 
     # Database stubs
     orch.db = AsyncMock()
