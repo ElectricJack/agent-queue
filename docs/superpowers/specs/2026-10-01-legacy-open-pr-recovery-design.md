@@ -93,8 +93,10 @@ aq integration close-delivered-pr PROJECT_ID PR_NUMBER --apply --head HEAD_SHA -
 
 It reads the PR through the repository's GitHub credential, refuses a PR
 whose base is not the default branch or whose head is not a branch of the
-designated repository, fetches the retained repository, checks that the
-remote head branch is the PR head, and tries three proofs in order:
+designated repository, and rejects live tracking tasks or attached writers
+before opening or locking the retained repository. Eligible PRs fetch the
+retained repository and read both exact remote branch refs together, check that
+the remote head branch is the PR head, and try three proofs in order:
 
 | Proof | Meaning |
 |---|---|

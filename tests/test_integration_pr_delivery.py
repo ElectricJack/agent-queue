@@ -213,7 +213,9 @@ async def test_a_live_task_keeps_its_pr_open_even_when_its_head_is_already_on_ma
 
 
 @pytest.mark.parametrize("attachment", ["session", "workspace", "assigned_agent"])
-async def test_a_completed_task_with_an_attached_writer_keeps_its_pr_open(env, attachment):
+async def test_a_completed_task_with_an_attached_writer_keeps_its_pr_open(
+    env, attachment, monkeypatch,
+):
     _branch(env, "aq/attached")
     head = _git("rev-parse", "HEAD", cwd=env.work)
     _push(env, "aq/attached")
@@ -242,9 +244,12 @@ async def test_a_completed_task_with_an_attached_writer_keeps_its_pr_open(env, a
             await conn.execute(update(tasks).where(tasks.c.id == "attached").values(
                 assigned_agent_id="writer",
             ))
+    ensure = AsyncMock(side_effect=AssertionError("ineligible PR waited for the retained store"))
+    monkeypatch.setattr(env.control.promotion, "_ensure_retained_repository", ensure)
     held = await env.control.run("p", 15)
     assert held["outcome"] == "not_eligible" and held["live_task_ids"] == ["attached"]
     assert env.github.closed == [] and env.github.comments == {}
+    ensure.assert_not_awaited()
 
 
 async def test_task_reopening_during_apply_invalidates_delivery_proof_before_any_write(
@@ -423,18 +428,45 @@ async def test_a_moved_or_mismatched_head_is_never_closed(env):
     ],
 )
 async def test_only_open_prs_of_the_designated_repository_to_main_qualify(
-    env, base, repo_id, state, merged_at, outcome,
+    env, base, repo_id, state, merged_at, outcome, monkeypatch,
 ):
     _branch(env, "aq/feature")
     head = _commit(env, "feature.txt", "feature\n", "feature")
     _push(env, "aq/feature")
     env.github.open(17, "aq/feature", head, base=base, repo_id=repo_id)
     env.github.pulls[17].update(state=state, merged_at=merged_at)
+    ensure = AsyncMock(side_effect=AssertionError("ineligible PR waited for the retained store"))
+    monkeypatch.setattr(env.control.promotion, "_ensure_retained_repository", ensure)
     result = await env.control.run("p", 17)
     assert result["outcome"] == outcome
     if merged_at:
         assert result["state"] == "merged"
     assert env.github.closed == []
+    ensure.assert_not_awaited()
+
+
+async def test_delivery_reads_both_remote_heads_together_and_fails_closed(env, monkeypatch):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+
+    _branch(env, "aq/refs")
+    head = _git("rev-parse", "HEAD", cwd=env.work)
+    _push(env, "aq/refs")
+    env.github.open(18, "aq/refs", head)
+    git = env.control.git
+    refs = AsyncMock(wraps=git.als_remote_refs)
+    monkeypatch.setattr(git, "als_remote_refs", refs)
+    monkeypatch.setattr(git, "als_remote_ref", AsyncMock(side_effect=AssertionError(
+        "PR proof issued an extra remote round trip",
+    )))
+    assert (await env.control.run("p", 18))["outcome"] == "would_close"
+    assert refs.await_args.args[1] == ["aq/refs", "main"]
+    refs.assert_awaited_once()
+    refs.side_effect = None
+    refs.return_value = {branch: RemoteRefResult(RemoteRefState.ERROR, error="unavailable")
+                         for branch in ("aq/refs", "main")}
+    result = await env.control.run("p", 18, dry_run=False, expected_head_sha=head, reason="retry")
+    assert result["outcome"] == "changed"
+    assert env.github.closed == [] and env.github.comments == {}
 
 
 async def test_a_project_without_a_designated_repository_is_not_eligible(env):
