@@ -67,7 +67,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
-  - { paths: ["scripts/bazel/generate_targets.py", "src/**/BUILD.bazel", "tests/BUILD.bazel", "checks/BUILD.bazel"], areas: ["bazel-toolchains", "bazel-environment", "test-selection"] }
+  - { paths: ["scripts/bazel/generate_targets.py", "scripts/bazel/impact.py", "src/**/BUILD.bazel", "tests/BUILD.bazel", "checks/BUILD.bazel"], areas: ["bazel-toolchains", "bazel-environment", "test-selection"] }
   - { paths: ["tools/bazel/runtime.py", "tools/bazel/pytest_plugin.py", "tools/bazel/runtime-contract.md", "tools/bazel/runtime-ledger.json"], areas: ["bazel-runtime"] }
   - { paths: [".bazelversion", ".bazelrc", "MODULE.bazel", "MODULE.bazel.lock", "BUILD.bazel", "tools/bazel/**"], areas: ["bazel-toolchains", "bazel-environment"] }
   - { paths: ["REPO.bazel", "checks/BUILD.bazel", "dashboard/BUILD.bazel", "dashboard/package.json", "packages/aq-ts-client/**", "package.json", "package-lock.json"], areas: ["bazel-toolchains"] }

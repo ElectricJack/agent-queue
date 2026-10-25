@@ -203,3 +203,44 @@ The first also installs directly from the npm lock and runs the existing npm
 commands using the pinned Node 24 archive. TypeScript filename/byte manifests
 and Vite output manifests must match across both Bazel roots and npm. Missing
 opt-in settings explicitly skip this acceptance, rather than establishing parity.
+
+## V1 observational impact audit
+
+Use the project environment with the pinned `pytest-impacted` dependency and the
+locked Bazel executable to compare an ancestor base and an exact candidate head:
+
+```bash
+python scripts/bazel/impact.py --base BASE_SHA --head HEAD_SHA \
+  --bazel /absolute/path/to/bazel-8.3.1 --suite default_1 \
+  --output /absolute/path/to/impact.json
+```
+
+Repeat `--suite` for each manifest suite/marker arm, or use `dashboard` and
+`generated` for the non-Python checks. The audit creates clean local clones of
+both commits, checks their identities before and after queries, and never fetches
+Git refs or executes tests. A dirty caller checkout does not supply BUILD files.
+Each signature binds both commits, graph inputs and edges, dependency locks,
+generator registry inputs/version, selection rules, marker and audit tool version.
+Query diagnostics sit outside the deterministic signature digest.
+
+Reports retain per-path owners, reverse dependencies, static/mandatory target
+obligations and differences. Missing query/static evidence, unowned paths,
+unresolved dynamic loads/resources or missing obligations widen the entire
+requested suite and set `promotion_blocked`. Exit 0 means the observational audit
+is complete, 1 means evidence requires widening, and 2 means the audit was refused.
+These signatures do not change test selection, required checks or train eligibility.
+
+The real-query mutation matrix uses disposable pinned repositories and a
+self-contained graph with a generator output and unrelated test targets:
+
+```bash
+POSTGRES_TEST_DSN=<disposable-test-dsn> \
+AQ_BAZEL_IMPACT=/absolute/path/to/bazel-8.3.1 \
+AQ_BAZEL_IMPACT_EVIDENCE=/absolute/path/to/evidence \
+aq test tests/test_bazel_manifest.py -k impact
+```
+
+It covers fixture, prompt, migration, package initializer and generator input
+edits, plus deletions and renames using both old and new paths. Without the Bazel
+opt-in, the real-query cases explicitly skip; fast tests still verify exact-head
+isolation, deterministic identities and conservative fallback behavior.

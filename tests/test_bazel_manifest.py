@@ -8,10 +8,13 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+from src.test_selection.static_impact import FixedStaticImpact
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("bazel_lock", ROOT / "tools/bazel/lock.py")
@@ -847,3 +850,302 @@ def test_clean_root_dashboard_acceptance():
             assert manifest(reference / "dashboard/dist") == build
     assert manifests[0] and manifests[0] == manifests[1]
     assert builds[0] and builds[0] == builds[1]
+
+
+# V1: exact-head observational graph evidence and conservative cross-checks.
+_spec_impact = importlib.util.spec_from_file_location(
+    "bazel_impact",
+    ROOT / "scripts/bazel/impact.py",
+)
+impact = importlib.util.module_from_spec(_spec_impact)
+# dataclasses resolves annotations through the module registry.
+sys.modules[_spec_impact.name] = impact
+_spec_impact.loader.exec_module(impact)
+
+
+def _impact_repo(tmp_path):
+    from tests.selection_fixture_repo import build_fixture_repo, git
+
+    repo = build_fixture_repo(tmp_path / "repo")
+    for relative in (*impact.LOCKS, *impact.REGISTRY):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+    (repo / "tools/bazel/toolchains.lock.json").write_bytes(
+        (ROOT / "tools/bazel/toolchains.lock.json").read_bytes()
+    )
+    (repo / "MODULE.bazel.lock").write_bytes((ROOT / "MODULE.bazel.lock").read_bytes())
+    (repo / "MODULE.bazel").write_text('module(name = "impact_fixture")\n')
+    # No external modules: this graph tests invalidation without registry I/O.
+    (repo / ".bazelrc").write_text("common --noenable_bzlmod\ncommon --enable_workspace\n")
+    (repo / ".gitignore").write_text("bazel-*\n__pycache__/\n*.pyc\n")
+    (repo / "probe.bzl").write_text("""
+def _impl(ctx):
+    ctx.actions.write(ctx.outputs.executable, "#!/bin/sh\\nexit 0\\n", is_executable = True)
+probe_test = rule(implementation = _impl, test = True, attrs = {
+    "srcs": attr.label_list(allow_files = True),
+    "deps": attr.label_list(),
+})
+""")
+    # The fixture exercises real query edges, including an intermediate generator
+    # output. The unrelated c/docs tests establish that successful queries narrow.
+    (repo / "BUILD.bazel").write_text("""
+load(":probe.bzl", "probe_test")
+filegroup(name = "inputs", srcs = glob(["src/**", "fixtures/**", "migrations/**", "generator/**"]))
+genrule(name = "generated", srcs = [":inputs"], outs = ["generated.txt"], cmd = "touch $@")
+probe_test(name = "a", srcs = ["tests/test_a.py", ":generated.txt"])
+probe_test(name = "b", srcs = ["tests/sub/test_b.py"], deps = [":inputs"])
+probe_test(name = "c", srcs = ["tests/test_c.py"])
+probe_test(name = "docs", srcs = ["tests/test_docs_scan.py"])
+probe_test(name = "a_slow", srcs = ["tests/test_a.py", ":generated.txt"])
+""")
+    modules = {
+        path: {"targets": {"module": "//:" + label}}
+        for path, label in (
+            ("tests/test_a.py", "a"),
+            ("tests/sub/test_b.py", "b"),
+            ("tests/test_c.py", "c"),
+            ("tests/test_docs_scan.py", "docs"),
+        )
+    }
+    modules["tests/test_a.py"]["targets"]["slow"] = "//:a_slow"
+    manifest = {
+        "suites": {
+            "module": {
+                "marker": "not slow",
+                "modules": {p: [] for p in modules},
+                "targets": [m["targets"]["module"] for m in modules.values()],
+            },
+            "slow": {
+                "marker": "slow",
+                "modules": {"tests/test_a.py": []},
+                "targets": ["//:a_slow"],
+            },
+        },
+        "modules": modules,
+    }
+    (repo / impact.MANIFEST).write_text(json.dumps(manifest))
+    for relative in (
+        "fixtures/value.json",
+        "src/pkg/prompt.md",
+        "migrations/001.sql",
+        "generator/input.json",
+    ):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("original fixture content sufficiently long for rename detection\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "pinned graph fixture")
+    return repo, git(repo, "rev-parse", "HEAD").strip()
+
+
+def _impact_graph(*, omit_inputs=False):
+    inputs = {
+        "//:src/pkg/a.py",
+        "//:src/pkg/__init__.py",
+        "//:src/pkg/prompt.md",
+        "//:fixtures/value.json",
+        "//:migrations/001.sql",
+        "//:generator/input.json",
+    }
+    return impact.Graph(
+        {
+            "//:inputs": set() if omit_inputs else inputs,
+            "//:generated": {"//:inputs"},
+            "//:generated.txt": {"//:generated"},
+            "//:a": {"//:generated.txt"},
+            "//:b": {"//:inputs"},
+            "//:c": set(),
+            "//:docs": set(),
+            "//:a_slow": {"//:generated.txt"},
+        },
+        {"//:a", "//:b", "//:c", "//:docs", "//:a_slow"},
+    )
+
+
+def _impact_adapter(*, complete=True, modules=("tests/test_a.py", "tests/sub/test_b.py")):
+    return FixedStaticImpact(modules, complete=complete)
+
+
+async def test_impact_uses_pinned_heads_ignores_dirty_caller_and_binds_versions(tmp_path):
+    from tests.selection_fixture_repo import git
+
+    repo, base = _impact_repo(tmp_path)
+    (repo / "src/pkg/a.py").write_text("def alpha(): return 4\n")
+    git(repo, "commit", "-qam", "changed source")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    (repo / "BUILD.bazel").write_text("poison caller BUILD\n")
+    seen = []
+
+    async def query(root, bazel, output_root):
+        seen.append(await impact.pin(root, "HEAD"))
+        assert "poison" not in (root / "BUILD.bazel").read_text()
+        return _impact_graph()
+
+    first = await impact.audit(
+        repo,
+        base,
+        head,
+        Path("unused"),
+        ["module", "slow"],
+        query_graph=query,
+        static_adapter=_impact_adapter(),
+    )
+    second = await impact.audit(
+        repo,
+        base,
+        head,
+        Path("unused"),
+        ["slow", "module"],
+        query_graph=query,
+        static_adapter=_impact_adapter(),
+    )
+    assert seen == [base, head, base, head]
+    assert first == second
+    assert first["observational"] and not first["authoritative"]
+    assert not first["promotion_blocked"]
+    assert first["suites"]["module"]["required_targets"] == ["//:a", "//:b"]
+    assert first["suites"]["slow"]["required_targets"] == ["//:a_slow"]
+    assert first["suites"]["slow"]["marker"] == "slow"
+    assert first["identities"]["head"]["generator_registry"]["version"] == 1
+    for field in ("graph_inputs_sha256", "graph_sha256", "lock_sha256", "selection_sha256"):
+        assert len(first["identities"]["head"][field]) == 64
+    assert first["base"] == base and first["head"] == head
+    for body, reason in (
+        ("import importlib\nimportlib.import_module(configured_name)\n", "unresolved_dynamic_load"),
+        ("from importlib import import_module as load\nload(name)\n", "unresolved_dynamic_load"),
+        ("from pathlib import Path\nPath(resource).read_text()\n", "unresolved_resource"),
+        ("import src.missing_module\n", "unresolved_import"),
+        (
+            "from importlib.metadata import entry_points\nentry_points()\n",
+            "unresolved_plugin_discovery",
+        ),
+        ("pytest_plugins = ['src.plugin']\n", "unresolved_plugin_discovery"),
+    ):
+        (repo / "BUILD.bazel").write_text(git(repo, "show", head + ":BUILD.bazel"))
+        (repo / "src/pkg/a.py").write_text(body)
+        git(repo, "commit", "-qam", "unresolved loader")
+        changed = git(repo, "rev-parse", "HEAD").strip()
+        unresolved = await impact.audit(
+            repo,
+            base,
+            changed,
+            Path("unused"),
+            ["module"],
+            query_graph=query,
+            static_adapter=_impact_adapter(),
+        )
+        suite = unresolved["suites"]["module"]
+        assert any(code.startswith(reason) for code in suite["blockers"])
+        assert suite["required_targets"] == suite["eligible_targets"]
+    for path, field in (
+        (impact.LOCKS[0], "lock_sha256"),
+        (impact.REGISTRY[0], "generator_registry"),
+        (impact.MANIFEST, "manifest_sha256"),
+    ):
+        with (repo / path).open("a") as stream:
+            stream.write("\n")
+        git(repo, "commit", "-qam", "changed bound input")
+        changed = git(repo, "rev-parse", "HEAD").strip()
+        bound = await impact.audit(
+            repo,
+            base,
+            changed,
+            Path("unused"),
+            ["module"],
+            query_graph=query,
+            static_adapter=_impact_adapter(),
+        )
+        assert bound["identities"]["head"][field] != first["identities"]["head"][field]
+        assert bound["signature_sha256"] != first["signature_sha256"]
+
+
+@pytest.mark.parametrize("failure", ["underdeclared", "unavailable", "static", "dirty_query"])
+async def test_impact_failures_widen_whole_marker_suite(tmp_path, failure):
+    from tests.selection_fixture_repo import git
+
+    repo, base = _impact_repo(tmp_path)
+    (repo / "src/pkg/a.py").write_text("def alpha(): return 4\n")
+    git(repo, "commit", "-qam", "changed source")
+    head = git(repo, "rev-parse", "HEAD").strip()
+
+    async def query(root, bazel, output_root):
+        if failure == "unavailable":
+            raise ValueError("missing query evidence")
+        if failure == "dirty_query":
+            (root / "BUILD.bazel").write_text("changed during query")
+        return _impact_graph(omit_inputs=failure == "underdeclared")
+
+    if failure == "dirty_query":
+        with pytest.raises(ValueError, match="snapshot identity changed"):
+            await impact.audit(
+                repo,
+                base,
+                head,
+                Path("unused"),
+                ["module"],
+                query_graph=query,
+                static_adapter=_impact_adapter(),
+            )
+        return
+    report = await impact.audit(
+        repo,
+        base,
+        head,
+        Path("unused"),
+        ["module"],
+        query_graph=query,
+        static_adapter=_impact_adapter(complete=failure != "static"),
+    )
+    suite = report["suites"]["module"]
+    assert report["promotion_blocked"] and suite["widened"]
+    assert suite["required_targets"] == suite["eligible_targets"]
+    if failure == "underdeclared":
+        assert "under_declared" in suite["blockers"]
+        assert suite["missing_targets"] == ["//:a", "//:b"]
+
+
+@pytest.mark.parametrize(
+    "mutation,path",
+    [
+        ("edit", "fixtures/value.json"),
+        ("edit", "src/pkg/prompt.md"),
+        ("edit", "migrations/001.sql"),
+        ("edit", "src/pkg/__init__.py"),
+        ("edit", "generator/input.json"),
+        ("delete", "src/pkg/a.py"),
+        ("rename", "src/pkg/a.py"),
+    ],
+)
+async def test_impact_real_query_mutation_matrix_on_pinned_heads(tmp_path, mutation, path):
+    from tests.selection_fixture_repo import git
+
+    executable = os.environ.get("AQ_BAZEL_IMPACT")
+    if not executable:
+        pytest.skip("set AQ_BAZEL_IMPACT to locked Bazel for the pinned-head mutation matrix")
+    repo, base = _impact_repo(tmp_path)
+    if mutation == "delete":
+        (repo / path).unlink()
+    elif mutation == "rename":
+        (repo / path).rename(repo / "src/pkg/renamed.py")
+    else:
+        with (repo / path).open("a") as stream:
+            stream.write("\n# mutation\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "mutation " + mutation)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    report = await impact.audit(repo, base, head, Path(executable), ["module"])
+    evidence = os.environ.get("AQ_BAZEL_IMPACT_EVIDENCE")
+    if evidence:
+        output = Path(evidence)
+        output.mkdir(parents=True, exist_ok=True)
+        (output / (mutation + "-" + path.replace("/", "_") + ".json")).write_text(
+            json.dumps(report, indent=2)
+        )
+    suite = report["suites"]["module"]
+    assert suite["graph_targets"] == ["//:a", "//:b"], report["diagnostics"] or suite
+    assert {"//:a", "//:b"} <= set(suite["required_targets"])
+    assert report["identities"]["base"]["head"] == base
+    assert report["identities"]["head"]["head"] == head
+    if mutation == "rename":
+        assert suite["per_path"]["src/pkg/renamed.py"]["old_path"] == path

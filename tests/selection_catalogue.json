@@ -3343,8 +3343,10 @@
         "bazel-toolchains"
       ],
       "default_arm": true,
-      "digest": "sha256:2669f7605d8f5cbe70f349cfb090cbef8746aa7950d5e34ab0a9ed298fdd9e47",
-      "imports": [],
+      "digest": "sha256:f138d435ee05414c40fa0e8497e5bc7d99c1bc6208f69fdd2726344e60915fc7",
+      "imports": [
+        "src.test_selection.static_impact"
+      ],
       "markers": [
         "parametrize"
       ],
