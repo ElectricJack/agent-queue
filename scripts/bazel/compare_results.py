@@ -15,7 +15,8 @@ The suite manifest supplies the independent expected node set via B1's
 collection.nodes and suites[ID].modules indices. A small external plan may use
 suites[ID].expected_nodes instead. Dashboard plans declare kind="dashboard";
 their evidence supplies exit_status and artifacts: {path, sha256}, a JSON list
-of {path, sha256} generated files (an explicit empty list is valid for typecheck).
+of {path, sha256} generated files. Builds require a nonempty manifest; typecheck
+plans may explicitly set artifacts_required=false to allow an empty manifest.
 Markers always come from the plan. All artifact paths are relative and confined
 to the evidence directory. References hash the original cached bytes. Result
 digests exclude context and invocation metadata; copying a cached result into a
@@ -320,11 +321,13 @@ def pytest_suite(root, suite, expected, *, require_lifecycle):
     return {"nodes": sorted(all_nodes, key=lambda node: node["nodeid"])}, outputs, failures
 
 
-def dashboard_suite(root, suite):
+def dashboard_suite(root, suite, *, artifacts_required):
     code = suite["exit_status"]
     require(type(code) is int and code >= 0, "invalid dashboard exit status")
     files = decode(artifact(root, suite["artifacts"]))
     require(isinstance(files, list), "dashboard artifact manifest must be a list")
+    require(type(artifacts_required) is bool, "invalid dashboard artifact obligation")
+    require(not artifacts_required or files, "missing dashboard build artifacts")
     seen = set()
     for entry in files:
         path = str(relative_path(entry["path"]))
@@ -375,7 +378,9 @@ def load_backend(root, *, backend):
             )
         else:
             require(kind == "dashboard", f"unknown suite kind: {kind}")
-            result, outputs, failed = dashboard_suite(root, evidence)
+            result, outputs, failed = dashboard_suite(
+                root, evidence, artifacts_required=obligation.get("artifacts_required", True)
+            )
         suites[name] = {"kind": kind, "marker": evidence["marker"], **result}
         digests[name] = digest(canonical(sorted(outputs, key=canonical)).encode())
         failures.extend(f"{name}: {failure}" for failure in failed)
@@ -431,6 +436,10 @@ def compare(legacy: Path, bazel: Path, *, require_exact_sha=True):
         "errors": errors,
         "differences": differences,
         "failures": failures,
+        "contexts": {
+            label: {**value["context"], "suite_manifest_sha256": value["suite_manifest_sha256"]}
+            for label, value in backends.items()
+        },
         "result_digests": {label: value["result_digests"] for label, value in backends.items()},
         "invocations": {label: value["invocation"] for label, value in backends.items()},
     }
