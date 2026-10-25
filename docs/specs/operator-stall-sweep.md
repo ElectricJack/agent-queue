@@ -71,6 +71,33 @@ a merge conflict uses the ordinary bounded train repair path, and the child
 remains withheld until checks, attestation and publication finish. The diagnostic
 does not authorize bypassing holds or open human gates.
 
+## Patrol runtime
+
+All subprocess reads share a monotonic 55-second sweep budget so the patrol's
+60-second caller timeout leaves room for reporting and process cleanup. The
+`--timeout` option accepts a smaller positive budget. Exhaustion prints findings
+already observed plus `SWEEP-INCOMPLETE`, exits 1, and kills the current subprocess
+groups (including shell pipelines). It never treats unobserved checks as healthy.
+Authorization denial still exits 2 and stops the sweep without widening scope.
+
+Independent reads run in waves of at most eight workers: project task lists,
+queued-task explanations and paused/terminal child counts, referenced blockers,
+verifier parents, and current worker claim identities. Only rows whose diagnosis
+uses an explanation request one. Each identical observation, including a failed
+read, is cached for this invocation; many dependents sharing a blocker need only
+one completion read. Scoped patrols do not prefetch foreign-project blockers.
+`--skip-pools` preserves the installed patrol's option to leave pool checks to a
+global supervisor. `--timings` writes total elapsed time and per-command call
+counts/cumulative subprocess time to stderr; concurrent durations overlap.
+
+The focused suite verifies call counts, caching, scope and deadline cleanup with
+isolated fake commands. Its opt-in timing check models 128 stale tasks with one
+second of CLI/daemon latency per read and requires a complete sweep under 60s:
+`AQ_PERF_STRICT=1 aq test -m perf -p no:xdist tests/test_supervisor_stall_sweep_script.py`.
+This synthetic workload is repeatable evidence of batching, not a live-daemon
+latency measurement. Use `--timings` from the authorized patrol session to locate
+any remaining endpoint or local-command delays.
+
 ## Auto-deploy stalls
 
 `scripts/operator-checks/aq-auto-deploy.sh` is the canonical copy of the cron job
