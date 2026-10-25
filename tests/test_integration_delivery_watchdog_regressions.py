@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from src.database.tables import escalations, projects, tasks, wait_records
 from src.git.manager import GitError, GitManager
 from src.integration import delivery_truth
-from src.integration.delivery_truth import DeliverySnapshot
+from src.integration.delivery_truth import DeliveryRequest, DeliverySnapshot
 from src.integration.delivery_watchdog import scan_stuck_deliveries
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 
@@ -27,9 +27,11 @@ async def world(reuse_database, monkeypatch):
     state = SimpleNamespace(db=db, now=10000.0, generation="completion-1")
 
     async def requests(_db, task_ids, **kwargs):
-        return {tid: SimpleNamespace(completion_id=state.generation, legacy_generation="",
-                                    completed_at=1, has_recorded_source=True,
-                                    task_status="COMPLETED") for tid in task_ids}
+        return {tid: DeliveryRequest(
+            project_id="p", repository_id="r", target_ref="refs/heads/main", task_id=tid,
+            task_version=1, completion_id=state.generation, legacy_generation="",
+            completed_at=1, has_recorded_source=True,
+        ) for tid in task_ids}
 
     entry = dict(task_id="t", project_id="p", archived=False, root=True,
                  branch="aq/t", head="a" * 40, wip=False, rule="stranded_root")
