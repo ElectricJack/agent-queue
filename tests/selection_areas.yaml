@@ -452,6 +452,7 @@ areas:
       - tests/test_integration_close_merge.py
       - tests/test_integration_gitops.py
       - tests/test_integration_git_truth.py
+      - tests/test_integration_signatures.py
       - tests/test_integration_truth_reconciler.py
       - tests/test_integration_replay.py
       - tests/test_integration_reconciler.py
