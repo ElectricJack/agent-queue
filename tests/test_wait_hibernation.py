@@ -254,7 +254,7 @@ async def test_checkpoint_remains_available_during_flag_rollback(env):
     assert facts["open_subtasks"] == []
 
 
-async def resumed(env, *, degraded=False):
+async def resumed(env, *, degraded=False, outcome="satisfied"):
     if degraded:
         await fallback(env)
     else:
@@ -281,7 +281,7 @@ async def resumed(env, *, degraded=False):
             update(continuations).values(new_session_id="new", resume_state="delivered")
         )
         await conn.execute(
-            update(wait_records).values(outcome="satisfied", result_ref="task:source:COMPLETED")
+            update(wait_records).values(outcome=outcome, result_ref="task:source:COMPLETED")
         )
     return PrimeRenderer(env.db, AppConfig())
 
@@ -303,10 +303,11 @@ async def mail(env, ident, *, to_kind="session", to_id="wait-s", **kwargs):
 
 
 @pytest.mark.parametrize("degraded", [False, True])
+@pytest.mark.parametrize("outcome", ["satisfied", "cancelled"])
 async def test_resume_prime_outcome_summary_ticket_all_comments_and_held_mail(
-    env, tmp_path, degraded
+    env, tmp_path, degraded, outcome
 ):
-    renderer = await resumed(env, degraded=degraded)
+    renderer = await resumed(env, degraded=degraded, outcome=outcome)
     for n in range(12):
         await env.db.add_task_comment(
             "owner", f"comment-{n:02}: {'内容' * 800}", author_kind="user", author_id="human"
@@ -331,6 +332,10 @@ async def test_resume_prime_outcome_summary_ticket_all_comments_and_held_mail(
     assert "Server facts captured" in body and "task:source:COMPLETED" in body
     assert f"aq wait ack --wait-id {env.wait_id} --continuation-id c --generation 1" in body
     assert "then `aq prime` again" in body
+    if outcome == "cancelled":
+        assert "The wait was cancelled; you still hold the task claim" in body
+        assert "Acknowledge this cancelled outcome before continuing" in body
+        assert "do not stop or exit" in body
     assert (
         "held-body-old-session" in body
         and "held-body-task-mail" in body
@@ -1398,7 +1403,7 @@ async def test_failed_stop_signal_with_fresh_death_proof_still_parks(env, monkey
     case.handler.wait_escalation_create.assert_not_awaited()
 
 
-async def bound_resume(env):
+async def bound_resume(env, *, outcome='satisfied'):
     """Park a real claim, reserve a seat, bind an entirely new process."""
     from dataclasses import replace
     from src.database.tables import admission_reservations, agents
@@ -1412,7 +1417,7 @@ async def bound_resume(env):
     await mail(env, 'foreign', to_id='someone-else')
     await mail(env, 'control', to_kind='task', to_id='owner', body_kind='wait_suspend')
     async with env.db._engine.begin() as conn:
-        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+        await conn.execute(update(wait_records).values(outcome=outcome, resolved_at=NOW + 10))
     await park(env)
     async with env.db._engine.begin() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(assigned_agent_id='a'))
@@ -1442,12 +1447,13 @@ async def bound_resume(env):
     return driver, action, scope
 
 
-async def test_resume_ack_requires_exact_delivered_outcome_and_consumes_snapshot(env):
+@pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])
+async def test_resume_ack_requires_exact_delivered_outcome_and_consumes_snapshot(env, outcome):
     from src.waits.resume_ack import acknowledge, mark_delivered
     from src.waits.holding import active_wait_for
     from src.waits.fencing import mutation_fence
 
-    _, _, scope = await bound_resume(env)
+    _, _, scope = await bound_resume(env, outcome=outcome)
     args = dict(wait_id=env.wait_id, continuation_id='c', generation=1)
     async with env.db._engine.begin() as conn:
         with pytest.raises(WaitError, match='delivered'):
@@ -1474,11 +1480,12 @@ async def test_resume_ack_requires_exact_delivered_outcome_and_consumes_snapshot
         assert await mutation_fence(conn, 'task_close', principal) is None
 
 
-async def test_resume_prime_stale_context_claim_guides_ack_then_prime(env):
+@pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])
+async def test_resume_prime_stale_context_claim_guides_ack_then_prime(env, outcome):
     from tests.record_helpers import knowledge_config
     from tests.test_wait_dispatch import runtime
 
-    await bound_resume(env)
+    await bound_resume(env, outcome=outcome)
     service = runtime(env, registry=build_registry())
     config = service.orch.config
     config.knowledge = knowledge_config()
@@ -1501,6 +1508,8 @@ async def test_resume_prime_stale_context_claim_guides_ack_then_prime(env):
         assert (f'`aq wait ack --wait-id {env.wait_id} --continuation-id c --generation 1` first'
                 in refused['error'])
         assert '`aq prime` again' in refused['error']
+        assert 'A cancelled wait outcome also requires acknowledgement' in refused['error']
+        assert 'you still hold the task claim. Do not stop or exit.' in refused['error']
         assert (await intent(env))['resume_state'] == 'delivered'
         assert (await env.db.get_task('owner')).status.value == 'RESUME_PENDING'
         repeated = await handler.execute('prime', {'_scope': scope})
@@ -2095,7 +2104,7 @@ def assert_fresh_checkout(env, rig, target):
     assert not rig.old.exists()
 
 
-async def assert_resumed_binding(env, rig, target):
+async def assert_resumed_binding(env, rig, target, *, outcome='satisfied'):
     """Bind the new process and prove the sentinel plus durable receipt agree."""
     from src.claim_file import write_claim_file
     from src.database.tables import admission_reservations, workspaces
@@ -2115,7 +2124,7 @@ async def assert_resumed_binding(env, rig, target):
         await conn.execute(update(workspaces).where(workspaces.c.id == 'slot').values(generation=103))
         await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
             assigned_agent_id='a', status='RESUME_PENDING'))
-        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 25))
+        await conn.execute(update(wait_records).values(outcome=outcome, resolved_at=NOW + 25))
         await conn.execute(insert(admission_reservations).values(
             id='reservation', project_id='p', continuation_id='c', scope={},
             effective_priority=100, provenance='resume', deadline_at=NOW + 300,
@@ -2135,8 +2144,13 @@ async def assert_resumed_binding(env, rig, target):
     assert await reconcile_slot_bindings(env.db, rig.slots, 'p') == []
 
 
-async def test_fresh_resume_reprovisions_through_real_slot_manager_without_pruning(env, tmp_path):
+@pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])
+async def test_fresh_resume_reprovisions_through_real_slot_manager_without_pruning(
+    env, tmp_path, outcome,
+):
     rig = await fresh_rig(env, tmp_path)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome=outcome, resolved_at=NOW + 25))
 
     target = await resume_fresh(env, rig)
 
@@ -2149,11 +2163,14 @@ async def test_fresh_resume_reprovisions_through_real_slot_manager_without_pruni
     assert (await intent(env))['facts']['fresh_workspace'] == {
         'old_path': str(rig.old), 'new_path': str(rig.target), 'workspace_id': 'slot',
         'attempt': 1}
-    await assert_resumed_binding(env, rig, target)
+    await assert_resumed_binding(env, rig, target, outcome=outcome)
 
 
-async def test_restart_recovery_adopts_added_checkout_and_retires_old_folder(env, tmp_path):
+@pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])
+async def test_restart_recovery_adopts_added_checkout_and_retires_old_folder(env, tmp_path, outcome):
     rig = await fresh_rig(env, tmp_path)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome=outcome, resolved_at=NOW + 25))
     await stage_recovery(env, rig)
 
     target = await resume_fresh(env, rig)
@@ -2163,7 +2180,7 @@ async def test_restart_recovery_adopts_added_checkout_and_retires_old_folder(env
     registered = await rig.registered()
     assert rig.peer.resolve() in registered and rig.old.resolve() not in registered
     assert await rig.git._arun(['rev-parse', 'HEAD'], cwd=target) == rig.head
-    await assert_resumed_binding(env, rig, target)
+    await assert_resumed_binding(env, rig, target, outcome=outcome)
 
 
 @pytest.mark.parametrize('drift', ['dirty', 'branch', 'ancestry'])

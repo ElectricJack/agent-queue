@@ -390,7 +390,7 @@ class IntegrationCommandsMixin:
             if inspect.isawaitable(client):
                 client = await client
             admin_reader = None
-            if (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
+            if read_only or (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
                 admin_reader = LocalRulesetReader(self._promotion_user_client(binding))
             service = Cutover(self.db, CutoverGit(
                 self.db, client, ruleset_admin_reader=admin_reader,
