@@ -11,13 +11,17 @@ Origin fetches also verify local-only refs when no origin tip can be advertised.
 Tip naming is transactional in the disposable import repository. The local
 exact-commit shortcut must walk the requested history without excluding seeded
 refs; an unreferenced commit needs the same full-body check before local success.
-These checks use the existing acquisition deadline. No increased budget, global
-lock or persistent integrity cache is introduced. Full verification has a cost
-proportional to the retained object store; timeout leaves that observation
-unavailable. Independent stores retain their existing concurrency.
+Default isolated origin and exact acquisitions give retained verification its
+own bounded 300-second phase before lending objects. This phase includes the
+store-lock wait and all retries, and preserves the transfer's remaining budget
+instead of giving full verification only that remainder. An explicit exact-fetch
+timeout remains an overall cap; enclosing visit cancellation still propagates.
+No global lock or persistent integrity cache is introduced. Full verification
+has a cost proportional to the retained object store; timeout leaves that
+observation unavailable. Independent stores retain their existing concurrency.
 
 A failed full verification is retried up to three times with one-, two- and
-four-second backoff within the same acquisition deadline (including lock waits
+four-second backoff within the same integrity deadline (including lock waits
 and backoff). Verification and GitManager's foreground `gc`, `repack` and
 `maintenance` share per-common-store exclusion, including linked worktrees and
 commands inside repository transactions. Independent Git processes do not take
@@ -44,6 +48,14 @@ incremental traffic cannot defer the next full check indefinitely. Missing,
 replaced or truncated files and expired checks still require full verification.
 Failed acquisitions never extend the baseline. Incident recovery retains its
 full checks and durable journal.
+
+The isolated origin and exact-fetch seams carry this baseline forward after
+successful transport, checked local import and exact ref readback. Both legs of
+an exact fetch enable `fetch.fsckObjects`, just as origin fetches do. Unknown
+additions still invalidate verification; only successful checked acquisitions
+under the caller's repository writer exclusion may extend it.
+Full-fallback exact imports use `--refetch` so a partial destination's tips do
+not negotiate away promised blobs that the staged acquisition downloaded.
 
 Admission shares a five-second snapshot-wait budget across one request's Git
 observations. A slow fetch or recovery continues as the existing shared flight
