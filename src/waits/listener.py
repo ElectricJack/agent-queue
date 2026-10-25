@@ -56,10 +56,15 @@ class WaitSourceListener:
 
         # A dedicated connection, never a checked-out SQLAlchemy pool member.
         url = self.db._engine.url
-        return await asyncpg.connect(
-            user=url.username, password=url.password, host=url.host, port=url.port,
-            database=url.database, **dict(url.query),
-        )
+        kwargs = {
+            key: value for key, value in {
+                "user": url.username, "password": url.password, "host": url.host,
+                "port": url.port, "database": url.database,
+            }.items() if value is not None
+        }
+        # Query hosts also support Unix socket directories when URL host is absent.
+        kwargs.update(url.query)
+        return await asyncpg.connect(**kwargs)
 
     async def lease(self, *, release=False):
         now = self.clock()
