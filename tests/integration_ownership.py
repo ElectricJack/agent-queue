@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2222,
+ 'authorized_owned_delta': 2228,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1076,7 +1076,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82504,
- 'measured_owned_total': 157721,
+ 'measured_owned_total': 157727,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1168,6 +1168,26 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
       'repair_task_id': 'amber-journey-18',
       'task_id': 'fleet-zenith-14',
       'thread_id': 'amber-journey-18-epoch4-size'},
+ 'wait_scheduler_sync_rollback_composition': {'authorized_engine_delta': 0,
+      'authorized_owned_delta': 6,
+      'authorized_shared_owned_delta': 6,
+      'authorized_table_delta': 0,
+      'charged_files': {'src/wait_runtime/scheduler.py': 6},
+      'dev_source_revision': '286269b134d961c1a13c921ae82aa4db8e580f47',
+      'operator_decision': '6679052c',
+      'previous_measured_engine_lines': 82504,
+      'previous_measured_owned_total': 157721,
+      'previous_measured_table_count': 45,
+      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1963',
+      'reason': 'Exact supervisor-approved +6 shared owned lines from brisk-impact-45 / PR 1963 '
+                '(scheduler_wait_sync rollback after timeout so an invalidated transaction cannot '
+                'wedge the wait runtime), hand-landed on dev by the supervisor. Preserve the '
+                'separately approved PR 1921 +4, PR 1955 +3 and PR 1957 +3 compositions, original '
+                'baselines, historical grants and ownership classifications, with zero remaining '
+                'headroom and no new storage category.',
+      'referenced_decision': 'size-cap-delegation-2026-10-23',
+      'source_revision': '8a7897370c06707e4920856754c47fe9ed2846b9',
+      'task_id': 'brisk-impact-45'},
  'source_ci_repair_composition': {'authorized_engine_delta': 46,
                                   'authorized_owned_delta': 46,
                                   'merged_pull_request': 1917,
