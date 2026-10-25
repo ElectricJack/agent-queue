@@ -390,9 +390,6 @@ class IntegrationCommandsMixin:
             if inspect.isawaitable(client):
                 client = await client
             admin_reader = None
-            # Authorized previews need the same complete ruleset snapshot as LOCAL.
-            # integration_operator above checks live session authority and project scope;
-            # this reader only supplements matching policy through bound ruleset GETs.
             if read_only or (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
                 admin_reader = LocalRulesetReader(self._promotion_user_client(binding))
             service = Cutover(self.db, CutoverGit(
