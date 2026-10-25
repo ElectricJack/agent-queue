@@ -9514,7 +9514,7 @@ _WAIT_V2_DESCRIPTIONS = {
     "wait_ack": "Acknowledge a verified wait outcome for the held claim.",
     "wait_decide": "Record a supervisor decision for a verified wait.",
     "wait_lift": "Lift an escalated verified wait with an authorized decision.",
-    "wait_source_redispatch": "Reobserve one durable source event in a supervisor project.",
+    "wait_source_redispatch": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
 }
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": name, "description": _WAIT_V2_DESCRIPTIONS[name],

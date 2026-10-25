@@ -6,6 +6,12 @@ Each source transaction has a five second work budget. A timed out transaction r
 back completely; a separate leased cursor CAS may advance past that event, leaving
 its undispatched row as durable retry ownership. Later events may proceed. Cancellation
 and lease loss never authorize this advance. Retry passes are bounded and back off.
+Budget failures and retry deadlines persist with the source row. After three
+consecutive budget failures the row is quarantined, retaining its payload and
+subscription ownership, and retried behind the forward cursor at five minute
+intervals. A successful dispatch clears the failure streak and quarantine. A
+restart respects the persisted retry deadline. Quarantine never asserts a wait
+outcome or prevents later events from dispatching.
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
 
@@ -46,6 +52,25 @@ of that source/generation through the requested sequence when no pending verifie
 subscriber anywhere needs each event. It reports and audits the number retired. A project-scoped recovery
 must preserve any event still needed by another project's subscriber. Retirement
 uses bounded batches; repeat the command to drain additional history.
+
+The same supervisor authority supplies `aq wait source-blockers --project P` and
+`aq wait source-retire --source-seq N --project P --note REASON`. These dispatch
+the source recovery command with action `blockers` or `retire`. Inspection lists
+old or failed undispatched sources, their cursor position, durable failure count,
+quarantine/deadline and matching project subscriptions. Retirement cancels only
+service-owned integration CI subscriptions for the selected source and project;
+it refuses agent subscriptions and lifecycle sources. It stamps the source only
+when no project still needs it and never jumps the forward cursor. Cancellation
+and the supervisor audit commit together, without remote CI observation.
+
+Canonical aborted/superseded batch events cancel that target's integration CI
+subscriptions whose exact head no longer belongs to a non-aborted batch. They
+preserve a head reused by an active batch and successful settlement of promoted
+candidates. Speculative subscriptions retain their existing train reconciliation.
+Reconciliation during train synchronization repeats this cleanup to recover old
+rows and crash windows. CI observation reuses the immutable candidate check policy
+captured during train synchronization, while still observing fresh remote evidence. Its remote read budget leaves time for listener transaction
+bookkeeping; trust reconstruction must not recur on every observation.
 
 An independent listener monitor checks undispatched row count and oldest commit age,
 including deferred rows behind the cursor. Alert when count exceeds configurable

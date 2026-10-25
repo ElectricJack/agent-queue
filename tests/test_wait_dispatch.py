@@ -1376,6 +1376,62 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
 
 
+async def test_budget_quarantine_survives_restart_and_does_not_block_later_sources(runtime_env):
+    from sqlalchemy import func
+    from src.waits.listener import WaitSourceListener
+
+    env = runtime_env
+    receipt = await register(env)
+    slow = await env.db.wait_source_commit(source_key="test:poison", generation=0,
+        revision="1", outcome_ref="poison", payload={"project_id": "p"})
+    now = [NOW]
+    service = runtime(env, clock=lambda: now[0], dispatcher=ObservingDispatcher(env.registry))
+    original = service.listener._dispatch
+    calls = []
+
+    async def stall(conn, event):
+        if event["seq"] == slow:
+            calls.append(slow)
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+            await conn.execute(select(func.pg_sleep(60)))
+        return await original(conn, event)
+
+    for failure in range(1, 4):
+        service.listener.event_budget_seconds = 0.1
+        service.listener._dispatch = stall
+        later = await env.db.wait_source_commit(source_key="test:later", generation=0,
+            revision=str(failure), outcome_ref="later", payload={})
+        await service.listener.tick()
+        outbox = {r["seq"]: r for r in await records(env, wait_source_events)}
+        assert outbox[later]["dispatched_at"] is not None
+        failed = outbox[slow]
+        assert failed["dispatch_failures"] == failure
+        assert failed["dispatched_at"] is None
+        assert (failed["quarantined_at"] is not None) == (failure == 3)
+        assert (await env.db.get_task("owner")).title != "abort"
+        assert len(calls) == failure
+        # A new leader must not bypass durable backoff.
+        await service.listener.lease(release=True)
+        service.listener = WaitSourceListener(service, clock=lambda: now[0])
+        service.listener.event_budget_seconds = 0.1
+        service.listener._dispatch = stall
+        await service.listener.tick()
+        assert len(calls) == failure
+        now[0] = failed["dispatch_retry_at"] + 1
+
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    # Recover without publishing a replacement source revision.
+    service.listener._dispatch = original
+    await service.listener.tick()
+    recovered = next(r for r in await records(env, wait_source_events) if r["seq"] == slow)
+    assert recovered["dispatched_at"] is not None
+    assert recovered["dispatch_failures"] == 0
+    assert recovered["quarantined_at"] is None
+    assert recovered["dispatch_retry_at"] is None
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+
+
 @pytest.mark.parametrize("kind", ["ci_check", "pool", "workspace", "config"])
 async def test_contiguous_observations_coalesce_and_stop_before_lifecycle_event(runtime_env, kind):
     env = runtime_env
@@ -1677,3 +1733,29 @@ async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(runti
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
     assert not [r for r in await records(env, audit_events)
                 if r["event_type"] == "wait.source_redispatched"]
+
+
+@pytest.mark.parametrize("failure", ["cancel", "lease_loss"])
+async def test_quarantine_never_advances_after_cancellation_or_lease_loss(runtime_env, failure):
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="test:fenced", generation=0,
+        revision="1", outcome_ref="fenced", payload={})
+    now = [NOW]
+    service = runtime(env, clock=lambda: now[0])
+    service.listener.event_budget_seconds = 0.1
+
+    async def stop(conn, event):
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+        if failure == "cancel":
+            raise asyncio.CancelledError()
+        now[0] += service.listener.lease_seconds + 1
+        await asyncio.Event().wait()
+
+    service.listener._dispatch = stop
+    with pytest.raises(asyncio.CancelledError if failure == "cancel" else LeaseLost):
+        await service.listener.tick()
+    assert (await env.db.get_task("owner")).title != "abort"
+    event = next(row for row in await records(env, wait_source_events) if row["seq"] == seq)
+    assert event["dispatched_at"] is None and event["dispatch_failures"] == 0
+    assert event["quarantined_at"] is None and event["dispatch_retry_at"] is None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0

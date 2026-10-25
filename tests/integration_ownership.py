@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2426,
+ 'authorized_owned_delta': 2717,
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 15,
  'authorized_shared_owned_delta': 15,
@@ -1091,8 +1091,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82649,
- 'measured_owned_total': 157925,
+ 'measured_engine_lines': 82728,
+ 'measured_owned_total': 158216,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1338,7 +1338,42 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '6951e0fae10722f912b78c66664b2d700fbc36f5',
      'supervisor_grant_reference': 'msg-2d36d0eb',
      'task_id': 'eager-stone-76',
-     'thread_id': 'eager-stone-76-ci-size'}}
+     'thread_id': 'eager-stone-76-ci-size'},
+ 'wait_source_quarantine_composition': {'authorized_engine_delta': 79,
+ 'authorized_owned_delta': 291,
+ 'authorized_shared_owned_delta': 212,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/database/queries/wait_queries.py': 11,
+                   'src/integration/dispatch_waits.py': 79,
+                   'src/waits/listener.py': 109,
+                   'src/waits/recovery.py': 10,
+                   'src/waits/resource_sources.py': 81,
+                   'src/waits/watchers/ci.py': 1},
+ 'charged_file_deltas': {'src/database/queries/wait_queries.py': {'owned': 11, 'engine': 0},
+                         'src/integration/dispatch_waits.py': {'owned': 79, 'engine': 79},
+                         'src/waits/listener.py': {'owned': 109, 'engine': 0},
+                         'src/waits/recovery.py': {'owned': 10, 'engine': 0},
+                         'src/waits/resource_sources.py': {'owned': 81, 'engine': 0},
+                         'src/waits/watchers/ci.py': {'owned': 1, 'engine': 0}},
+ 'decision_message_id': 'msg-3737d47dcd5c4b3f8c7efc4423446bc8',
+ 'dev_source_revision': 'fcbe9ca3dc89e65ec62332c3bc5552d990b9f856',
+ 'source_revision': '79edb0bab5bce7897ff00a2b5443710f1e424299',
+ 'previous_measured_engine_lines': 82649,
+ 'previous_measured_owned_total': 157925,
+ 'previous_measured_table_count': 45,
+ 'measured_engine_lines': 82728,
+ 'measured_owned_total': 158216,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'task_id': 'clear-journey-76',
+ 'thread_id': 'clear-journey-76-size',
+ 'reason': 'Exact supervisor-approved wait-source quarantine and obsolete CI subscription recovery '
+           'composition. Preserve every historical grant and ownership classification, with zero '
+           'remaining headroom. Migration a00000000124 adds only dispatch_failures, '
+           'dispatch_retry_at and quarantined_at to existing wait_source_events; guarded '
+           'idempotent upgrade preserves rows, no new table or storage category, and downgrade '
+           'refuses while quarantined rows exist. Operator applies schema upgrade at deploy.'}}
 
 
 def integration_table(name: str) -> bool:

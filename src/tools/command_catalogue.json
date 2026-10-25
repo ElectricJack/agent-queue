@@ -12813,7 +12813,7 @@
     },
     {
       "name": "wait_source_redispatch",
-      "description": "Reobserve one durable source event in a supervisor project.",
+      "description": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -12822,22 +12822,53 @@
             "title": "Project Id",
             "type": "string"
           },
+          "action": {
+            "default": "redispatch",
+            "enum": [
+              "redispatch",
+              "blockers",
+              "retire"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
           "source_seq": {
-            "minimum": 1,
-            "title": "Source Seq",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Seq"
           },
           "note": {
-            "maxLength": 4000,
-            "minLength": 1,
-            "title": "Note",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Note"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
           }
         },
         "required": [
-          "project_id",
-          "source_seq",
-          "note"
+          "project_id"
         ],
         "title": "WaitSourceRedispatchArgs",
         "type": "object"

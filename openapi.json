@@ -23508,8 +23508,8 @@
         "tags": [
           "wait"
         ],
-        "summary": "Reobserve one durable source event in a supervisor project.",
-        "description": "Reobserve one durable source event in a supervisor project.",
+        "summary": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
+        "description": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
         "operationId": "wait_source_redispatch",
         "requestBody": {
           "content": {
@@ -90173,24 +90173,53 @@
             "minLength": 1,
             "title": "Project Id"
           },
+          "action": {
+            "type": "string",
+            "enum": [
+              "redispatch",
+              "blockers",
+              "retire"
+            ],
+            "title": "Action",
+            "default": "redispatch"
+          },
           "source_seq": {
-            "type": "integer",
-            "minimum": 1.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Source Seq"
           },
           "note": {
-            "type": "string",
-            "maxLength": 4000,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Note"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "project_id",
-          "source_seq",
-          "note"
+          "project_id"
         ],
         "title": "WaitSourceRedispatchArgs"
       },

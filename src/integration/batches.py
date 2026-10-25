@@ -691,7 +691,7 @@ class BatchStore:
                 "operator_id": "service:integration-train",
                 "reason": "pre-existing target failures; admit green pending baseline fix",
             }
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted", ejection_record=instruction,
                      human_abort_reason=instruction["reason"], cleanup_state="pending",

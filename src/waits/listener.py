@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import replace
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.queries.wait_queries import verify_owner
@@ -49,6 +49,8 @@ class WaitSourceListener:
     event_budget_seconds = 5
     drain_budget_seconds = 5
     retry_seconds = 30
+    quarantine_failures = 3
+    quarantine_retry_seconds = 300
     graph_wait_seconds = 0.25
 
     def __init__(self, service, *, clock=time.time, owner=None, connect=None):
@@ -63,7 +65,7 @@ class WaitSourceListener:
         self._graph_busy = False
         # The outbox's undispatched stamp is durable retry ownership. This
         # process-local cadence only avoids hammering a temporarily unavailable
-        # provider; restart makes retained events immediately eligible again.
+        # provider; budget-failure deadlines survive restart in the outbox row.
         self._retry_due = {}
 
     async def _connect(self):
@@ -134,6 +136,13 @@ class WaitSourceListener:
             return None
 
     async def _dispatch(self, conn, event, *, project_id=None):
+        if event["source_key"].startswith("batch:"):
+            from src.integration.dispatch_waits import retire_obsolete_ci_waits
+
+            await retire_obsolete_ci_waits(
+                conn, batch_id=event["source_key"].removeprefix("batch:"),
+                project_id=project_id, now=self.clock(),
+            )
         if event["source_key"].startswith("task:"):
             from src.waits.recovery import TERMINAL_TASK_STATUSES, retire_terminal_task_waits
 
@@ -270,7 +279,8 @@ class WaitSourceListener:
             if processed:
                 await conn.execute(update(wait_source_events).where(
                     wait_source_events.c.seq.in_(processed),
-                ).values(dispatched_at=self.clock()))
+                ).values(dispatched_at=self.clock(), dispatch_failures=0,
+                         dispatch_retry_at=None, quarantined_at=None))
             await self.locked_lease(conn)
         for seq in processed:
             self._retry_due.pop(seq, None)
@@ -288,13 +298,27 @@ class WaitSourceListener:
         return None
 
     async def _defer(self, attempt):
-        """After rollback, retain the source row and CAS only the forward cursor."""
+        """After rollback, persist failure/backoff and CAS the leased forward cursor."""
         if not attempt:
             return False
         async with self.db._engine.begin() as conn:
             cursor = await self.locked_lease(conn)
             if cursor["last_seq"] != attempt["position"]:
                 return False
+            failed = wait_source_events.c.dispatch_failures + 1
+            quarantine = failed >= self.quarantine_failures
+            failures = (await conn.execute(update(wait_source_events).where(
+                wait_source_events.c.seq.in_(attempt["seqs"]),
+            ).values(
+                dispatched_at=None,
+                dispatch_failures=failed,
+                dispatch_retry_at=self.clock() + case(
+                    (quarantine, self.quarantine_retry_seconds), else_=self.retry_seconds),
+                quarantined_at=case(
+                    (quarantine, func.coalesce(wait_source_events.c.quarantined_at, self.clock())),
+                    else_=None),
+            ).returning(wait_source_events.c.dispatch_failures,
+                        wait_source_events.c.dispatch_retry_at))).all()
             await conn.execute(update(wait_listener_cursors).where(
                 wait_listener_cursors.c.listener_key == "source",
                 wait_listener_cursors.c.lease_owner == self.owner,
@@ -302,8 +326,12 @@ class WaitSourceListener:
                      updated_at=self.clock()))
         for seq in attempt["seqs"]:
             self._retry_due[seq] = self.clock() + self.retry_seconds
-        logger.warning("wait.source_dispatch_deferred seq=%s source_key=%s",
-                       attempt["event"]["seq"], attempt["event"]["source_key"])
+        streak = max((row.dispatch_failures for row in failures), default=0)
+        logger.warning("wait.source_dispatch_deferred seq=%s source_key=%s "
+                       "dispatch_failures=%s quarantined=%s retry_at=%s",
+                       attempt["event"]["seq"], attempt["event"]["source_key"],
+                       streak, streak >= self.quarantine_failures,
+                       max((row.dispatch_retry_at for row in failures), default=None))
         return True
 
     async def _dispatched_ci_retry(self, conn, watermark, attempted):
@@ -324,6 +352,8 @@ class WaitSourceListener:
         )
         return (await conn.execute(select(wait_source_events).where(
             wait_source_events.c.seq.in_(recoverable),
+            or_(wait_source_events.c.dispatch_retry_at.is_(None),
+                wait_source_events.c.dispatch_retry_at <= self.clock()),
             wait_source_events.c.seq.not_in(self._retry_due),
             wait_source_events.c.seq.not_in(attempted),
         ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
@@ -437,6 +467,8 @@ class WaitSourceListener:
                     wait_source_events.c.seq <= (position or 0),
                     wait_source_events.c.seq <= watermark,
                     wait_source_events.c.dispatched_at.is_(None),
+                    or_(wait_source_events.c.dispatch_retry_at.is_(None),
+                        wait_source_events.c.dispatch_retry_at <= self.clock()),
                     wait_source_events.c.seq.not_in(self._retry_due),
                     wait_source_events.c.seq.not_in(recovery["attempted"]),
                 ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
@@ -513,10 +545,14 @@ class WaitSourceListener:
                     processed = coalesced or [event["seq"]]
                 if cursor["lease_expires_at"] <= self.clock():
                     raise LeaseLost("wait source lease expired during dispatch")
+                # A completed attempt breaks the consecutive budget-failure
+                # streak even if fresh observation asks for a provider retry.
+                values = {"dispatch_failures": 0, "quarantined_at": None, "dispatch_retry_at": None}
                 if not retry_after:
-                    await conn.execute(update(wait_source_events).where(
-                        wait_source_events.c.seq.in_(processed),
-                    ).values(dispatched_at=self.clock()))
+                    values["dispatched_at"] = self.clock()
+                await conn.execute(update(wait_source_events).where(
+                    wait_source_events.c.seq.in_(processed),
+                ).values(**values))
                 await conn.execute(update(wait_listener_cursors).where(
                     wait_listener_cursors.c.listener_key == "source",
                     wait_listener_cursors.c.lease_owner == self.owner,
@@ -532,6 +568,10 @@ class WaitSourceListener:
         from src.waits.loops import prepare_progress
 
         project_id = args["project_id"]
+        if args.get("action") == "blockers":
+            return await self.blockers(project_id, limit=args["limit"])
+        if args.get("action") == "retire":
+            return await self.retire(args, principal=principal)
         async with asyncio.timeout(self.event_budget_seconds), self._tick_lock:
             if not await self.service.lease():
                 raise WaitError("wait.unavailable", "listener lease belongs to another instance")
@@ -564,7 +604,8 @@ class WaitSourceListener:
                     if retired:
                         await conn.execute(update(wait_source_events).where(
                             wait_source_events.c.seq.in_(retired),
-                        ).values(dispatched_at=self.clock()))
+                        ).values(dispatched_at=self.clock(), dispatch_failures=0,
+                                 dispatch_retry_at=None, quarantined_at=None))
                 await conn.execute(insert(events).values(
                     event_type="wait.source_redispatched", project_id=project_id,
                     timestamp=self.clock(), payload=json.dumps({
@@ -581,6 +622,101 @@ class WaitSourceListener:
                 "retry_after": retry_after, "redispatched": True,
                 "retired_events": len(retired),
             }}
+
+    @staticmethod
+    def _project_source(project_id):
+        from src.database.tables import repos
+
+        return or_(
+            wait_source_events.c.payload["project_id"].astext == project_id,
+            wait_source_events.c.payload["repository_id"].astext.in_(
+                select(repos.c.id).where(repos.c.project_id == project_id)),
+            select(wait_records.c.id).where(
+                wait_records.c.project_id == project_id,
+                wait_records.c.source_key == wait_source_events.c.source_key,
+                wait_records.c.source_generation == wait_source_events.c.source_generation,
+            ).exists(),
+        )
+
+    async def blockers(self, project_id, *, limit=100):
+        """Diagnostic reads remain available without listener leadership or GRAPH_LOCK."""
+        async with self.db._engine.connect() as conn:
+            position = await conn.scalar(select(wait_listener_cursors.c.last_seq).where(
+                wait_listener_cursors.c.listener_key == "source")) or 0
+            events = (await conn.execute(select(
+                wait_source_events.c.seq, wait_source_events.c.source_key,
+                wait_source_events.c.source_generation, wait_source_events.c.committed_at,
+                wait_source_events.c.dispatch_failures, wait_source_events.c.dispatch_retry_at,
+                wait_source_events.c.quarantined_at,
+            ).where(wait_source_events.c.dispatched_at.is_(None),
+                    self._project_source(project_id))
+                .order_by(wait_source_events.c.seq).limit(limit + 1))).mappings().all()
+            blockers = []
+            for event in events[:limit]:
+                subscribers = (await conn.execute(select(
+                    wait_records.c.id, wait_records.c.owner_kind, wait_records.c.owner_id,
+                ).where(wait_records.c.project_id == project_id,
+                        wait_records.c.outcome == "pending",
+                        wait_records.c.source_key == event["source_key"],
+                        wait_records.c.source_generation == event["source_generation"],
+                        wait_records.c.source_watermark_seq < event["seq"])
+                    .order_by(wait_records.c.id).limit(201))).mappings().all()
+                blockers.append({**dict(event), "behind_cursor": event["seq"] <= position,
+                    "age_seconds": max(0, self.clock() - event["committed_at"]),
+                    "subscribers": [dict(row) for row in subscribers[:200]],
+                    "subscribers_truncated": len(subscribers) > 200})
+        return {"success": True, "result": {"project_id": project_id, "cursor_seq": position,
+                "blockers": blockers, "truncated": len(events) > limit}}
+
+    async def retire(self, args, *, principal):
+        """Retire integration CI subscriptions without making a remote-state claim."""
+        from src.database.queries.wait_queries import cancel_wait
+        from src.database.tables import events
+
+        project_id, now = args["project_id"], self.clock()
+        async with asyncio.timeout(self.event_budget_seconds), self._tick_lock:
+            if not await self.service.lease():
+                raise WaitError("wait.unavailable", "listener lease belongs to another instance")
+            async with self.db._engine.begin() as conn:
+                await lock_graph(conn, queued=True, timeout=self.graph_wait_seconds)
+                await self.locked_lease(conn)
+                source = (await conn.execute(select(wait_source_events).where(
+                    wait_source_events.c.seq == args["source_seq"],
+                    self._project_source(project_id),
+                ))).mappings().first()
+                if source is None:
+                    raise WaitError("wait.source_unresolved", "source event not found in project")
+                if not source["source_key"].startswith(("ci_check:", "ci_run:")):
+                    raise WaitError("wait.invalid", "only integration CI sources may be retired")
+                rows = (await conn.execute(select(wait_records).where(
+                    wait_records.c.project_id == project_id,
+                    wait_records.c.source_key == source["source_key"],
+                    wait_records.c.source_generation == source["source_generation"],
+                    wait_records.c.source_watermark_seq < source["seq"],
+                    wait_records.c.outcome == "pending",
+                ).order_by(wait_records.c.id))).mappings().all()
+                if any(row["owner_kind"] != "integration" or row["session_id"] is not None
+                       or row["condition_kind"] not in {"ci_check", "ci_run"} for row in rows):
+                    raise WaitError("wait.out_of_scope", "source has non-integration subscribers; "
+                                    "use wait cancel for an explicit wait decision")
+                for row in rows:
+                    await cancel_wait(conn, row["id"], project_id=project_id, now=now)
+                needed = await conn.scalar(select(self._hint_subscription()).where(
+                    wait_source_events.c.seq == source["seq"]))
+                if not needed:
+                    await conn.execute(update(wait_source_events).where(
+                        wait_source_events.c.seq == source["seq"],
+                    ).values(dispatched_at=now, dispatch_retry_at=None,
+                             dispatch_failures=0, quarantined_at=None))
+                payload = {"source_seq": source["seq"], "source_key": source["source_key"],
+                    "note": args["note"], "cancelled_wait_ids": [row["id"] for row in rows],
+                    "retired": not needed,
+                    "supervisor_session_id": getattr(principal, "session_id", None)}
+                await conn.execute(insert(events).values(event_type="wait.source_retired",
+                    project_id=project_id, timestamp=now, payload=json.dumps(payload)))
+                await self.locked_lease(conn)
+            self.changed.set()
+        return {"success": True, "result": {"project_id": project_id, **payload}}
 
     async def report_lag(self):
         """Count retained retries as well as unread events, without taking graph locks."""
@@ -612,7 +748,8 @@ class WaitSourceListener:
                     body=json.dumps({
                         "pending_events": pending, "oldest_seq": oldest, "age_seconds": age,
                         "next_step": "Inspect graph contention and source dispatch failures; "
-                                     "aq wait source-redispatch can reobserve one event.",
+                                     "aq wait source-blockers lists blockers; source-redispatch "
+                                     "reobserves and source-retire cancels obsolete integration CI.",
                     }),
                 ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 

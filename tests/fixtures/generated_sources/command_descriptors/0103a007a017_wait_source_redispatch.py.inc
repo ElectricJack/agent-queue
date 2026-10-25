@@ -5,7 +5,7 @@ def _wait_source_redispatch_changes():
 
 
 def _before_wait_source_redispatch_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_wait_source_recovery_catalogue()
     evidence = _wait_source_redispatch_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
@@ -17,11 +17,11 @@ def _before_wait_source_redispatch_catalogue():
 def test_wait_source_redispatch_only_adds_scoped_recovery_command():
     evidence = _wait_source_redispatch_changes()
     assert evidence["command"] == "wait_source_redispatch"
-    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+    assert _wait_source_recovery_changes()["previous_fingerprint"] == (
         evidence["contract_fingerprint"]
     )
     assert hashlib.sha256(
-        (json.dumps(_before_task_list_limit_catalogue(json.loads(render_command_catalogue())),
+        (json.dumps(_before_task_list_limit_catalogue(_before_wait_source_recovery_catalogue()),
                     indent=2) + "\n").encode()
     ).hexdigest() == (
         evidence["cli_catalogue_sha256"]

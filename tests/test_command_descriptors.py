@@ -1779,7 +1779,7 @@ def _wait_source_redispatch_changes():
 
 
 def _before_wait_source_redispatch_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_wait_source_recovery_catalogue()
     evidence = _wait_source_redispatch_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
@@ -1791,11 +1791,11 @@ def _before_wait_source_redispatch_catalogue():
 def test_wait_source_redispatch_only_adds_scoped_recovery_command():
     evidence = _wait_source_redispatch_changes()
     assert evidence["command"] == "wait_source_redispatch"
-    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+    assert _wait_source_recovery_changes()["previous_fingerprint"] == (
         evidence["contract_fingerprint"]
     )
     assert hashlib.sha256(
-        (json.dumps(_before_task_list_limit_catalogue(json.loads(render_command_catalogue())),
+        (json.dumps(_before_task_list_limit_catalogue(_before_wait_source_recovery_catalogue()),
                     indent=2) + "\n").encode()
     ).hexdigest() == (
         evidence["cli_catalogue_sha256"]
@@ -1880,3 +1880,37 @@ def test_task_list_limit_playbooks_only_refresh_command_pins():
         old.pop("compiled_at")
         new.pop("compiled_at")
         assert new == old, path
+
+
+def _wait_source_recovery_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/wait-source-recovery-contract-changes.json").read_text()
+    )
+
+
+def _before_wait_source_recovery_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    evidence = _wait_source_recovery_changes()
+    [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
+    assert definition == evidence["definition"]
+    definition.clear()
+    definition.update(evidence["previous_definition"])
+    return catalogue
+
+
+def test_wait_source_recovery_only_extends_existing_scoped_command():
+    evidence = _wait_source_recovery_changes()
+    assert evidence["command"] == "wait_source_redispatch"
+    contract = CONTRACTS.require(evidence["command"]).contract
+    assert contract.fingerprint() == evidence["fingerprint"] != evidence["previous_fingerprint"]
+    assert canonical_execution_document(contract.execution) == evidence["execution"]
+    schema = evidence["definition"]["input_schema"]
+    assert schema["properties"]["action"]["enum"] == ["redispatch", "blockers", "retire"]
+    assert schema["properties"]["action"]["default"] == "redispatch"
+    assert schema["required"] == ["project_id"]
+    assert set(schema["properties"]) - set(evidence["previous_definition"]["input_schema"][
+        "properties"]) == {"action", "limit"}
+    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"])
+    previous = json.dumps(_before_wait_source_recovery_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
