@@ -648,6 +648,8 @@ def _parse_status_branch_header(header: str) -> str:
 
 #: How long a clean full fsck of an unchanged object store is reused.
 _RETAINED_VERIFY_TTL_SECONDS = 3600.0
+#: Full-body verification is a separate phase from negotiated object transfer.
+_RETAINED_VERIFY_TIMEOUT_SECONDS = 300.0
 _RETAINED_VERIFY_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
@@ -2328,11 +2330,15 @@ class GitManager:
             )
             seeded_tips = 0
             if borrowable_objects is not None:
+                deadline = await self._aretained_fetch_deadline(
+                    destination_git_dir, home=home, deadline=deadline,
+                )
                 seeded_tips = await self._alend_fetch_objects(
                     imported, destination_git_dir, borrowable_objects,
                     patterns=("refs/remotes/origin", "refs/tags", "refs/aq/provenance"),
                     home=home, deadline=deadline,
                 )
+            reusable = await self.aretained_store_verified(destination_git_dir)
             mode = "incremental" if borrowable_objects is not None else "full"
             prepared_at = loop.time()
             try:
@@ -2406,6 +2412,8 @@ class GitManager:
                 )
                 if destination_map.get(destination_ref) != oid:
                     raise GitError("authenticated Git fetch imported a different ref")
+            if reusable:
+                await self.aextend_retained_store_verified(destination_git_dir)
         transfer = _OriginFetchTransfer(
             mode=mode,
             seeded_tips=seeded_tips,
@@ -2606,6 +2614,22 @@ class GitManager:
                     fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             self._record_retained_verified(key, fingerprint, after, started)
+
+    async def _aretained_fetch_deadline(
+        self, git_dir: str, *, home: Path, deadline: float,
+    ) -> float:
+        """Verify before lending, without consuming the transfer's remaining time.
+
+        The bounded integrity phase includes store-lock waits and all retries.
+        Callers with an explicit overall acquisition cap must keep that cap
+        instead. Cancellation from an enclosing visit still propagates normally.
+        """
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await self._averify_retained_objects(
+            git_dir, home=home, deadline=started + _RETAINED_VERIFY_TIMEOUT_SECONDS,
+        )
+        return deadline + (loop.time() - started)
 
     def _retained_verified_matches(self, key: str, fingerprint: tuple | None) -> bool:
         verified = self.__dict__.setdefault("_retained_verified", {})
@@ -4091,12 +4115,35 @@ class GitManager:
         self, checkout_path: str, *, repository_url: str | None = None,
     ) -> dict[str, str]:
         """List all remote branch heads using this repository's read credentials."""
+        return await self._als_remote_inventory(
+            checkout_path, repository_url=repository_url,
+            options=["--heads"], prefixes=("refs/heads/",),
+        )
+
+    async def als_remote_snapshot_refs(
+        self, checkout_path: str, *, repository_url: str,
+    ) -> dict[str, str]:
+        """Advertise every ref namespace imported by a retained origin fetch.
+
+        Patterns include new and deleted provenance/tags as well as branches;
+        checking only known heads could miss a newly published completion.
+        """
+        prefixes = ("refs/heads/", "refs/tags/", "refs/aq/provenance/")
+        return await self._als_remote_inventory(
+            checkout_path, repository_url=repository_url,
+            options=["--refs"], prefixes=prefixes,
+            patterns=[prefix + "*" for prefix in prefixes],
+        )
+
+    async def _als_remote_inventory(
+        self, checkout_path, *, repository_url, options, prefixes, patterns=(),
+    ):
         destination, token = await self._apush_destination(
             checkout_path, "origin", repository_url=repository_url,
         )
         if destination is None:
             result = await self.arun_git_result(
-                ["ls-remote", "--heads", "origin"], cwd=checkout_path,
+                ["ls-remote", *options, "origin", *patterns], cwd=checkout_path,
             )
             if result.returncode:
                 raise GitError(result.stderr or "remote head inventory failed")
@@ -4106,7 +4153,7 @@ class GitManager:
                 home = Path(temporary)
                 home.chmod(0o700)
                 output = (await self._arun_authenticated_git(
-                    ["ls-remote", "--heads", destination], home=home,
+                    ["ls-remote", *options, destination, *patterns], home=home,
                     repository_url=destination, token=token,
                     deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
                     budget_seconds=self._GIT_TIMEOUT,
@@ -4114,7 +4161,7 @@ class GitManager:
         found = {}
         for line in output.splitlines():
             oid, separator, ref = line.partition("\t")
-            if (not separator or not ref.startswith("refs/heads/")
+            if (not separator or not ref.startswith(prefixes)
                     or not is_valid_git_oid(oid) or ref in found):
                 raise GitError("remote returned malformed or duplicate head identity")
             _validate_ref(ref.removesuffix("^{}"))
@@ -4890,12 +4937,18 @@ class GitManager:
             seeded_tips = 0
             held = False
             if borrowable_objects is not None:
+                if timeout_seconds is None:
+                    deadline = await self._aretained_fetch_deadline(
+                        str(destination), home=home, deadline=deadline,
+                    )
                 seeded_tips = await self._alend_fetch_objects(
                     imported, str(destination), borrowable_objects,
                     patterns=(), home=home, deadline=deadline,
                 )
                 held = _object_type == "commit" and await self._aholds_complete_commit(
-                    imported, oid, home=home, deadline=deadline, lender_verified=seeded_tips > 0,
+                    imported, oid, home=home, deadline=deadline,
+                    lender_verified=(seeded_tips > 0
+                                     or await self.aretained_store_verified(str(destination))),
                     lender_git_dir=str(destination),
                 )
             mode = (
@@ -4924,11 +4977,13 @@ class GitManager:
                 )
                 return oid
             else:
+                reusable = await self.aretained_store_verified(str(destination))
                 try:
                     await self._arun_authenticated_git(
                         # The destination's tips reach negotiation only through
                         # the seeded refs, as in the origin fetch.
                         ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
+                         "-c", "fetch.fsckObjects=true",
                          f"--git-dir={imported}", "fetch", "--no-tags", "--force",
                          destination_url, f"{oid}:refs/aq/exact"],
                         home=home,
@@ -4957,7 +5012,10 @@ class GitManager:
                 raise GitError("authenticated exact Git fetch returned another object type")
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                 "-c", "fetch.fsckObjects=true",
                  f"--git-dir={destination}", "fetch", "--no-tags", "--force",
+                 # Partial tips cannot negotiate away their promised blobs.
+                 *(["--refetch"] if borrowable_objects is None else []),
                  str(imported), f"{oid}:{destination_ref}"],
                 home=home, deadline=deadline,
             )
@@ -4967,6 +5025,8 @@ class GitManager:
             )
             if local.decode("ascii", errors="replace") != oid:
                 raise _git_preparation_error("import_mismatch", subcommand="rev-parse")
+            if reusable:
+                await self.aextend_retained_store_verified(str(destination))
         logger.info(
             "authenticated exact fetch: exact_fetch=%s, seeded_tips=%d, "
             "received_objects=%d, received_kib=%d, elapsed=%.1fs",
