@@ -673,22 +673,30 @@ class IntegrationCommandsMixin:
         # this check runs independently of lane errors and retry scheduling.
         checked_at = getattr(self, "_train_stall_checked_at", None)
         if (getattr(self, "db", None) is not None
+                and not getattr(self, "_train_stall_checking", False)
                 and (checked_at is None or now < checked_at or now - checked_at >= 60)):
             from src.integration.stall_alerts import alert_stalled_batches
 
-            await alert_stalled_batches(self, now=now)
-            observer = getattr(self.orchestrator, "delivery_observer", None)
-            if observer is not None:
-                import logging
-
-                from src.integration.delivery_watchdog import scan_stuck_deliveries
-
-                try:
-                    await scan_stuck_deliveries(self.db, observer=observer, now=now,
-                                              hierarchy=self._hierarchy_integration_service())
-                except Exception:
-                    logging.getLogger(__name__).exception("delivery watchdog scan failed")
+            # Reserve the cadence before yielding. Multiple service/control
+            # ticks must not duplicate a slow fleet inventory, even if it runs
+            # longer than the minute between scans.
+            self._train_stall_checking = True
             self._train_stall_checked_at = now
+            try:
+                await alert_stalled_batches(self, now=now)
+                observer = getattr(self.orchestrator, "delivery_observer", None)
+                if observer is not None:
+                    import logging
+
+                    from src.integration.delivery_watchdog import scan_stuck_deliveries
+
+                    try:
+                        await scan_stuck_deliveries(self.db, observer=observer, now=now,
+                                                  hierarchy=self._hierarchy_integration_service())
+                    except Exception:
+                        logging.getLogger(__name__).exception("delivery watchdog scan failed")
+            finally:
+                self._train_stall_checking = False
         result = await train.tick(visit_now)
         return {"success": True, **result}
 
