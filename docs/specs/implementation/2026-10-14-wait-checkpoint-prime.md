@@ -73,6 +73,12 @@ prime once to receive the outcome, run its exact ack command even when knowledge
 preparation reports the pre-ack `record.stale_claim`, then prime again. An initial
 ack before outcome delivery remains refused; the bootstrap never directs the
 worker to stop on this recoverable pre-ack refusal.
+This handshake also applies when the wait outcome is `cancelled`: cancellation
+resolves the wait condition without releasing the resumed task's claim. The
+bootstrap, outcome section and pre-ack `record.stale_claim` guidance must say to
+acknowledge the cancelled outcome, then run prime again and continue the task.
+Fresh and recovered continuation checkouts retain the same assignment sentinel
+and acquisition receipt for cancelled outcomes as for satisfied outcomes.
 
 No database DDL, claim/pool scheduling or public API model change is made here.
 The tests cover the SQL checkpoint/deadline race on disposable PostgreSQL,

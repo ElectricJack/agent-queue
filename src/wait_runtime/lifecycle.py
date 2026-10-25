@@ -4,6 +4,7 @@ import time
 import json
 import asyncio
 import logging
+from collections import OrderedDict
 
 from sqlalchemy import Float, Integer, and_, cast, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -33,6 +34,7 @@ class WaitLifecycle:
         self._resume_tasks = {}
         self._resume_graph_busy = {}
         self._hibernate_tasks = {}
+        self._turn_token_cache = OrderedDict()
 
     async def register(self, args, *, principal, scope, handler):
         watermark = await self.db.wait_source_watermark()
