@@ -20,9 +20,6 @@ from src.database.tables import (
     projects,
     repos,
     task_branch_origins,
-    task_delivery_receipts,
-    task_integration_checkpoints,
-    task_metadata,
     tasks,
 )
 from src.git.manager import GitError
@@ -488,9 +485,7 @@ class IntegrationStatusService:
         the train's last visit or authorize delivery, admission or publication.
         Reopened generations and receipts for other targets keep their blockers.
         """
-        from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
-        from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
-        from src.integration.delivery_truth import completion_after_rework, load_delivery_requests
+        from src.integration.root_pull_requests import historically_landed_root_heads_on
 
         visits = self._train_visits(project_id)
         for key, visit in visits.items():
@@ -499,46 +494,7 @@ class IntegrationStatusService:
                    if b.get("code") == "pr_conflicting" and b.get("task_id")}
             if not ids:
                 continue
-            repository_id, target_ref = key
-            receipts = (await conn.execute(select(task_delivery_receipts).join(
-                repos, repos.c.id == task_delivery_receipts.c.repository_id,
-            ).where(
-                task_delivery_receipts.c.source_task_id.in_(ids),
-                repos.c.project_id == project_id,
-                *_root_delivery_receipt_conditions(repository_id, target_ref),
-                *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
-            ))).mappings().all()
-            if not receipts:
-                continue
-            requests = await load_delivery_requests(
-                self.db, ids, repository_id=repository_id, target_ref=target_ref,
-                conn=conn, reduced=True,
-            )
-            checkpoints = {row["task_id"]: row for row in (await conn.execute(
-                select(task_integration_checkpoints).where(
-                    task_integration_checkpoints.c.task_id.in_(ids),
-                    task_integration_checkpoints.c.repository_id == repository_id,
-                ),
-            )).mappings()}
-            rework = dict((await conn.execute(select(
-                task_metadata.c.task_id, task_metadata.c.value,
-            ).where(task_metadata.c.task_id.in_(ids),
-                    task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all())
-            settled = set()
-            for receipt in receipts:
-                request = requests.get(receipt["source_task_id"])
-                if (request is None or request.task_status != "COMPLETED"
-                        or (request.project_id, request.repository_id) != (project_id, repository_id)):
-                    continue
-                source, completed_at = request.reported_source, request.completed_at
-                if source is None and request.completion_id == request.legacy_generation:
-                    checkpoint = checkpoints.get(request.task_id)
-                    if checkpoint is not None:
-                        source, completed_at = checkpoint["checkpoint_sha"], checkpoint["updated_at"]
-                if (source and source == receipt["reviewed_head_sha"]
-                        and completed_at is not None and completed_at <= receipt["created_at"]
-                        and completion_after_rework(receipt["created_at"], rework.get(request.task_id))):
-                    settled.add((request.task_id, source))
+            settled = await historically_landed_root_heads_on(self.db, conn, project_id, *key, ids)
             current = [b for b in blockers if not (
                 b.get("code") == "pr_conflicting"
                 and (b.get("task_id"), b.get("source_sha")) in settled
