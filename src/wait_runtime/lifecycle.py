@@ -31,6 +31,7 @@ class WaitLifecycle:
         self.resume = ResumeTransaction(service, clock=clock)
         self.medians = {}
         self._resume_tasks = {}
+        self._resume_graph_busy = {}
         self._hibernate_tasks = {}
 
     async def register(self, args, *, principal, scope, handler):
@@ -287,15 +288,28 @@ class WaitLifecycle:
             if pending is not None and not pending.done():
                 continue
             self._resume_tasks[key] = asyncio.create_task(self._dispatch_resume(intent, key))
+        ready_keys = {(intent["id"], intent["suspension_generation"]) for intent in ready}
+        self._resume_graph_busy = {key: count for key, count in self._resume_graph_busy.items()
+                                   if key in ready_keys}
 
     async def _dispatch_resume(self, intent, key):
         try:
             result = await self.service.command("wait_resume_dispatch", {
                 "continuation_id": intent["id"], "generation": intent["suspension_generation"],
             })
-            if not result.get("success"):
-                logger.warning("Wait resume dispatch refused for %s: %s", intent["id"], result)
+            if result.get("error_code") == "wait.graph_busy" and not result.get("success"):
+                count = self._resume_graph_busy.get(key, 0) + 1
+                self._resume_graph_busy[key] = count
+                logger.warning(
+                    "wait.resume_graph_busy: continuation_id=%s generation=%s "
+                    "consecutive_refusals=%d", *key, count,
+                )
+            else:
+                self._resume_graph_busy.pop(key, None)
+                if not result.get("success"):
+                    logger.warning("Wait resume dispatch refused for %s: %s", intent["id"], result)
         except Exception:
+            self._resume_graph_busy.pop(key, None)
             logger.exception("Wait resume dispatch failed for %s", intent["id"])
         finally:
             self._resume_tasks.pop(key, None)
