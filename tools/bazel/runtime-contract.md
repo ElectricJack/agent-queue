@@ -7,6 +7,16 @@ invocation loads this plugin automatically. No BUILD target is introduced here.
 
 ## Launcher integration
 
+The merged H2 `run_isolated` and H3 `run_postgres_target` APIs currently return
+an exit status, not a complete lifecycle receipt or an owned-process handle.
+H3 already places PostgreSQL setup and teardown inside H2's isolated process.
+B1 must adapt that lifecycle before using the callbacks below; it must not pass
+a no-op `kill`, treat the H2 return code as a receipt, or start a fresh 300-second
+clock inside PostgreSQL bootstrap. Pass only the outer deadline's remaining
+time to nested launchers, allowing their termination grace periods, and measure
+environment construction, process creation and final namespace reaping too.
+H2/H3's default timeout alone does not certify that complete launcher interval.
+
 1. Record `time.monotonic()` at launcher entry, before environment/PG/daemon
    bootstrap. Call `runtime.run_target(bootstrap, execute, cleanup, kill,
    started=entry_time)` in the parent launcher. Callbacks are asynchronous and
