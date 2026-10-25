@@ -249,11 +249,34 @@ class WaitSourceListener:
                        attempt["event"]["seq"], attempt["event"]["source_key"])
         return True
 
+    async def _dispatched_ci_retry(self, conn, watermark, attempted):
+        # Older daemons stamped events dispatched even when fresh observation
+        # failed. The stamp is not a per-wait receipt. Start from pending
+        # subscriptions and their indexed source histories, not all history.
+        latest = select(func.max(wait_source_events.c.seq)).where(
+            wait_source_events.c.source_key == wait_records.c.source_key,
+            wait_source_events.c.source_generation == wait_records.c.source_generation,
+            wait_source_events.c.seq > wait_records.c.source_watermark_seq,
+            wait_source_events.c.seq <= watermark,
+            wait_source_events.c.dispatched_at.is_not(None),
+        ).correlate(wait_records).scalar_subquery()
+        recoverable = select(latest).where(
+            wait_records.c.outcome == "pending",
+            wait_records.c.verification_state == "verified",
+            wait_records.c.condition_kind.in_(("ci_check", "ci_run")),
+        )
+        return (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.seq.in_(recoverable),
+            wait_source_events.c.seq.not_in(self._retry_due),
+            wait_source_events.c.seq.not_in(attempted),
+        ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
+
     @admission_pass("service.scheduler.reader")
     async def drain(self, watermark):
         """Bound each transaction; retain slow observations for a later retry pass."""
         count = retries = 0
         retry_pending = True
+        recovery = {"position": None, "attempted": set()}
         started = asyncio.get_running_loop().time()
         while True:
             if asyncio.get_running_loop().time() - started >= self.drain_budget_seconds:
@@ -266,7 +289,7 @@ class WaitSourceListener:
             try:
                 async with budget:
                     result = await self._drain_one(
-                        watermark, retry_pending and retries < self.retry_batch_size, attempt)
+                        watermark, retry_pending and retries < self.retry_batch_size, attempt, recovery)
             except TimeoutError:
                 if not budget.expired():
                     raise
@@ -291,13 +314,18 @@ class WaitSourceListener:
                                max(0, self.clock() - result["event"]["occurred_at"]))
             if result["retry"]:
                 retries += 1
+                recovery["attempted"].update(processed)
+                if result["event"]["dispatched_at"] is not None and not retry_after:
+                    # An unsatisfied observation is legitimate. Bound repeated
+                    # recovery visits without requiring a new source revision.
+                    self._retry_due[processed[-1]] = self.clock() + self.safety_seconds
                 if not retry_after:
                     logger.info("wait.source_observation_retried seq=%s", processed[-1])
             count += len(processed)
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
 
-    async def _drain_one(self, watermark, retry_pending, attempt):
+    async def _drain_one(self, watermark, retry_pending, attempt, recovery):
         async with self.db._engine.begin() as conn:
             from src.waits.loops import prepare_progress
 
@@ -306,6 +334,8 @@ class WaitSourceListener:
             ))
             self._retry_due = {seq: due for seq, due in self._retry_due.items()
                                if due > self.clock()}
+            if recovery["position"] is None:
+                recovery["position"] = position or 0
             # Forward events precede retries so a provider outage cannot
             # hold later messages or task transitions behind its retry budget.
             candidate = None
@@ -330,7 +360,14 @@ class WaitSourceListener:
                     wait_source_events.c.seq <= watermark,
                     wait_source_events.c.dispatched_at.is_(None),
                     wait_source_events.c.seq.not_in(self._retry_due),
+                    wait_source_events.c.seq.not_in(recovery["attempted"]),
                 ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
+                if retry is None:
+                    # Keep the undispatched partial index usable; combining
+                    # these paths with OR scans the full outbox prefix.
+                    retry = await self._dispatched_ci_retry(
+                        conn, min(recovery["position"], watermark), recovery["attempted"],
+                    )
                 # New failures in this pass already receive a backoff;
                 # do not rescan the retry index for every forward event.
                 retry_pending = retry is not None

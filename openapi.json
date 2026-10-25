@@ -53538,6 +53538,18 @@
             "title": "Project Id",
             "description": "Filter by project ID (optional, but required for tree/compact modes)"
           },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Maximum tasks in a flat live listing, after filtering. The total remains uncapped. Use page_size for snapshots."
+          },
           "status": {
             "anyOf": [
               {

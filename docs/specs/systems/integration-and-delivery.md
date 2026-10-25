@@ -258,6 +258,15 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
    that stacks are valid (`stacked_branches.py`) and applies the root PR gate
    (`github_review_poll.RootPullRequestGate`).
    - A leaf root gets its PR at worker close and must pass that PR's checks and review.
+     After verifying that the PR head equals the retained source SHA, hosted root
+     admission may fill a required check absent from the PR event with its push-event
+     check on that exact SHA. An existing PR check takes precedence, including failed
+     or unfinished attempts. Both events retain the trusted producer and latest
+     workflow-attempt validation; other events and other SHAs cannot substitute.
+     This admission evidence has a separate cache identity from strict PR checks and
+     candidate push checks. Conflict and review requirements still apply.
+     A bot refresh that retains an earlier admission source keeps strict PR checks
+     for that earlier SHA; push fallback requires the checked SHA to be the PR head.
      A source whose PR checks are red is admitted only together with its authorized
      repair ([conflicting-source batches](../design/conflicting-source-batches.md),
      [root PR check recovery](../design/root-pr-check-recovery.md)).
