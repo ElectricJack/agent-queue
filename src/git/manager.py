@@ -4115,12 +4115,35 @@ class GitManager:
         self, checkout_path: str, *, repository_url: str | None = None,
     ) -> dict[str, str]:
         """List all remote branch heads using this repository's read credentials."""
+        return await self._als_remote_inventory(
+            checkout_path, repository_url=repository_url,
+            options=["--heads"], prefixes=("refs/heads/",),
+        )
+
+    async def als_remote_snapshot_refs(
+        self, checkout_path: str, *, repository_url: str,
+    ) -> dict[str, str]:
+        """Advertise every ref namespace imported by a retained origin fetch.
+
+        Patterns include new and deleted provenance/tags as well as branches;
+        checking only known heads could miss a newly published completion.
+        """
+        prefixes = ("refs/heads/", "refs/tags/", "refs/aq/provenance/")
+        return await self._als_remote_inventory(
+            checkout_path, repository_url=repository_url,
+            options=["--refs"], prefixes=prefixes,
+            patterns=[prefix + "*" for prefix in prefixes],
+        )
+
+    async def _als_remote_inventory(
+        self, checkout_path, *, repository_url, options, prefixes, patterns=(),
+    ):
         destination, token = await self._apush_destination(
             checkout_path, "origin", repository_url=repository_url,
         )
         if destination is None:
             result = await self.arun_git_result(
-                ["ls-remote", "--heads", "origin"], cwd=checkout_path,
+                ["ls-remote", *options, "origin", *patterns], cwd=checkout_path,
             )
             if result.returncode:
                 raise GitError(result.stderr or "remote head inventory failed")
@@ -4130,7 +4153,7 @@ class GitManager:
                 home = Path(temporary)
                 home.chmod(0o700)
                 output = (await self._arun_authenticated_git(
-                    ["ls-remote", "--heads", destination], home=home,
+                    ["ls-remote", *options, destination, *patterns], home=home,
                     repository_url=destination, token=token,
                     deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
                     budget_seconds=self._GIT_TIMEOUT,
@@ -4138,7 +4161,7 @@ class GitManager:
         found = {}
         for line in output.splitlines():
             oid, separator, ref = line.partition("\t")
-            if (not separator or not ref.startswith("refs/heads/")
+            if (not separator or not ref.startswith(prefixes)
                     or not is_valid_git_oid(oid) or ref in found):
                 raise GitError("remote returned malformed or duplicate head identity")
             _validate_ref(ref.removesuffix("^{}"))

@@ -71,6 +71,32 @@ their handles through cancellation during spawn, and terminate/reap their proces
 groups before cancellation or timeout releases the caller's exclusion. This
 closes a writer-lifetime gap; it does not identify the cause of a past corruption.
 
+## Tick-scoped observations
+
+Train lanes dispatched by one tick share one repository acquisition, including
+lanes arriving after that acquisition starts or completes. Reconciliation stages
+likewise share one observation per repository in their tick. The train and Git
+truth reconciler use the same GitTruth service for immutable facts and backoff.
+Only work dispatched by that tick retains its scope; later ticks and publication
+follow-ups enter a new scope. Each reader retains independent answer and freshness caches.
+Mutable authority and remote target identity still require their existing checks
+before a proof can authorize a state change.
+
+For these background observations, a reusable full integrity baseline allows a
+fresh authenticated `ls-remote --refs` inventory before transport, under the
+repository transaction. All branches, tags and provenance refs are compared
+with the retained import inventory, including additions, deletions and rewinds.
+Exact equality permits skipping transfer, full fsck and foreground maintenance.
+An expired or changed baseline, unequal inventories or a recovery journal or
+pending marker retains normal acquisition and recovery. A failed remote probe
+leaves the observation unavailable. Conservatively retained or unimported tags
+can prevent the shortcut; no tag or retained object is removed to obtain a hit.
+
+Per-visit selection metrics distinguish `snapshot_acquisition`,
+`snapshot_scope_wait`, `snapshot_ref_probe`, `retained_fetch`, `retained_fsck`
+and `retained_maintenance`. Counters include `tick_snapshot_hits`,
+`snapshot_ref_probes`, `snapshot_unchanged` and `retained_fetch_starts`.
+
 ## Recovery authority
 
 Detection is read-only with respect to the lender. It does not change refs,
