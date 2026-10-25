@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import runpy
 import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import delete, insert, select, update
@@ -302,26 +306,30 @@ async def test_abandon_task_records_one_decision_for_a_legacy_leaf(world):
         "stranded", "abandoned", None, "op")
     assert "superseded by later work on main" in row.reason and "abandon stranded" in row.reason
     assert "stranded" not in await blocker_codes(world)
+    async with db._engine.connect() as conn:
+        assert set((await conn.execute(select(branch_retirements.c.branch))).scalars()) == {
+            "aq/stranded", "aq/stranded-wip"}
     again = await abandon_task(db, "p", "stranded", dry_run=False, operator_id="op", reason="r")
     assert again["results"] == []
 
 
-async def test_abandon_task_refuses_what_git_already_proves(world):
+@pytest.mark.parametrize("keep_branch", [False, True])
+async def test_abandon_task_refuses_what_git_already_proves(world, keep_branch):
     from src.integration.legacy_backfill import abandon_task
 
     db = world.db
     await legacy(world, "landed", land=True)
     await legacy(world, "squashed", squash=True)
     with pytest.raises(ValueError, match="already proves landed"):
-        await abandon_task(db, "p", "landed")
+        await abandon_task(db, "p", "landed", keep_branch=keep_branch)
     with pytest.raises(ValueError, match="already proves squashed"):
-        await abandon_task(db, "p", "squashed")
+        await abandon_task(db, "p", "squashed", keep_branch=keep_branch)
     await db.create_task(Task(id="open", project_id="p", repo_id="r", title="open", description="",
                               branch_name="aq/open", status=TaskStatus.IN_PROGRESS))
     with pytest.raises(ValueError, match="only a completed task"):
-        await abandon_task(db, "p", "open")
+        await abandon_task(db, "p", "open", keep_branch=keep_branch)
     with pytest.raises(ValueError, match="not a task of this project"):
-        await abandon_task(db, "p", "no-such-task")
+        await abandon_task(db, "p", "no-such-task", keep_branch=keep_branch)
     async with db._engine.connect() as conn:
         assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
 
@@ -386,6 +394,84 @@ async def test_abandon_task_on_a_container_covers_its_undelivered_children(world
     assert [(r["task_id"], r["outcome"]) for r in applied["results"]] == [
         ("child", "recorded"), ("parent", "recorded")]
     assert not {"parent", "child"} & set(await blocker_codes(world))
+
+
+@pytest.mark.parametrize("surface", ["leaf", "container", "epic"])
+async def test_abandon_keep_branch_records_decision_without_retirement(world, surface):
+    from src.integration.legacy_backfill import abandon_epic, abandon_task
+
+    db, origin = world.db, world.origin
+    if surface == "leaf":
+        await legacy(world, "kept")
+        expected = {"kept"}
+    else:
+        await epic_with_child(world, "kept", "child", epic_status=TaskStatus.COMPLETED)
+        expected = {"kept", "child"}
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id="kept-origin", task_id="kept", repository_id="r", branch_name="aq/kept",
+                base_sha=git(origin.clone, "rev-parse", "origin/main"), creation_generation=0,
+                reserved=True, materialized=True, created_at=time.time()))
+    abandon = abandon_epic if surface == "epic" else abandon_task
+    before = {tid: git(origin.url, "rev-parse", f"refs/heads/aq/{tid}") for tid in expected}
+    preview = await abandon(db, "p", "kept", keep_branch=True)
+    assert preview["keep_branch"] is True
+    assert {r["task_id"] for r in preview["results"]} == expected
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+        assert (await conn.execute(select(branch_retirements))).all() == []
+    with pytest.raises(ValueError, match="nonblank reason"):
+        await abandon(db, "p", "kept", dry_run=False, keep_branch=True)
+
+    applied = await abandon(db, "p", "kept", dry_run=False, keep_branch=True,
+                            operator_id="op", reason="retain experiment for reference")
+    assert applied["keep_branch"] is True
+    assert {r["task_id"] for r in applied["results"] if r["outcome"] == "recorded"} == expected
+    assert not expected & set(await blocker_codes(world))
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_legacy_deliveries))).all()
+        assert {r.task_id for r in rows} == expected
+        assert all(r.proof == "abandoned" and r.operator_id == "op"
+                   and "[branches: keep]" in r.reason
+                   and "retain experiment for reference" in r.reason for r in rows)
+        assert (await conn.execute(select(branch_retirements))).all() == []
+    again = await abandon(db, "p", "kept", dry_run=False, keep_branch=True, reason="repeat")
+    assert again["results"] == []
+    assert {tid: git(origin.url, "rev-parse", f"refs/heads/aq/{tid}") for tid in expected} == before
+
+
+@pytest.mark.parametrize("apply", [False, True])
+async def test_backfill_script_forwards_keep_branch_to_both_abandon_controls(
+    monkeypatch, tmp_path, capsys, apply,
+):
+    script = runpy.run_path(str(Path(__file__).parents[1] / "scripts/backfill-legacy-deliveries.py"))
+    db = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock(),
+                         set_delivery_observer=MagicMock())
+    monkeypatch.setattr("src.config.load_config", lambda _: SimpleNamespace(data_dir=tmp_path))
+    monkeypatch.setattr("src.database.create_database", lambda _: db)
+    controls = {name: AsyncMock(return_value={"keep_branch": True})
+                for name in ("abandon_task", "abandon_epic")}
+    for name, control in controls.items():
+        monkeypatch.setattr(f"src.integration.legacy_backfill.{name}", control)
+    args = ["p", "--abandon-task", "leaf", "--abandon-epic", "epic", "--keep-branch",
+            "--operator", "op", "--reason", "retain experiment"]
+    assert await script["main"](args + (["--apply"] if apply else [])) == 0
+    for name, task_id in (("abandon_task", "leaf"), ("abandon_epic", "epic")):
+        controls[name].assert_awaited_once_with(
+            db, "p", task_id, dry_run=not apply, operator_id="op", reason="retain experiment",
+            keep_branch=True)
+    db.close.assert_awaited_once()
+    assert '"keep_branch": true' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("selection", [[], ["--relanded", "t=" + "a" * 40],
+                                      ["--abandon-task", "t", "--relanded", "t=" + "a" * 40]])
+async def test_backfill_script_rejects_keep_branch_without_exclusive_abandon(selection, capsys):
+    script = runpy.run_path(str(Path(__file__).parents[1] / "scripts/backfill-legacy-deliveries.py"))
+    with pytest.raises(SystemExit) as exc:
+        await script["main"](["p", "--keep-branch", *selection])
+    assert exc.value.code == 2
+    assert "--keep-branch requires --abandon-task or --abandon-epic" in capsys.readouterr().err
 
 
 async def test_backfill_never_answers_an_epic_by_its_branch(world):
