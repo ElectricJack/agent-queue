@@ -1766,6 +1766,58 @@ async def test_tick_command_reports_an_inactive_train():
     assert result["success"] is False and result["outcome"] == "unavailable"
 
 
+@pytest.mark.parametrize("cancel_scan", [False, True])
+@pytest.mark.parametrize("scan_phase", ["stalls", "watchdog"])
+async def test_tick_command_does_not_duplicate_a_slow_stall_scan(
+    monkeypatch, cancel_scan, scan_phase,
+):
+    from unittest.mock import AsyncMock
+
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    from src.integration import delivery_watchdog, stall_alerts
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_scan(*args, **kwargs):
+        entered.set()
+        await release.wait()
+
+    scan = AsyncMock(side_effect=slow_scan)
+    stalls = scan if scan_phase == "stalls" else AsyncMock()
+    watchdog = scan if scan_phase == "watchdog" else AsyncMock()
+    monkeypatch.setattr(stall_alerts, "alert_stalled_batches", stalls)
+    monkeypatch.setattr(delivery_watchdog, "scan_stuck_deliveries", watchdog)
+    handler = IntegrationCommandsMixin()
+    handler.db = object()
+    train_tick = AsyncMock(return_value={"started": [], "running": []})
+    train, observer, hierarchy = SimpleNamespace(tick=train_tick), object(), object()
+    handler.orchestrator = SimpleNamespace(integration_train=train, delivery_observer=observer)
+    monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: hierarchy)
+    with principal_context(ExecutionPrincipal.service("integration-train")):
+        first = asyncio.create_task(handler._cmd_integration_train_tick({"now": 100}))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            for now in (100, 101, 161):
+                assert (await handler._cmd_integration_train_tick({"now": now}))["success"]
+            scan.assert_awaited_once()
+        finally:
+            if cancel_scan:
+                first.cancel()
+            release.set()
+            if cancel_scan:
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+            else:
+                await first
+        # Completion and cancellation both release the single-flight guard.
+        assert (await handler._cmd_integration_train_tick({"now": 162}))["success"]
+        assert scan.await_count == 2
+        watchdog.assert_awaited_with(
+            handler.db, observer=observer, now=162, train=train, hierarchy=hierarchy,
+        )
+
+
 async def test_service_drives_the_train_through_the_command_as_the_daemon():
     from src.commands.integration_commands import IntegrationCommandsMixin
     from src.commands.principal import PrincipalKind, current_principal
