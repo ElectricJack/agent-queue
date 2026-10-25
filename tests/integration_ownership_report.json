@@ -2780,7 +2780,7 @@
   },
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3380,
+    "authorized_owned_delta": 3530,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2884,8 +2884,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83556,
-    "measured_owned_total": 158879,
+    "measured_engine_lines": 83705,
+    "measured_owned_total": 159029,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -2927,6 +2927,39 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "source_revision": "9f4d979c54865bdaf06d85c036796f64b803991c",
       "task_id": "amber-journey-18"
+    },
+    "signature_selection_refresh_composition": {
+      "authorized_engine_delta": 1175,
+      "authorized_owned_delta": 1175,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-f3778539d3f641899534a1d0adc05b9b",
+      "dev_source_revision": "677da30953d618601b049f4b4eb78c48d8269098",
+      "inventory_sha256": "29b042abfad000ea654ae4622177b4abf1602c9cfc510fe150af95875ba65008",
+      "measured_source_revision": "c8650abe8bceefd7737866eb06da2e8f28365f05",
+      "operator_decision": "6679052c",
+      "parts": {
+        "postlanding_refresh": {
+          "authorized_engine_delta": 149,
+          "authorized_owned_delta": 149,
+          "charged_file": "src/integration/train_sources.py",
+          "task_id": "bright-bridge-75.6"
+        },
+        "signature_and_packing": {
+          "authorized_engine_delta": 1026,
+          "authorized_owned_delta": 1026,
+          "prior_approval_request_message_id": "msg-30801260",
+          "task_ids": [
+            "bright-bridge-75.1",
+            "bright-bridge-75.3"
+          ]
+        }
+      },
+      "previous_measured_engine_lines": 82530,
+      "previous_measured_owned_total": 157854,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved composition of the existing T3/dev grants, T1/T2 signature and packing footprint, and T6 postlanding refresh. Preserve original baselines, historical grants, ownership classifications and assertions; zero headroom and no new tables. T4/T5 are not included or double-counted.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-bridge-75.6"
     },
     "source_ci_repair_composition": {
       "authorized_engine_delta": 46,
@@ -3031,6 +3064,23 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "supervisor_decision_comment_id": "comment-26bf155ce932484188a12ac8776616fd",
       "task_id": "sharp-delta-65"
+    },
+    "wait_ci_timeout_backoff_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 1,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/waits/watchers/ci.py": 1
+      },
+      "dev_source_revision": "c413b548b78926032681cb99b410451f288a2bfe",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82524,
+      "previous_measured_owned_total": 157776,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +1 owned line: CI watcher backs off after an observation timeout so the wait listener drain does not pay a 5s timeout per CI event, hand-landed on dev by the global supervisor 2026-10-25. Zero remaining headroom.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "c413b548b78926032681cb99b410451f288a2bfe",
+      "task_id": "supervisor-global"
     },
     "wait_listener_fence_inherited_composition": {
       "authorized_engine_delta": 0,
@@ -16369,12 +16419,12 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83556,
+    "engine_cap": 83705,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3380,
+      "authorized_owned_delta": 3530,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16478,8 +16528,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 83556,
-      "measured_owned_total": 158879,
+      "measured_engine_lines": 83705,
+      "measured_owned_total": 159029,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16521,6 +16571,39 @@
         "referenced_decision": "size-cap-delegation-2026-10-23",
         "source_revision": "9f4d979c54865bdaf06d85c036796f64b803991c",
         "task_id": "amber-journey-18"
+      },
+      "signature_selection_refresh_composition": {
+        "authorized_engine_delta": 1175,
+        "authorized_owned_delta": 1175,
+        "authorized_table_delta": 0,
+        "decision_message_id": "msg-f3778539d3f641899534a1d0adc05b9b",
+        "dev_source_revision": "677da30953d618601b049f4b4eb78c48d8269098",
+        "inventory_sha256": "29b042abfad000ea654ae4622177b4abf1602c9cfc510fe150af95875ba65008",
+        "measured_source_revision": "c8650abe8bceefd7737866eb06da2e8f28365f05",
+        "operator_decision": "6679052c",
+        "parts": {
+          "postlanding_refresh": {
+            "authorized_engine_delta": 149,
+            "authorized_owned_delta": 149,
+            "charged_file": "src/integration/train_sources.py",
+            "task_id": "bright-bridge-75.6"
+          },
+          "signature_and_packing": {
+            "authorized_engine_delta": 1026,
+            "authorized_owned_delta": 1026,
+            "prior_approval_request_message_id": "msg-30801260",
+            "task_ids": [
+              "bright-bridge-75.1",
+              "bright-bridge-75.3"
+            ]
+          }
+        },
+        "previous_measured_engine_lines": 82530,
+        "previous_measured_owned_total": 157854,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved composition of the existing T3/dev grants, T1/T2 signature and packing footprint, and T6 postlanding refresh. Preserve original baselines, historical grants, ownership classifications and assertions; zero headroom and no new tables. T4/T5 are not included or double-counted.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bright-bridge-75.6"
       },
       "source_ci_repair_composition": {
         "authorized_engine_delta": 46,
@@ -16626,6 +16709,23 @@
         "supervisor_decision_comment_id": "comment-26bf155ce932484188a12ac8776616fd",
         "task_id": "sharp-delta-65"
       },
+      "wait_ci_timeout_backoff_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 1,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/waits/watchers/ci.py": 1
+        },
+        "dev_source_revision": "c413b548b78926032681cb99b410451f288a2bfe",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82524,
+        "previous_measured_owned_total": 157776,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +1 owned line: CI watcher backs off after an observation timeout so the wait listener drain does not pay a 5s timeout per CI event, hand-landed on dev by the global supervisor 2026-10-25. Zero remaining headroom.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "c413b548b78926032681cb99b410451f288a2bfe",
+        "task_id": "supervisor-global"
+      },
       "wait_listener_fence_inherited_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 3,
@@ -16704,7 +16804,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 158879,
+    "owned_total_cap": 159029,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
