@@ -114,20 +114,24 @@ def test_setup_sh_asks_no_question_it_cannot_survive_the_answer_to() -> None:
     )
 
 
-def test_the_ask_helper_takes_the_default_with_no_terminal() -> None:
-    """Run the helper itself, the way a piped `setup.sh` runs it."""
+def test_the_ask_helper_takes_the_default_with_no_terminal(tmp_path: Path) -> None:
+    """Run the helper with closed stdin and the file context of `setup.sh`."""
     import subprocess
 
     helper = SETUP_SH.read_text().split("# --- Detect Python 3.12+ ---")[0]
     script = helper + '\nif ask "Add it?" Y; then echo YES; else echo NO; fi\n'
+    # The preamble resolves its directory through BASH_SOURCE, which is unset in bash -c.
+    helper_file = tmp_path / "setup-helper.sh"
     for default, expected in (("Y", "YES"), ("N", "NO")):
         body = script.replace('ask "Add it?" Y', f'ask "Add it?" {default}')
+        helper_file.write_text(body)
         result = subprocess.run(
-            ["bash", "-c", body],
+            ["bash", str(helper_file)],
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
             check=False,
         )
         assert result.returncode == 0, result.stderr
+        assert not result.stderr, result.stderr
         assert expected in result.stdout, result.stdout
