@@ -7304,6 +7304,7 @@ GENERATOR_INPUTS = [
     "tests/test_wait_hibernation.py",
     "tests/test_wait_holding.py",
     "tests/test_wait_legacy_bridge.py",
+    "tests/test_wait_listener.py",
     "tests/test_wait_metrics.py",
     "tests/test_wait_migration.py",
     "tests/test_wait_outcomes.py",
