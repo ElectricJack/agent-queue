@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2304,
+ 'authorized_owned_delta': 2347,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1067,8 +1067,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82542,
- 'measured_owned_total': 157803,
+ 'measured_engine_lines': 82562,
+ 'measured_owned_total': 157846,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1292,7 +1292,26 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
                                   'supervisor_decision_message_id': 'msg-09ca31f5246b46af8c7d4bcd1602faec'},
  'source_revision': 'f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0',
  'supervisor_decision_message_id': 'msg-2077aa41ec2c4f8685869fa59596627b',
- 'task_id': 'smart-nexus-83'}
+ 'task_id': 'smart-nexus-83',
+ 'incoming_child_batch_composition': {'authorized_engine_delta': 20,
+     'authorized_owned_delta': 43,
+     'authorized_shared_owned_delta': 23,
+     'authorized_table_delta': 0,
+     'decision_message_id': 'msg-a8972b49541b431e9146cd95001f18b4',
+     'dev_source_revision': 'c10b5b6f9',
+     'operator_decision': '6679052c',
+     'previous_measured_engine_lines': 82542,
+     'previous_measured_owned_total': 157803,
+     'previous_measured_table_count': 45,
+     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2017',
+     'reason': 'Exact supervisor-approved incoming-child-batch ownership and fresh-head recovery '
+               'footprint after merging dev and its setup-script test fix. Preserve original '
+               'baselines, every historical grant and ownership classification, with zero '
+               'remaining headroom and no new storage category.',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'source_revision': '3c4ccef55c93e3b400a35485e4ebd70ad016931a',
+     'task_id': 'solid-forge-85',
+     'thread_id': 'solid-forge-85-ci-size'}}
 
 
 def integration_table(name: str) -> bool:
