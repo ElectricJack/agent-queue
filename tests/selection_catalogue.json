@@ -5184,14 +5184,16 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:f842f37b8241d9dd6e966a90d619083494660571cc5a793b151c7d631fa014df",
+      "digest": "sha256:eaafe78596b612430a44af7dff6d95197655d8d8fcc7998bd98100543bf449a7",
       "imports": [
         "src.database",
         "src.database.queries.conversation_queries",
         "src.database.tables",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Durable supervisor conversations, inputs, backfill cursors and gaps on PostgreSQL."
     },
     "tests/test_conversation_render.py": {
@@ -5214,13 +5216,14 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:c9530260494f0baf95572c372293a1f9655657853211df18fca67f2aabacc1e3",
+      "digest": "sha256:45d65278b3bab7c109cb19587f87ae4f95102d1c536691f99ff3a158a77e3268",
       "imports": [
         "src.commands.principal",
         "src.config",
         "src.conversations.intake",
         "src.conversations.outbox",
         "src.conversations.preconditions",
+        "src.database.tables",
         "src.digest",
         "src.discord.inbound",
         "src.discord.intake_diagnostics",
@@ -9465,8 +9468,9 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:de72fddfdd8a6396cf9bec8a23613f9b3786e5d874a2f1c813abbdff1c667a48",
+      "digest": "sha256:dc89c23a21f3c778410e0e67b9626d9cad974fa25db76d51b38f3d18330d389e",
       "imports": [
+        "src.config",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
