@@ -1878,8 +1878,21 @@ async def test_poller_logs_each_root_condition_once_per_change(case, caplog):
     assert caplog.text.count("Completed train root legacy has PR") == 1
 
 
-async def test_poller_binds_each_repository_once_per_tick(case, caplog):
+def _poller_log_records(caplog):
+    return [
+        record for record in caplog.records
+        if record.name == "src.integration.github_review_poll"
+    ]
+
+
+@pytest.mark.parametrize("unrelated_warning", [False, True])
+async def test_poller_binds_each_repository_once_per_tick(case, caplog, unrelated_warning):
     caplog.set_level(logging.WARNING, logger="src.integration.github_review_poll")
+    if unrelated_warning:
+        # A loaded CI runner can log a slow query during any poller tick.
+        logging.getLogger("src.database.engine").warning(
+            "database query duration_ms=1722.8 failed=False"
+        )
     async with case["db"].immediate() as conn:
         await conn.execute(insert(tasks).values(
             id="e2", project_id="p", repo_id="repo", title="Leaf root", description="",
@@ -1905,21 +1918,21 @@ async def test_poller_binds_each_repository_once_per_tick(case, caplog):
     assert git.binds == 2
     assert caplog.text.count("GitHub PR review repository bind failed") == 1
     assert "GitHub access service is not configured" in caplog.text
-    assert all(record.exc_info is None for record in caplog.records)
-    assert len(caplog.records) == 1
+    assert all(record.exc_info is None for record in _poller_log_records(caplog))
+    assert len(_poller_log_records(caplog)) == 1
 
     # The next page/cycle shares the failure; each repository logs only once
     # in its retry window, even if many roots use it.
     await poller.tick(1062.0)
     assert git.binds == 2
-    assert len(caplog.records) == 1
+    assert len(_poller_log_records(caplog)) == 1
     await poller.tick(1093.0)
     assert git.binds == 3
-    assert len(caplog.records) == 2
-    assert "retry in 120s" in caplog.records[-1].message
+    assert len(_poller_log_records(caplog)) == 2
+    assert "retry in 120s" in _poller_log_records(caplog)[-1].message
     await poller.tick(1155.0)
     assert git.binds == 3
-    assert len(caplog.records) == 2
+    assert len(_poller_log_records(caplog)) == 2
 
     # Success resumes both roots and resets backoff for the next failure.
     git.error = None
@@ -1929,8 +1942,8 @@ async def test_poller_binds_each_repository_once_per_tick(case, caplog):
     git.error = GitHubAccessError("permission", "gh: forbidden (HTTP 403)")
     await poller.tick(1245.0)
     assert git.binds == 5
-    assert len(caplog.records) == 3
-    assert "retry in 60s" in caplog.records[-1].message
+    assert len(_poller_log_records(caplog)) == 3
+    assert "retry in 60s" in _poller_log_records(caplog)[-1].message
 
 
 async def test_poller_bind_backoff_is_capped_and_does_not_block_other_repositories(case, caplog):
@@ -1944,8 +1957,8 @@ async def test_poller_bind_backoff_is_capped_and_does_not_block_other_repositori
     )
     for now, delay in ((1000.0, 30), (1031.0, 60), (1092.0, 60)):
         await poller.tick(now)
-        assert f"retry in {delay}s" in caplog.records[-1].message
-    assert (git.binds, len(caplog.records)) == (3, 3)
+        assert f"retry in {delay}s" in _poller_log_records(caplog)[-1].message
+    assert (git.binds, len(_poller_log_records(caplog))) == (3, 3)
 
     # A different repository can bind while the first is backing off.
     git.error = None

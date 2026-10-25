@@ -469,6 +469,9 @@ class TestDeliveryPolicy:
                 self.marked: list = []
                 self.archived: list = []
 
+            async def route_queued_conversation_inputs(self):
+                return 0
+
             async def redirect_disabled_supervisor_messages(self):
                 return 0
 
@@ -1470,6 +1473,17 @@ async def test_wait_result_never_fabricates_transcript_reply(db, body_kind):
 
 
 class TestIndependentDelivery:
+    async def test_conversation_recovery_failure_does_not_block_other_mail(self, db, monkeypatch):
+        monkeypatch.setattr(db, "route_queued_conversation_inputs", AsyncMock(
+            side_effect=RuntimeError("routing unavailable"),
+        ))
+        msg = await _send(db)
+        manager = FakeSessionManager(activity_map={
+            ("session", "supervisor-p1", "p1"): "idle",
+        })
+        await make_engine(db, manager).run_delivery_pass()
+        assert len(manager.nudges) == 1 and msg.id in manager.nudges[0][3]
+
     async def test_refused_pointer_retries_without_any_prompt_or_new_event(self, db, monkeypatch):
         monkeypatch.setattr("src.messages.delivery.NOTIFICATION_RETRY_SECONDS", 0.1)
         msg = await _send(db)
@@ -1546,6 +1560,57 @@ class TestIndependentDelivery:
         finally:
             await service.stop()
         assert bus._handlers["message.sent"] == []
+
+    @pytest.mark.parametrize("phase", ["delivery", "reply_sweep", "waiting"])
+    async def test_conversation_wake_bypasses_interval_during_each_phase(self, monkeypatch, phase):
+        bus = EventBus(validate_events=False)
+        reached, release, delivered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def delivery_pass():
+            if engine.run_delivery_pass.await_count == 1:
+                if phase == "delivery":
+                    reached.set()
+                    await release.wait()
+            else:
+                delivered.set()
+
+        async def reply_sweep():
+            if phase == "reply_sweep" and engine.check_reply_timeouts.await_count == 1:
+                reached.set()
+                await release.wait()
+
+        class EventOnlyWait:
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            async def wait_for(self, awaitable, timeout):
+                # Never expire the routine timer. Only the intake event can
+                # start another pass, regardless of the test machine's speed.
+                if phase == "waiting":
+                    reached.set()
+                return await awaitable
+
+        monkeypatch.setattr("src.messages.service.asyncio", EventOnlyWait())
+        engine = SimpleNamespace(
+            run_delivery_pass=AsyncMock(side_effect=delivery_pass),
+            check_reply_timeouts=AsyncMock(side_effect=reply_sweep),
+        )
+        cfg = MessagesConfig(delivery_interval=3600)
+        service = MessageDeliveryService(engine, lambda: cfg, bus)
+        service.start()
+        try:
+            async with asyncio.timeout(5):
+                await reached.wait()
+                for _ in range(50):
+                    await bus.emit("message.sent", {
+                        "to_kind": "session", "body_kind": "conversation_input",
+                    })
+                assert engine.run_delivery_pass.await_count == 1
+                release.set()
+                await delivered.wait()
+                assert engine.run_delivery_pass.await_count == 2
+        finally:
+            await service.stop()
 
     async def test_disabled_service_resumes_backlog_after_live_enable(self):
         bus = EventBus(validate_events=False)
