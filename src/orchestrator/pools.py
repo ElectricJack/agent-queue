@@ -301,7 +301,9 @@ class PoolsMixin:
         measurement.pool_sessions = await self.db.list_sessions(
             lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
         )
-        from src.waits.occupancy import continuation_occupancy, evictable_sessions
+        from src.waits.occupancy import (
+            continuation_occupancy, evictable_sessions, queued_continuation_demand,
+        )
         evictable = await evictable_sessions(self.db, self.config)
         resuming, reserved = await continuation_occupancy(self.db, self.config)
         known = {session.id for session in measurement.pool_sessions}
@@ -315,6 +317,9 @@ class PoolsMixin:
         from src.routing.readiness import orchestrator_ready_projects
 
         ready_projects = await orchestrator_ready_projects(self)
+        resume_demand = await queued_continuation_demand(
+            self.db, pool_profiles=pool_profiles, ready_projects=ready_projects,
+        )
         sessions_by_project: dict[str, list[SessionRecord]] = {}
         for session in measurement.pool_sessions:
             status = task_statuses.get(session.task_id)
@@ -352,7 +357,7 @@ class PoolsMixin:
                     **({"cached_only": True} if for_display else {}),
                 )
                 allowed = batch.allowed
-            # Demand is claimable work only (mandatory routing §9.1): an
+            # Ordinary demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.
             policy = dict(
@@ -408,6 +413,10 @@ class PoolsMixin:
                 until, _reason = self._pool_quarantine_state(project.id, profile_id, now)
                 for kind_id in sorted(kind_ids):
                     ready, repair_ready = demand_by_profile.get((profile_id, kind_id), (0, 0))
+                    # Fresh resumes launch in project-repo workspaces. Their
+                    # queued intents need seats too, before occupancy owns one.
+                    if kind_id == "project-repo":
+                        ready += resume_demand.get((project.id, profile_id), 0)
                     measurement.demand[key] += ready
                     local = PoolProjectSupply(running_busy=(
                         reserved.get((project.id, profile_id), 0) if kind_id == "project-repo" else 0

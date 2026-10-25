@@ -1,7 +1,28 @@
-"""Live in-place waits are occupied seats with an eviction candidate marker."""
+"""Wait occupancy and queued continuation demand for fleet capacity observations."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from src.database.tables import sessions, tasks, wait_records
+
+
+async def queued_continuation_demand(db, *, pool_profiles, ready_projects):
+    """Unfunded fresh resumes, grouped by their current project and pool route.
+
+    Reserved/launching intents belong to ``continuation_occupancy`` instead.
+    Keep this separate from the READY frontier: demand never permits an ordinary
+    pool claim to take ownership of a suspended task.
+    """
+    from src.database.queries.claim_queries import _pool_profiles_predicate, route_claimable_in
+    from src.database.tables import continuations
+
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(
+            tasks.c.project_id, tasks.c.profile_id, func.count(),
+        ).select_from(tasks.join(continuations, continuations.c.task_id == tasks.c.id)).where(
+            tasks.c.status == "RESUME_PENDING",
+            continuations.c.resume_state == "queued", continuations.c.hold_reason.is_(None),
+            route_claimable_in(ready_projects), _pool_profiles_predicate(pool_profiles),
+        ).group_by(tasks.c.project_id, tasks.c.profile_id))).all()
+    return {(project_id, profile_id): count for project_id, profile_id, count in rows}
 
 
 async def evictable_sessions(db, config):

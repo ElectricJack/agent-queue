@@ -2385,6 +2385,92 @@ async def test_suspended_status_pool_supply_and_frontier(orch, db, status, expec
     assert supply.running_idle == 0
 
 
+@pytest.mark.parametrize("resume_state,hold,status,expected", [
+    ("queued", None, TaskStatus.RESUME_PENDING, 1),
+    ("queued", "operator_hold", TaskStatus.RESUME_PENDING, 0),
+    ("held", "operator_hold", TaskStatus.RESUME_PENDING, 0),
+    ("reserved", None, TaskStatus.RESUME_PENDING, 0),
+    ("launching", None, TaskStatus.RESUME_PENDING, 0),
+    ("delivered", None, TaskStatus.RESUME_PENDING, 0),
+    ("acknowledged", None, TaskStatus.IN_PROGRESS, 0),
+    ("queued", None, TaskStatus.HIBERNATED, 0),
+])
+async def test_queued_continuation_increases_pool_desired_above_busy(
+    orch, db, resume_state, hold, status, expected,
+):
+    from src.commands import CommandHandler
+    from src.database.tables import admission_reservations, continuations, wait_records
+    from src.scheduler import PoolKey, place_pool_actions
+
+    await ready(db, "busy")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    await db.transition_task("busy", TaskStatus.IN_PROGRESS)
+    await db.update_session(session.id, task_id="busy", claim_phase="active")
+    key = PoolKey("worker")
+    before = await orch._measure_pools()
+    assert before.supply[key].running_busy == 1
+    assert before.demand[key] == 0
+    assert orch._size_pool_actions(before, time.time())[0] == []
+
+    await db.create_task(Task(
+        id="resume", project_id=PROJECT_ID, title="resume", description="",
+        status=status, profile_id="worker", route_source="override",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(wait_records).values(
+            id="resume-wait", project_id=PROJECT_ID, owner_kind="task", owner_id="resume",
+            origin="agent", condition_kind="timer", condition={}, source_key="timer:resume",
+            source_generation=0, source_watermark_seq=0, verification_state="verified",
+            evidence_ref="timer:resume", verified_at=1, created_at=1, request_hash="resume",
+            outcome="satisfied", resolved_at=2, sleep_decision="hibernate",
+        ))
+        await conn.execute(insert(continuations).values(
+            id="resume-intent", task_id="resume", wait_id="resume-wait",
+            suspension_generation=1, facts={}, branch="aq/resume", prior_status="IN_PROGRESS",
+            held_cursor_seq=0, resume_state=resume_state, hold_reason=hold, stopped_at=2,
+        ))
+        if resume_state in {"reserved", "launching"}:
+            await conn.execute(insert(admission_reservations).values(
+                id="resume-seat", project_id=PROJECT_ID, continuation_id="resume-intent",
+                scope={"profile_id": "worker"}, effective_priority=0, provenance="resume",
+                deadline_at=100, state="granted", created_at=2,
+            ))
+
+    measurement = await orch._measure_pools()
+    assert measurement.demand[key] == expected
+    [candidate] = measurement.candidates[key]
+    assert candidate.ready == expected and candidate.workspace_capacity > 0
+    actions, _ = orch._size_pool_actions(measurement, time.time())
+    starts, drains, starved = place_pool_actions(
+        actions=actions, candidates=measurement.candidates,
+    )
+    assert len(starts) == expected
+    assert not drains and not starved
+    assert measurement.supply[key].running_busy == (
+        2 if resume_state in {"reserved", "launching"} else 1
+    )
+    status_result = await CommandHandler(orch, orch.config)._cmd_pool_status({})
+    [pool] = status_result["pools"]
+    assert pool["ready"] == expected
+    assert pool["desired"] == measurement.supply[key].running_busy + expected
+    # Demand is never authority for an ordinary pool claim to take this task.
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        ) is None
+    if expected:
+        await db.update_task("resume", route_source="unrouted")
+        assert (await orch._measure_pools()).demand[key] == 0
+        await db.update_task("resume", route_source="override", profile_id=None)
+        assert (await orch._measure_pools()).demand[key] == 0
+        await db.update_task("resume", profile_id="worker", intelligence_class="stale-class")
+        profile = await db.get_profile("worker")
+        await db.upsert_profile(replace(profile, default_class="standard-high"))
+        assert (await orch._measure_pools()).demand[key] == 0
+
+
 async def test_native_demand_launches_matching_workspace_and_counts_supply_once(orch, db, tmp_path):
     from src.scheduler import PoolKey, project_pool_candidates
 
