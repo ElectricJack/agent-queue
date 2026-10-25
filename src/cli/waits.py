@@ -465,3 +465,14 @@ def wait_bridge(ctx, project_id, apply, mode):
     if project_id:
         params["project_id"] = project_id
     emit(ctx, _execute(ctx, "wait_legacy_bridge", params))
+
+
+@wait.command("source-redispatch")
+@click.option("--source-seq", required=True, type=click.IntRange(min=1))
+@click.option("--project", "project_id", required=True)
+@click.option("--note", required=True)
+@click.pass_context
+@_handle_errors
+def wait_source_redispatch(ctx, **params):
+    """Reobserve one persisted source event using normal scoped dispatch."""
+    emit(ctx, _execute(ctx, "wait_source_redispatch", params))

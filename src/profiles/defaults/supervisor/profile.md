@@ -194,6 +194,7 @@ start code work, tests or QA from a digest author turn.
     "wait_explain",
     "wait_graph",
     "wait_decide",
+    "wait_source_redispatch",
     "wait_lift",
     "waits.fleet_summary",
     "task_batch_propose",
