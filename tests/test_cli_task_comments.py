@@ -135,7 +135,10 @@ async def test_prime_keeps_complete_newest_comments_and_points_to_omitted_histor
     assert len(history.encode("utf-8")) <= TASK_COMMENTS_BYTES
     assert f"Showing {shown} of {len(comments)} comments." in history
     assert f"{len(comments) - shown} older comments omitted" in history
-    assert "`aq task comments t-1`" in history
+    assert (
+        f"{len(comments) - shown} older comments omitted; "
+        "read full history: `aq task comments t-1`."
+    ) in history
     positions = []
     for index, comment in enumerate(comments):
         quoted = "\n".join("> " + line for line in comment["body"].split("\n"))
@@ -189,7 +192,10 @@ async def test_prime_retains_bounded_history_and_full_comments_survive_reopen(tm
         shown = history.count("agent:worker-1 ·")
         assert 0 < shown < len(comments)
         assert f"Showing {shown} of {len(comments)} comments." in history
-        assert "`aq task comments t`" in history
+        assert (
+            f"{len(comments) - shown} older comments omitted; "
+            "read full history: `aq task comments t`."
+        ) in history
         for index, body in enumerate(reversed(comments)):
             assert ("\n".join("> " + line for line in body.split("\n")) in text) == (index < shown)
         recovered = []
