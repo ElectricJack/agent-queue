@@ -214,11 +214,12 @@ sequence; the cutover history is in the
 
 #### 3.3.2 An event becomes a run
 
-1. `V2PlaybookRuntime.subscribe_to_events` subscribes to every bus event (`"*"`). Each
-   event becomes an asyncio task that calls `engine.dispatch_event` under the service
-   principal `playbook-dispatch`.
+1. `V2PlaybookRuntime.subscribe_to_events` subscribes to every bus event (`"*"`).
+   Events absent from the complete trigger catalog skip dispatch. Matching events
+   become asyncio tasks calling `engine.dispatch_event` under the service principal
+   `playbook-dispatch`; unknown coverage and required routing events also dispatch.
 2. `DatabaseActivationSource.ready_activations` lists every activation and loads each
-   ready artifact. This happens on every event; there is no prefilter by trigger.
+   ready artifact for events that pass the runtime's trigger prefilter.
 3. Scope filtering: system activations see all events; project activations need a
    matching `project_id`, except that `timer.*` and `cron.*` events carry no project and
    reach every project activation.
