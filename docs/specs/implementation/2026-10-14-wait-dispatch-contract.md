@@ -1,5 +1,20 @@
 # Wait outcome integration contract
 
+## Cancelled transaction recovery — 2026-10-24
+
+Graph-lock watchdog cleanup uses local connection-lifetime state, without
+accessing `Connection.info` or reconnecting. When cancellation invalidates an
+asyncpg connection, SQLAlchemy must finish rollback before any subsequent use.
+Scheduler sync and listener drain preserve committed prefixes, roll back the
+interrupted owner's work or event together with its cursor, and retry on a clean
+connection. A failed attempt must not prevent a later matching message event
+from resolving its pending wait.
+
+The `wait_scheduler` health check reports consecutive sync failures per project,
+including exhausted sync budgets. A successful completed sync clears only that
+project's failure streak. Ordinary graph contention defers work without adding
+or clearing failures. Health inspection performs no database work for this check.
+
 ## Supervisor delivery and CI observation correction — 2026-10-23
 
 Operational wait and continuation incidents remain internal during initial

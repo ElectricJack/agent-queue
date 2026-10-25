@@ -130,6 +130,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_sweep": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
+    "supervisor_inbox_say": "supervisor_inbox",
     "supervisor_inbox_status": "supervisor_inbox",
     "supervisor_inbox_history": "supervisor_inbox",
     # document reviews
@@ -8491,6 +8492,20 @@ _ALL_TOOL_DEFINITIONS.append({
 })
 
 _ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "supervisor_inbox_say",
+        "description": "Initiate a supervisor message in an existing open Discord conversation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {"type": "string", "minLength": 1},
+                "text": {"type": "string", "minLength": 1, "maxLength": 16000},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+            },
+            "required": ["conversation_id", "text", "idempotency_key"],
+            "additionalProperties": False,
+        },
+    },
     {
         "name": "supervisor_inbox_status",
         "description": "Read global supervisor conversation health, limits and intake diagnostics.",

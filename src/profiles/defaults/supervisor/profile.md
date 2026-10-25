@@ -382,6 +382,7 @@ start code work, tests or QA from a digest author turn.
     "supervisor_restart",
     "supervisor_inbox_history",
     "supervisor_inbox_reply",
+    "supervisor_inbox_say",
     "supervisor_inbox_status",
     "task_close",
     "task_comment",

@@ -2146,6 +2146,12 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         "types": {"conversation_id": str, "input_id": str, "reply_message_id": str,
                   "delivery_dedup_key": str, "created": bool},
     },
+    "conversation.post_queued.v1": {
+        "required": ["conversation_id", "reply_message_id", "delivery_id", "delivery_dedup_key", "created"],
+        "optional": [],
+        "types": {"conversation_id": str, "reply_message_id": str, "delivery_id": str,
+                  "delivery_dedup_key": str, "created": bool},
+    },
     "conversation.input_received.v1": {
         "required": ["conversation_id", "input_id", "transport", "verified_actor", "created", "source"],
         "optional": [],

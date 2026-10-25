@@ -16513,6 +16513,48 @@
         }
       }
     },
+    "/api/supervisor_inbox/say": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Initiate a supervisor message in an existing open Discord conversation.",
+        "description": "Initiate a supervisor message in an existing open Discord conversation.",
+        "operationId": "supervisor_inbox_say",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxSayRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxSayResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/supervisor_inbox/status": {
       "post": {
         "tags": [
@@ -79890,6 +79932,78 @@
           "truncated"
         ],
         "title": "SupervisorInboxReplyResponse"
+      },
+      "SupervisorInboxSayRequest": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Conversation Id"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Text"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "text",
+          "idempotency_key"
+        ],
+        "title": "SupervisorInboxSayRequest"
+      },
+      "SupervisorInboxSayResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "reply_message_id": {
+            "type": "string",
+            "title": "Reply Message Id"
+          },
+          "delivery_dedup_key": {
+            "type": "string",
+            "title": "Delivery Dedup Key"
+          },
+          "discord_text_chars": {
+            "type": "integer",
+            "title": "Discord Text Chars"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          },
+          "delivery_id": {
+            "type": "string",
+            "title": "Delivery Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "reply_message_id",
+          "delivery_dedup_key",
+          "discord_text_chars",
+          "truncated",
+          "delivery_id"
+        ],
+        "title": "SupervisorInboxSayResponse"
       },
       "SupervisorInboxStatusRequest": {
         "properties": {},

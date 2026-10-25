@@ -51,6 +51,7 @@ class SchedulerWaitService:
         self._dirty = set()
         self._all_dirty = True
         self._last_sync = {}
+        self._sync_failures = {}
         bus = getattr(orchestrator, "bus", None)
         if callable(getattr(bus, "subscribe", None)):
             self._unsubscribe = bus.subscribe("*", self._changed)
@@ -78,6 +79,26 @@ class SchedulerWaitService:
     def authorize(self, principal):
         if principal is None or principal.kind != PrincipalKind.SERVICE:
             raise WaitError("wait.out_of_scope", "scheduler waits require a service principal")
+
+    @property
+    def health(self):
+        return {"ok": not self._sync_failures,
+                "failed_projects": {pid: dict(failure)
+                                    for pid, failure in self._sync_failures.items()}}
+
+    def record_sync_result(self, project_id, result):
+        if result.get("deferred"):
+            return
+        if result.get("success") and not result.get("timed_out"):
+            self._sync_failures.pop(project_id, None)
+            return
+        previous = self._sync_failures.get(project_id, {})
+        self._sync_failures[project_id] = {
+            "consecutive_failures": previous.get("consecutive_failures", 0) + 1,
+            "last_failure_at": self.clock(),
+            "error_code": "wait.scheduler_sync_timeout" if result.get("timed_out")
+                          else result.get("error_code", "wait.scheduler_sync_failed"),
+        }
 
     @shared_stack_inputs()
     @background_graph_work()
@@ -402,10 +423,9 @@ class SchedulerWaitService:
                 **({'escalation_event': event_payload} if event_payload else {})}
 
 
-# One project's sync holds the global graph fence and row locks while it
-# observes admission on further pooled connections. Unbounded, a slow project
-# held them for 500s+ and convoyed the pool (2026-10-22). The cancelled
-# transaction rolls back whole; the next cycle re-scans from authoritative rows.
+# Bound each project's pass, including observation before the graph fence. The
+# interrupted owner's transaction rolls back; earlier owners remain committed
+# and the next cycle re-scans authoritative rows.
 SCHEDULER_SYNC_TIMEOUT = 30.0
 
 
@@ -422,7 +442,7 @@ async def bounded_sync(handler, args, *, timeout=None):
         # A busy fence defers this project, like a timeout; it is no failure.
         logger.warning("scheduler_wait_sync for project %s deferred: wait graph busy",
                        args["project_id"])
-        return {"success": True, "timed_out": True}
+        return {"success": True, "timed_out": True, "deferred": True}
     return result
 
 
@@ -454,12 +474,17 @@ async def scheduler_tick(handler):
     handlers.setdefault("wait_deadline_fire", service.deadline)
     with principal_context(ExecutionPrincipal.service("scheduler-waits")):
         cycle_id = str(uuid.uuid4())
-        for project in service.due(_rotated(await o.db.list_projects())):
+        projects = await o.db.list_projects()
+        live_projects = {p.id for p in projects}
+        for removed in service._sync_failures.keys() - live_projects:
+            del service._sync_failures[removed]
+        for project in service.due(_rotated(projects)):
             # Consume before awaiting, so events arriving during sync survive.
             service._dirty.discard(project.id)
             result = await bounded_sync(handler, {
                 "project_id": project.id, "blockers": [], "cycle_id": cycle_id,
             })
+            service.record_sync_result(project.id, result)
             if not result.get("success"):
                 service._dirty.add(project.id)
                 raise WaitError("wait.scheduler_sync_failed", str(result))

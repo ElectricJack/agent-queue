@@ -1257,6 +1257,7 @@
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
         "tests/test_supervisor_inbox_commands.py",
+        "tests/test_supervisor_inbox_say.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py",
         "tests/test_supervisor_stall_sweep_script.py",
@@ -7930,7 +7931,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:0540e536b07d1d4a8849d1e154181120eb27c4dd64aaad519948989229c7921d",
+      "digest": "sha256:e54e5d0df45add9afbc06b9b79734bc7174014a3e2279b2552f4c424562052e4",
       "imports": [
         "src.api",
         "src.api.dependencies",
@@ -7941,7 +7942,8 @@
         "src.main",
         "src.messaging.base",
         "src.messaging.null_adapter",
-        "src.playbooks.private_values"
+        "src.playbooks.private_values",
+        "src.wait_runtime.scheduler"
       ],
       "markers": [
         "asyncio",
@@ -18105,6 +18107,27 @@
         "parametrize"
       ],
       "summary": "Verified internal intake, durable quotas and replay-safe conversation notifications."
+    },
+    "tests/test_supervisor_inbox_say.py": {
+      "areas": [
+        "supervisor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:96ec048074c9f4f2f058d45f604385856b56d3d01dc0c1d04f3c0e8e51cc1c5c",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.principal",
+        "src.conversations.intake",
+        "src.database.queries.conversation_queries",
+        "src.escalations.transport",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Initiated supervisor posts use the conversation outbox without consuming input."
     },
     "tests/test_supervisor_recovery.py": {
       "areas": [

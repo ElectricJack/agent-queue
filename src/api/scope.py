@@ -335,7 +335,7 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return "out of scope: conversation intake is daemon-internal"
     # The command verifies the live launch and exact stored message recipient.
     # Project supervisors already own conversations selected by the named router.
-    if command == "supervisor_inbox_reply" and not scope.elevated:
+    if command in {"supervisor_inbox_reply", "supervisor_inbox_say"} and not scope.elevated:
         return "out of scope: conversation replies require local operator or supervisor"
     if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not (
         scope.elevated and scope.project_id is None

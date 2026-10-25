@@ -33,7 +33,13 @@ from sqlalchemy.exc import IntegrityError
 
 from src.waits.sources import insert_message_with_source_event
 from src.conversations.intake import KIND_CHANNEL, KIND_THREAD
-from src.conversations.limits import AUTHOR_WINDOW_LIMIT, CHANNEL_WINDOW_LIMIT, WINDOW_SECONDS
+from src.conversations.limits import (
+    AUTHOR_WINDOW_LIMIT,
+    CHANNEL_WINDOW_LIMIT,
+    SUPERVISOR_CHANNEL_WINDOW_LIMIT,
+    SUPERVISOR_WINDOW_LIMIT,
+    WINDOW_SECONDS,
+)
 from src.conversations.outbox import STATUS_LINE_ACTION
 from src.database.tables import (
     conversation_backfill_cursors,
@@ -978,6 +984,97 @@ class ConversationQueriesMixin:
     # ------------------------------------------------------------------
     # Replies
     # ------------------------------------------------------------------
+
+    async def get_conversation_recipient(self, conversation_id: str) -> dict | None:
+        """The most recent ordinary input's addressed supervisor and project.
+
+        Conversations span projects; an initiated post follows the latest
+        routed input rather than claiming ownership from a caller-supplied id.
+        """
+        async with self._engine.connect() as conn:
+            return _row((await conn.execute(
+                select(messages.c.to_id, messages.c.project_id)
+                .join(conversation_inputs, conversation_inputs.c.supervisor_message_id == messages.c.id)
+                .where(
+                    conversation_inputs.c.conversation_id == conversation_id,
+                    conversation_inputs.c.ask_id.is_(None),
+                    conversation_inputs.c.routing_state == "conversation",
+                )
+                .order_by(conversation_inputs.c.received_at.desc(), conversation_inputs.c.id.desc())
+                .limit(1)
+            )).mappings().first())
+
+    async def record_conversation_say(
+        self, *, conversation_id: str, reply_message_id: str, body: str,
+        sender: str, project_id: str | None, now: float,
+    ) -> dict[str, Any]:
+        """Persist an initiated post once, with restart-safe serialized quotas.
+
+        The first durable body wins, including a retry after an enqueue crash.
+        Outbound messages never consume or answer a conversation input.
+        """
+        async with self.immediate() as conn:
+            conversation = (await conn.execute(
+                select(supervisor_conversations)
+                .where(supervisor_conversations.c.id == conversation_id)
+            )).mappings().first()
+            if conversation is None:
+                raise ConversationNotFound(conversation_id)
+            for key in (f"conversation-say:sender:{sender}",
+                        f"conversation-say:channel:{conversation['channel_id']}"):
+                await conn.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0))))
+            conversation = (await conn.execute(
+                select(supervisor_conversations)
+                .where(supervisor_conversations.c.id == conversation_id)
+                .with_for_update()
+            )).mappings().first()
+            if conversation is None:
+                raise ConversationNotFound(conversation_id)
+            if conversation["state"] not in {"opening", "open"} or (
+                conversation["kind"] == KIND_THREAD and not conversation["external_thread_id"]
+            ):
+                raise ConversationStateError("conversation has no active delivery destination")
+            existing = (await conn.execute(
+                select(messages).where(messages.c.id == reply_message_id)
+            )).mappings().first()
+            if existing is not None:
+                if (existing["thread_id"] != conversation["thread_id"]
+                        or existing["from_id"] != sender
+                        or existing["project_id"] != project_id
+                        or existing["body_kind"] != "conversation_say"):
+                    raise ConversationConflict("idempotency key belongs to another sender")
+                return {"created": False, "message": dict(existing)}
+            for scope, predicate, limit in (
+                ("supervisor", messages.c.from_id == sender, SUPERVISOR_WINDOW_LIMIT),
+                ("channel", supervisor_conversations.c.channel_id == conversation["channel_id"],
+                 SUPERVISOR_CHANNEL_WINDOW_LIMIT),
+            ):
+                count = await conn.scalar(
+                    select(func.count()).select_from(messages)
+                    .join(supervisor_conversations,
+                          supervisor_conversations.c.thread_id == messages.c.thread_id)
+                    .where(messages.c.body_kind == "conversation_say",
+                           messages.c.created_at >= now - WINDOW_SECONDS, predicate)
+                )
+                if count >= limit:
+                    raise ConversationRateLimited(scope)
+            message = (await insert_message_with_source_event(
+                conn, pg_insert(messages).values(
+                    id=reply_message_id, project_id=project_id,
+                    from_kind="session", from_id=sender,
+                    to_kind="user", to_id=f"discord:{conversation['created_by'].removeprefix('human:discord:')}",
+                    thread_id=conversation["thread_id"],
+                    subject=f"Discord conversation {conversation_id}", body=body,
+                    priority=_SUPERVISOR_PRIORITY, created_at=now,
+                    archive_after_inject=0, body_kind="conversation_say",
+                ).returning(messages),
+            )).mappings().one()
+            await conn.execute(
+                update(supervisor_conversations)
+                .where(supervisor_conversations.c.id == conversation_id)
+                .values(updated_at=func.greatest(supervisor_conversations.c.updated_at, now))
+            )
+            return {"created": True, "message": dict(message)}
 
     async def record_conversation_reply(
         self,

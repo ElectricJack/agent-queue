@@ -128,12 +128,27 @@ class TestPostMessage:
     def test_generic_recipient_route_queues_a_user_message(self, client, handler):
         resp = client.post(
             "/api/messages/send",
-            json={"project_id": "agent-queue", "to_kind": "user", "to_id": "agent-queue", "body": "blocked"},
+            json={"project_id": "agent-queue", "to_kind": "user", "to_id": "dashboard", "body": "blocked"},
         )
         assert resp.status_code == 200, resp.text
         payload = resp.json()
         assert payload["success"] is True
         assert payload["message"]["project_id"] == "agent-queue"
+        assert payload["message"]["to_id"] == "dashboard"
+
+    @pytest.mark.parametrize("to_id", ["agent-queue", "user", "discord:42"])
+    async def test_generic_recipient_route_refuses_unsupported_user_without_queueing(
+        self, client, handler, to_id,
+    ):
+        resp = client.post("/api/messages/send", json={
+            "project_id": "agent-queue", "to_kind": "user", "to_id": to_id, "body": "blocked",
+        })
+        assert resp.status_code == 422, resp.text
+        payload = resp.json()
+        assert payload["success"] is False
+        assert payload["error_code"] == "unsupported_user_destination"
+        assert "aq supervisor-inbox say" in payload["error"]
+        assert not await handler.db.list_messages(project_id="agent-queue")
 
     def test_unknown_session_is_404(self, client):
         resp = client.post("/api/sessions/supervisor-ghost/message", json={"body": "hi"})
@@ -532,12 +547,14 @@ async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_pa
             assert [m["body"] for m in response.json()["messages"]] == ["hello"]
         direct = await ch.execute("message_send", {
             "from_kind": "session", "from_id": "global-admin", "to_kind": "user",
-            "to_id": "user", "body": "update", "_scope": {
+            "to_id": "dashboard", "body": "update", "_scope": {
                 "kind": "session", "session_id": "global-admin", "elevated": True,
                 "project_id": None, "session_instance_token": "global-token",
             },
         })
+        assert direct["success"], direct
         assert direct["message"]["project_id"] is None
+        assert direct["message"]["to_id"] == "dashboard"
         assert await db.get_project("global") is None
     finally:
         _deps._orchestrator = None

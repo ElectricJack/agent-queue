@@ -33,6 +33,7 @@ from src.dashboard_server.proxy import (
     upstream_request_headers,
     wire_close_code,
 )
+from src.dashboard_server.relay_stats import RelayStats
 from tests.dashboard_server_helpers import (
     TERMINAL_PROTOCOL,
     FakeDaemon,
@@ -80,8 +81,10 @@ class Stack:
 
 
 @asynccontextmanager
-async def proxied(**proxy_options: Any) -> AsyncIterator[Stack]:
-    daemon = FakeDaemon()
+async def proxied(
+    *, daemon: FakeDaemon | None = None, **proxy_options: Any
+) -> AsyncIterator[Stack]:
+    daemon = daemon if daemon is not None else FakeDaemon()
     async with serve_asgi(daemon.app) as daemon_url:
         proxy = DaemonProxy(daemon_url, version=VERSION, **proxy_options)
         async with serve_asgi(proxy_asgi(proxy)) as url:
@@ -553,28 +556,64 @@ async def test_a_garbled_daemon_answer_is_502(client):
 async def test_relay_stats_measure_headers_and_handshake_before_streams_end(monkeypatch):
     from types import SimpleNamespace
 
-    readings = iter([0.0, 0.005, 1.0, 1.007])
-    monkeypatch.setattr(
-        "src.dashboard_server.proxy.time", SimpleNamespace(perf_counter=lambda: next(readings)),
-    )
-    async with proxied() as stack, aiohttp.ClientSession() as client:
+    # Advance time only when the upstream sends headers or accepts the socket.
+    # Real network/scheduler delays must not affect these latency assertions.
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(proxy_module, "time", SimpleNamespace(perf_counter=lambda: clock.now))
+    daemon = FakeDaemon()
+    upstream_app = daemon.app
+
+    async def timed_upstream(scope, receive, send):
+        async def timed_send(message):
+            if message["type"] == "http.response.start":
+                clock.now = 0.005
+            elif message["type"] == "websocket.accept":
+                clock.now = 1.007
+            await send(message)
+
+        await upstream_app(scope, receive, timed_send)
+
+    daemon.app = timed_upstream
+    http_observed = asyncio.Event()
+    handshake_observed = asyncio.Event()
+
+    class ObservedStats(RelayStats):
+        def observe_http(self, ms):
+            super().observe_http(ms)
+            http_observed.set()
+
+        def observe_ws_handshake(self, ms):
+            super().observe_ws_handshake(ms)
+            handshake_observed.set()
+
+    stats = ObservedStats()
+    async with proxied(daemon=daemon, stats=stats) as stack, aiohttp.ClientSession() as client:
         async with client.get(f"{stack.url}/api/sse") as response:
+            assert response.status == 200
             await asyncio.wait_for(response.content.readuntil(b"\n\n"), GUARD)
-            snapshot = stack.proxy.stats.snapshot()
+            await asyncio.wait_for(http_observed.wait(), GUARD)
+            snapshot = stats.snapshot()
             assert snapshot["http"]["count"] == 1
             assert snapshot["http"]["sum"] == pytest.approx(5)
             assert snapshot["relays_open"] == 1
-            assert not stack.daemon.sse_release.is_set()
-            stack.daemon.sse_release.set()
-            await response.read()
+            assert not daemon.sse_release.is_set()
+            assert not daemon.sse_closed.is_set()
+            daemon.sse_release.set()
+            await asyncio.wait_for(response.read(), GUARD)
+        # EOF at the browser precedes removal from the proxy's active relays.
+        # Finish that cleanup before beginning the next measured request.
+        await no_proxy_tasks()
+        clock.now = 1.0
         async with ws_connect(f"{stack.ws_url}/ws/echo") as ws:
             await ws.send("ping")
             assert await asyncio.wait_for(ws.recv(), GUARD) == "ping"
-            snapshot = stack.proxy.stats.snapshot()
+            await asyncio.wait_for(handshake_observed.wait(), GUARD)
+            snapshot = stats.snapshot()
             assert snapshot["ws_handshake"]["count"] == 1
             assert snapshot["ws_handshake"]["sum"] == pytest.approx(7)
             assert snapshot["relays_open"] >= 1
-    snapshot = stack.proxy.stats.snapshot()
+            assert not daemon.websockets[0].closed.is_set()
+    snapshot = stats.snapshot()
     assert snapshot["http"]["count"] == snapshot["ws_handshake"]["count"] == 1
     assert snapshot["relays_open"] == 0
     assert not any(snapshot["upstream_failures"].values())
