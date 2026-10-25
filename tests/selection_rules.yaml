@@ -197,6 +197,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/dashboard_paths.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/remote_links.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
+  - { paths: ["src/project_schedules.py", "src/database/queries/project_schedule_queries.py", "src/commands/schedule_commands.py", "src/commands/contracts/schedule.py"], areas: ["scheduling"] }
   - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }
   - { paths: ["src/surface_schema.py"], areas: ["command-dispatch"] }
   - { paths: ["src/warm_workspaces.py", "src/build_cache.py"], areas: ["workspaces", "integration-trains", "managed-jobs"] }

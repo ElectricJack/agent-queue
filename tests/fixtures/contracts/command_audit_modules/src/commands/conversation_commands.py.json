@@ -168,13 +168,14 @@
         "return": "_error('invalid_envelope', 'a follow-up must name the channel conversation or its observed thread')"
       }
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Conversation intake correction: recipient resolution occurs inside accept_conversation_input; after commit both new inputs and gateway replays emit the delivery wake for the existing durable notice. Reviewed return branches, argument reads, resource gates and typed result contract remain unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:01c742ff4e41328de9bc690f038f6531c19d1dc953f1719987de5e893648bb63",
+    "source_digest": "sha256:c8924f02bfa52481c6c455f5e97f0e7ed24be74a5f991babf4448367c45369f6",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_conversation_wiring.py::test_committed_conversation_wakes_delivery_without_a_cycle"
     ]
   },
   "supervisor_inbox_reply": {
@@ -262,11 +263,95 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+    "source_digest": "sha256:6a00315773a676d08cf8af34d8dbe78708f0478f2369cb207e9b80c8e6e17545",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "supervisor_inbox_say": {
+    "argument_reads_diagnostic_only": [
+      "conversation_id",
+      "idempotency_key",
+      "text"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/conversation_commands.py:ConversationCommandsMixin._cmd_supervisor_inbox_say",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'created': recorded['created'], 'reply_message_id': reply_message_id, 'delivery_id': delivery_id, 'delivery_dedup_key': dedup_key, 'discord_text_chars': len(discord_text), 'truncated': discord_text != f'{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('spoofed_identity', 'caller identity and destination are server-derived')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'conversation_id, text and idempotency_key are required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'post text or idempotency key exceeds its limit')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('preconditions_unmet', 'conversation preconditions unmet', unmet=list(preconditions.unmet))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_open', 'conversation has no active delivery destination')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('visibility_changed', 'conversation destination or audience is unauthorized')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'conversation is addressed to another supervisor')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'say requires a live supervisor launch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('rate_limited', 'supervisor post rate limit reached', scope=exc.scope)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('idempotency_conflict', 'idempotency key belongs to another sender')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_open', 'conversation must be open before posting')"
+      }
+    ],
+    "review_notes": "Initiated conversation posts retain typed outcomes. Live launch, latest routed project notice, audience/destination preconditions, durable quotas and deterministic message/outbox keys are enforced before delivery. No input is consumed. Reviewed return branches include explicit scope, visibility, quota and idempotency refusals.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:7948edaaf0b69d1bcf968d13f0aa6c3513a6c4792377882a9cdb87bf15ca209c",
+    "tests": [
+      "tests/test_supervisor_inbox_say.py",
+      "tests/test_ask_intake.py::test_answer_to_initiated_supervisor_post_returns_to_conversation",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "supervisor_inbox_status": {
