@@ -23,6 +23,8 @@ class TrainPolicyView:
     enabled: bool = True
     policy: TrainPolicy | None = None
     reason: str | None = None
+    # Exact activated bytes, not merely the schema version, identify tuned policy.
+    policy_revision: str | None = None
 
 
 def train_disabled_for_project(project_table=projects):
@@ -91,7 +93,11 @@ async def train_policy_on(conn, project_id: str) -> TrainPolicyView:
         return TrainPolicyView(False, policy, "train_playbook_disabled")
     if row["health"] != "ready":
         return TrainPolicyView(False, policy, "train_policy_unavailable")
-    return TrainPolicyView(True, policy)
+    try:
+        policy.validate_project_policy(configured or {})
+    except ValueError:
+        return TrainPolicyView(False, policy, "train_policy_modes_conflict")
+    return TrainPolicyView(True, policy, policy_revision=row["artifact_sha256"])
 
 
 async def load_train_policy(db, project_id: str) -> TrainPolicyView:
