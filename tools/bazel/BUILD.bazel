@@ -4,6 +4,9 @@ load("@rules_python//python:defs.bzl", "py_binary")
 load("@pypi//:requirements.bzl", "all_requirements")
 load(":generators.bzl", "aq_generate")
 load("//tools/bazel/smoke:defs.bzl", "py_smoke")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages(name = "node_modules")
 
 exports_files(["requirements_linux_x86_64.txt"])
 
@@ -53,7 +56,7 @@ aq_generate(
     name = "typescript",
     kind = "typescript",
     srcs = [
-        "//:scripts/regenerate-ts-client.sh", "//:packages/aq-ts-client/package.json",
+        "//:scripts/regenerate-ts-client.sh", "//packages/aq-ts-client:package.json",
         "//:package-lock.json", "generator_npm.lock.json",
     ],
     upstream = ":generated",
@@ -86,5 +89,29 @@ py_smoke(
         "generator_inputs.bzl", "generator_npm.lock.json",
     ],
     size = "small",
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["pnpm-lock.yaml", "pnpm-workspace.yaml"])
+
+py_binary(
+    name = "dashboard_runner",
+    srcs = ["dashboard.py", "generate.py", "import_npm.py"],
+    main = "dashboard.py",
+    legacy_create_init = False,
+)
+
+py_smoke(
+    name = "dashboard_check",
+    srcs = ["dashboard_check.py", "import_npm.py"],
+    main = "dashboard_check.py",
+    args = [
+        "--typecheck", "$(rootpath //dashboard:typecheck)",
+        "--build", "$(rootpath //dashboard:build)",
+    ],
+    data = ["//:dashboard_inputs", "//dashboard:typecheck", "//dashboard:build", "//dashboard:sources"],
+    legacy_create_init = False,
+    size = "medium",
+    timeout = "moderate",
     visibility = ["//visibility:public"],
 )
