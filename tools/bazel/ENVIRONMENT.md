@@ -82,3 +82,45 @@ libraries. It is a local boundary fixture, not a replacement for H1's locked
 Bazel runtime. Without the flag the real namespace cases are visibly skipped;
 that is not acceptance evidence. With the flag, unsupported/missing isolation
 fails instead of skipping. V3 owns hosted shadow workflow integration.
+
+## H3 PostgreSQL targets
+
+For a PostgreSQL consumer, await `postgres_cluster.run_postgres_target(environment,
+binaries, command, cwd=...)` instead of `run_isolated`. Supply `PostgresBinaries`
+with absolute `initdb`, `postgres`, `pg_ctl`, and `psql` paths from H1's native
+toolchain. The launcher validates these as declared executable inputs and enters
+H2's boundary before running `initdb`. Its Bazel library carries
+`//:postgres_test_migrations` (all migrations and `alembic.ini`) as data; consuming
+targets must retain that closure so migration edits invalidate their actions.
+
+Each target/shard gets a new cluster, data directory, socket directory, port and
+database. Unix sockets are the default; `tcp=True` enables private loopback.
+Long Bazel paths use a short symlink in the namespace's private `/tmp`, pointing
+to sockets under TEST_TMPDIR. PostgreSQL runs in the foreground for bounded
+termination, with H2's PID namespace containing any remaining descendants.
+No cluster is shared across targets or shards.
+
+Only the child receives the new `POSTGRES_TEST_DSN`, `AQ_TEST_PG_MODE=postgres`,
+`AQ_REQUIRE_POSTGRES_TESTS=1`, and `AQ_DB_SCOPE=test`. Parent worker sentinels stay
+untouched. Existing owner locks, migrated templates, clones and lease pools then
+operate within this private cluster. The lower-level `postgres_cluster` async
+context manager requires the caller to enter H2 first for hermetic execution.
+
+B1 sets `AQ_TEST_PG_MODE=pure` on pure target children. Root pytest fixtures then
+allocate no PostgreSQL resources, and an attempted PG dependency fails with a
+declaration diagnostic. Collection-only invocations never require a DSN or
+provision a database. Unset mode preserves legacy DSN-based test execution and
+the existing `aq test` CLI admission contract.
+
+For the real lifecycle and namespace acceptance cases, explicitly supply H1's
+materialized locked native runtime; there is no ambient binary discovery:
+
+```bash
+AQ_BAZEL_ISOLATION=1 AQ_BAZEL_POSTGRES_RUNTIME=/absolute/path/to/native/runtime \
+  aq test tests/test_postgres_test_substrate.py tests/test_pg_dsn.py \
+  tests/test_bazel_environment.py -m 'not perf and not migration and not tmux and not integration'
+```
+
+The outer legacy harness still needs a separate disposable POSTGRES_TEST_DSN.
+The marker override includes the substrate's `slow` arm. Without the runtime
+setting, real PostgreSQL lifecycle cases visibly skip and do not prove acceptance.
