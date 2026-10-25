@@ -4293,13 +4293,14 @@
         "return": "{'success': False, 'error': str(exc), 'code': exc.code}"
       }
     ],
-    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed hierarchy-lock ordering correction: preflight and task creation acquire the project hierarchy lock before the batch row. Argument reads, authority checks, return branches and the typed result contract are unchanged; deterministic graph-writer overlap coverage verifies dispatch replay and preserved ingestion holds.",
     "schema_quality": "typed",
-    "source_digest": "sha256:5d8241ade06c27411ebedd03845e39664533a2799b03ee2acf354dcdf7cab4de",
+    "source_digest": "sha256:a67c2033885e0604ad4e5c45621ce0a13c591a86eeac3209af24b729c7902ecd",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_fidelity_review.py",
-      "tests/test_routing_mandatory.py"
+      "tests/test_routing_mandatory.py",
+      "tests/test_fidelity_review.py::test_dispatch_waits_for_graph_writer_without_locking_batch"
     ]
   },
   "ensure_spec_ingest": {
