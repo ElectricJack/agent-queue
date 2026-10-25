@@ -17,7 +17,7 @@ from src.database.tables import (
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
 from src.waits.conditions import WaitError
-from src.waits.admission import admission_pass
+from src.waits.admission import AdmissionReader
 
 from src.waits.graph import background_graph_work, lock_graph
 from src.wait_runtime.hibernate import locked_suspension
@@ -89,17 +89,20 @@ class ResumeTransaction:
 
     @background_graph_work()
     async def reserve(self, continuation_id, generation):
-        """Refresh Git before capturing admission, outside the global graph lock."""
-        from src.integration.delivery_observer import hierarchy_frontier_modes
+        """Capture this resume's fresh evidence independently of source draining."""
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(continuations.c.task_id).where(
                 continuations.c.id == continuation_id, continuations.c.resume_state == 'queued',
             ))
-        if task_id:
-            await hierarchy_frontier_modes(self.db, task_id=task_id)
+        reader = getattr(getattr(self.service, 'scheduler', None), 'reader', None)
+        if task_id and isinstance(reader, AdmissionReader):
+            # Never inherit a fleet-wide/cached pass from a slow listener or
+            # scheduler. Observe every delivery mode before the graph fence,
+            # and fence only this candidate's inputs during reservation.
+            async with reader.prepared(task_ids=[task_id], cached_only=False):
+                return await self._reserve(continuation_id, generation)
         return await self._reserve(continuation_id, generation)
 
-    @admission_pass("service.scheduler.reader")
     async def _reserve(self, continuation_id, generation):
         async with self.db._engine.begin() as conn:
             # Join PostgreSQL's lock queue before transaction reads. A listener

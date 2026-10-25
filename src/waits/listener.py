@@ -175,11 +175,12 @@ class WaitSourceListener:
     async def _unobserved_prefix(self, conn, position, watermark):
         """Retire only a contiguous irrelevant prefix, under the graph fence.
 
-        CI checks have no consumer side effects without a subscription. Pool
-        snapshots only invalidate resource waits. In particular, task retirement
-        and provider recovery must still run even when no wait matches directly.
+        Known sources have no consumer side effects without a subscription,
+        except task retirement and provider recovery, which must still run.
         Broad resource matching is conservative: dispatch rechecks canonical scope.
         """
+        from src.waits.recovery import TERMINAL_TASK_STATUSES
+
         subscribed = select(wait_records.c.id).where(
             wait_records.c.outcome == "pending",
             wait_records.c.verification_state == "verified",
@@ -187,20 +188,27 @@ class WaitSourceListener:
             or_(
                 (wait_records.c.source_key == wait_source_events.c.source_key)
                 & (wait_records.c.source_generation == wait_source_events.c.source_generation),
-                wait_source_events.c.source_key.startswith("resource_invalidation:pool:")
+                wait_source_events.c.source_key.startswith("resource_invalidation:")
                 & (wait_records.c.condition_kind == "resource"),
             ),
         ).exists()
         rows = (await conn.execute(select(
-            wait_source_events.c.seq, wait_source_events.c.source_key,
+            wait_source_events.c.seq, wait_source_events.c.source_key, wait_source_events.c.payload,
             subscribed.label("subscribed"),
         ).where(
             wait_source_events.c.seq > position, wait_source_events.c.seq <= watermark,
         ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings()
         prefix = []
         for row in rows:
-            if row["subscribed"] or not row["source_key"].startswith((
-                "ci_check:", "resource_invalidation:pool:",
+            key = row["source_key"]
+            if row["subscribed"] or key.startswith("resource_invalidation:provider:"):
+                break
+            if key.startswith("task:"):
+                if row["payload"].get("status") in TERMINAL_TASK_STATUSES:
+                    break
+            elif not key.startswith((
+                "ci_check:", "ci_run:", "message:", "dependency:", "batch:",
+                "job:", "playbook_condition:", "resource_invalidation:",
             )):
                 break
             prefix.append(row["seq"])

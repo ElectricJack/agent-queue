@@ -445,14 +445,15 @@ async def test_irrelevant_batch_rolls_back_on_expired_lease_and_replays(runtime_
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
 
 
-async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
+@pytest.mark.parametrize('kind', ['ci_check', 'message', 'dependency', 'task', 'job', 'batch'])
+async def test_irrelevant_batch_stops_before_subscribed_event(runtime_env, kind):
     env = runtime_env
     receipt = await register(env)
     async with env.db._engine.begin() as conn:
         await conn.execute(update(wait_records).where(
             wait_records.c.id == receipt["wait_id"],
-        ).values(source_key="ci_check:repo:sha:unit", source_generation=0))
-    for key in ("ci_check:other:sha:unit", "ci_check:repo:sha:unit", "ci_check:other:sha:unit"):
+        ).values(source_key=f"{kind}:subscribed", source_generation=0))
+    for key in (f"{kind}:other", f"{kind}:subscribed", f"{kind}:other"):
         await env.db.wait_source_commit(source_key=key, generation=0,
             revision=str(len(await records(env, wait_source_events))), outcome_ref=key, payload={})
     source = sorted(await records(env, wait_source_events), key=lambda event: event["seq"])
@@ -471,6 +472,38 @@ async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
     assert dispatcher.commit.await_count == 1
     assert dispatcher.commit.await_args.args[2]["seq"] == source[1]["seq"]
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
+
+
+async def test_mixed_backlog_batches_preserve_terminal_and_provider_callbacks(runtime_env):
+    env = runtime_env
+    service = runtime(env)
+    ordinary = [
+        ('message:mail', {}), ('dependency:a:b:blocks', {}),
+        ('task:changing', {'status': 'IN_PROGRESS'}), ('ci_run:repo:head', {}),
+        ('batch:batch', {}), ('job:job', {}), ('playbook_condition:run:wait', {}),
+        ('resource_invalidation:workspace:ws', {}), ('resource_invalidation:config:cfg', {}),
+    ]
+    terminal = ('task:gone', {'status': 'COMPLETED'})
+    provider = ('resource_invalidation:provider:fake', {'identity': 'fake'})
+    sequence = ordinary * 25 + [terminal] + ordinary + [provider] + ordinary
+    async with env.db._engine.begin() as conn:
+        for n, (key, payload) in enumerate(sequence):
+            await record_source_event(conn, source_key=key, generation=0,
+                revision=str(n), outcome_ref=f'event:{n}', payload=payload, occurred_at=NOW)
+    dispatch = service.listener._dispatch
+    service.listener._dispatch = AsyncMock(wraps=dispatch)
+    prefix = service.listener._unobserved_prefix
+    service.listener._unobserved_prefix = AsyncMock(wraps=prefix)
+    assert await service.listener.tick()
+    assert [call.args[1]['source_key'] for call in service.listener._dispatch.await_args_list] == [
+        terminal[0], provider[0],
+    ]
+    # More than one bounded batch, but no per-event transactions for irrelevant traffic.
+    assert service.listener._unobserved_prefix.await_count < 10
+    source = await records(env, wait_source_events)
+    assert len(source) == len(sequence) and all(event['dispatched_at'] is not None for event in source)
+    assert (await records(env, wait_listener_cursors))[0]['last_seq'] == max(
+        event['seq'] for event in source)
 
 
 async def test_deadline_command_can_exceed_renewal_cadence(runtime_env):

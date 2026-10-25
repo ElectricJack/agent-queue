@@ -1,5 +1,23 @@
 # Wait outcome integration contract
 
+## Resume admission during source backlogs — 2026-10-25
+
+Each resume attempt captures fresh delivery and Git observations for its own
+task before joining the graph-lock queue. It replaces any inherited admission
+pass and revalidates the same task's graph, routing and policy under the fence.
+Unrelated candidates and the source listener's cursor do not participate in
+that snapshot. Expired or changed evidence still refuses admission.
+Stack ref checks under the graph fence use only the existing two-second cache;
+even a freshly prepared writer view cannot perform Git I/O there.
+
+The listener batches contiguous unsubscribed known source events, including
+messages, dependency changes, nonterminal task transitions and resource
+invalidations without resource subscriptions. Terminal task events and provider
+invalidations always retain their retirement and recovery callbacks. Unknown
+source types and subscribed events retain individual dispatch. Prefix selection,
+dispatched stamps and the leased cursor commit under the same graph fence;
+batching never skips a relevant event or changes retry ownership.
+
 ## Temporary CI observation failures — 2026-10-25
 
 A train visit that cannot freshly observe a disappearing pending wait preserves
