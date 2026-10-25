@@ -647,6 +647,7 @@ class TaskCommandsMixin:
         ----------
         args : dict
             ``project_id`` – filter by project (optional).
+            ``limit`` – positive maximum rows for flat live reads (optional).
             ``status`` – filter by a specific TaskStatus value (optional).
             ``display_mode`` – ``"flat"``, ``"tree"``, or ``"compact"`` (default ``"flat"``).
             ``include_completed`` – if True, include terminal tasks (default False).
@@ -657,6 +658,15 @@ class TaskCommandsMixin:
         """
         from src.observations.commands import snapshot_command
         from src.observations.snapshots import requested
+
+        limit = args.get("limit")
+        if limit is not None:
+            if type(limit) is not int or limit < 1:
+                return {"success": False, "error": "limit must be a positive integer"}
+            if requested(args):
+                return {"success": False, "error": "Use page_size instead of limit for snapshots"}
+            if args.get("display_mode", "flat") != "flat":
+                return {"success": False, "error": "limit is only supported for flat listings"}
 
         if requested(args):
             return await snapshot_command(self, "list_tasks", args)
@@ -744,12 +754,12 @@ class TaskCommandsMixin:
                 hidden_count = all_count - len(tasks)
             # else: include_completed=True — return everything unfiltered.
 
-        # Always show all active tasks; only cap completed/finished ones so
-        # that active work (DEFINED, READY, IN_PROGRESS, …) is never hidden.
-        active = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
-        finished = [t for t in tasks if t.status in self._FINISHED_STATUSES]
-        cap = max(0, 200 - len(active))
-        capped_tasks = active + finished[:cap]
+        if args.get("limit") is not None:
+            capped_tasks = tasks[:args["limit"]]
+        else:
+            active = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
+            finished = [t for t in tasks if t.status in self._FINISHED_STATUSES]
+            capped_tasks = active + finished[:max(0, 200 - len(active))]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
         await attach_activity(self.db, task_dicts)
         from src.task_graph.readiness import attach_readiness

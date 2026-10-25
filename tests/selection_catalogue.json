@@ -2913,7 +2913,7 @@
         "api-scope"
       ],
       "default_arm": true,
-      "digest": "sha256:fb3575e4208e217fab43b07a93ec2128eed91f2443cee976637274b231a23d54",
+      "digest": "sha256:d02837f32a37b0bcd3abe5a96a7fcbf1a93037ac7c4386cc99cef0f768afea94",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -2921,7 +2921,9 @@
         "src.commands.principal",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Tests for aq-surface Phase S2 scope checker."
     },
     "tests/test_api_task_files.py": {
@@ -3098,7 +3100,7 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:a3bdbe8ed42ceb97577327282772031dcd74fd4da7ca3dca0742365ad32b5115",
+      "digest": "sha256:15489bac268a1d85c27bfc005e49fa08ba09e9c59d8ef07c9cbae08f42d9ad61",
       "imports": [
         "src.asks",
         "src.asks.delivery",
@@ -3106,7 +3108,8 @@
         "src.commands.principal",
         "src.conversations.delivery",
         "src.database.tables",
-        "src.escalations.transport"
+        "src.escalations.transport",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"
@@ -5210,7 +5213,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:0fff545125d8bdcb2c0d32eb99f002c0ea1b26687115ca50be050048242d1f57",
+      "digest": "sha256:c9530260494f0baf95572c372293a1f9655657853211df18fca67f2aabacc1e3",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -5232,9 +5235,10 @@
       ],
       "markers": [
         "parametrize",
+        "timeout",
         "tmux"
       ],
-      "summary": "Production outbox binding and project-supervisor conversation round trips."
+      "summary": "Production outbox binding and global-supervisor conversation round trips."
     },
     "tests/test_costs.py": {
       "areas": [
@@ -9139,14 +9143,16 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:75dce18784ab37b8f466152b98f47751a83c31f684bc71ddbc82d6b75cc3c0ac",
+      "digest": "sha256:d4bc888d42de354726cd1a9e8d421a31eb4825337614873177269d46fde7bf32",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.doctor.stall_checks",
         "src.integration",
+        "src.integration.branch_materialization",
         "src.integration.delivery_truth",
         "src.integration.delivery_watchdog",
+        "src.integration.hierarchy",
         "src.integration.models",
         "src.models"
       ],
@@ -20547,11 +20553,12 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:bce01ede788f35da5f855b8291264db6700a4fe013a7642bc46618a43d1fdb89",
+      "digest": "sha256:82b9866b3e1e98c718295594c04e36af44857f45fb21903b3106a0adf384a241",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
         "src.models",
         "src.orchestrator"
       ],
