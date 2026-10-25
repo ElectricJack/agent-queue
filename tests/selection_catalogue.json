@@ -117,6 +117,12 @@
         "tests/test_bazel_manifest.py"
       ]
     },
+    "bazel-workflows": {
+      "description": "Paired exact-commit CI sampling, protected cache writers and complete retained evidence.",
+      "modules": [
+        "tests/test_bazel_workflows.py"
+      ]
+    },
     "capabilities": {
       "description": "Command capabilities: the capability policy, server-derived execution principals, authorization at the dispatch boundary, no widening through delegation or task inheritance, and operator migration surfaces.",
       "modules": [
@@ -3411,6 +3417,18 @@
         "parametrize"
       ],
       "summary": "H5 contracts: real pytest lifecycles with synthetic time, never timing benchmarks."
+    },
+    "tests/test_bazel_workflows.py": {
+      "areas": [
+        "bazel-workflows"
+      ],
+      "default_arm": true,
+      "digest": "sha256:99444bb3db02688fcdb0c4a736dbbce381ae7f951ed37749fc054f26ce7bec60",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shadow workflow trust boundaries and fail-closed CI evidence accounting."
     },
     "tests/test_blocked_state.py": {
       "areas": [

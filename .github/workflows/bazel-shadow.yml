@@ -1,0 +1,186 @@
+name: Bazel shadow
+
+# Observational only: Tests, train-candidate and main-attestation remain intact.
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, staging, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+# Do not supersede dev samples. PRs use the same synthetic merge SHA as Tests.
+permissions:
+  contents: read
+  actions: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: plan
+        env:
+          MATRIX_PATH: ${{ runner.temp }}/matrix.json
+        run: |
+          python scripts/bazel/ci_sample.py plan --output "$MATRIX_PATH"
+          echo "matrix=$(jq -c . "$MATRIX_PATH")" >> "$GITHUB_OUTPUT"
+  legacy:
+    needs: plan
+    uses: ./.github/workflows/bazel-legacy-sample.yml
+    with:
+      sha: ${{ github.sha }}
+      matrix: ${{ needs.plan.outputs.matrix }}
+  bazel:
+    name: Shadow Bazel (all obligations)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SAMPLE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set runner-local evidence and cache paths
+        run: |
+          echo "SAMPLE_OUTPUT=$RUNNER_TEMP/bazel" >> "$GITHUB_ENV"
+          echo "SAMPLE_STATE=$RUNNER_TEMP/aq-bazel-v1" >> "$GITHUB_ENV"
+          echo "SAMPLE_CACHE=$RUNNER_TEMP/aq-bazel-disk-v1" >> "$GITHUB_ENV"
+      - name: Verify exact paired checkout
+        run: test "$(git rev-parse HEAD)" = "$SAMPLE_SHA"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.12'
+      - name: Admit mandatory Linux namespace isolation
+        run: |
+          mkdir -p "$SAMPLE_OUTPUT"
+          {
+            if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+              sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            fi
+            unshare --user --map-root-user --mount --pid --net --fork true
+          } > "$SAMPLE_OUTPUT/isolation-bootstrap.log" 2>&1
+      - name: Install checksum-locked Bazel
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, urllib.request
+          lock = json.loads(pathlib.Path('tools/bazel/toolchains.lock.json').read_text())['bazel']
+          data = urllib.request.urlopen(lock['url'], timeout=120).read()
+          assert hashlib.sha256(data).hexdigest() == lock['sha256'], 'Bazel checksum mismatch'
+          binary = pathlib.Path(os.environ['RUNNER_TEMP']) / 'bazel-bin'
+          binary.mkdir()
+          (binary / 'bazel').write_bytes(data)
+          (binary / 'bazel').chmod(0o755)
+          with open(os.environ['GITHUB_PATH'], 'a') as path:
+              path.write(str(binary) + '\n')
+          PY
+      - name: Select cache trust namespace
+        id: namespace
+        env:
+          TRUSTED: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' && github.ref_protected }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LOCKS: ${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock', 'tools/bazel/toolchains.lock.json', 'tools/bazel/requirements_linux_x86_64.txt', 'package-lock.json', 'tools/bazel/pnpm-lock.yaml') }}
+        run: |
+          if [ "$TRUSTED" = true ]; then
+            scope=protected-dev
+          else
+            scope="untrusted-${PR_NUMBER:-dispatch}"
+          fi
+          echo "prefix=aq-bazel-v1-${scope}-${RUNNER_OS}-${RUNNER_ARCH}-8.3.1-${LOCKS}-" >> "$GITHUB_OUTPUT"
+      - name: Start restore clock
+        run: date +%s%N > "$RUNNER_TEMP/cache-restore-start"
+      - name: Restore compatible local disk cache
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.SAMPLE_CACHE }}
+          key: ${{ steps.namespace.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.namespace.outputs.prefix }}
+      - name: Stop restore clock
+        run: date +%s%N > "$RUNNER_TEMP/cache-restore-end"
+      - name: Run incremental, cold, unchanged warm and discarded-server samples
+        run: python scripts/bazel/ci_sample.py bazel --sha "$SAMPLE_SHA" --output "$SAMPLE_OUTPUT" --state "$SAMPLE_STATE" --cache "$SAMPLE_CACHE"
+      - name: Start save clock
+        if: always()
+        run: date +%s%N > "$RUNNER_TEMP/cache-save-start"
+      - name: Save protected immutable snapshot
+        id: protected_save
+        if: >-
+          success() && github.event_name == 'push' && github.ref == 'refs/heads/dev' &&
+          github.ref_protected && steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SAMPLE_CACHE }}
+          key: ${{ steps.namespace.outputs.prefix }}${{ github.sha }}
+      - name: Save isolated PR snapshot
+        id: pr_save
+        if: >-
+          success() && github.event_name == 'pull_request' &&
+          steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.SAMPLE_CACHE }}
+          key: ${{ steps.namespace.outputs.prefix }}${{ github.sha }}
+      - name: Record transfer cost and provider inventory
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_PREFIX: ${{ steps.namespace.outputs.prefix }}
+          CACHE_MATCH: ${{ steps.restore.outputs.cache-matched-key }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.namespace.outputs.prefix }}${{ github.sha }}
+          CACHE_SAVE: ${{ steps.protected_save.outcome }} / ${{ steps.pr_save.outcome }}
+        run: |
+          date +%s%N > "$RUNNER_TEMP/cache-save-end"
+          python scripts/bazel/ci_sample.py cache --output "$SAMPLE_OUTPUT/cache.json" --cache "$SAMPLE_CACHE"
+      - name: Retain raw BEP, JUnit, outcomes, locks and timing evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bazel
+          path: ${{ env.SAMPLE_OUTPUT }}
+          retention-days: 90
+          if-no-files-found: error
+          include-hidden-files: true
+  evidence:
+    name: Shadow paired evidence (nonrequired)
+    needs: [plan, legacy, bazel]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 100
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.12'
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/inputs
+      - name: Compare exact SHA, outcomes and unchanged cache receipts
+        env:
+          SAMPLE_SHA: ${{ github.sha }}
+        run: python scripts/bazel/ci_sample.py sample --sha "$SAMPLE_SHA" --inputs "$RUNNER_TEMP/inputs" --output "$RUNNER_TEMP/paired"
+      - name: Update consecutive dev evidence
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/bazel/ci_sample.py history --output "$RUNNER_TEMP/paired" --sha "$GITHUB_SHA"
+      - name: Publish versioned paired report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bazel-shadow-evidence-v1
+          path: |
+            ${{ runner.temp }}/paired/sample.json
+            ${{ runner.temp }}/paired/window.json
+            ${{ runner.temp }}/paired/history.json
+            ${{ runner.temp }}/paired/summary.md
+          retention-days: 90
+          if-no-files-found: error

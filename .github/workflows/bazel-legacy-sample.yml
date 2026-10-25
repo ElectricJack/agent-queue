@@ -1,0 +1,94 @@
+name: Bazel paired legacy sample
+
+# Called by the nonrequired shadow workflow. Never a required Tests check.
+on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      matrix:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  legacy:
+    name: Shadow legacy (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    env:
+      POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
+      AQ_REQUIRE_POSTGRES_TESTS: '1'
+      GIT_AUTHOR_NAME: CI
+      GIT_AUTHOR_EMAIL: ci@example.invalid
+      GIT_COMMITTER_NAME: CI
+      GIT_COMMITTER_EMAIL: ci@example.invalid
+      AQ_PERF_STRICT: ${{ matrix.suite == 'cli_startup' && '1' || '0' }}
+      SAMPLE_SHA: ${{ inputs.sha }}
+      SAMPLE_SUITE: ${{ matrix.suite }}
+    services:
+      postgres:
+        image: mirror.gcr.io/library/postgres:18
+        env:
+          POSTGRES_USER: agent_queue
+          POSTGRES_PASSWORD: agent_queue
+          POSTGRES_DB: agent_queue
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U agent_queue -d agent_queue -h 127.0.0.1'
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - name: Set runner-local evidence path
+        run: echo "SAMPLE_OUTPUT=$RUNNER_TEMP/legacy-$SAMPLE_SUITE" >> "$GITHUB_ENV"
+      - name: Verify exact paired checkout
+        run: test "$(git rev-parse HEAD)" = "$SAMPLE_SHA"
+      - name: Match legacy disposable PostgreSQL settings
+        if: startsWith(matrix.suite, 'dashboard_') == false
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG_CONTAINER" psql -U agent_queue -d agent_queue -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_connections = 300"
+          docker exec "$PG_CONTAINER" psql -U agent_queue -d agent_queue -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET fsync = off"
+          docker exec "$PG_CONTAINER" psql -U agent_queue -d agent_queue -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET synchronous_commit = off"
+          docker exec "$PG_CONTAINER" psql -U agent_queue -d agent_queue -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET full_page_writes = off"
+          docker restart "$PG_CONTAINER"
+          for attempt in {1..60}; do
+            if docker exec "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U agent_queue -d agent_queue; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.10.0'
+      - name: Install legacy Python dependencies
+        if: startsWith(matrix.suite, 'dashboard_') == false
+        run: |
+          python -m pip install -r tools/bazel/requirements_linux_x86_64.txt
+          python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
+      - name: Install legacy npm dependencies
+        if: startsWith(matrix.suite, 'dashboard_')
+        run: npm ci
+      - name: Execute unchanged legacy obligation with outcome recorder
+        run: python scripts/bazel/ci_sample.py legacy --sha "$SAMPLE_SHA" --suite "$SAMPLE_SUITE" --output "$SAMPLE_OUTPUT"
+      - name: Retain legacy evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: legacy-${{ matrix.suite }}
+          path: ${{ env.SAMPLE_OUTPUT }}
+          retention-days: 90
+          if-no-files-found: error
+          include-hidden-files: true

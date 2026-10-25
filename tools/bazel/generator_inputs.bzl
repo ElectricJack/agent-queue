@@ -6436,6 +6436,7 @@ GENERATOR_INPUTS = [
     "tests/test_bazel_metrics.py",
     "tests/test_bazel_parity.py",
     "tests/test_bazel_runtime.py",
+    "tests/test_bazel_workflows.py",
     "tests/test_blocked_state.py",
     "tests/test_blocked_task_escalation.py",
     "tests/test_branch_discard.py",

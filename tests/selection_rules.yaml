@@ -67,6 +67,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["scripts/bazel/ci_evidence.py", "scripts/bazel/ci_sample.py", ".github/workflows/bazel-shadow.yml", ".github/workflows/bazel-legacy-sample.yml"], areas: ["bazel-workflows"] }
   - { paths: ["scripts/bazel/compare_results.py", "tools/bazel/pytest_plugin.py"], areas: ["bazel-parity"] }
   - { paths: ["scripts/bazel/generate_targets.py", "scripts/bazel/impact.py", "src/**/BUILD.bazel", "tests/BUILD.bazel", "checks/BUILD.bazel"], areas: ["bazel-toolchains", "bazel-environment", "test-selection"] }
   - { paths: ["tools/bazel/runtime.py", "tools/bazel/pytest_plugin.py", "tools/bazel/runtime-contract.md", "tools/bazel/runtime-ledger.json"], areas: ["bazel-runtime"] }

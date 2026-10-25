@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: bazel-workflows
+    description: "Paired exact-commit CI sampling, protected cache writers and complete retained evidence."
+    match: [tests/test_bazel_workflows.py]
   - id: bazel-parity
     description: "Exact candidate JUnit, canonical pytest outcomes, shards and dashboard artifact parity."
     match: [tests/test_bazel_parity.py]
