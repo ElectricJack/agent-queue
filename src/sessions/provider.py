@@ -544,12 +544,14 @@ class SessionProvider(ABC):
     # -- interaction -------------------------------------------------------
 
     @abstractmethod
-    async def nudge(self, h: SessionHandle, text: str) -> None:
+    async def nudge(self, h: SessionHandle, text: str) -> dict[str, str | None] | None:
         """Inject *text* and submit it.
 
         Raises :class:`NotSubmitted` when submission could not be
         confirmed, and :class:`CapabilityUnsupported` when the provider has
         no input channel at all.
+        Providers may return ``pending_action`` (``submitted`` or ``cleared``)
+        when recovering older AQ input before submitting the new text.
         """
 
     async def send_input(

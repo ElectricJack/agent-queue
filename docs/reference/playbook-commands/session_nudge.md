@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:0b61d10613829e449c980f67768c3eac4b6c4231af7d75f761533b1a855fc61e` |
+| Contract fingerprint | `sha256:0352f5043d96512ade82762859267c9e40cc82cb59014bd07a93e3c50d5e80b7` |
 
 ## Parameters
 
@@ -26,6 +26,7 @@
 | `task_id` | `string` | no | — | Resolve session from this task id |
 | `text` | `string` | no | — | Text to inject and submit |
 | `message` | `string` | no | — | Alias for text |
+| `submit_pending` | `boolean` | no | — | Recover pending AQ input without new text; clears collapsed input for retry |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `fallback`; quality: `declared`; coarse effect: `destructive`.
@@ -50,7 +51,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using session_id, id, name, task_id, text, message | — | always |
+| Composite using session_id, id, name, task_id, text, message, submit_pending | — | always |
 
 <!-- aq:generated:end -->
 

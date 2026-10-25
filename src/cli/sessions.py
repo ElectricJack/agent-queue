@@ -139,17 +139,24 @@ def session_attach(ctx: click.Context, session_id) -> None:
 
 @session.command("nudge")
 @click.argument("session_id")
-@click.argument("text")
+@click.argument("text", required=False)
+@click.option("--submit-pending", is_flag=True, help="Recover pending AQ input without typing text.")
 @click.pass_context
 @_handle_errors
-def session_nudge(ctx: click.Context, session_id, text) -> None:
+def session_nudge(ctx: click.Context, session_id, text, submit_pending) -> None:
     """Inject TEXT into a session and submit it.
 
-    Reports ``not_submitted`` when the text was pasted but Enter could not
-    be confirmed — that is a real outcome, not a transport error, and the
-    caller should re-queue rather than assume delivery.
+    Reports submitted, deferred, or pasted_pending. With --submit-pending,
+    submits exact AQ input or clears an attributable collapsed paste for retry.
     """
-    emit(ctx, _call(ctx, "session_nudge", {"session_id": session_id, "text": text}))
+    if submit_pending == bool(text):
+        raise click.UsageError("Provide TEXT or --submit-pending.")
+    args = {"session_id": session_id}
+    if submit_pending:
+        args["submit_pending"] = True
+    else:
+        args["text"] = text
+    emit(ctx, _call(ctx, "session_nudge", args))
 
 
 @session.command("logs")

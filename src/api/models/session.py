@@ -82,6 +82,10 @@ class SessionNudgeResponse(BaseModel):
     session_id: str
     delivered: bool = False
     error: str | None = None
+    state: str | None = None
+    composer_dirty: bool | None = None
+    pending_action: str | None = None
+    reason: str | None = None
 
 
 class SessionInputResponse(BaseModel):

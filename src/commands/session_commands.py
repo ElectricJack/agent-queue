@@ -41,6 +41,7 @@ from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
     NotSubmitted,
+    NudgeDeferred,
     SessionHandle,
 )
 # Safe at module scope: the reconciler's claim-file helpers live in the leaf
@@ -390,7 +391,10 @@ class SessionCommandsMixin:
         never saw.
         """
         text = str(args.get("text") or args.get("message") or "").strip()
-        if not text:
+        submit_pending = args.get("submit_pending", False)
+        if submit_pending and text:
+            return {"success": False, "error": "submit_pending cannot be combined with text"}
+        if not text and not submit_pending:
             return {"success": False, "error": "text is required"}
         session, err = await self._resolve_session(args)
         if err:
@@ -398,15 +402,43 @@ class SessionCommandsMixin:
         provider = self._provider_for_session(session)
         if provider is None:
             return {"success": False, "error": f"Provider '{session.provider}' is not available"}
+        handle = self._session_handle(session)
         try:
-            await provider.nudge(self._session_handle(session), text)
-        except NotSubmitted:
-            return {"success": False, "error": "not_submitted", "session_id": session.id}
+            if submit_pending:
+                resubmit = getattr(provider, "resubmit_pending", None)
+                probe = getattr(provider, "pending_submit_detail", None)
+                pending = getattr(provider, "pending_submit", None)
+                if resubmit is None or pending is None:
+                    return {"success": False, "error": "pending recovery unsupported"}
+                detail = await probe(handle) if probe else await pending(handle)
+                if detail is None:
+                    return {"success": True, "session_id": session.id, "state": "no_pending",
+                            "delivered": False, "composer_dirty": False}
+                if await resubmit(handle):
+                    return {"success": True, "session_id": session.id, "state": "submitted",
+                            "delivered": True, "composer_dirty": False}
+                clear = getattr(provider, "clear_pending", None)
+                if isinstance(detail, dict) and detail.get("clearable") and clear:
+                    if await clear(handle):
+                        return {"success": True, "session_id": session.id, "state": "cleared",
+                                "delivered": False, "composer_dirty": False}
+                return {"success": False, "error": "not_submitted", "session_id": session.id,
+                        "state": "pasted_pending", "delivered": False, "composer_dirty": True}
+            result = await provider.nudge(handle, text)
+        except NudgeDeferred as exc:
+            return {"success": False, "error": "not_submitted", "session_id": session.id,
+                    "state": "deferred", "delivered": False, "reason": str(exc.reason),
+                    "composer_dirty": exc.composer_dirty}
+        except NotSubmitted as exc:
+            return {"success": False, "error": "not_submitted", "session_id": session.id,
+                    "state": "pasted_pending" if exc.composer_dirty else "not_submitted",
+                    "delivered": False, "composer_dirty": exc.composer_dirty}
         except CapabilityUnsupported as exc:
             return {"success": False, "error": str(exc), "session_id": session.id}
         except Exception as exc:
             return {"success": False, "error": f"nudge failed: {exc}"}
-        return {"success": True, "session_id": session.id, "delivered": True}
+        return {"success": True, "session_id": session.id, "delivered": True,
+                "state": "submitted", "composer_dirty": False, **(result or {})}
 
     async def _cmd_session_logs(self, args: dict) -> dict:
         """Normalized output for a session.
