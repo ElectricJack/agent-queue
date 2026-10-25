@@ -125,6 +125,16 @@ profiles), `diagnostics.json`, and optionally `traces.json` (recorded replays).
 artifact hash, an enabled bit and a health. Only an activation that is enabled, `ready`
 and points at an artifact runs.
 
+The runtime refreshes an event-type interest catalog with activation changes.
+An event absent from a complete catalog skips background dispatch and task hydration.
+Scope checks, literal filters and guards still run through the engine for subscribed
+types. Before the first refresh, or if a ready artifact cannot be loaded, dispatch
+remains conservative so artifact failures can retain pending events.
+Refresh generations also prevent an older read from restoring stale coverage
+after a newer post-commit refresh is cancelled. Required
+`task.route_needed` retention is independent of the catalog. Durable integration
+acceptance and pinned replay retain their separate delivery boundary.
+
 **Run.** One execution of one rule of one artifact, pinned to that artifact's hash for
 its whole life. A run has a mode (`live`, `dry_run`, `shadow`); the mode chooses which
 executors run, never a different graph.

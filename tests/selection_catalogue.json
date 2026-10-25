@@ -20544,11 +20544,12 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:bce01ede788f35da5f855b8291264db6700a4fe013a7642bc46618a43d1fdb89",
+      "digest": "sha256:82b9866b3e1e98c718295594c04e36af44857f45fb21903b3106a0adf384a241",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
         "src.models",
         "src.orchestrator"
       ],

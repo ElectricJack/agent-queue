@@ -120,6 +120,10 @@ class V2PlaybookRuntime:
         self._routing_activation_snapshot = None
         self._routing_activation_refresh_lock = asyncio.Lock()
         self._triggers: tuple[str, ...] = ()
+        # None means that trigger coverage is unknown: dispatch conservatively
+        # before the first refresh or when a ready artifact cannot be loaded.
+        self._event_triggers: frozenset[str] | None = None
+        self._event_catalog_generation = 0
         self._integration_destinations: tuple[_IntegrationDestination, ...] = ()
         self._integration_activation_addresses: tuple[_IntegrationDestination, ...] = ()
         self._integration_catalog_loaded = False
@@ -146,10 +150,18 @@ class V2PlaybookRuntime:
         # after its own activation commit, so the refresh that finishes last
         # is current; unserialized, a slower refresh holding an older read
         # could overwrite the trigger map the timer service follows.
+        # Invalidate before waiting for the lock. If this post-commit caller
+        # is cancelled, an older in-flight read cannot restore stale coverage.
+        self._event_catalog_generation += 1
+        self._event_triggers = None
         async with self._routing_activation_refresh_lock:
             await self._refresh_locked()
 
     async def _refresh_locked(self) -> None:
+        # A failed post-commit refresh must not leave a stale negative cache
+        # hiding an activation's newly added trigger until daemon restart.
+        self._event_triggers = None
+        generation = self._event_catalog_generation
         rows = await self._db.list_playbook_activations(enabled_only=False)
         # A verified but schema-invalid artifact must not poison the runtime
         # catalog or the synchronous routing snapshot. Keep the classification
@@ -158,6 +170,7 @@ class V2PlaybookRuntime:
         runtime_rows = [dict(row) for row in rows]
         loaded_rows: list[dict[str, Any]] = []
         triggers: set[str] = set()
+        trigger_catalog_complete = True
         integration_destinations: list[_IntegrationDestination] = []
         activation_addresses: list[_IntegrationDestination] = []
         for row in runtime_rows:
@@ -183,12 +196,14 @@ class V2PlaybookRuntime:
             try:
                 definition = self._store.load(sha)
             except (OSError, ArtifactVerificationFailed) as exc:
+                trigger_catalog_complete = False
                 row["health"] = "unavailable"
                 logger.warning(
                     "Playbook %s artifact %s is unavailable: %s", row["playbook_id"], sha, exc
                 )
                 continue
             except Exception:  # noqa: BLE001 - quarantine malformed definitions per activation
+                trigger_catalog_complete = False
                 row["health"] = "invalid"
                 logger.exception("Playbook %s artifact %s is invalid", row["playbook_id"], sha)
                 continue
@@ -205,6 +220,8 @@ class V2PlaybookRuntime:
                 )
             )
         self._triggers = tuple(sorted(triggers))
+        if generation == self._event_catalog_generation and trigger_catalog_complete:
+            self._event_triggers = frozenset(triggers)
         install_routing_activation_snapshot(self, loaded_rows, artifact_store=self._store)
         self._required_inactive_ids = self._required_inactive_from(runtime_rows)
         self._integration_destinations = tuple(integration_destinations)
@@ -264,9 +281,19 @@ class V2PlaybookRuntime:
         return len(self._triggers)
 
     def _on_event(self, event: dict[str, Any]) -> None:
-        if event.get("_event_type") == "integration.publication_verified":
+        event_type = event.get("_event_type") or event.get("event_type", "")
+        if event_type == "integration.publication_verified":
             # Its outbox durably accepts playbook destinations separately;
             # the bus copy wakes observation and external deployment owners.
+            return
+        if (
+            self._event_triggers is not None
+            and event_type not in self._event_triggers
+            and event_type != "task.route_needed"
+        ):
+            # Trigger names need no hydrated task, scope lookup or guard
+            # evaluation. Activation commands refresh this catalog after commit.
+            # Required routing retention remains independent of subscriptions.
             return
         payload = dict(event)
         # The live publisher cannot choose its own backlog age or observation
