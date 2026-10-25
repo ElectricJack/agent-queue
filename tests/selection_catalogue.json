@@ -4320,14 +4320,13 @@
         "task-comments"
       ],
       "default_arm": true,
-      "digest": "sha256:2fd59d032fca3ecc4277536287f1187fb1b0e14418a7a3060eb449236d739650",
+      "digest": "sha256:252412a90d4ca5beda33eacb7cd1fa7a6351c68464b896c132504c2c993d0647",
       "imports": [
         "src.cli.app",
         "src.config",
         "src.database",
         "src.models",
         "src.prime",
-        "src.prime.budgets",
         "src.prime.sections"
       ],
       "markers": [
