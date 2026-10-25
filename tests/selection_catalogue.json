@@ -6700,7 +6700,7 @@
         "e2e-kit"
       ],
       "default_arm": true,
-      "digest": "sha256:0ea17f5934ba1e8bd23b0f200b3364aebd3ffe22ab1e2b09f5523fe6a65c3e46",
+      "digest": "sha256:58088c079810a73cbe46f0cb2bc440c0fcb1aa3321534344e946fc672c31a3b6",
       "imports": [
         "src.api",
         "src.api.dependencies",
@@ -6708,8 +6708,7 @@
         "src.api.health_monitor"
       ],
       "markers": [
-        "parametrize",
-        "skipif"
+        "parametrize"
       ],
       "summary": "The e2e kit must not call a daemon healthy when it cannot use its schema."
     },
