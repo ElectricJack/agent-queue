@@ -22,7 +22,10 @@ from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUP
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
 BATCH_REF = candidate_ref('batch-1').removeprefix('refs/heads/')
-POSTGRES_IMAGE = 'mirror.gcr.io/library/postgres:18'
+POSTGRES_IMAGES = [
+    'mirror.gcr.io/library/postgres:18',
+    'public.ecr.aws/docker/library/postgres:18',
+]
 
 
 def workflow(name='tests.yml'):
@@ -342,12 +345,24 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
 
 def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit():
     # Run 37990643989 (2026-10-09) failed all 15 Postgres jobs with Docker Hub's
-    # `toomanyrequests` before a test ran. Google's Docker Hub mirror serves the
-    # same official image with no secret, so fork pull requests can pull it too.
+    # `toomanyrequests` before a test ran. Independent mirrors serve the
+    # official image without secrets, including for fork pull requests.
     jobs = workflow()['jobs']
-    start = next(step for step in jobs['test']['steps'] if step['name'] == 'Start PostgreSQL')
-    assert POSTGRES_IMAGE in start['run'].split()
-    assert jobs['e2e-cli']['services']['postgres']['image'] == POSTGRES_IMAGE
+    starts = []
+    for job_name in ('test', 'e2e-cli'):
+        job = jobs[job_name]
+        assert not job.get('services')  # Implicit service pulls cannot fall back.
+        start = next(step for step in job['steps'] if step['name'] == 'Start PostgreSQL')
+        assert all(image in start['run'] for image in POSTGRES_IMAGES)
+        assert job['steps'].index(start) < next(
+            i for i, step in enumerate(job['steps']) if step['name'] == 'Set up Python'
+        )
+        assert {'name': 'PostgreSQL logs on failure', 'if': 'failure()',
+                'run': 'docker logs ci-postgres || true'} in job['steps']
+        assert {'name': 'Remove PostgreSQL', 'if': 'always()',
+                'run': 'docker rm --force --volumes ci-postgres || true'} in job['steps']
+        starts.append(start['run'])
+    assert starts[0] == starts[1]
     for path in WORKFLOWS.glob('*.yml'):
         text = path.read_text()
         assert not re.search(r'(?<![\w./-])postgres:\d', text), path
@@ -365,6 +380,8 @@ def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit()
         (0, 0, 0, 0),
         (1, 0, 0, 0),
         (2, 0, 0, 0),
+        (3, 0, 0, 0),
+        (5, 0, 0, 0),
         (99, 0, 0, 125),
         (0, 125, 0, 125),
         (0, 0, 3, 0),
@@ -434,13 +451,16 @@ raise AssertionError(sys.argv)
     pulls = [call for call in calls if call[0] == "pull"]
     starts = [call for call in calls if call[0] == "run"]
     probes = [call for call in calls if call[0] == "exec"]
-    assert pulls == [["pull", POSTGRES_IMAGE]] * min(pull_failures + 1, 3)
-    if pull_failures >= 3:
+    assert pulls == [
+        ["pull", POSTGRES_IMAGES[i % 2]] for i in range(min(pull_failures + 1, 6))
+    ]
+    if pull_failures >= 6:
         assert not starts and not probes
         assert "::error::PostgreSQL image pull failed" in result.stdout
     else:
         assert len(starts) == 1
-        assert "--pull=never" in starts[0] and POSTGRES_IMAGE in starts[0]
+        assert "--pull=never" in starts[0]
+        assert POSTGRES_IMAGES[pull_failures % 2] in starts[0]
         assert calls[: len(pulls)] == pulls
         if run_status:
             assert not probes
@@ -461,8 +481,8 @@ raise AssertionError(sys.argv)
             if readiness_failures >= 60:
                 assert "::error::PostgreSQL did not become ready" in result.stdout
     delays = tmp_path / "retry-delays"
-    expected_delays = ["5"] * min(pull_failures, 2)
-    if pull_failures < 3 and not run_status:
+    expected_delays = ["5"] * min(pull_failures // 2, 2)
+    if pull_failures < 6 and not run_status:
         expected_delays += ["1"] * min(readiness_failures, 60)
     assert (delays.read_text().splitlines() if delays.exists() else []) == expected_delays
 
