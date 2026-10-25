@@ -136,9 +136,12 @@ class DispatchWaits:
                 # for the durable listener rather than replacing it with cancel.
                 service = getattr(self.orch, "wait_service", None)
                 if service is not None:
-                    async with self.db._engine.connect() as conn:
-                        observed = await service.registry.observe(
-                            conn, Condition.from_record(row["condition"]))
+                    try:
+                        async with self.db._engine.connect() as conn:
+                            observed = await service.registry.observe(
+                                conn, Condition.from_record(row["condition"]))
+                    except WaitError:
+                        continue  # unobservable now; keep it rather than abort the visit
                     if observed.state == "satisfied":
                         continue
             result = await command("wait_cancel", {
