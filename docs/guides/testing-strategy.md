@@ -1,7 +1,7 @@
 # Testing strategy
 
 Status: draft for the A2 interview and review (`bright-ridge-12.2`). Jack's
-Q1 and Q2 answers are recorded; the remaining interview and strategy acceptance
+Q1–Q3 answers are recorded; the remaining interview and strategy acceptance
 are pending. This draft records the existing approved obligations; it does not
 authorize a check removal or suite
 cutover. H1 BUILD authoring requires A2 acceptance.
@@ -94,7 +94,8 @@ agent recommendation is not Jack's acceptance.
 |---|---|---|
 | Q1 — confidence | When a change is green, what do you need that green result to tell you before it lands on the frequently automatically deployed dev branch? | Jack's verified answer on 2026-10-24: “If it’s green and it’s an epic (complete feature) I want it merged, and that should be all tasks at the root level”. Discord input `cinput-6970a5ab` at 19:54Z; supervisor relay `msg-80ee66dc374447e98cca5fea1c8073ab`. Identical confirmation `cinput-6d17114e` at 20:46Z, relayed in `msg-6a5de3917fd145eeb213e87a315edff2`. Treat these as one answer. |
 | Q2 — blocking failures | Which failures must block a root epic from merging to dev, even when its focused feature tests pass? | Jack's verified answer on 2026-10-24 at 22:19:25Z: “Only failures in areas the epic touches”. Discord input `cinput-c73d3c964604480fb20caaa550afda37`, conversation `conv-7b812291-a40d-465b-9a86-21da0d9c3a7e`; supervisor relay `msg-72a475a9aa044072b5f23e7ddd89ee10` (sequence 136547), backed by task comment `comment-6b37662673c54f67aa91a59b5f839b85`. |
-| Q3 — affected-area boundary | Should "areas the epic touches" include downstream behavior that depends on changed code, even when that area’s files are unchanged? | Requested once on 2026-10-24 through supervisor in `msg-45b07a3d78db4cc5b52f352aed3849c0`, thread `bright-ridge-12.2-interview-q3`; verified answer pending. |
+| Q3 — affected-area boundary | Should "areas the epic touches" include downstream behavior that depends on changed code, even when that area’s files are unchanged? | Jack's verified answer on 2026-10-24 at 22:57:33Z: “I think yes, downstream that depends on code the epic changed should be tested”. Discord input `cinput-fff40414137f47f0bbf065677974744b`, conversation `conv-7b812291-a40d-465b-9a86-21da0d9c3a7e`, actor `human:discord:395982012789293056`; supervisor relay `msg-8d6ea6b7bd6c45619b9d99fba16ceb81`. Duplicate relay `msg-d54da5f71f254256b2941a331d1971cf` is the same answer. |
+| Q4 — redundant coverage | What evidence would make you comfortable consolidating tests that appear to cover the same behavior? | Requested once through supervisor in `msg-e982a7a22cf54f809cf6bf7766d61ef1`, thread `bright-ridge-12.2-interview-q4`; verified answer pending. |
 
 Q1 establishes Jack's desired delivery outcome: merge a green, complete feature
 at the root level. It does not yet specify which failures must block that green
@@ -104,13 +105,16 @@ strategy. The earlier supervisor status
 human inputs above supply the answer.
 
 Q2 records Jack's preference to block on failures in areas the epic touches.
-The boundary of an affected area, including downstream behavior, remains to be
-clarified. Record that preference for strategy review while retaining the
-current required gates. This interview answer alone does not establish which
-observed failures are unrelated or supply replacement coverage evidence.
+Q3 includes downstream behavior that depends on changed code within that
+boundary, even when its own files are unchanged. Assess dependency impact as
+well as edited paths when reviewing affected-area evidence; unknown impact
+requires conservative verification. Retain the current required gates pending
+the reviewed implementation and its evidence. These answers alone do not
+establish which observed failures are unrelated or supply replacement coverage
+evidence.
 
-Continue with the affected-area boundary, redundant assertions and the risk of
-frequent automatic deployment, adapting each next question to Jack's
+Continue with redundant assertions and the risk of frequent automatic
+deployment, adapting each next question to Jack's
 answer. Record the accepted strategy review's ID, revision, content hash and
 decision receipt here before claiming A2 acceptance. Moving protection past
 deployment needs a separate approved policy amendment even if an interview
