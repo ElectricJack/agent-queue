@@ -63,6 +63,9 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   The authoring command refreshes the fixture and shipped copies; assembly uses
   `scripts/generate-recorded-artifacts.py` to project these approved inputs unchanged.
   `src/prompts/reviewed_playbooks/<id>/` is the only path an install imports from.
+  A shipped profile grant or command-contract change must rebuild affected bundles
+  in the same commit. `aq test tests/test_default_playbook_v2_artifacts.py` validates
+  every shipped artifact against shipped profiles and current contracts.
 - **Import the `.aq/claim.json` helpers from `src/claim_file.py`**, never from
   `src.commands.claim_commands`, or `src.sessions` and `src.commands` form an import cycle.
 - **`openapi.json` and both API clients are generated.** After any change to
@@ -99,6 +102,9 @@ Tests are one file per area (`tests/test_<area>.py`, plus `tests/perf/`, `tests/
 The suite is ~14k tests; a full run is a whole-box, many-minute affair that stalls every
 agent on the machine. Rationale and the baseline workflow:
 [docs/guides/resource-gating.md](docs/guides/resource-gating.md).
+Testing confidence, retained obligations and replacement-coverage evidence are
+documented in [the accepted testing strategy](docs/guides/testing-strategy.md)
+(`rev-agile-ember` r1; A2 acceptance recorded before Bazel BUILD authoring).
 
 - **`aq test`, not bare `pytest`, for anything past one file.** It takes a box-wide test
   slot, applies the per-session worker cap and the default marker deselect
