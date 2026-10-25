@@ -335,13 +335,11 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return "out of scope: conversation intake is daemon-internal"
     # Chat belongs to global even when legacy notices still carry a project.
     # The command additionally verifies the live launch and instance token.
-    if command in {"supervisor_inbox_reply", "supervisor_inbox_say"} and not (
-        scope.elevated and scope.project_id is None
-    ):
+    global_supervisor = scope.elevated and scope.project_id is None
+
+    if command in {"supervisor_inbox_reply", "supervisor_inbox_say"} and not global_supervisor:
         return "out of scope: conversation replies require local operator or global supervisor"
-    if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not (
-        scope.elevated and scope.project_id is None
-    ):
+    if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not global_supervisor:
         return "out of scope: conversation reads require local operator or global supervisor"
     if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
         return "out of scope: integration control requires local operator or supervisor"
