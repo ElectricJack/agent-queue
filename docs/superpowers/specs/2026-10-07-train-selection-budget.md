@@ -133,3 +133,43 @@ unchanged observations should let a visit evaluate the whole eligible window;
 the cooperative quantum and final candidate/publication gates remain in force.
 Deterministic tests cover reuse of checks and reviews, refresh on expiry and
 identity changes, target-tip invalidation of refusals, and warm-frontier coverage.
+
+## Opt-in dependency packing (2026-10-24)
+
+The reviewed train policy's `packing.enabled` switch adds a scoring stage after
+ordinary admission. Legacy and disabled policies retain their uncapped root
+frontier behavior. Only the current visit's admitted window is scored; dependency
+reads traverse ancestors of that window rather than the whole project graph.
+
+Connected dependency closures form inseparable units. Rank each unit by its
+highest member score, then its oldest completion time and task ID. Reserve the
+first attempt for the oldest unit over the policy's age threshold (default two
+hours). Capacity counts members, not units. An oversized closure takes the
+ordinary path alone. A failed reserved probe leaves space for other units.
+
+Version 1 components are exact-head green times `green_weight`, locally clean
+times `merge_clean_weight`, `signature_size_weight / (1 + path_count)`, nonhot
+path fraction times `nonhot_weight`, elapsed fractional hours times
+`age_per_hour` capped by `max_age_score`, and rolling successful terminal checks
+as a fraction of observations times `pass_rate_weight`. Before the minimum
+observations, use `pass_rate_neutral`. Universal signatures earn no size/nonhot
+bonus; absent hotness evidence is unknown, not proof that a source is cold.
+Terminal check history is bounded to 1000 recent records; hotness reads only the
+policy's last landed batches (default 50). These hints never replace admission.
+
+The initial path classifier recognizes Python source/tests, dashboard source,
+and Markdown documentation. Unknown paths, shared policy files and generated
+outputs remain universal. No output is subtracted without trusted provenance;
+this stage does not invent such receipts. All candidate signatures bind a shared
+classifier digest, exact heads, target and activated policy revision.
+
+Disjointness applies between units. Each proposed cumulative prefix also runs
+`merge_generated_tree` with assembly's effective bases, migration conflict check
+and deferred generated driver. Synthetic commits remain local objects. Generator
+execution and all exact-candidate checks still run during ordinary assembly.
+Immediately before freezing, reload completion, dependency, PR, source, target
+and policy identities; invalidate stale signatures and restart at most once
+within the remaining visit budget. Frozen selection evidence is stored atomically
+in the existing batch artifact snapshot. The Git-first train does not create
+legacy candidate-revision journal rows. Counts, per-component scores and exclusion
+outcomes are diagnostic only; metric outcome retention is bounded separately.

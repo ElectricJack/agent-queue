@@ -250,6 +250,10 @@ class SupersedeMemberUnavailable(ValueError):
         super().__init__(f"Cannot supersede: refreshed member {task_id} {detail}")
 
 
+class SelectionIdentityChanged(ValueError):
+    """An unfrozen packing observation changed; selection must start afresh."""
+
+
 class BatchStore:
     """Intent/input writes invoked by commands; legacy columns retire at stage four."""
 
@@ -275,19 +279,20 @@ class BatchStore:
 
     async def freeze(self, batch: Batch, members: Iterable[BatchMember], *,
                      trees: Mapping[str, str], exclusive_target=False,
-                     promotion: Mapping | None = None, conn=None):
+                     promotion: Mapping | None = None, conn=None, selection_snapshot=None):
         """Atomic immutable membership; replay must name exactly the same inputs."""
         members = tuple(members)
         if conn is not None:
             return await self._freeze_locked(conn, batch, members, trees=trees,
                                              exclusive_target=exclusive_target,
-                                             promotion=promotion)
+                                             promotion=promotion, selection_snapshot=selection_snapshot)
         async with self.db.immediate() as owned:
             return await self._freeze_locked(owned, batch, members, trees=trees,
                                              exclusive_target=exclusive_target,
-                                             promotion=promotion)
+                                             promotion=promotion, selection_snapshot=selection_snapshot)
 
-    async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
+    async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion,
+                             selection_snapshot=None):
         from src.integration.delivery_truth import load_delivery_requests
         from src.integration.engine import lock_key
 
@@ -321,7 +326,8 @@ class BatchStore:
         await self._target_lock(conn, batch)
         if exclusive_target:
             await self._exclusive_target(conn, batch)
-        return await self._freeze_on(conn, batch, members, trees=trees, promotion=promotion)
+        return await self._freeze_on(conn, batch, members, trees=trees, promotion=promotion,
+                                     selection_snapshot=selection_snapshot)
 
     @staticmethod
     async def _target_lock(conn, batch):
@@ -344,7 +350,8 @@ class BatchStore:
         if other:
             raise ValueError("another batch already owns this target")
 
-    async def _freeze_on(self, conn, batch, members, *, trees, promotion=None):
+    async def _freeze_on(self, conn, batch, members, *, trees, promotion=None,
+                         selection_snapshot=None):
         if tuple(member.order for member in members) != tuple(range(len(members))):
             raise ValueError("membership must have contiguous frozen order")
         if not members:
@@ -386,6 +393,9 @@ class BatchStore:
                                       r["source_base_sha"], r["ordinal"]) for r in frozen)
             if identity != wanted or inputs != members:
                 raise ValueError("batch id already names different frozen inputs")
+            if (selection_snapshot is not None
+                    and existing["artifact_snapshot"] != selection_snapshot):
+                raise ValueError("batch id already names different selection evidence")
             if promotion is not None and (
                 existing["trigger"] != "promotion"
                 or existing["request_id"] != promotion["request_id"]
@@ -423,7 +433,7 @@ class BatchStore:
                 **policy,
                 "promotion_step": promotion["step"],
                 "promotion_intent": dict(promotion),
-            }, artifact_snapshot={}, cleanup_state="pending",
+            }, artifact_snapshot=selection_snapshot or {}, cleanup_state="pending",
         ))
         for member in members:
             tree = trees[member.task_id]
@@ -845,12 +855,22 @@ class BatchService:
         self, batch: Batch, members: Iterable[BatchMember], *,
         requests: Mapping[str, DeliveryRequest], snapshot: GitTruthSnapshot,
         dependencies: Mapping[str, Iterable[str]] | None = None,
+        selection_snapshot=None, selection_recheck=None,
     ) -> Batch:
         """Retain current exact completion sources before freezing their inputs."""
-        members, trees = await self.freeze_inputs(
-            batch, members, requests=requests, snapshot=snapshot, dependencies=dependencies,
-        )
-        return await self.store.freeze(batch, members, trees=trees, exclusive_target=True)
+        try:
+            members, trees = await self.freeze_inputs(
+                batch, members, requests=requests, snapshot=snapshot, dependencies=dependencies,
+            )
+        except ValueError:
+            if selection_recheck is not None and not await selection_recheck():
+                raise SelectionIdentityChanged("packing inputs changed while sealing") from None
+            raise
+        if selection_recheck is not None and not await selection_recheck():
+            raise SelectionIdentityChanged("packing identity moved before freeze")
+        return await self.store.freeze(batch, members, trees=trees, exclusive_target=True,
+                                       **({"selection_snapshot": selection_snapshot}
+                                          if selection_snapshot is not None else {}))
 
     async def freeze_inputs(self, batch, members, *, requests, snapshot, dependencies=None):
         """Retain current exact completion sources before freezing their inputs."""
