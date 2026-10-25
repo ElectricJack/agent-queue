@@ -86,6 +86,12 @@
         "tests/test_worker_git_scope.py"
       ]
     },
+    "bazel-environment": {
+      "description": "Credential-free child environments, namespace isolation and bounded process cleanup.",
+      "modules": [
+        "tests/test_bazel_environment.py"
+      ]
+    },
     "bazel-metrics": {
       "description": "Verification obligation inventory and exact-identity delivery metric accounting.",
       "modules": [
@@ -3312,6 +3318,18 @@
         "parametrize"
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
+    "tests/test_bazel_environment.py": {
+      "areas": [
+        "bazel-environment"
+      ],
+      "default_arm": true,
+      "digest": "sha256:64ebc1c762b1d5c134bd7cd62868d9939ee437c3b8c36fec1b1cefac321149b7",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "H2 environment boundary and real Linux namespace/process acceptance."
     },
     "tests/test_bazel_manifest.py": {
       "areas": [

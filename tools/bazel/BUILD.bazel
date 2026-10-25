@@ -1,5 +1,12 @@
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
+load("@rules_python//python:defs.bzl", "py_library")
 load(":prebuilt_cc.bzl", "prebuilt_cc_config")
+
+py_library(
+    name = "test_environment",
+    srcs = ["test_environment.py"],
+    visibility = ["//visibility:public"],
+)
 
 exports_files(["requirements_linux_x86_64.txt"])
 

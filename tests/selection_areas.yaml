@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: bazel-environment
+    description: "Credential-free child environments, namespace isolation and bounded process cleanup."
+    match: [tests/test_bazel_environment.py]
   - id: bazel-toolchains
     description: "Pinned toolchain, dependency lock and Linux ABI integrity boundaries."
     match: [tests/test_bazel_manifest.py]
