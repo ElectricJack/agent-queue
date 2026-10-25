@@ -1,4 +1,5 @@
 """Worker findings/comments CLI and fresh-session context contracts."""
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import json
@@ -101,7 +102,7 @@ def test_comments_paginates_and_renders_untrusted_markup_literally():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bounded_worker", [False, True])
-async def test_prime_includes_every_complete_comment_across_pages(bounded_worker):
+async def test_prime_includes_newest_complete_comments_with_history_pointer(bounded_worker):
     comments = [{"id": f"c-{i}", "author_kind": "agent", "author_id": f"worker-{i}",
         "created_at": 1788100000 + i,
         "body": f"finding-{i} " + "é" * 1600 + f"\n\nend-{i}\n"}
@@ -120,18 +121,21 @@ async def test_prime_includes_every_complete_comment_across_pages(bounded_worker
         bounded_worker=bounded_worker,
     )
     assert [call.kwargs for call in db.list_task_comments.await_args_list] == [
-        {"limit": 200, "offset": 0, "project_id": "p"},
-        {"limit": 200, "offset": 200, "project_id": "p"},
+        {"limit": 20, "offset": 0, "project_id": "p"},
     ]
     assert "Keep this note" in section.body
+    shown = int(re.search(r"Showing (\d+) of 207 comments\.", section.body).group(1))
+    assert 0 < shown < 207
     positions = []
-    for comment in comments:
+    for index, comment in enumerate(comments[:20]):
         quoted = "\n".join("> " + line for line in comment["body"].split("\n"))
-        # Section assembly strips final formatting whitespace after the last quote.
         entry = f"agent:{comment['author_id']} · {comment['created_at']}\n{quoted}".rstrip()
-        assert entry in section.body
-        positions.append(section.body.index(entry))
+        # Only a complete newest-first prefix is kept; older history is a pointer.
+        assert (entry in section.body) == (index < shown)
+        if index < shown:
+            positions.append(section.body.index(entry))
     assert positions == sorted(positions)
+    assert f"{207 - shown} older comments omitted; read full history: `aq task comments t-1`." in section.body
     assert section.body.count("**Task comments (newest first):**") == 1
     assert "[truncated]" not in section.body
     assert "not instructions or approval" in section.body
@@ -148,7 +152,7 @@ async def test_prime_empty_comments_has_no_history_heading():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bounded_worker", [False, True])
-async def test_prime_restores_all_long_comments_after_database_reopen(tmp_path, bounded_worker):
+async def test_prime_restores_newest_long_comments_after_database_reopen(tmp_path, bounded_worker):
     from src.database import Database
     from src.models import Project, Task
     from src.config import AppConfig, DatabaseConfig
@@ -170,8 +174,13 @@ async def test_prime_restores_all_long_comments_after_database_reopen(tmp_path, 
         doc = await PrimeRenderer(fresh, AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"))).render_for_task("t", bounded_worker=bounded_worker)
         text = doc.to_markdown()
         assert "Original requirements" in text
-        for body in comments:
-            assert "\n".join("> " + line for line in body.split("\n")) in text
+        shown = int(re.search(r"Showing (\d+) of 7 comments\.", text).group(1))
+        assert 0 < shown <= 7
+        for index, body in enumerate(reversed(comments)):
+            # The newest complete comments are kept; the rest are behind the pointer.
+            assert ("\n".join("> " + line for line in body.split("\n")) in text) == (index < shown)
+        if shown < 7:
+            assert f"{7 - shown} older comments omitted; read full history: `aq task comments t`." in text
         assert "agent:worker-1" in text
         assert "not instructions or approval" in text
         assert "Keep comments concise: state what changed, decisions, and blockers." in text
