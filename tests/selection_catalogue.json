@@ -20261,7 +20261,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:f99b0c0cc9e3aca6656d6378c395dee7564dfdf9a01ffe3f80a07f2d09026470",
+      "digest": "sha256:09865b26435dc2f731cedc81f092ea8dbf5b962784a4b750061e59adeed88d3c",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -20299,7 +20299,8 @@
         "src.waits.holding",
         "src.waits.occupancy",
         "src.waits.registry",
-        "src.waits.resume_ack"
+        "src.waits.resume_ack",
+        "src.waits.source_sql"
       ],
       "markers": [
         "parametrize"

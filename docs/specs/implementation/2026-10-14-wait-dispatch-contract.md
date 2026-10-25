@@ -360,6 +360,20 @@ independent wait outcome audit is retained. Bulk hierarchy changes publish every
 in the mutation transaction using a bounded number of database statements.
 All wait feature flags remain disabled by default.
 
+CI cache refreshes publish a source event only when the check's evidence changes;
+refreshing observation/due timestamps alone updates the cache without another wake.
+The comparison and cache write serialize per check, including concurrent first
+observations. A transition back to an earlier result still publishes a new revision.
+
+The listener retires contiguous batches of CI events without pending verified
+subscriptions and pool invalidations without pending verified resource waits.
+It checks subscriptions under the registration graph fence and commits dispatched
+stamps with the leased cursor. It never skips past an event requiring dispatch.
+Task retirement and provider recovery events retain their per-event side effects.
+This same automatic drain repairs an existing irrelevant backlog on deployment;
+no operator deletion or cursor jump is required. Relevant events retain fresh
+observation, progress preparation, ownership fences and per-event rollback.
+
 
 ## Retry and repair of resume workspace preparation
 

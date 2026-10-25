@@ -388,6 +388,59 @@ async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_
     assert (await records(env, wait_listener_cursors))[0]['last_seq'] == expected[-1]
 
 
+async def test_irrelevant_batch_rolls_back_on_expired_lease_and_replays(runtime_env, monkeypatch):
+    env = runtime_env
+    for n in range(3):
+        await env.db.wait_source_commit(source_key="ci_check:repo:sha:unit", generation=0,
+            revision=str(n), outcome_ref=f"check:{n}", payload={})
+    now = [NOW]
+    service = runtime(env, clock=lambda: now[0])
+    prefix = service.listener._unobserved_prefix
+
+    async def expire(conn, position, watermark):
+        result = await prefix(conn, position, watermark)
+        assert len(result) == 3
+        now[0] += service.listener.lease_seconds + 1
+        return result
+
+    monkeypatch.setattr(service.listener, "_unobserved_prefix", expire)
+    with pytest.raises(LeaseLost):
+        await service.listener.tick()
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+    assert all(event["dispatched_at"] is None for event in await records(env, wait_source_events))
+    monkeypatch.setattr(service.listener, "_unobserved_prefix", prefix)
+    assert await service.listener.tick()
+    assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
+
+
+async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
+    env = runtime_env
+    receipt = await register(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ).values(source_key="ci_check:repo:sha:unit", source_generation=0))
+    for key in ("ci_check:other:sha:unit", "ci_check:repo:sha:unit", "ci_check:other:sha:unit"):
+        await env.db.wait_source_commit(source_key=key, generation=0,
+            revision=str(len(await records(env, wait_source_events))), outcome_ref=key, payload={})
+    source = sorted(await records(env, wait_source_events), key=lambda event: event["seq"])
+    service = runtime(env)
+    # No dispatcher: the subscribed middle event must fail, retaining its cursor,
+    # while the irrelevant prefix is already committed and the suffix untouched.
+    with pytest.raises(ListenerUnavailable):
+        await service.listener.tick()
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == source[0]["seq"]
+    dispatched = sorted(await records(env, wait_source_events), key=lambda event: event["seq"])
+    assert dispatched[0]["dispatched_at"] is not None
+    assert all(event["dispatched_at"] is None for event in dispatched[1:])
+    dispatcher = SimpleNamespace(commit=AsyncMock(return_value={"success": True}))
+    service.orch.wait_dispatcher = dispatcher
+    assert await service.listener.tick()
+    assert dispatcher.commit.await_count == 1
+    assert dispatcher.commit.await_args.args[2]["seq"] == source[1]["seq"]
+    assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
+
+
 async def test_deadline_command_can_exceed_renewal_cadence(runtime_env):
     service = runtime(runtime_env)
     service.listener.renewal_seconds = 0.01
