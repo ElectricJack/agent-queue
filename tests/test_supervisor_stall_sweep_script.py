@@ -23,12 +23,16 @@ SCRIPT = ROOT / "scripts" / "operator-checks" / "stall-sweep.py"
 COMMANDS = ("aq", "git", "docker", "tmux", "bash", "tail")
 
 FAKE = """\
-import json, os, sys
+import json, os, subprocess, sys, time
 name = os.path.basename(sys.argv[1])  # the shim passes its own path first
 args = [a for a in sys.argv[2:] if not (name == "aq" and a == "--json")]
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write(json.dumps([name, *args]) + "\\n")
 responses = json.load(open(os.environ["FAKE_RESPONSES"])).get(name, {})
+if " ".join(args).startswith(os.environ.get("FAKE_DELAY_PREFIX", "")):
+    if os.environ.get("FAKE_CHILD"):
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    time.sleep(float(os.environ.get("FAKE_DELAY", "0")))
 if name == "aq":
     key = " ".join(args)
     if key in responses:
@@ -65,7 +69,8 @@ def _session(name, project_id, task_id):
     }
 
 
-def _run(tmp_path, responses, *args, missing_commands=(), session_id=None, extra_env=None):
+def _run(tmp_path, responses, *args, missing_commands=(), session_id=None, extra_env=None,
+         script=SCRIPT):
     responses.setdefault("aq", {}).setdefault(
         "playbook activation-health", {"success": True, "activations": [], "count": 0},
     )
@@ -96,7 +101,7 @@ def _run(tmp_path, responses, *args, missing_commands=(), session_id=None, extra
         env["AQ_SESSION_ID"] = session_id
     env.update(extra_env or {})
     proc = subprocess.run(
-        [sys.executable, "-I", str(SCRIPT), *args],
+        [sys.executable, "-I", str(script), *args],
         capture_output=True, text=True, timeout=60, env=env, cwd=tmp_path, check=False,
     )
     calls = [json.loads(line) for line in log.read_text().splitlines()]
@@ -778,7 +783,7 @@ def test_read_timeout_is_incomplete(tmp_path):
 import runpy, subprocess, sys
 from unittest.mock import patch
 sys.argv = sys.argv[1:]
-with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("aq", 60)):
+with patch("subprocess.Popen", side_effect=subprocess.TimeoutExpired("aq", 60)):
     runpy.run_path(sys.argv[0], run_name="__main__")
 """
     proc = subprocess.run(
@@ -1104,3 +1109,105 @@ def test_supervisor_turn_health_ignores_recent_process_activity(tmp_path, sample
     proc, _ = _run(tmp_path, responses, "--project", "rom")
     assert proc.returncode == 0, proc.stderr
     assert f"{alarm} n-supervisor--rom" in proc.stdout
+
+
+def _large_patrol_responses(count=64):
+    tasks = [_task(f"paused-{i}", "PAUSED") for i in range(count)]
+    tasks += [_task(f"ready-{i}", "READY") for i in range(count)]
+    responses = _scoped_responses(tasks)
+    for i in range(count):
+        responses["aq"][f"task get --task-id paused-{i}"] = {
+            "children": {"total": 4, "done": 2},
+        }
+        responses["aq"][f"task explain --task-id ready-{i}"] = {"reasons": [{
+            "code": "blocked_dependency", "detail": "dep 'delivered' status=COMPLETED",
+        }]}
+        # The old sweep requested these without using their results.
+        responses["aq"][f"task explain --task-id paused-{i}"] = {"reasons": []}
+    responses["aq"]["task get --task-id delivered"] = {
+        "status": "COMPLETED", "completion": {"completed_at": time.time()},
+    }
+    return responses
+
+
+def test_sweep_reads_each_blocker_once_and_skips_unused_explanations(tmp_path):
+    proc, calls = _run(tmp_path, _large_patrol_responses(12), "--project", "rom", "--timings")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SWEEP-ERROR" not in proc.stdout
+    assert "STUCK" not in proc.stdout
+    assert "paused containers with open children" in proc.stdout
+    gets = [c for c in calls if c[1:3] == ["task", "get"]]
+    explains = [c for c in calls if c[1:3] == ["task", "explain"]]
+    assert len(gets) == 13
+    assert len(explains) == 12
+    assert calls.count(["aq", "task", "get", "--task-id", "delivered"]) == 1
+    assert all(c[-1].startswith("ready-") for c in explains)
+    assert "SWEEP-TIMING total" in proc.stderr
+    assert "aq --json task get: 13 calls" in proc.stderr
+
+
+def test_sweep_caches_failed_blocker_reads(tmp_path):
+    responses = _large_patrol_responses(8)
+    responses["aq"]["task get --task-id delivered"] = {"_stdout": "", "_exit": 3}
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert calls.count(["aq", "task", "get", "--task-id", "delivered"]) == 1
+    assert proc.stdout.count("SWEEP-ERROR aq task get --task-id delivered") == 1
+    assert "OK: nothing stalled" not in proc.stdout
+
+
+@pytest.mark.parametrize("prefix", ["integration status", "task explain"])
+def test_sweep_deadline_stops_slow_reads_and_parallel_batches(tmp_path, prefix):
+    proc, calls = _run(
+        tmp_path, _large_patrol_responses(12), "--project", "rom", "--timeout", "1",
+        "--timings", extra_env={"FAKE_DELAY": "10", "FAKE_DELAY_PREFIX": prefix},
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.count("SWEEP-INCOMPLETE") == 1
+    assert "1s sweep budget exhausted" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+    assert "SWEEP-TIMING total" in proc.stderr
+    assert not any(c[1:3] == ["session", "list"] for c in calls)
+
+
+def test_sweep_deadline_cleans_up_children_inheriting_output_pipes(tmp_path):
+    proc, calls = _run(
+        tmp_path, {}, "--project", "rom", "--timeout", "0.2",
+        extra_env={"FAKE_DELAY": "120", "FAKE_CHILD": "1"},
+    )
+    # The harness's 60s subprocess timeout also verifies that a child inheriting
+    # stdout cannot keep communicate() blocked after its parent is killed.
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.count("SWEEP-INCOMPLETE") == 1
+    assert len(calls) <= 1
+
+
+@pytest.mark.parametrize("timeout", ["0", "-1", "nan", "inf", "60"])
+def test_sweep_rejects_invalid_budgets_before_reading(tmp_path, timeout):
+    proc, calls = _run(tmp_path, {}, "--timeout", timeout)
+    assert proc.returncode == 2
+    assert "--timeout must be" in proc.stderr
+    assert calls == []
+
+
+def test_skip_pools_preserves_installed_patrol_option(tmp_path):
+    proc, calls = _run(tmp_path, _scoped_responses([]), "--project", "rom", "--skip-pools")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "OK: nothing stalled"
+    assert not any(c[1:3] == ["pool", "status"] for c in calls)
+
+
+@pytest.mark.perf
+def test_large_sweep_completes_within_patrol_budget(perf_strict, tmp_path):
+    # 128 stale tasks with one second of CLI/daemon latency per read. Serial
+    # child and completion reads alone used to exceed the patrol's 60s limit.
+    started = time.monotonic()
+    proc, calls = _run(
+        tmp_path, _large_patrol_responses(), "--project", "rom", "--timings",
+        extra_env={"FAKE_DELAY": "1"},
+    )
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SWEEP-ERROR" not in proc.stdout and "SWEEP-INCOMPLETE" not in proc.stdout
+    assert len([c for c in calls if c[1:3] == ["task", "get"]]) == 65
+    assert elapsed < 60, (elapsed, proc.stderr)
