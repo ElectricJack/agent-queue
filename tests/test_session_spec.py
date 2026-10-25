@@ -814,6 +814,8 @@ class TestPromptDelivery:
         retry = spec.prompt.index("3. Run `aq prime` again")
         assert delivery < ack < retry < spec.prompt.index("aq task close")
         assert "`record.stale_claim`" in spec.prompt and "do not stop or exit" in spec.prompt
+        assert "`cancelled` wait outcome still requires `aq wait ack`" in spec.prompt
+        assert "you still hold the task claim" in spec.prompt
         assert "Run `aq prime` first and follow" not in spec.prompt
 
     @pytest.mark.parametrize(
