@@ -82,7 +82,7 @@ type RelatedReview = { id: string; title: string; relation?: unknown };
 
 export interface TaskDetailBodyProps {
   taskId: string;
-  /** Show another task: the pane swaps its args; the focus route pushes /focus/tasks/:id. */
+  /** Show another task: the pane swaps its args; the task page pushes /tasks/:id. */
   onOpenTask: (taskId: string) => void;
   /** Leave the detail: after a delete, and before a terminal or session opens. */
   onClose: () => void;

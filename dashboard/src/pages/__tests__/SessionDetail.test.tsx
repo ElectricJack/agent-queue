@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import SessionDetail from "../SessionDetail";
 import { TerminalMock, FitAddonMock, TerminalSocketMock, ResizeObserverMock } from "../../testUtils/terminal";
 
-const state = vi.hoisted(() => ({ session: { id: "session-a", name: "Worker", project_id: "p1", state: "running", provider: "tmux" } }));
+const state = vi.hoisted(() => ({ session: { id: "session-a", name: "Worker", project_id: "p1", state: "running", provider: "tmux", started_at: 100 } }));
+vi.mock("../../api/agents", () => ({ useAgentFlock: () => ({ data: [] }) }));
 vi.mock("../../api/hooks", () => ({
   useSession: () => ({ data: state.session }),
   useSessionAttach: () => ({ data: { attach_command: "tmux attach" } }),
@@ -23,6 +24,7 @@ function page(initial: string | { pathname: string; state: unknown } = "/session
   </Routes></MemoryRouter>;
 }
 beforeEach(() => {
+  state.session.started_at = 100;
   state.session.state = "running"; state.session.provider = "tmux";
   TerminalMock.instances = []; TerminalSocketMock.instances = []; FitAddonMock.instances = []; ResizeObserverMock.instances = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
@@ -120,4 +122,22 @@ describe("The session terminal is one window at every width", () => {
     expect(TerminalSocketMock.instances[0]!.url).toContain("/ws/terminal/session-a");
     expect(screen.getByRole("textbox", { name: "Worker terminal input" })).toBeInTheDocument();
   });
+});
+
+it("requires an explicit choice before attaching to a restarted process", async () => {
+  render(page("/sessions/session-a?started=50"));
+  expect(screen.getByRole("status")).toHaveTextContent("This session restarted");
+  expect(TerminalSocketMock.instances).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Watch the new process" }));
+  await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+});
+it("disconnects when the process changes after first loading", async () => {
+  const view = render(page());
+  await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+  const socket = TerminalSocketMock.instances[0]!;
+  act(() => socket.open());
+  state.session.started_at = 200;
+  view.rerender(page());
+  expect(screen.getByRole("status")).toHaveTextContent("This session restarted");
+  expect(socket.closed).toBe(true);
 });
