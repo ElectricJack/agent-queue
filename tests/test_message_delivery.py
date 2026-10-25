@@ -1020,8 +1020,14 @@ class TestTranscriptTailCausalBinding:
         chat = await _send(db, thread_id="discord:t1")
         await db.mark_delivered(old.id, via="read")
         await db.mark_delivered(chat.id, via="read")
-        await _age_delivery(db, [chat.id])
-        await _age_delivery(db, [old.id], seconds=121.0 + 360.0 + 1.0)
+        # One reference clock keeps the deliveries 361 seconds apart even
+        # when a database round trip takes longer than their one-second margin.
+        delivered_at = time.time() - 121.0
+        async with db._engine.begin() as conn:
+            for msg, stamp in ((chat, delivered_at), (old, delivered_at - 361.0)):
+                await conn.execute(sa_update(messages).where(messages.c.id == msg.id).values(
+                    delivered_at=stamp,
+                ))
 
         assert await make_engine(db, sessions).check_reply_timeouts() == 1
         (reply,) = await db.list_messages(to_kind="user")
