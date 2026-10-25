@@ -227,7 +227,7 @@ class ConversationCommandsMixin:
         }
 
     async def _cmd_supervisor_inbox_reply(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Only the live launch addressed by the input may queue an answer."""
+        """Only the live global supervisor (or local operator) may answer chat."""
         bad = sorted(_FORBIDDEN_AUTHORITY_ARGS.intersection(args))
         if bad:
             return _error("spoofed_identity", "caller identity and destination are server-derived")
@@ -239,6 +239,7 @@ class ConversationCommandsMixin:
             expected_name = named_session_name("supervisor", principal.project_id or "global")
             if (
                 live is None
+                or principal.project_id is not None
                 or live.state not in _LIVE_SESSION_STATES
                 or live.name != expected_name
                 or live.profile_id != "supervisor"
@@ -247,7 +248,7 @@ class ConversationCommandsMixin:
                 or principal.session_id != live.id
                 or not matches_session_instance(principal, live.instance_token)
             ):
-                return _error("out_of_scope", "reply requires the live addressed supervisor launch")
+                return _error("out_of_scope", "reply requires the live global supervisor launch")
 
         required = {"conversation_id", "input_id", "text", "idempotency_key"}
         if set(args) != required or any(
@@ -264,13 +265,6 @@ class ConversationCommandsMixin:
         if item is None or item["conversation_id"] != conversation_id:
             return _error("input_not_in_conversation", "input does not belong to this conversation")
         await self.db.route_queued_conversation_inputs(self.config.discord.project_id)
-        notice = await self.db.get_message(item["supervisor_message_id"])
-        if principal.kind is not PrincipalKind.LOCAL and (
-            notice is None
-            or notice.to_id != f"supervisor-{principal.project_id or 'global'}"
-            or notice.project_id != principal.project_id
-        ):
-            return _error("out_of_scope", "input is addressed to another supervisor")
         if conversation["state"] == "closed":
             return _error("conversation_closed", "conversation is closed")
         if item["state"] == "revoked":
@@ -368,6 +362,7 @@ class ConversationCommandsMixin:
                 live = await self.db.get_session(principal.session_id)
             if (
                 live is None
+                or principal.project_id is not None
                 or live.state not in _LIVE_SESSION_STATES
                 or live.desired_state == "stopped"
                 or live.name != named_session_name("supervisor", principal.project_id or "global")
@@ -376,7 +371,7 @@ class ConversationCommandsMixin:
                 or live.project_id != principal.project_id
                 or not matches_session_instance(principal, live.instance_token)
             ):
-                return _error("out_of_scope", "say requires a live supervisor launch")
+                return _error("out_of_scope", "say requires the live global supervisor launch")
         required = {"conversation_id", "text", "idempotency_key"}
         if set(args) != required or any(
             not isinstance(args.get(key), str) or not args[key].strip() for key in required
@@ -416,13 +411,6 @@ class ConversationCommandsMixin:
         ):
             return _error("visibility_changed", "conversation destination or audience is unauthorized")
         await self.db.route_queued_conversation_inputs(settings.project_id)
-        recipient = await self.db.get_conversation_recipient(conversation_id)
-        if principal.project_id is not None and (
-            recipient is None
-            or recipient["project_id"] != principal.project_id
-            or recipient["to_id"] != f"supervisor-{principal.project_id}"
-        ):
-            return _error("out_of_scope", "conversation is addressed to another supervisor")
         sender = f"supervisor-{principal.project_id or 'global'}"
         digest = hashlib.sha256(f"{conversation_id}:{args['idempotency_key']}".encode()).hexdigest()
         reply_message_id = f"msg-conv-say-{digest[:32]}"

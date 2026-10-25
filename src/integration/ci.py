@@ -939,19 +939,21 @@ class AuthenticatedGitHubObserver:
     def __init__(
         self, client: Any, *, expected_event: str | None = None,
         ignore_cancelled_batches: bool = False,
+        allow_push_fallback: bool = False,
     ):
-        self.client = client
-        self.expected_event = expected_event
+        if allow_push_fallback and expected_event != "pull_request":
+            raise ValueError("push fallback requires pull_request observation")
+        self.client, self.expected_event = client, expected_event
         self.ignore_cancelled_batches = ignore_cancelled_batches
+        self.allow_push_fallback = allow_push_fallback
 
     async def observe(
         self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
     ) -> TrustedCIObservation | FailedCIObservation:
         if not isinstance(head_sha, str) or re.fullmatch(_SHA_PATTERN, head_sha) is None:
             raise AttestationError("invalid CI head")
-        owner, repository = trust.full_name.split("/", 1)
         workflow_records = await _hosted_listing(self.client,
-            f"/repos/{owner}/{repository}/actions/runs?head_sha={head_sha}&per_page=100",
+            f"/repos/{trust.full_name}/actions/runs?head_sha={head_sha}&per_page=100",
             key="workflow_runs",
         )
         cancelled_batch_suites: set[int] = set()
@@ -976,16 +978,14 @@ class AuthenticatedGitHubObserver:
                     for run in runs
                 ):
                     cancelled_batch_suites.add(suite_id)
-        allowed_suites = (
-            {
-                _strict_int(record.get("check_suite_id"))
-                for record in workflow_records
-                if record.get("event") == self.expected_event
-                and record.get("head_sha") == head_sha
-            }
-            if self.expected_event is not None
-            else None
-        )
+        suites_by_event: dict[str, set[int | None]] = {}
+        for record in workflow_records:
+            if record.get("head_sha") == head_sha:
+                suites_by_event.setdefault(record.get("event"), set()).add(
+                    _strict_int(record.get("check_suite_id")))
+        allowed_suites = (suites_by_event.get(self.expected_event, set())
+                          if self.expected_event is not None else None)
+        fallback_suites = suites_by_event.get("push", set()) if self.allow_push_fallback else set()
         selected: list[dict[str, Any]] = []
         diagnostics: dict[int, dict[str, Any]] = {}
         missing: list[str] = []
@@ -994,17 +994,15 @@ class AuthenticatedGitHubObserver:
         # exhausted the App installation's hourly rate limit within an hour of
         # every daemon restart.
         all_records = await _hosted_listing(self.client,
-            f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
-            "?filter=all&per_page=100",
+            f"/repos/{trust.full_name}/commits/{head_sha}/check-runs?filter=all&per_page=100",
             key="check_runs",
         )
         for name in trust.required_checks.names:
             records = [record for record in all_records if record.get("name") == name]
             candidates: list[tuple[int, dict[str, Any]]] = []
+            fallback_candidates: list[tuple[int, dict[str, Any]]] = []
             for record in records:
                 app = record.get("app")
-                if record.get("name") != name:
-                    continue
                 app_id = _strict_int(app.get("id")) if isinstance(app, dict) else None
                 if app_id is None or app_id <= 0:
                     raise AttestationError(f'required check App identity is malformed: {name}')
@@ -1016,8 +1014,14 @@ class AuthenticatedGitHubObserver:
                 suite = record.get("check_suite")
                 suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
                 if allowed_suites is not None and suite_id not in allowed_suites:
+                    if suite_id in fallback_suites:
+                        fallback_candidates.append((record_id, record))
                     continue
                 candidates.append((record_id, record))
+            # Root PR admission can use a push job omitted by PR workflows.
+            # Never let a successful push conceal an existing red/pending PR job.
+            using_fallback = not candidates and bool(fallback_candidates)
+            candidates = candidates or fallback_candidates
             if not candidates:
                 missing.append(name)
                 continue
@@ -1040,14 +1044,6 @@ class AuthenticatedGitHubObserver:
                 if alternatives:
                     candidates = alternatives
             _, newest = max(candidates, key=lambda item: item[0])
-            selected_app = newest.get("app")
-            selected_app_id = (
-                _strict_int(selected_app.get("id"))
-                if isinstance(selected_app, dict)
-                else None
-            )
-            if selected_app_id is None or selected_app_id <= 0:
-                raise AttestationError(f"required check App identity is malformed: {name}")
             suite = newest.get("check_suite")
             suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
             conclusion = newest.get("conclusion")
@@ -1057,7 +1053,7 @@ class AuthenticatedGitHubObserver:
 
                     pending_diagnostics = await stuck_check_diagnostics(
                         self.client, trust, head_sha, all_records, workflow_records,
-                        expected_event=self.expected_event,
+                        expected_event="push" if using_fallback else self.expected_event,
                     )
                     raise CIObservationDeferred(
                         f"required check is not conclusive: {name}", classification="pending",
@@ -1076,21 +1072,15 @@ class AuthenticatedGitHubObserver:
                 or suite_id <= 0
             ):
                 raise AttestationError(f"required check is not conclusive: {name}")
-            selected.append(
-                {
-                    "name": name,
-                    "check_run_id": newest["id"],
-                    "check_suite_id": suite_id,
-                    "producer_app_id": selected_app_id,
-                    "head_sha": head_sha,
-                    "conclusion": conclusion,
-                    **(
-                        {"producer_id": trust.producer_id}
-                        if isinstance(trust, IntegrationCITrust)
-                        else {}
-                    ),
-                }
-            )
+            selected.append({
+                "name": name,
+                "check_run_id": newest["id"],
+                "check_suite_id": suite_id,
+                "producer_app_id": _strict_int(newest["app"]["id"]),
+                "head_sha": head_sha,
+                "conclusion": conclusion,
+                **({"producer_id": trust.producer_id} if isinstance(trust, IntegrationCITrust) else {}),
+            })
             diagnostics[newest["id"]] = _failed_check_diagnostics(newest)
 
         missing_suite_id: int | None = None
@@ -1099,7 +1089,8 @@ class AuthenticatedGitHubObserver:
             # Only completed workflows of the expected event on this head establish
             # that the snapshot's required name was never produced.
             expected_runs = [record for record in workflow_records
-                         if record.get("event") == (self.expected_event or "push")
+                         if (record.get("event") == (self.expected_event or "push")
+                             or (self.allow_push_fallback and record.get("event") == "push"))
                          and record.get("head_sha") == head_sha]
             if not expected_runs or any(record.get("status") != "completed" for record in expected_runs):
                 missing_push = self.expected_event == "push" and not expected_runs
@@ -1212,7 +1203,7 @@ class AuthenticatedGitHubObserver:
                              or record.get("conclusion") != "success"))):
                 _require_workflow_repository(record, trust)
                 jobs = await self.client.paged_items(
-                    f"/repos/{owner}/{repository}/actions/runs/{workflow_run_id}"
+                    f"/repos/{trust.full_name}/actions/runs/{workflow_run_id}"
                     f"/attempts/{run_attempt}/jobs?per_page=100",
                     key="jobs",
                 )
