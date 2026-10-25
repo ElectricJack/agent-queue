@@ -50,6 +50,7 @@
         "tests/test_wait_hibernation.py",
         "tests/test_wait_holding.py",
         "tests/test_wait_legacy_bridge.py",
+        "tests/test_wait_listener.py",
         "tests/test_wait_metrics.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_outcomes.py",
@@ -9232,7 +9233,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:3c1c9ae16a1db00cba0d3a120ac473efdbd2d2ca164bbd7c87b47da4bc048639",
+      "digest": "sha256:22fc7b1d00dbc9f9b406331d56361f59f2443d19289dc5d22529b499f3df0db9",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -9248,9 +9249,12 @@
         "src.integration.train",
         "src.wait_runtime.service",
         "src.waits.conditions",
-        "src.waits.graph"
+        "src.waits.graph",
+        "src.waits.listener"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The train's shared waits use verified sources and survive policy replacement."
     },
     "tests/test_integration_eject.py": {
@@ -20369,6 +20373,20 @@
         "parametrize"
       ],
       "summary": "Legacy adoption preserves age, ownership and exactly one outcome path."
+    },
+    "tests/test_wait_listener.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:ace1960f57f6b36f4349132aa8dfd50991a7d7b5844acefc26a7c927c64ca4e9",
+      "imports": [
+        "src.waits.listener"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."
     },
     "tests/test_wait_metrics.py": {
       "areas": [
