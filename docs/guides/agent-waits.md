@@ -77,6 +77,12 @@ held mail. It must acknowledge the delivered generation before ordinary mutation
 aq wait ack --wait-id WAIT_ID --continuation-id CONTINUATION_ID --generation GENERATION
 ```
 
+Run `aq prime` once to receive the outcome, then its exact `aq wait ack` command,
+then `aq prime` again. Follow this sequence even when the wait outcome is
+`cancelled` or the first prime reports `record.stale_claim` with an ack command
+while `RESUME_PENDING`. A cancelled wait still requires acknowledgement; the
+resumed worker still holds the task claim and continues the task after ack.
+
 For an in-place outcome, `aq wait show WAIT_ID --consume` acknowledges its
 notification. Receipt replay preserves the original registration identity.
 Named supervisors can register, cancel and acknowledge their own in-place waits.

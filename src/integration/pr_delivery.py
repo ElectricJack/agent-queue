@@ -136,8 +136,6 @@ class DeliveredPullRequestClosure:
             ), None
         default_branch = repo.default_branch.removeprefix("refs/heads/")
         try:
-            resolved = await self.promotion._resolve_repository(repo.id)
-            await self.promotion._ensure_retained_repository(resolved)
             binding = await self.git.bind_github_repository(repo.url)
             client = self.git._github_client(binding)
             pr_url = f"https://github.com/{binding.full_name}/pull/{pr_number}"
@@ -181,14 +179,16 @@ class DeliveredPullRequestClosure:
             ), None
         if live_task_ids:
             return self._held_by_tasks(base, live_task_ids), None
-        store = str(resolved.retained_git_dir)
         try:
+            resolved = await self.promotion._resolve_repository(repo.id)
+            await self.promotion._ensure_retained_repository(resolved)
+            store = str(resolved.retained_git_dir)
             async with self.git.arepository_transaction(store):
                 await self.promotion._fetch_all_heads(
                     resolved.retained_git_dir, resolved.origin_url
                 )
-                remote = await self.git.als_remote_ref(store, head["ref"])
-                main = await self.git.als_remote_ref(store, default_branch)
+                refs = await self.git.als_remote_refs(store, [head["ref"], default_branch])
+                remote, main = refs[head["ref"]], refs[default_branch]
                 if remote.state is not RemoteRefState.PRESENT or remote.oid != head["sha"]:
                     return _refused(base, "changed", "the remote head branch is not the PR head"), None
                 if main.state is not RemoteRefState.PRESENT:
