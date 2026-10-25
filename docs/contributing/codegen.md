@@ -514,6 +514,12 @@ digests. Repeat the command explicitly if multiple audit rows pin that helper.
 Unknown selections are refused. This workflow is separate from bulk
 generated-artifact regeneration.
 
+The unread inbox correction records the `message_inbox` help-text change in
+`unread-inbox-contract-changes.json`. Its descriptor tests restore the previous
+definition before checking historical catalogue hashes. The argument schema,
+effects and return protocol stay unchanged; inbox regressions cover delivered
+unread visibility, supervisor aliases and undelivered-only injection.
+
 Generated results must be JSON objects with an actual boolean `success` at
 every producer exit, including early refusals and delegated helpers. Only the
 executor's `_consume` boundary interprets this protocol: true means success,
