@@ -300,7 +300,21 @@ class WaitDecisions:
             wait = dict((await conn.execute(select(wait_records).where(
                 wait_records.c.id == candidate["id"],
             ).with_for_update())).mappings().one())
-            if wait["outcome"] != "pending":
+            privileged = principal.kind == "local" or (
+                principal.kind == "session" and isinstance(scope, dict) and principal.elevated
+            )
+            # A resolved outcome still needs delivery to a valid owner. Only
+            # privileged callers may test a historical hold's lost-owner fence
+            # and retire its execution state without replacing that outcome.
+            resolved_hold = wait["outcome"] != "pending" and privileged and (
+                wait["owner_kind"] == "task"
+            ) and await conn.scalar(
+                select(continuations.c.id).where(
+                    continuations.c.wait_id == wait["id"],
+                    continuations.c.resume_state == "held",
+                ).limit(1),
+            )
+            if wait["outcome"] != "pending" and not resolved_hold:
                 # Replays of an earlier cancel (or a lost race with the source)
                 # report the committed row, as the v1 verb did.
                 return {"success": True, "wait_id": wait["id"], "wait": wait,
@@ -317,10 +331,6 @@ class WaitDecisions:
                 # A supervisor can retire a stale task wait even before it has
                 # escalated. Never impersonate its lost holder, send a wake or
                 # modify the task/new claim while cleaning up the old wait.
-                privileged = principal.kind == "local" or (
-                    principal.kind == "session" and isinstance(scope, dict)
-                    and principal.elevated
-                )
                 if exc.code not in {"wait.out_of_scope", "stale_claim"} or not privileged or not (
                     wait["owner_kind"] == "task"
                 ):
@@ -337,6 +347,10 @@ class WaitDecisions:
                     wait_records.c.id == wait["id"],
                 ))).mappings().one())
                 return {"success": True, "wait_id": row["id"], "wait": row}
+            if wait["outcome"] != "pending":
+                return {"success": True, "wait_id": wait["id"], "wait": wait,
+                        "changed": False,
+                        "warnings": [f"wait already resolved: {wait['outcome']}"]}
             if continuation is None and wait["sleep_decision"] == "hibernate":
                 wait = await self.withdraw_intent(conn, wait)
             result = await dispatcher.finish(
