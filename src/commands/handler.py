@@ -48,6 +48,7 @@ from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
 from src.commands.wait_v2_commands import WaitV2CommandsMixin
 from src.commands.cron_commands import CronCommandsMixin
+from src.commands.schedule_commands import ScheduleCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
 from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
@@ -419,6 +420,7 @@ class CommandHandler(
     WaitCommandsMixin,
     WaitV2CommandsMixin,
     CronCommandsMixin,
+    ScheduleCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
     CollaborationLifecycleMixin,

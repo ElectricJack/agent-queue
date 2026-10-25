@@ -613,7 +613,7 @@ async def test_an_owned_ask_does_not_admit_an_unowned_input(asks_db):
         "ask_apply_input", {"ask_id": "ask-p", "input_id": "input-None"}, "p", db=asks_db,
     )
     assert error is not None and "out of scope" in error
-    assert unresolvable_targets({"input_id": "input-p"}, command="supervisor_inbox_reply") == [
+    assert unresolvable_targets({"input_id": "input-p"}, command="unrelated_command") == [
         "input_id",
     ]
 
@@ -809,7 +809,6 @@ _UNRESOLVED_TARGETS = {
     "report_get": ["report_id"],  # reports are keyed by scope, not by project
     "report_request": ["request_id"],
     "report_submit": ["request_id"],
-    "supervisor_inbox_reply": ["conversation_id", "input_id"],  # daemon-internal
 }
 
 
