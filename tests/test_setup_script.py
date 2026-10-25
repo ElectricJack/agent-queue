@@ -115,7 +115,7 @@ def test_setup_sh_asks_no_question_it_cannot_survive_the_answer_to() -> None:
 
 
 def test_the_ask_helper_takes_the_default_with_no_terminal(tmp_path: Path) -> None:
-    """Run the setup prefix as a script with no terminal attached to stdin."""
+    """Run the setup prefix as a script with no terminal and both prompt defaults."""
     import subprocess
 
     helper = SETUP_SH.read_text().split("# --- Detect Python 3.12+ ---")[0]
@@ -134,4 +134,5 @@ def test_the_ask_helper_takes_the_default_with_no_terminal(tmp_path: Path) -> No
             check=False,
         )
         assert result.returncode == 0, result.stderr
+        assert result.stderr == "", result.stderr
         assert expected in result.stdout, result.stdout

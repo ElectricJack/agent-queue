@@ -341,6 +341,13 @@ allowlist.
    repair a missed wake using the original notice and notification deduplication.
    Another supervisor may inspect the notice but cannot consume it through inbox
    injection or mark it read.
+   The independent delivery pass also reconciles routing before scanning its
+   backlog, including its first pass after restart; it needs no scheduler cycle
+   or replayed event. An undelivered, unarchived notice with a read stamp is
+   returned to pending only when its durable input is still accepted in an
+   active conversation and has no recorded reply. Answered, expired, revoked,
+   archived and delivered inputs retain their consumption history. Recording a
+   conversation reply stamps both read and delivery atomically.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
    `outbound_deliveries`. For channel and DM conversations, the Discord reply
