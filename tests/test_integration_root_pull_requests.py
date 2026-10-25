@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,9 +19,12 @@ from sqlalchemy import insert, select, update
 from src.database.tables import (
     events,
     projects,
+    repos,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
 )
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
@@ -31,6 +35,7 @@ from src.integration.root_pull_requests import (
     RootDeliveryRedrive,
     RootPullRequestReconciler,
 )
+from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType
 
 BASE = "b" * 40
@@ -141,6 +146,86 @@ async def test_stored_closed_pr_reports_named_blocker_and_recovers_when_reopened
     client.pull_request.return_value = {"state": "open"}
     assert (await service.open_for_epic("r1"))["outcome"] == "already_open"
     git.acreate_pr.assert_not_awaited()
+
+
+@pytest.mark.parametrize("completion", [False, True])
+@pytest.mark.parametrize("guard", [None, "qualified_ref", "missing", "repository", "target",
+                                  "parent", "head", "old", "reopened", "generation", "rework",
+                                  "noncode"])
+async def test_delivered_root_receipt_retires_only_current_pr_conflict(db, completion, guard):
+    """A closed PR's cherry-picked delivery supersedes its last conflict diagnosis."""
+    await _root(db, pr_url=PR)
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).values(default_branch="dev"))
+        if completion:
+            await conn.execute(insert(task_completion_records).values(
+                id="close-r1", task_id="r1", outcome="pass", commits=json.dumps([HEAD]),
+                completed_at=1.0,
+            ))
+        receipt = dict(
+            id="delivery", domain_key="delivery", source_task_id="r1", repository_id="repo",
+            target_branch="refs/heads/dev" if guard == "qualified_ref" else "dev",
+            disposition="code", source_pr=PR, reviewed_head_sha=HEAD,
+            # Cherry-picking changes the commit identity; the old PR head is retained.
+            squash_sha="d" * 40, after_sha="d" * 40, created_at=2.0,
+        )
+        if guard == "repository":
+            receipt["repository_id"] = "other"
+        elif guard == "target":
+            receipt["target_branch"] = "main"
+        elif guard == "parent":
+            receipt["target_task_id"] = "parent"
+        elif guard == "head":
+            receipt["reviewed_head_sha"] = BASE
+        elif guard == "old":
+            receipt["created_at"] = 0.5
+        elif guard == "noncode":
+            receipt.update(disposition="skipped", resolution_evidence={"reason": "not delivered"})
+        if guard != "missing":
+            await conn.execute(insert(task_delivery_receipts).values(**receipt))
+        if guard == "reopened":
+            await conn.execute(update(tasks).where(tasks.c.id == "r1").values(status="IN_PROGRESS"))
+        elif guard == "generation":
+            # Re-closing the same head is still a new obligation.
+            if completion:
+                await conn.execute(insert(task_completion_records).values(
+                    id="reclose-r1", task_id="r1", outcome="pass", commits=json.dumps([HEAD]),
+                    completed_at=3.0,
+                ))
+            else:
+                await conn.execute(update(task_integration_checkpoints).values(updated_at=3.0))
+        elif guard == "rework":
+            await conn.execute(insert(task_metadata).values(
+                task_id="r1", key="integration_rework_at", value="3.0",
+            ))
+    conflict = {"code": "pr_conflicting", "task_id": "r1", "ref": "r1",
+                "source_sha": HEAD, "detail": "Source conflicts with the fetched target"}
+    other = {"code": "pr_review_missing", "task_id": "r1", "ref": "r1",
+             "detail": "Unrelated admission evidence stays visible"}
+    visit = {"project_id": "p", "repository_id": "repo", "target_ref": "refs/heads/dev",
+             "state": "idle", "detail": {"blockers": [conflict, other]}}
+    service = IntegrationStatusService(db, train=SimpleNamespace(status=lambda: [visit]))
+    expected = [other] if guard in {None, "qualified_ref"} else [conflict, other]
+    for result in (await service.status("p"), await service.control_status("p")):
+        assert {b["code"] for b in result["blockers"]} == {b["code"] for b in expected}
+        assert result["targets"][0]["detail"]["blockers"] == expected
+    assert {b["code"] for b in (await service.task_blockers("r1"))["blockers"]} == {
+        b["code"] for b in expected
+    }
+    async with db._engine.connect() as conn:
+        owner = await service.delivery_ownership_on(conn, "r1")
+        assert owner["blockers"] == expected
+        # The watchdog must use the same current PR evidence as redrive diagnostics.
+        visit["detail"]["blockers"] = [conflict]
+        owner = await service.delivery_ownership_on(conn, "r1")
+        if guard in {None, "qualified_ref"}:
+            assert owner is None
+        else:
+            assert owner["blockers"] == [conflict]
+        visit["detail"]["blockers"] = [conflict, other]
+    assert visit["detail"]["blockers"] == [conflict, other]
+    if guard in {None, "qualified_ref"}:
+        assert (await RootDeliveryRedrive(db, _git()).run("r1"))["outcome"] == "nothing_to_redrive"
 
 
 async def test_reconciler_selects_only_pr_ready_train_roots(db):

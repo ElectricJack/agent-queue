@@ -135,12 +135,34 @@ connection with exponential backoff capped at thirty seconds. Releasing a lease 
 conditional on its unique owner, so a retiring instance cannot release its replacement.
 Source retention keeps the persisted cursor floor even after every old row is purged.
 
+Lease renewal starts before startup replay. Each source attempt has a five-second
+budget, including progress preparation and transaction commit. Graph acquisition
+queues for at most 250 ms, then yields without locking the leader cursor. A timed-out
+attempt rolls back its effects and advances only the forward cursor; its source rows
+remain undispatched for retry after thirty seconds. Forward events take precedence
+over up to twenty retained retries per drain. After five seconds a drain yields between
+attempts and schedules an immediate watermark refresh. Cancellation and lease loss roll back
+without advancing the cursor. Contiguous CI observations with the same source and
+generation, or pool/config/workspace invalidations with the same producer and project,
+coalesce in batches of at most 200 into one fresh observation. Other sources and
+provider lifecycle events keep their ordering.
+
+An independent monitor reports undispatched rows, including retained retries behind
+the cursor. It warns when their count exceeds `wait_policy.listener_lag_events`
+(default 500), or their oldest commit is over two minutes old, and writes one durable
+notice per oldest sequence and affected supervisor project. A named project supervisor
+or local operator can run `aq wait source-redispatch --source-seq SEQ --project PROJECT
+--note REASON` to reobserve a durable event. This audited command checks current
+ownership and predicates within that project and neither moves the global cursor nor
+marks a global source dispatched.
+
 The dispatcher owner installs `orch.wait_dispatcher`, whose async
 `commit(conn, wait_row, committed_event, *, evidence=None)` returns a success dictionary
 for both a committed outcome and an unsatisfied no-op. It must use the supplied batch
 transaction, repeat owner/source fences and fresh predicate observation, and own outcome
 CAS and delivery. A refusal or exception rolls back the batch; missing dispatchers leave
-matching rows unread. Resource invalidations use the canonical paged bridge and fresh
+matching rows unread. A budget timeout retains the undispatched source for retry even
+when the forward cursor moves past it. Resource invalidations use the canonical paged bridge and fresh
 `registry.verify` with the configured admission reader. The resource generation remains
 zero and revisions remain opaque; producer events never establish satisfaction.
 
