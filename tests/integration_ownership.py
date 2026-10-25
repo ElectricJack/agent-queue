@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2550,
+ 'authorized_owned_delta': 2636,
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 15,
  'authorized_shared_owned_delta': 15,
@@ -1034,6 +1034,24 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
                                                     'headroom and no new storage category.',
                                           'referenced_decision': 'size-cap-delegation-2026-10-23',
                                           'task_id': 'bright-quest-30'},
+ 'historical_root_pr_diagnostics_composition': {'authorized_engine_delta': 86,
+  'authorized_owned_delta': 86,
+  'authorized_table_delta': 0,
+  'decision_message_id': 'msg-1da1b007351f478493b5681519dcc45c',
+  'dev_source_revision': '5d995a8378e53acd797b19e5b8d0fb2263156c2a',
+  'operator_decision': '6679052c',
+  'previous_measured_engine_lines': 82532,
+  'previous_measured_owned_total': 157785,
+  'previous_measured_table_count': 45,
+  'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1991',
+  'reason': 'Exact supervisor-approved +86 owned/engine lines for historical root PR '
+            'diagnostics in the existing root_pull_requests receipt owner. Preserve all '
+            'historical grants, original baselines and ownership classifications, with zero '
+            'remaining headroom and no new storage category.',
+  'referenced_decision': 'size-cap-delegation-2026-10-23',
+  'source_revision': '0a81ecabe1d1dcdfd22ac7a0d75187c8bf406702',
+  'task_id': 'bold-delta-18',
+  'thread_id': 'bold-delta-18-ci-contracts'},
  'initial_inventory': '/tmp/smart-nexus-83-live-inventory.json',
  'inventory_sha256': '87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416',
  'large_session_prompt_composition': {'authorized_engine_delta': 23,
@@ -1091,8 +1109,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82727,
- 'measured_owned_total': 158049,
+ 'measured_engine_lines': 82813,
+ 'measured_owned_total': 158135,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1367,6 +1385,28 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
  'reason': 'Exact supervisor-approved footprint for retained-fixer publication recovery after '
            'daemon restart and the owning-supervisor authority control. Preserve all '
            'historical grants, original baselines and ownership classifications; zero '
+           'remaining headroom and no new storage category.'},
+ 'retained_fixer_authority_merge_measurement': {'task_id': 'noble-harbor-10',
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2025',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'decision_message_id': 'msg-de48ec376521488e81ab42017fe4f0d6',
+ 'original_decision_message_id': 'msg-3472013282e44ae0810b733694d356fe',
+ 'source_revision': 'b5b1db9bbe32703f855b95bb051647b8b66e94f4',
+ 'dev_source_revision': '5ff637f73bcb2a990e72035d8c5415c657b0a8a3',
+ 'authorized_owned_delta': 124,
+ 'authorized_engine_delta': 78,
+ 'authorized_shared_owned_delta': 46,
+ 'authorized_table_delta': 0,
+ 'previous_measured_owned_total': 158011,
+ 'previous_measured_engine_lines': 82735,
+ 'previous_measured_table_count': 45,
+ 'measured_owned_total': 158135,
+ 'measured_engine_lines': 82813,
+ 'measured_table_count': 45,
+ 'reason': 'Carry the unchanged approved retained-fixer authority delta onto current dev; the '
+           'project supervisor pre-approved this exact merge measurement. Preserve every '
+           'historical grant, original baseline and ownership classification, with zero '
            'remaining headroom and no new storage category.'}}
 
 

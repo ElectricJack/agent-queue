@@ -9,6 +9,7 @@ import signal
 import shutil
 import ssl
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
@@ -567,6 +568,79 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     assert _git(["rev-parse", "HEAD"], destination) == base
     assert _git(["config", "--get", "remote.origin.url"], destination) == str(trap)
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
+
+
+@pytest.mark.parametrize("operation", ["origin", "exact", "clone", "push"])
+@pytest.mark.parametrize("exit_kind", ["success", "failure", "cancellation", "cancel_cleanup"])
+async def test_isolated_git_cleanup_runs_off_loop_and_retains_ownership(
+    tmp_path, monkeypatch, operation, exit_kind,
+):
+    checkout, source, _trap, base, tip = _git_push_case(tmp_path)
+    manager = GitManager()
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered = asyncio.Event()
+    release = threading.Event()
+    directories = []
+    original_cleanup = manager_module.tempfile.TemporaryDirectory.cleanup
+
+    def blocked_cleanup(directory):
+        # This fails immediately if recursive deletion returns to the loop.
+        assert threading.get_ident() != loop_thread
+        directories.append(Path(directory.name))
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(10), "test did not release cleanup"
+        original_cleanup(directory)
+
+    monkeypatch.setattr(manager_module.tempfile.TemporaryDirectory, "cleanup", blocked_cleanup)
+    if exit_kind in {"failure", "cancellation"}:
+        async def abort(*args, **kwargs):
+            if exit_kind == "cancellation":
+                raise asyncio.CancelledError
+            raise GitError("injected Git failure")
+
+        monkeypatch.setattr(manager, "_run_isolated_import_git", abort)
+
+    async def perform():
+        if operation == "origin":
+            return await manager._afetch_origin_with_auth_to_url(
+                str(checkout), source_url=source.as_uri(), token="test-token")
+        if operation == "exact":
+            return await manager._afetch_exact_oid_with_app_auth_to_url(
+                str(source), destination_url=source.as_uri(), token="test-token",
+                oid=base, destination_ref="refs/aq/test/cleanup")
+        if operation == "clone":
+            return await manager._aclone_with_auth_to_url(
+                str(source), str(tmp_path / "cloned"), source_url=source.as_uri(),
+                token="test-token")
+        return await manager._apush_oid_with_app_auth_to_url(
+            str(checkout), destination_url=source.as_uri(), token="test-token",
+            tip_oid=tip, branch="main", expected_old_oid=base)
+
+    task = asyncio.create_task(perform())
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        # A runnable loop can observe cleanup blocked in its worker thread.
+        assert directories[0].exists()
+        assert not task.done()
+        if exit_kind in {"cancellation", "cancel_cleanup"}:
+            # Both a first and a repeated cancellation must keep ownership.
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0)
+                assert not task.done()
+        release.set()
+        if exit_kind == "success":
+            await task
+        else:
+            error = (asyncio.CancelledError if exit_kind in {"cancellation", "cancel_cleanup"}
+                     else GitError)
+            with pytest.raises(error):
+                await task
+        assert not directories[0].exists()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 def _origin_fetch_case(tmp_path: Path) -> tuple[Path, Path, Path]:
