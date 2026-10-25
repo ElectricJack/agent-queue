@@ -288,10 +288,13 @@ def test_policy_defaults_enable_cutover_and_string_flags_refused():
     assert policy.v2_enabled and policy.hibernation_enabled and policy.scheduler_waits_enabled
     assert policy.v1_bodies == "refuse"
     assert policy.branch_admission_deadline_seconds == 1800
+    assert policy.listener_lag_events == 500
     assert not policy.validate()
     assert parse_wait_policy({"v2_enabled": "false"}).validate()
     assert parse_wait_policy({"branch_admission_deadline_seconds": 1}).validate()
     assert parse_wait_policy({"projects": {"p": {"hibernate_margin": 0.5}}}).validate()
+    for invalid in (0, -1, True, "500"):
+        assert parse_wait_policy({"listener_lag_events": invalid}).validate()
 
 
 async def test_workspace_release_reobserves_same_identity_and_retracts_wait(env):
