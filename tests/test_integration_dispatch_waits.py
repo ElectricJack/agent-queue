@@ -17,6 +17,7 @@ from src.integration.checks import CommitCheck, Conclusion, ExactChecks, Require
 from src.integration.dispatch_waits import DispatchWaits
 from src.integration.outbox import IntegrationOutbox
 from src.wait_runtime.service import WaitService
+from src.waits.conditions import WaitError
 from tests.test_integration_gitops import LocalGit, git
 from tests.test_integration_train_sources import MAIN, completed, lane, world as world
 
@@ -343,6 +344,23 @@ async def test_moved_delivery_tip_replaces_exact_candidate_wait(world):
     pending = [w for w in await rows(world) if w["outcome"] == "pending"]
     assert len(pending) == 1
     assert pending[0]["condition"]["head_sha"] == replacement.candidate_sha
+
+
+async def test_unobservable_stale_wait_is_kept_without_aborting_the_visit(world):
+    case = await runtime(world)
+    await completed(world, "first")
+    first = await case.train.visit(MAIN)
+    old_id = first.detail["dispatch"]["wait_ids"][0]
+    await completed(world, "outside")
+    world.origin.land("outside")
+    case.service.registry.observe = AsyncMock(side_effect=WaitError(
+        "wait.unavailable", "CI observation temporarily unavailable"))
+    for _ in range(3):
+        replacement = await case.train.visit(MAIN)
+        if replacement.state == "testing" and replacement.candidate_sha != first.candidate_sha:
+            break
+    assert replacement.candidate_sha != first.candidate_sha
+    assert next(w for w in await rows(world) if w["id"] == old_id)["outcome"] == "pending"
 
 
 async def test_local_checks_register_only_the_exact_pending_job_and_replace_hosted_wait(world):

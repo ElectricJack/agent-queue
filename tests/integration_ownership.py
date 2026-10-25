@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2278,
+ 'authorized_owned_delta': 2281,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1048,8 +1048,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82524,
- 'measured_owned_total': 157777,
+ 'measured_engine_lines': 82527,
+ 'measured_owned_total': 157780,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1176,6 +1176,21 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
       'referenced_decision': 'size-cap-delegation-2026-10-23',
       'source_revision': '93c9d12a6f87dbd119b9736279023b73500f68c1',
       'task_id': 'stark-horizon-78'},
+ 'wait_dispatch_unobservable_keep_composition': {     'authorized_engine_delta': 3,
+      'authorized_owned_delta': 3,
+      'authorized_table_delta': 0,
+      'charged_files': {'src/integration/dispatch_waits.py': 3},
+      'dev_source_revision': '677da30953d618601b049f4b4eb78c48d8269098',
+      'operator_decision': '6679052c',
+      'previous_measured_engine_lines': 82524,
+      'previous_measured_owned_total': 157777,
+      'previous_measured_table_count': 45,
+      'reason': 'Exact supervisor-approved +3 engine/owned lines: a train visit keeps an '
+                'unobservable stale CI wait instead of aborting the whole dev-lane visit, '
+                'hand-landed on dev by the global supervisor 2026-10-25. Zero remaining headroom.',
+      'referenced_decision': 'size-cap-delegation-2026-10-23',
+      'source_revision': '677da30953d618601b049f4b4eb78c48d8269098',
+      'task_id': 'supervisor-global'},
  'wait_ci_timeout_backoff_composition': {'authorized_engine_delta': 0,
       'authorized_owned_delta': 1,
       'authorized_table_delta': 0,
