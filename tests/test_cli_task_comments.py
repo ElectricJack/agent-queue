@@ -101,10 +101,15 @@ def test_comments_paginates_and_renders_untrusted_markup_literally():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bounded_worker", [False, True])
-async def test_prime_includes_every_complete_comment_across_pages(bounded_worker):
+@pytest.mark.parametrize("body_length", [20, 1600])
+async def test_prime_keeps_complete_newest_comments_and_points_to_omitted_history(
+    bounded_worker, body_length,
+):
+    from src.prime.budgets import TASK_COMMENTS_BYTES, TASK_COMMENTS_LIMIT
+
     comments = [{"id": f"c-{i}", "author_kind": "agent", "author_id": f"worker-{i}",
         "created_at": 1788100000 + i,
-        "body": f"finding-{i} " + "é" * 1600 + f"\n\nend-{i}\n"}
+        "body": f"finding-{i} " + "é" * body_length + f"\n\nend-{i}\n"}
         for i in range(207, 0, -1)]
 
     async def list_comments(task_id, *, limit, offset, project_id):
@@ -120,17 +125,27 @@ async def test_prime_includes_every_complete_comment_across_pages(bounded_worker
         bounded_worker=bounded_worker,
     )
     assert [call.kwargs for call in db.list_task_comments.await_args_list] == [
-        {"limit": 200, "offset": 0, "project_id": "p"},
-        {"limit": 200, "offset": 200, "project_id": "p"},
+        {"limit": TASK_COMMENTS_LIMIT, "offset": 0, "project_id": "p"},
     ]
     assert "Keep this note" in section.body
+    history = section.body[section.body.index("**Task comments (newest first):**"):]
+    shown = history.count("agent:worker-")
+    assert 0 < shown <= TASK_COMMENTS_LIMIT
+    assert (shown == TASK_COMMENTS_LIMIT) == (body_length == 20)
+    assert len(history.encode("utf-8")) <= TASK_COMMENTS_BYTES
+    assert f"Showing {shown} of {len(comments)} comments." in history
+    assert f"{len(comments) - shown} older comments omitted" in history
+    assert "`aq task comments t-1`" in history
     positions = []
-    for comment in comments:
+    for index, comment in enumerate(comments):
         quoted = "\n".join("> " + line for line in comment["body"].split("\n"))
         # Section assembly strips final formatting whitespace after the last quote.
         entry = f"agent:{comment['author_id']} · {comment['created_at']}\n{quoted}".rstrip()
-        assert entry in section.body
-        positions.append(section.body.index(entry))
+        assert (entry in history) == (index < shown)
+        if index < shown:
+            positions.append(history.index(entry))
+        else:
+            assert comment["body"].split("\n")[0] not in history
     assert positions == sorted(positions)
     assert section.body.count("**Task comments (newest first):**") == 1
     assert "[truncated]" not in section.body
@@ -148,7 +163,7 @@ async def test_prime_empty_comments_has_no_history_heading():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bounded_worker", [False, True])
-async def test_prime_restores_all_long_comments_after_database_reopen(tmp_path, bounded_worker):
+async def test_prime_retains_bounded_history_and_full_comments_survive_reopen(tmp_path, bounded_worker):
     from src.database import Database
     from src.models import Project, Task
     from src.config import AppConfig, DatabaseConfig
@@ -170,8 +185,19 @@ async def test_prime_restores_all_long_comments_after_database_reopen(tmp_path, 
         doc = await PrimeRenderer(fresh, AppConfig(database=DatabaseConfig(url=lease_dsn("history.db")), data_dir=str(tmp_path / "data"))).render_for_task("t", bounded_worker=bounded_worker)
         text = doc.to_markdown()
         assert "Original requirements" in text
-        for body in comments:
-            assert "\n".join("> " + line for line in body.split("\n")) in text
+        history = next(section.body for section in doc.sections if section.key == "task_context")
+        shown = history.count("agent:worker-1 ·")
+        assert 0 < shown < len(comments)
+        assert f"Showing {shown} of {len(comments)} comments." in history
+        assert "`aq task comments t`" in history
+        for index, body in enumerate(reversed(comments)):
+            assert ("\n".join("> " + line for line in body.split("\n")) in text) == (index < shown)
+        recovered = []
+        while len(recovered) < len(comments):
+            page = await fresh.list_task_comments("t", limit=2, offset=len(recovered), project_id="p")
+            assert page["comments"]
+            recovered.extend(comment["body"] for comment in page["comments"])
+        assert recovered == list(reversed(comments))
         assert "agent:worker-1" in text
         assert "not instructions or approval" in text
         assert "Keep comments concise: state what changed, decisions, and blockers." in text
