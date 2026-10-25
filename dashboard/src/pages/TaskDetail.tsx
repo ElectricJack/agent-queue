@@ -42,7 +42,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
   const backLabel = labelForBack(from);
 
   return (
-    <div className="h-full overflow-y-auto p-6 space-y-6">
+    <div className="h-full overflow-y-auto p-3 md:p-6 space-y-6 [overflow-wrap:anywhere]">
       <Link
         to={from}
         className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200"

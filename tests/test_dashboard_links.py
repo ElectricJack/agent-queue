@@ -62,45 +62,44 @@ def test_the_scheme_table_names_every_object_the_design_spec_lists():
 
 
 @pytest.mark.parametrize(
-    ("name", "oid", "expected_focus", "expected_desktop"),
+    ("name", "oid", "expected_path", "expected_route"),
     [
-        ("task", "t-1", "/focus/tasks/t-1", "/tasks/{id}"),
-        ("session", "s-1", "/focus/sessions/s-1", "/sessions/{id}"),
-        ("report", "r-1", "/focus/reports/r-1", "/reports/{id}"),
-        ("review", "rev-1", "/focus/reviews/rev-1", "/reviews/{id}"),
-        # §6.1: an escalation has no desktop page, so both columns agree.
-        ("escalation", "esc-1", "/focus/escalations/esc-1", "/focus/escalations/{id}"),
-        ("batch", "b-1", "/focus/batches/b-1", "/projects/{project}/graph?batch={id}"),
-        ("inbox", "", "/focus/inbox", "/reviews"),
-        ("conversation", "c-1", "/focus/conversations/c-1", "/conversations"),
+        ("task", "t-1", "/tasks/t-1", "/tasks/{id}"),
+        ("session", "s-1", "/sessions/s-1", "/sessions/{id}"),
+        ("report", "r-1", "/reports/r-1", "/reports/{id}"),
+        ("review", "rev-1", "/reviews/rev-1", "/reviews/{id}"),
+        ("escalation", "esc-1", "/escalations/esc-1", "/escalations/{id}"),
+        ("batch", "b-1", "/batches/b-1", "/batches/{id}"),
+        ("inbox", "", "/inbox", "/inbox"),
+        ("conversation", "c-1", "/conversations/c-1", "/conversations/{id}"),
     ],
 )
-def test_each_object_opens_its_phone_first_page(name, oid, expected_focus, expected_desktop):
+def test_each_object_opens_its_full_dashboard_page(name, oid, expected_path, expected_route):
     target = SCHEME[name]
-    assert target.focus(oid) == expected_focus
-    assert target.desktop == expected_desktop
+    assert target.path(oid) == expected_path
+    assert target.route == expected_route
 
 
 def test_the_table_cannot_claim_a_route_exists_when_it_does_not():
     assert SCHEME["task"].status == "live"
     assert SCHEME["session"].status == "live"
     assert SCHEME["report"].status == "live"
-    assert {SCHEME[name].status for name in SCHEME} == {"live", "planned"}
+    assert {SCHEME[name].status for name in SCHEME} == {"live"}
 
 
 def test_ids_are_quoted_so_a_path_cannot_escape_its_segment():
-    assert task_path("a/b c") == "/focus/tasks/a%2Fb%20c"
-    assert escalation_path("esc/1?x=2") == "/focus/escalations/esc%2F1%3Fx%3D2"
-    assert review_path("rev 1") == "/focus/reviews/rev%201"
-    assert session_path("../reports") == "/focus/sessions/..%2Freports"
-    assert conversation_path("c/1") == "/focus/conversations/c%2F1"
-    assert batch_path("b/1") == "/focus/batches/b%2F1"
+    assert task_path("a/b c") == "/tasks/a%2Fb%20c"
+    assert escalation_path("esc/1?x=2") == "/escalations/esc%2F1%3Fx%3D2"
+    assert review_path("rev 1") == "/reviews/rev%201"
+    assert session_path("../reports") == "/sessions/..%2Freports"
+    assert conversation_path("c/1") == "/conversations/c%2F1"
+    assert batch_path("b/1") == "/batches/b%2F1"
 
 
 def test_href_is_the_only_join_and_tolerates_a_trailing_slash():
-    assert dashboard_href(ORIGIN, escalation_path("esc-1")) == f"{ORIGIN}/focus/escalations/esc-1"
-    assert dashboard_href(f"{ORIGIN}/", "/focus/inbox") == f"{ORIGIN}/focus/inbox"
-    assert inbox_path() == "/focus/inbox"
+    assert dashboard_href(ORIGIN, escalation_path("esc-1")) == f"{ORIGIN}/escalations/esc-1"
+    assert dashboard_href(f"{ORIGIN}/", "/inbox") == f"{ORIGIN}/inbox"
+    assert inbox_path() == "/inbox"
 
 
 # --------------------------------------------------------------- the producers
@@ -187,24 +186,24 @@ def test_the_escalation_post_links_the_incident_page_and_nothing_else():
     post = render_root(
         facts(), mentions=MentionPolicy(), base_url=ORIGIN, dedup_key="esc-1:root:0"
     )
-    assert post.endswith(f"<{ORIGIN}/focus/escalations/esc-1>")
+    assert post.endswith(f"<{ORIGIN}/escalations/esc-1>")
     assert "#escalation-reply-" not in post
     assert ORIGIN in post
 
 
 def test_the_digest_links_the_needs_you_inbox():
     post = digest_post()
-    assert post.endswith(f"<{ORIGIN}/focus/inbox>")
+    assert post.endswith(f"<{ORIGIN}/inbox>")
 
 
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("escalation_root", f"{ORIGIN}/focus/escalations/esc-1"),
-        ("escalation_opener", f"{ORIGIN}/focus/escalations/esc-1"),
-        ("escalation_resolution", f"{ORIGIN}/focus/escalations/esc-1"),
-        ("digest", f"{ORIGIN}/focus/inbox"),
-        ("review_ready", f"{ORIGIN}/focus/reviews/rev-1"),
+        ("escalation_root", f"{ORIGIN}/escalations/esc-1"),
+        ("escalation_opener", f"{ORIGIN}/escalations/esc-1"),
+        ("escalation_resolution", f"{ORIGIN}/escalations/esc-1"),
+        ("digest", f"{ORIGIN}/inbox"),
+        ("review_ready", f"{ORIGIN}/reviews/rev-1"),
     ],
 )
 def test_every_linked_post_carries_exactly_one_link_and_it_is_last(name, expected):
@@ -256,9 +255,9 @@ def test_thread_acknowledgements_carry_no_second_link():
 
 
 def test_an_origin_that_cannot_be_carried_as_link_markup_degrades_to_the_notice():
-    assert link_line("https://aq.example ts.net", "/focus/inbox") != ""
-    assert "<" not in link_line("https://aq.example ts.net", "/focus/inbox")
-    assert link_line("not a url at all", "/focus/inbox", notice="notice") == "notice"
+    assert link_line("https://aq.example ts.net", "/inbox") != ""
+    assert "<" not in link_line("https://aq.example ts.net", "/inbox")
+    assert link_line("not a url at all", "/inbox", notice="notice") == "notice"
 
 
 # --------------------------------------------- the resolver is the only source
@@ -339,4 +338,4 @@ async def no_probe(_settings):
 def test_a_link_is_never_built_from_a_dashboard_link_that_never_resolved():
     """``DashboardLink(url="")`` is the "no origin" answer, not a relative link."""
     assert link_line(DashboardLink().url, escalation_path("esc-1"), notice="n") == "n"
-    assert compose(["one"], STATUS_LINE, link=link_line("", "/focus/inbox")) == "one"
+    assert compose(["one"], STATUS_LINE, link=link_line("", "/inbox")) == "one"

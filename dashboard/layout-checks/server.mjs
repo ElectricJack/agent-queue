@@ -144,6 +144,11 @@ export async function startStubServer({ distDir, fixtures }) {
     requests.push({ method: req.method, path: url.pathname, body });
     const pane = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pane$/);
     if (pane) return openPane(decodeURIComponent(pane[1]), res);
+    // SessionDetail reads transcripts alongside the terminal. End this fixture
+    // stream immediately with 204 (EventSource must not reconnect).
+    if (/^\/api\/sessions\/[^/]+\/stream$/.test(url.pathname)) {
+      res.writeHead(204); return res.end();
+    }
     const access = url.pathname.match(/^\/ws\/terminal\/([^/]+)$/);
     if (access && req.method === "GET") {
       // The access probe a browser makes after a refused upgrade (WebSocket's

@@ -44,7 +44,7 @@ export function AskDetail({ askId }: { askId: string }) {
       <p className="text-sm text-gray-400">These remain separate from pending decisions.</p>
       <ul>{data.obligations?.map(item => <li key={String(item.id)} className="mt-2">
         <p className="whitespace-pre-wrap">{String(item.original_text)} — {String(item.progress)}</p>
-        {item.task_id != null && <Link className="inline-block min-h-11 py-2 text-indigo-200" to={`/focus/tasks/${encodeURIComponent(String(item.task_id))}`}>Assigned work {String(item.task_id)}</Link>}
+        {item.task_id != null && <Link className="inline-block min-h-11 py-2 text-indigo-200" to={`/tasks/${encodeURIComponent(String(item.task_id))}`}>Assigned work {String(item.task_id)}</Link>}
         <p className="text-xs">{String(item.logical_owner ?? "")}</p>
       </li>)}</ul>
     </section>

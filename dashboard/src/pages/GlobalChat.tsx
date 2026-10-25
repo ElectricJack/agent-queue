@@ -27,7 +27,7 @@ export default function GlobalChat() {
     retry: 1,
   });
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-3 p-3 md:p-4 [overflow-wrap:anywhere]">
       <h1 className="text-lg font-semibold">Supervisor conversations</h1>
       {status.isLoading ? (
         <p className="text-sm text-gray-500">Loading conversation status…</p>

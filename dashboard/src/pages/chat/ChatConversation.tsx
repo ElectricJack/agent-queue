@@ -29,12 +29,12 @@ function Bubble({ msg, replied, deliveryFailed }: { msg: PendingMessage; replied
             : "bg-gray-800 text-gray-100"
         } ${msg.pending ? "opacity-60" : ""}`}
       >
-        <div className="mb-1 flex items-center gap-2 text-xs text-gray-400">
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-gray-400">
           <span>{senderLabel(msg)}</span>
           <span>{fmt(msg.created_at)}</span>
           {outbound && <span className={msg.failed || deliveryFailed ? "text-red-400" : "text-gray-400"}>{state}</span>}
         </div>
-        <div className="whitespace-pre-wrap">{msg.body}</div>
+        <div className="whitespace-pre-wrap [overflow-wrap:anywhere]">{msg.body}</div>
       </div>
     </div>
   );
@@ -136,10 +136,11 @@ export default function ChatConversation(props: Props = {}) {
           }}
           rows={2}
           placeholder="Message the supervisor (Enter to send, Shift-Enter for newline)…"
-          className="flex-1 resize-none rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
+          className="min-w-0 flex-1 resize-none rounded border border-gray-800 bg-gray-900 px-2 py-1 text-sm text-gray-200"
         />
         <button
           type="submit"
+          aria-label="Send"
           disabled={isSending || !body.trim()}
           className="inline-flex items-center gap-1 rounded bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >

@@ -16,9 +16,9 @@ describe("TaskCard", () => {
   });
 
   it("as a link: carries the row marker, wraps long titles and names the project", () => {
-    render(<MemoryRouter><TaskCard task={task} projectName="First project" to="/focus/tasks/t1" /></MemoryRouter>);
+    render(<MemoryRouter><TaskCard task={task} projectName="First project" to="/tasks/t1" /></MemoryRouter>);
     const link = screen.getByRole("link");
-    expect(link).toHaveAttribute("href", "/focus/tasks/t1");
+    expect(link).toHaveAttribute("href", "/tasks/t1");
     expect(link).toHaveAttribute("data-task-row", "t1");
     expect(link).toHaveAttribute("data-primary-control");
     expect(screen.getByText("ｗ".repeat(200)).className).toContain("[overflow-wrap:anywhere]");

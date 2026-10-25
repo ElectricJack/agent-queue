@@ -2,18 +2,17 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { testQueryClient } from "../../../testUtils/dashboardState";
-import FocusShell from "../FocusShell";
-import FocusBatch from "../FocusBatch";
+import { testQueryClient } from "../../testUtils/dashboardState";
+import BatchPage from "../BatchPage";
 
 const wire = vi.hoisted(() => ({ projects: vi.fn(), list: vi.fn() }));
 
-vi.mock("../../../api/hooks", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../api/hooks")>()),
+vi.mock("../../api/hooks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/hooks")>()),
   useProjects: wire.projects,
 }));
-vi.mock("../../../api/graphLayout", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../api/graphLayout")>()),
+vi.mock("../../api/graphLayout", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/graphLayout")>()),
   fetchList: wire.list,
 }));
 
@@ -56,9 +55,7 @@ function renderAt(path: string) {
     <QueryClientProvider client={testQueryClient()}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/focus" element={<FocusShell />}>
-            <Route path="batches/:batchId" element={<FocusBatch />} />
-          </Route>
+          <Route path="/batches/:batchId" element={<BatchPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -78,7 +75,7 @@ beforeEach(() => {
   wire.list.mockResolvedValue({
     nodes: [
       node({ delivery: integrating }),
-      node({ id: "child-1", title: "Focus routes", container_id: "epic-1", status: "COMPLETED" }),
+      node({ id: "child-1", title: "Dashboard routes", container_id: "epic-1", status: "COMPLETED" }),
       node({ id: "child-2", title: "Digest", container_id: "epic-1", status: "IN_PROGRESS" }),
       node({ id: "epic-other", title: "Unrelated epic" }),
     ],
@@ -87,20 +84,20 @@ beforeEach(() => {
   });
 });
 
-describe("FocusBatch", () => {
+describe("BatchPage", () => {
   it("resolves the batch from the epic that names it, with its tasks", async () => {
-    renderAt("/focus/batches/batch-77");
+    renderAt("/batches/batch-77");
     expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Batch batch-77");
     expect(await screen.findByText("Discord as a chat extension")).toBeInTheDocument();
     expect(screen.getByText(/1 collection integrating under this batch/)).toBeInTheDocument();
     expect(screen.getByText("3 commits on the integration branch")).toBeInTheDocument();
     expect(screen.getByText("Waiting on CI")).toBeInTheDocument();
     expect(screen.getByText("Evidence: current")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Focus routes/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Dashboard routes/ })).toHaveAttribute(
       "href",
-      "/focus/tasks/child-1",
+      "/tasks/child-1",
     );
-    expect(screen.getByRole("link", { name: /Digest/ })).toHaveAttribute("href", "/focus/tasks/child-2");
+    expect(screen.getByRole("link", { name: /Digest/ })).toHaveAttribute("href", "/tasks/child-2");
     expect(wire.list).toHaveBeenCalledWith("agent-queue", expect.objectContaining({ variant: "all" }), expect.anything());
   });
 
@@ -110,7 +107,7 @@ describe("FocusBatch", () => {
       next_cursor: null,
       layout_version: 3,
     });
-    renderAt("/focus/batches/batch-77");
+    renderAt("/batches/batch-77");
     expect(await screen.findByRole("link", { name: "Pull request" })).toHaveAttribute(
       "href",
       "https://github.com/o/r/pull/9",
@@ -118,24 +115,21 @@ describe("FocusBatch", () => {
   });
 
   it("says so when no project reports the batch", async () => {
-    renderAt("/focus/batches/batch-unknown");
+    renderAt("/batches/batch-unknown");
     expect(await screen.findByText("No project reports this integration batch.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open in full dashboard" })).toHaveAttribute(
-      "href",
-      "/command-center/graph",
-    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Batch batch-unknown");
   });
 
   it("waits out a layout the server has not built yet", async () => {
     wire.list.mockResolvedValue({ pending: true });
-    renderAt("/focus/batches/batch-77");
+    renderAt("/batches/batch-77");
     expect(await screen.findByText("No project reports this integration batch.")).toBeInTheDocument();
   });
 
   it("offers Retry when the project read fails", async () => {
     const refetch = vi.fn();
     wire.projects.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("project list unavailable"), refetch });
-    renderAt("/focus/batches/batch-77");
+    renderAt("/batches/batch-77");
     expect(await screen.findByRole("alert")).toHaveTextContent("project list unavailable");
     screen.getByRole("button", { name: "Retry" }).click();
     expect(refetch).toHaveBeenCalled();

@@ -15,7 +15,7 @@ function EvidenceItems({ items, taskHref }: { items: ReportItem[]; taskHref: Tas
   </li>)}</ul>;
 }
 
-/** The report read page's content (also `/focus/reports/:id`); `taskHref` decides where task evidence leads. */
+/** The report read page's content; `taskHref` decides where task evidence leads. */
 export function MorningReportContent({ reportId, taskHref }: { reportId: string; taskHref: TaskHref }) {
   const query = useQuery({
     queryKey: ["report", reportId],

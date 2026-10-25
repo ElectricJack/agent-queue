@@ -10,7 +10,8 @@ import {
   FolderPlusIcon,
   PlusIcon,
   DocumentTextIcon,
-  DevicePhoneMobileIcon,
+  InboxIcon,
+  ChatBubbleLeftRightIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import AgentFlock from "./AgentFlock";
@@ -184,9 +185,12 @@ export default function LeftRail({ variant = "column", onClose }: { variant?: "c
             <Cog6ToothIcon className="h-4 w-4" />
             <span>Settings</span>
           </NavLink>
-          <NavLink to="/focus" data-listnav="1" data-primary-control className={({ isActive }) => linkClass(isActive)}>
-            <DevicePhoneMobileIcon className="h-4 w-4" />
-            <span>Focus view</span>
+          <NavLink to="/inbox" data-listnav="1" data-primary-control className={({ isActive }) => linkClass(isActive)}>
+            <InboxIcon className="h-4 w-4" />
+            <span>Requests</span>
+          </NavLink>
+          <NavLink to="/conversations" data-listnav="1" data-primary-control className={({ isActive }) => linkClass(isActive)}>
+            <ChatBubbleLeftRightIcon className="h-4 w-4" /><span>Conversations</span>
           </NavLink>
         </div>
         <AgentFlock />

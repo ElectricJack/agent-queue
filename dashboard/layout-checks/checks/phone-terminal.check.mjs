@@ -111,8 +111,10 @@ const setKeyboard = (t, covered) => t.page.evaluate((px) => {
 export async function run(t) {
   const wide = t.page.viewport().width >= 768;
   t.stub.allowTerminal(SESSION, SCREEN);
-  await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url(`/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
   await t.page.waitForFunction((selector) => document.querySelector(selector)?.textContent === "connected", { timeout: 15_000 }, STATUS);
+  // The shared session page also has metadata above its terminal.
+  await t.page.$eval(HOST, el => el.scrollIntoView({ block: "start" }));
   const vp = t.page.viewport();
 
   // One attach, sized to the phone, asking for tmux's scrollback and for the
@@ -163,6 +165,7 @@ export async function run(t) {
 
   // The on-screen keyboard covers the terminal without changing the layout
   // viewport, so tmux follows the visual one; closing it gives the rows back.
+  await t.page.$eval(HOST, el => el.scrollIntoView({ block: "start" }));
   const covered = Math.round(vp.height * 0.4);
   await setKeyboard(t, covered);
   const typing = await poll(() => stable(viewer), (size) => size.rows < initial.rows, 5_000,
@@ -213,6 +216,6 @@ export async function run(t) {
   assert.deepEqual(t.stub.statePuts(), [], "the phone terminal wrote roaming preferences");
 
   // Leaving closes the attach, which is when the daemon gives the agent its size back.
-  await t.page.goto(t.url("/focus"), { waitUntil: "domcontentloaded" });
+  await t.page.goto(t.url("/agents"), { waitUntil: "domcontentloaded" });
   await poll(() => viewer.open, (open) => !open, 5_000, "leaving left the attach open");
 }

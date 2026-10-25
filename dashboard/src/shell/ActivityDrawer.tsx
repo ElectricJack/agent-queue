@@ -6,7 +6,7 @@ import { useEventBuffer } from "../ws/EventStreamProvider";
 import type { NotifyEvent } from "../ws/types";
 
 import { useRightSurface } from "./useRightSurface";
-import { AskInbox } from "../pages/focus/FocusInbox";
+import { AskInbox } from "../components/asks/AskInbox";
 
 function tabClass(active: boolean): string {
   return `rounded px-2 py-1 text-xs ${

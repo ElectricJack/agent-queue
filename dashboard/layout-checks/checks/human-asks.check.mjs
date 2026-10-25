@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { expectLayout } from "../probes.mjs";
 import { REVIEW_ID, REVIEW_MARKDOWN } from "../fixtures/reviews.mjs";
 
 export const name = "human-asks";
@@ -34,10 +35,11 @@ export async function run(t) {
   t.stub.override("POST /api/review/ask-decide", () => ({ success: true, decision_id: "decision-rollout", application_state: "pending" }));
   let acknowledge;
   t.stub.override("POST /api/review/ask-reply", () => new Promise(resolve => { acknowledge = () => resolve({ success: true, input_id: "input-rollout" }); }));
-  await t.page.goto(t.url(`/focus/asks/${ask.id}`), { waitUntil: "networkidle0" });
+  await t.page.goto(t.url(`/asks/${ask.id}`), { waitUntil: "networkidle0" });
   const discuss = 'section[aria-label="Discuss"] textarea';
   const approve = 'button::-p-text(Prepare Approve)';
   await t.page.waitForSelector(discuss);
+  await expectLayout(t, { primary: [discuss, approve] });
   await t.page.focus(discuss);
   await t.page.keyboard.type("How is restart handled?");
   assert.equal(await t.page.$eval(approve, el => el.disabled), true, "discussion draft must hold approval");
@@ -54,10 +56,13 @@ export async function run(t) {
   await t.page.waitForSelector('section[aria-label="Decision preview"]');
   const previewText = await t.page.$eval('section[aria-label="Decision preview"]', el => el.textContent);
   for (const text of ["Exact revision 2", "Cover restart", "Verify restart receipts", "required before release", "packet-hash"]) assert.ok(previewText.includes(text), text);
+  await expectLayout(t);
   await t.shot("prepared-feedback");
   version.feedback_version++;
+  ask.feedback_version = version.feedback_version;
   t.stub.pushEvent({ seq: 999, event_type: "review.comment_added", data: { review_id: REVIEW_ID }, timestamp: Date.now() / 1000 });
   await t.page.waitForFunction(() => document.body.textContent.includes("Preview is stale"));
+  await t.page.waitForFunction(() => document.body.textContent.includes("feedback 4"));
   const confirm = 'button::-p-text(Confirm prepared decision)';
   assert.equal(await t.page.$eval(confirm, el => el.disabled), true);
   await (await t.page.$(approve)).focus();

@@ -141,6 +141,7 @@ function project(body) {
 }
 
 export const routes = {
+  "POST /api/wait/explain": () => ({ success: true, waits: [], total: 0, truncated: false }),
   "GET /health": () => ({ status: "ok" }),
   "GET /ready": () => ({ ready: true }),
   "POST /api/project/list": () => projects,
@@ -158,6 +159,7 @@ export const routes = {
   "POST /api/system/session-list": () => sessions,
   "GET /api/providers/usage": () => usage,
   "GET /api/providers/availability": () => availability,
+  "POST /api/review/ask-list": () => ({ success: true, items: [], count: 0, snapshot_at: NOW, source_health: "healthy" }),
   "POST /api/review/list": () => ({ success: true, reviews: [] }),
   "POST /api/task/gate-list": () => ({ success: true, gates: [] }),
   "POST /api/record/capabilities": () => ({ success: true, capabilities: { enabled: false, ui_enabled: false } }),

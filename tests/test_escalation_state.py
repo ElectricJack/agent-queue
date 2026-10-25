@@ -566,7 +566,7 @@ async def test_a_reply_rewrites_the_one_post_in_place_and_appends_nothing(world)
     edited = world.transport.messages[root].content
     assert "Answered" in edited and "acting on it" in edited
     # §5.2's answered row keeps the one link and nothing else.
-    assert edited.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
+    assert edited.endswith(f"<{BASE_URL}/escalations/esc-1>")
     # The ack still goes to the thread; the channel post is not the conversation.
     assert "post_thread_message" in world.transport.calls
 
@@ -614,7 +614,7 @@ async def test_a_closed_incident_collapses_its_post_once_and_stamps_the_clock(wo
     assert collapsed.startswith("✅ Resolved: Cut from main")
     # One line, no link, no mention: §3.2's collapsed row.
     assert len(collapsed.splitlines()) == 2 and collapsed.splitlines()[1].startswith("-# ")
-    assert "/focus/" not in collapsed
+    assert "/" not in collapsed
     stamped = await world.db.get_escalation(row["id"])
     assert stamped["collapsed_at"] == world.clock()
     # The thread is archived exactly once and the closed post is one line.
@@ -1406,7 +1406,7 @@ def test_the_answered_row_is_one_line_plus_the_incident_link():
     )
     body = [line for line in text.splitlines() if not line.startswith("-# ")]
     assert body[0].startswith("💬 Answered <t:1750003600:f>")
-    assert body[-1] == f"<{BASE_URL}/focus/escalations/esc-1>"
+    assert body[-1] == f"<{BASE_URL}/escalations/esc-1>"
     assert text.count("<" + BASE_URL) == 1, "§3.1: exactly one link, last"
 
 
@@ -1428,5 +1428,5 @@ def test_the_stale_row_is_one_line_plus_the_incident_link():
         facts, display="stale", base_url=BASE_URL, dedup_key="esc-1:state:0:stale"
     )
     assert "Still open since <t:1750000000:f>" in text
-    assert text.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
+    assert text.endswith(f"<{BASE_URL}/escalations/esc-1>")
     assert "/settings/" not in text
