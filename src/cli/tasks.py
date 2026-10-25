@@ -102,7 +102,7 @@ def task_batch_propose(ctx, change_file, project_id, source, dry_run, **operatio
     if not change_file and not inline:
         raise click.UsageError("supply --file or inline change set operations")
     document = _load_graph_document(change_file) if change_file else inline
-    allowed = {"project_id", "source", "tasks", "edits", "edges", "remove_edges", "comments"}
+    allowed = {"project_id", "source", "tasks", "edits", "edges", "remove_edges", "comments", "no_op"}
     if unknown := set(document) - allowed:
         raise click.UsageError(f"unknown change set fields: {sorted(unknown)}")
     provenance = source or document.get("source") or change_file
