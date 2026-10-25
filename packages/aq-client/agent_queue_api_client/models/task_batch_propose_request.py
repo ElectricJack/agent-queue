@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.task_batch_propose_request_no_op_type_0 import TaskBatchProposeRequestNoOpType0
+
 
 T = TypeVar("T", bound="TaskBatchProposeRequest")
 
@@ -19,6 +23,8 @@ class TaskBatchProposeRequest:
             task the commit creates.
         project_id (None | str | Unset): Project to propose into (defaults to the active one).
         dry_run (bool | None | Unset): Validate and return the diff without storing a proposal.
+        no_op (None | TaskBatchProposeRequestNoOpType0 | Unset): Design-ingest settlement when every approved goal is
+            already delivered; requires no change operations.
         edits (list[Any] | None | Unset): Existing task edits and controls. Live control changes are refused.
         remove_edges (list[Any] | None | Unset): Typed edges to remove: from, to, dep_type (default blocks).
         comments (list[Any] | None | Unset): Append comments to existing ids or tempIds. Author comes from the caller.
@@ -29,6 +35,7 @@ class TaskBatchProposeRequest:
     source: str
     project_id: None | str | Unset = UNSET
     dry_run: bool | None | Unset = UNSET
+    no_op: None | TaskBatchProposeRequestNoOpType0 | Unset = UNSET
     edits: list[Any] | None | Unset = UNSET
     remove_edges: list[Any] | None | Unset = UNSET
     comments: list[Any] | None | Unset = UNSET
@@ -37,6 +44,8 @@ class TaskBatchProposeRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.task_batch_propose_request_no_op_type_0 import TaskBatchProposeRequestNoOpType0
+
         source = self.source
 
         project_id: None | str | Unset
@@ -50,6 +59,14 @@ class TaskBatchProposeRequest:
             dry_run = UNSET
         else:
             dry_run = self.dry_run
+
+        no_op: dict[str, Any] | None | Unset
+        if isinstance(self.no_op, Unset):
+            no_op = UNSET
+        elif isinstance(self.no_op, TaskBatchProposeRequestNoOpType0):
+            no_op = self.no_op.to_dict()
+        else:
+            no_op = self.no_op
 
         edits: list[Any] | None | Unset
         if isinstance(self.edits, Unset):
@@ -107,6 +124,8 @@ class TaskBatchProposeRequest:
             field_dict["project_id"] = project_id
         if dry_run is not UNSET:
             field_dict["dry_run"] = dry_run
+        if no_op is not UNSET:
+            field_dict["no_op"] = no_op
         if edits is not UNSET:
             field_dict["edits"] = edits
         if remove_edges is not UNSET:
@@ -122,6 +141,8 @@ class TaskBatchProposeRequest:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.task_batch_propose_request_no_op_type_0 import TaskBatchProposeRequestNoOpType0
+
         d = dict(src_dict)
         source = d.pop("source")
 
@@ -142,6 +163,23 @@ class TaskBatchProposeRequest:
             return cast(bool | None | Unset, data)
 
         dry_run = _parse_dry_run(d.pop("dry_run", UNSET))
+
+        def _parse_no_op(data: object) -> None | TaskBatchProposeRequestNoOpType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                no_op_type_0 = TaskBatchProposeRequestNoOpType0.from_dict(data)
+
+                return no_op_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskBatchProposeRequestNoOpType0 | Unset, data)
+
+        no_op = _parse_no_op(d.pop("no_op", UNSET))
 
         def _parse_edits(data: object) -> list[Any] | None | Unset:
             if data is None:
@@ -232,6 +270,7 @@ class TaskBatchProposeRequest:
             source=source,
             project_id=project_id,
             dry_run=dry_run,
+            no_op=no_op,
             edits=edits,
             remove_edges=remove_edges,
             comments=comments,

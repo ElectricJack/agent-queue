@@ -54,6 +54,20 @@ created `released` with the server receipt `design_authoring_shape`
 (release actor `service:design_authoring_shape`). No fidelity reviewer runs,
 and design approval creates no implementation work.
 
+When every approved design goal is already delivered, the live ingester may
+instead call `task_batch_propose` with `no_op: {reason, delivered_evidence}`.
+The reason explains coverage of the approved goals; `delivered_evidence` is a
+nonempty list of merged PR or commit citations the ingester has checked.
+This explicit settlement requires an empty change set and the same immutable
+approval authority as ordinary ingestion. Required follow-ups must already
+have completion evidence. A dry run previews the settlement without writing.
+The command records a successful decision-keyed `materialization` operation
+with `task_ids: []` and an `already_delivered` release receipt containing the
+approval identity, reason, citations and feedback. It creates no proposal,
+batch, tasks or fidelity-review dispatch. Retries return that receipt; the
+ingester records it and closes pass through the normal task-close command.
+An empty graph alone never requests this settlement.
+
 **Implementation documents** produce delivery epics and self-contained leaves.
 A delivery epic contains only the finite work that produces and verifies its
 landable artifact: implementation, tests, necessary documentation and packaging.

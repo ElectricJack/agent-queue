@@ -1187,6 +1187,7 @@
       "modules": [
         "tests/test_project_constraint_enforcement.py",
         "tests/test_project_constraints.py",
+        "tests/test_project_schedules.py",
         "tests/test_schedule.py",
         "tests/test_scheduler.py",
         "tests/test_timer_service.py",
@@ -1268,6 +1269,7 @@
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
         "tests/test_supervisor_inbox_commands.py",
+        "tests/test_supervisor_inbox_say.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py",
         "tests/test_supervisor_stall_sweep_script.py",
@@ -3121,12 +3123,14 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:335d2cc74562e83b4fc4d81f74fdcf94bbe07236c63d3e0df923268e3408f486",
+      "digest": "sha256:b9cd025686d96f8949d986fcf72e2de315e6ba71a54c85ac270f91628d8ff032",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.asks.delivery",
+        "src.asks.ingestion",
         "src.asks.intake",
+        "src.asks.operations",
         "src.asks.reconcile",
         "src.asks.reset_policy",
         "src.database",
@@ -3414,7 +3418,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:441a756dce8eef3ec79bed85bd3026b1fc89a21b469ec839282b7271bad7ca04",
+      "digest": "sha256:ee994f9e990dc5155d7d61fe6ccb94019c94c5152b60bdea61a9722a342ee1de",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
@@ -3422,6 +3426,7 @@
         "src.integration.batches",
         "src.integration.branch_retirement",
         "src.integration.cleanup",
+        "src.integration.delivery_branches",
         "src.integration.train_sources",
         "src.models",
         "src.sessions.obsolete"
@@ -3718,7 +3723,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c557a8d168474c61cb973a7135eca2fed3d872c9ea7c05bae123689da84ab6a1",
+      "digest": "sha256:a20d9a92dd9368bb4d7485b39c32559442f4ea3d26bea22e78a931ee0f146585",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3765,6 +3770,8 @@
         "src.preparation_failure",
         "src.scheduler",
         "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.provider",
         "src.sessions.reconciler",
         "src.workspace_disable"
       ],
@@ -5220,7 +5227,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:a4c9624f198e44ca6fbfd34871ae6f5fe434b387f07d1368c528662b7e840178",
+      "digest": "sha256:0fff545125d8bdcb2c0d32eb99f002c0ea1b26687115ca50be050048242d1f57",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -5232,8 +5239,10 @@
         "src.discord.intake_diagnostics",
         "src.discord.rate_guard",
         "src.escalations.transport",
+        "src.event_bus",
         "src.main",
         "src.messages.delivery",
+        "src.messages.service",
         "src.messages.session_lens",
         "src.models",
         "src.profiles.capabilities"
@@ -7959,7 +7968,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:0540e536b07d1d4a8849d1e154181120eb27c4dd64aaad519948989229c7921d",
+      "digest": "sha256:e54e5d0df45add9afbc06b9b79734bc7174014a3e2279b2552f4c424562052e4",
       "imports": [
         "src.api",
         "src.api.dependencies",
@@ -7970,7 +7979,8 @@
         "src.main",
         "src.messaging.base",
         "src.messaging.null_adapter",
-        "src.playbooks.private_values"
+        "src.playbooks.private_values",
+        "src.wait_runtime.scheduler"
       ],
       "markers": [
         "asyncio",
@@ -14475,9 +14485,9 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:4293a9075a63f1ec0f95f142285221ac39d24c857388ea61fae2c41c46d4ca50",
+      "digest": "sha256:9d5401310666ad691b3f912f2f6b37fee297fc1d071f51ea97462c4f44b41886",
       "imports": [
-        "src.commands.claim_commands",
+        "src.claim_file",
         "src.config",
         "src.database.queries.claim_queries",
         "src.database.tables",
@@ -15163,6 +15173,33 @@
         "parametrize"
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
+    },
+    "tests/test_project_schedules.py": {
+      "areas": [
+        "scheduling"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6b0c5c38d6a00ed1f5303787ca97b29207299252dbaa8d25923f9f4083bf87d8",
+      "imports": [
+        "src.api.codegen",
+        "src.cli.app",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.models",
+        "src.project_schedules",
+        "src.waits.adapters.base",
+        "src.waits.adapters.timer",
+        "src.waits.conditions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Long-horizon notices: durable receipts, cancellation races and scoped commands."
     },
     "tests/test_project_supervisors.py": {
       "areas": [
@@ -16282,7 +16319,7 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:1644948f36327a2e3e72de6668fab8121357b80f16645e202222f12cc9dac66b",
+      "digest": "sha256:eab6a92f936275b758dcd41d01afda7515f01acd8e2208e1163fba7529f26e9e",
       "imports": [
         "src.commands.principal",
         "src.commands.report_commands",
@@ -16302,7 +16339,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Durable hourly author requests, CAS submission and deterministic fallback."
+      "summary": "Durable hourly author requests, CAS submission and minimal no-report fallback."
     },
     "tests/test_repository_checkout_repair.py": {
       "areas": [
@@ -18086,9 +18123,11 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:3557adf497a6c785a96b58cda8e3aa470d87427dcaddf03bb9050425367a4493",
+      "digest": "sha256:9bde0ee23070c86f16be39f38a07bfeef4b3a2daa46be0b62b66c04abecad5e6",
       "imports": [
+        "src.api.auth",
         "src.api.models.supervisor_inbox",
+        "src.api.scope",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
@@ -18105,6 +18144,27 @@
         "parametrize"
       ],
       "summary": "Verified internal intake, durable quotas and replay-safe conversation notifications."
+    },
+    "tests/test_supervisor_inbox_say.py": {
+      "areas": [
+        "supervisor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:96ec048074c9f4f2f058d45f604385856b56d3d01dc0c1d04f3c0e8e51cc1c5c",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.principal",
+        "src.conversations.intake",
+        "src.database.queries.conversation_queries",
+        "src.escalations.transport",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Initiated supervisor posts use the conversation outbox without consuming input."
     },
     "tests/test_supervisor_recovery.py": {
       "areas": [
@@ -20084,7 +20144,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3d57522102b36c18ac459a32a1fbef31f38cace26de6e1174c2de701e07f198a",
+      "digest": "sha256:95458a619edbeb0a294fc0606ce3b05611b9243ef2b00f52b63233a4ce142105",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20098,9 +20158,11 @@
         "src.playbooks.waits",
         "src.scheduler",
         "src.wait_runtime.service",
+        "src.waits",
         "src.waits.conditions",
         "src.waits.graph",
         "src.waits.listener",
+        "src.waits.loops",
         "src.waits.registry",
         "src.waits.resource_sources",
         "src.waits.sources"
