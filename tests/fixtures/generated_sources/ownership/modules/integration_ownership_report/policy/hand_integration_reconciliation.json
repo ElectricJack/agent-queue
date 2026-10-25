@@ -1,7 +1,7 @@
 {
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2277,
+    "authorized_owned_delta": 2354,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -105,8 +105,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82524,
-    "measured_owned_total": 157776,
+    "measured_engine_lines": 82530,
+    "measured_owned_total": 157853,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -164,6 +164,30 @@
     "source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
     "supervisor_decision_message_id": "msg-2077aa41ec2c4f8685869fa59596627b",
     "task_id": "smart-nexus-83",
+    "train_packing_policy_composition": {
+      "authorized_engine_delta": 6,
+      "authorized_owned_delta": 77,
+      "authorized_policy_sources_delta": 71,
+      "authorized_table_delta": 0,
+      "batch_id": "train-e93b49f38ad57a20e08e6e1acacd0f59",
+      "charged_files": {
+        "src/integration/train_policy.py": 6,
+        "src/prompts/integration_playbooks/fast-smooth-train.md": 71
+      },
+      "decision_message_id": "msg-cbd43d3b3df54c0bb4a527754d4435f0",
+      "dev_source_revision": "3deb7954d8ec711b4a62321879a39c2a82255c50",
+      "measured_source_revision": "8726aad5da8cffe23aa0a6162c7695773a176d25",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82524,
+      "previous_measured_owned_total": 157776,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +77 owned / +6 engine / +0 tables for the T3 train policy packing/bisection contract. Preserve original baselines, all historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "request_message_id": "msg-e452daeb051f4cf8bfc91f8759dac3c2",
+      "source_revision": "2643673db9887dab9585df454efa2e26d16b7e02",
+      "task_id": "bright-bridge-75.2",
+      "thread_id": "batch-e93b49-size-cap"
+    },
     "wait_admission_reobservation_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 29,
