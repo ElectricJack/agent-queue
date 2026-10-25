@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from src.config import AppConfig
 from src.database.queries.wait_queries import register_wait
@@ -29,6 +29,7 @@ from src.database.tables import (
     wait_measurements,
     wait_priority_projection,
     wait_records,
+    wait_source_events,
 )
 from src.integration.admission import observe_admission
 from src.messages.delivery import MessageDeliveryEngine
@@ -395,7 +396,10 @@ async def test_matrix_source_resolves_during_stop_never_overlaps_writable_sessio
 
     async def resolve_during_stop():
         await env.db.transition_task("source", TaskStatus.COMPLETED)
-        assert await service.tick()
+        # The explicit driver owns suspension. Drain only source delivery so
+        # background maintenance cannot start a second suspension attempt or
+        # temporarily hold the graph fence before the outcome assertion.
+        assert await service.listener.tick()
         await one_outcome(env, wakes=0)
         assert (await intent(env))["resume_state"] == "sleeping"
         assert (await intent(env))["new_session_id"] is None
@@ -405,13 +409,13 @@ async def test_matrix_source_resolves_during_stop_never_overlaps_writable_sessio
         env, monkeypatch, on_stop=resolve_during_stop)
     assert (await driver.advance(env.wait_id, handler=handler))["parked"]
     assert order == ["stop", "push", "release"]
-    assert await service.tick()
+    assert await service.listener.tick()
     outcome = await one_outcome(env, wakes=0)
     assert (await intent(env))["resume_state"] == "queued"
     assert (await env.db.get_task("owner")).claim_epoch == 2
     live = [r for r in await records(env, sessions) if r["state"] == "running"]
     assert live == []
-    assert await service.tick()
+    assert await service.listener.tick()
     assert await one_outcome(env, wakes=0) == outcome
     assert len(await records(env, continuations)) == 1
 
@@ -1119,6 +1123,139 @@ async def test_continuation_incident_binds_runtime_hold_and_replay(hibernation_e
     assert created["success"] and created["created"], created
     assert replay["success"] and not replay["created"], replay
     assert len(await records(env, escalations)) == 1
+
+
+@pytest.mark.parametrize("driver", ["scheduler", "listener"])
+@pytest.mark.parametrize("interruption", ["timeout", "cancel"])
+async def test_interrupted_wait_transaction_retries_and_resolves_message(
+    env, monkeypatch, driver, interruption,
+):
+    from src.wait_runtime import scheduler
+
+    service = service_for(env, [NOW + 1])
+    service.orch.config.wait_policy.scheduler_waits_enabled = True
+    await env.db.transition_task("source", TaskStatus.READY)
+    outgoing = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="s", to_kind="session",
+        to_id="peer", thread_id="reply-thread", body="question",
+    )
+    await register(env, {"kind": "message", "thread_id": "reply-thread",
+                         "after_seq": outgoing.created_seq})
+    assert await service.listener.tick()
+    answer = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="peer", to_kind="task",
+        to_id="owner", thread_id="reply-thread", body="answer",
+    )
+    source_seq = next(r["seq"] for r in await records(env, wait_source_events)
+                      if r["outcome_ref"] == f"message:{answer.id}")
+    original_title = (await env.db.get_task("source")).title
+    entered = asyncio.Event()
+
+    async def stall(conn):
+        await conn.execute(update(tasks).where(tasks.c.id == "source").values(title="aborted"))
+        entered.set()
+        # Cancellation during a real query invalidates the asyncpg connection.
+        await conn.execute(select(func.pg_sleep(60)))
+
+    original_dispatch = service.listener._dispatch
+    if driver == "scheduler":
+        async def observe(conn, task_id, **kwargs):
+            await stall(conn)
+
+        service.scheduler.reader = SimpleNamespace(observe_task=observe)
+        monkeypatch.setattr(scheduler, "SCHEDULER_SYNC_TIMEOUT",
+                            5 if interruption == "timeout" else 30)
+        async def tick():
+            return await scheduler.scheduler_tick(service.orch._command_handler)
+    else:
+        async def dispatch(conn, event):
+            await original_dispatch(conn, event)
+            if event["seq"] == source_seq:
+                # Roll back outcome/delivery writes along with the event cursor.
+                assert (await conn.scalar(select(wait_records.c.outcome))) == "satisfied"
+                await stall(conn)
+
+        monkeypatch.setattr(service.listener, "_dispatch", dispatch)
+        service.listener.lease_seconds = 1
+        tick = service.listener.tick
+
+    if interruption == "cancel":
+        running = asyncio.create_task(tick())
+        try:
+            await asyncio.wait_for(entered.wait(), 15)
+            await asyncio.sleep(0.02)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await running
+        finally:
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    elif driver == "listener":
+        with pytest.raises(TimeoutError):
+            await tick()
+    else:
+        await tick()
+        assert service.scheduler.health["failed_projects"]["p"]["consecutive_failures"] == 1
+
+    assert entered.is_set()
+    assert (await env.db.get_task("source")).title == original_title
+    assert (await records(env))[0]["outcome"] == "pending"
+    assert not await records(env, wait_measurements)
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] < source_seq
+    assert not any(m["body_kind"] == "wait_outcome" for m in await records(env, messages))
+
+    service.scheduler.reader = SimpleNamespace(observe_task=AsyncMock(return_value=None))
+    monkeypatch.setattr(service.listener, "_dispatch", original_dispatch)
+    service.listener.lease_seconds = 30
+    assert await service.listener.tick()
+    await scheduler.scheduler_tick(service.orch._command_handler)
+    assert service.scheduler.health == {"ok": True, "failed_projects": {}}
+    outcome = await one_outcome(env)
+    assert outcome["result_ref"] == f"message:{answer.id}"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] >= source_seq
+    assert await service.listener.tick()
+    assert await one_outcome(env) == outcome
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+async def test_scheduler_health_tracks_project_failure_streak_until_completed_sync(
+    monkeypatch, failure,
+):
+    from src.wait_runtime import scheduler
+
+    projects = [SimpleNamespace(id=pid) for pid in ("healthy", "failing")]
+    mode = [failure]
+
+    async def execute(name, args):
+        if args["project_id"] == "healthy" or mode[0] == "success":
+            return {"success": True}
+        if mode[0] == "timeout":
+            await asyncio.sleep(60)
+        return {"success": False, "error_code": "wait.graph_busy" if mode[0] == "busy"
+                else "command_runtime_error"}
+
+    monkeypatch.setattr(scheduler, "SCHEDULER_SYNC_TIMEOUT", 0.01)
+    orch = SimpleNamespace(db=SimpleNamespace(list_projects=AsyncMock(return_value=projects)))
+    service = orch.wait_scheduler_service = SchedulerWaitService(orch, reader=SimpleNamespace())
+    handler = SimpleNamespace(orchestrator=orch, execute=execute)
+    for count in (1, 2):
+        if failure == "error":
+            with pytest.raises(WaitError) as error:
+                await scheduler.scheduler_tick(handler)
+            assert error.value.code == "wait.scheduler_sync_failed"
+        else:
+            await scheduler.scheduler_tick(handler)
+        health = service.health
+        assert health["ok"] is False
+        assert list(health["failed_projects"]) == ["failing"]
+        assert health["failed_projects"]["failing"]["consecutive_failures"] == count
+    mode[0] = "busy"
+    await scheduler.scheduler_tick(handler)
+    assert service.health == health  # Contention neither adds nor clears failures.
+    mode[0] = "success"
+    await scheduler.scheduler_tick(handler)
+    assert service.health == {"ok": True, "failed_projects": {}}
 
 
 async def test_hung_project_sync_is_bounded_and_rotates_off_the_head(monkeypatch, caplog):

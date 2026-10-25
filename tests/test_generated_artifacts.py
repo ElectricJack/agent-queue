@@ -651,6 +651,105 @@ async def test_legacy_branch_without_unported_deltas_merges_cleanly(tmp_path, pa
 
 
 @pytest.mark.parametrize("path", LEGACY_SOURCES)
+@pytest.mark.parametrize("history", ["older-dev", "same-tree", "earlier-merge"])
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_epic_refresh_nets_inherited_legacy_evidence(tmp_path, path, history, reverse):
+    repo, _, migrated, _ = _legacy_bookkeeping_branches(tmp_path, path, ported=True)
+    base = _git(repo, "rev-parse", f"{migrated}^").stdout.strip()
+    prefix, _ = LEGACY_SOURCES[path]
+    if path.endswith(".py"):
+        fragment = repo / prefix / "0000_base.py.inc"
+        fragment.write_text(fragment.read_text().replace("assert 2", "assert 3"))
+    else:
+        fragment = (repo / prefix / "policy/version.json" if "ownership" in path else
+                    repo / prefix / "src/base.py.json")
+        payload = json.loads(fragment.read_text())
+        if "ownership" in path:
+            payload["version"] = 3
+        else:
+            payload["base"]["source_digest"] = "later reviewed source"
+        fragment.write_text(json.dumps(payload) + "\n")
+    # Intermediate train commits may carry older generated outputs alongside
+    # newer shards. Both dev and the epic inherit this reviewed history.
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "dev shards advanced before final sweep")
+    old_dev = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    epic = old_dev
+    if history == "same-tree":
+        _git(repo, "commit", "--allow-empty", "-qm", "epic with no unique tree changes")
+        epic = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    elif history == "earlier-merge":
+        epic = _git(repo, "commit-tree", f"{old_dev}^{{tree}}", "-p", base, "-p", old_dev,
+                    "-m", "earlier dev merge into epic").stdout.strip()
+    _git(repo, "checkout", "--detach", old_dev)
+    subprocess.run([sys.executable, "scripts/bookkeeping_sources.py"], cwd=repo, check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "newer dev projections")
+    current = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert _git(repo, "diff", f"{current}...{epic}").stdout == ""
+    sides = [epic, current] if reverse else [current, epic]
+    # Preserve the explicitly requested merge base, including in the final
+    # sweep's AQ_GENERATED_MERGE_INPUTS recheck.
+    tree = await merge_generated_tree(
+        GitManager(), repo, ["merge-tree", "--write-tree", f"--merge-base={base}", *sides],
+    )
+    assert _git(repo, "show", f"{tree}:{path}").stdout == _git(
+        repo, "show", f"{current}:{path}",
+    ).stdout
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    assert not list(tmp_path.glob("aq-regen-*"))
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+async def test_legacy_delta_already_represented_on_target_merges(tmp_path, path):
+    repo, base, _, legacy = _legacy_bookkeeping_branches(tmp_path, path)
+    # Port exactly the old branch's delta on dev, retaining dev's independent
+    # migration evidence. The old branch itself remains untouched.
+    _git(repo, "checkout", "--detach", "main")
+    prefix, _ = LEGACY_SOURCES[path]
+    if path.endswith(".py"):
+        fragment = repo / prefix / "0000_base.py.inc"
+        fragment.write_text(fragment.read_text().replace("assert 1", "assert 2"))
+    else:
+        fragment = (repo / prefix / "policy/version.json" if "ownership" in path else
+                    repo / prefix / "src/base.py.json")
+        payload = json.loads(fragment.read_text())
+        if "ownership" in path:
+            payload["version"] = 2
+        else:
+            payload["base"]["source_digest"] = "reviewed legacy delta"
+        fragment.write_text(json.dumps(payload) + "\n")
+    subprocess.run([sys.executable, "scripts/bookkeeping_sources.py"], cwd=repo, check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "dev ported old branch delta")
+    current = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    tree = await merge_generated_tree(
+        GitManager(), repo, ["merge-tree", "--write-tree", f"--merge-base={base}", current, legacy],
+    )
+    assert _git(repo, "show", f"{tree}:{path}").stdout == _git(
+        repo, "show", f"{current}:{path}",
+    ).stdout
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
+async def test_equal_unported_legacy_blobs_on_both_sides_still_refuse(tmp_path, path):
+    repo, base, migrated, legacy = _legacy_bookkeeping_branches(tmp_path, path)
+    _git(repo, "checkout", "--detach", migrated)
+    (repo / path).write_text(_git(repo, "show", f"{legacy}:{path}").stdout)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "same unported aggregate on dev")
+    current = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    with pytest.raises(GeneratedMergeConflict) as caught:
+        await merge_generated_tree(
+            GitManager(), repo,
+            ["merge-tree", "--write-tree", f"--merge-base={base}", current, legacy],
+        )
+    assert path in caught.value.files
+    assert RECIPE in str(caught.value)
+    assert not list(tmp_path.glob("aq-regen-*"))
+
+
+@pytest.mark.parametrize("path", LEGACY_SOURCES)
 @pytest.mark.parametrize("ported", [False, True], ids=["unported", "ported"])
 def test_legacy_merge_driver_requires_proven_source_refs(tmp_path, path, ported):
     repo, base, migrated, other = _legacy_bookkeeping_branches(tmp_path, path, ported=ported)

@@ -22,6 +22,7 @@ from src.integration.branch_retirement import (
 )
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+from src.integration.delivery_branches import live_branch_references
 from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from src.sessions.obsolete import ObsoleteClose
@@ -547,6 +548,53 @@ async def aborted_batch(db, head, *, aborted=True):
             created_at=1, updated_at=1,
         ))
     return await db.get_integration_batch("batch")
+
+
+@pytest.mark.parametrize(
+    ("intent", "lifecycle", "queue_status", "cleanup_state", "held"),
+    [
+        ("open", "sealed", None, "pending", True),
+        ("paused", "repairing", None, "pending", True),
+        ("aborted", "sealed", None, "pending", False),
+        ("aborted", "repairing", None, "pending", False),
+        ("aborted", "aborted", None, "pending", False),
+        ("aborted", "aborted", "deferred", "retained", True),
+        ("aborted", "aborted", "companion", "retained", True),
+        ("aborted", "aborted", "deferred", "pending", False),
+        ("aborted", "aborted", "companion", "pending", False),
+        ("aborted", "aborted", "companion", "complete", False),
+        ("open", "promoted", None, "pending", True),
+        ("open", "promoted", None, "complete", False),
+    ],
+)
+async def test_batch_intent_overrides_stale_liveness_for_retirement(
+    setup, intent, lifecycle, queue_status, cleanup_state, held,
+):
+    db, git, service, checkout, remote, head = setup
+    await BatchStore(db).freeze(
+        Batch(id="batch", project_id="p", repository_id="repo", target_ref="refs/heads/main"),
+        [BatchMember(task_id="retired", source_sha=head, source_base_sha=head)],
+        trees={"retired": await git.arev_parse(str(checkout), head + "^{tree}")},
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_batches).where(integration_batches.c.id == "batch").values(
+                intent=intent, lifecycle=lifecycle, cleanup_state=cleanup_state,
+                fixer_queue={"status": queue_status} if queue_status else None,
+            )
+        )
+        references = await live_branch_references(conn)
+    for ref in (candidate_ref("batch").removeprefix("refs/heads/"), BRANCH):
+        assert (ref in references) is held
+
+    # An explicit task retirement may retire its source independently of the
+    # aborted batch. The daily sweep uses the same live-reference predicate.
+    await request(db)
+    outcomes = await service.drain_due()
+    assert outcomes
+    audit = next(row for row in await rows(db) if row["branch"] == BRANCH)
+    assert audit["state"] == ("pending" if held else "complete")
+    assert await git.arev_parse(str(remote), BRANCH) == (head if held else None)
 
 
 async def test_abort_decision_queues_private_refs_but_preview_does_not(setup):

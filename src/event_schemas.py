@@ -816,7 +816,7 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
             "to_kind",
             "to_id",
         ],
-        "optional": ["thread_id", "subject", "pane_open"],
+        "optional": ["thread_id", "subject", "pane_open", "body_kind"],
     },
     "message.delivered": {
         # ``method``: nudge | inject | prime
@@ -1209,6 +1209,10 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
     "session.claim_timeout": {
         "required": ["session_id"],
         "optional": ["task_id"],
+    },
+    "session.claim_file_missing": {
+        "required": ["session_id", "task_id", "claim_epoch"],
+        "optional": ["project_id"],
     },
     # A session that had nothing left to do -- a recorded stop intent
     # (``aq task close``'s release, a drain, ``aq session kill``) or a spent
@@ -2140,6 +2144,12 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         "required": ["conversation_id", "input_id", "reply_message_id", "delivery_dedup_key", "created"],
         "optional": [],
         "types": {"conversation_id": str, "input_id": str, "reply_message_id": str,
+                  "delivery_dedup_key": str, "created": bool},
+    },
+    "conversation.post_queued.v1": {
+        "required": ["conversation_id", "reply_message_id", "delivery_id", "delivery_dedup_key", "created"],
+        "optional": [],
+        "types": {"conversation_id": str, "reply_message_id": str, "delivery_id": str,
                   "delivery_dedup_key": str, "created": bool},
     },
     "conversation.input_received.v1": {
