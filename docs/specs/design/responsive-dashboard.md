@@ -42,3 +42,8 @@ charged footprint falls from 59 to 33 lines, so the exact transition ceiling
 falls by 26 to 157,899 owned lines; engine lines remain 82,649 and tables remain
 45. Historical grants and baseline measurements stay intact, and the size tests
 retain their equality assertions and zero remaining headroom.
+
+Merging dev's separately approved historical root PR diagnostics adds its
+recorded 86 owned/engine lines to that reduced ceiling: 157,985 owned lines and
+82,735 engine lines, still with 45 tables and zero remaining headroom. Both
+composition records retain their original measurements and decision evidence.
