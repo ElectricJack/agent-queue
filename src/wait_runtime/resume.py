@@ -19,7 +19,7 @@ from src.scheduler import AssignAction
 from src.waits.conditions import WaitError
 from src.waits.admission import admission_pass
 
-from src.waits.graph import background_graph_work
+from src.waits.graph import background_graph_work, lock_graph
 from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
@@ -27,6 +27,8 @@ from src.wait_runtime.legacy_parking import parked
 
 
 WORKSPACE_ATTEMPTS = 3
+# Outlast one listener batch's 30-second lease budget, including its handoff.
+RESUME_GRAPH_LOCK_TIMEOUT = 35.0
 
 
 def retryable_workspace_error(exc):
@@ -100,6 +102,9 @@ class ResumeTransaction:
     @admission_pass("service.scheduler.reader")
     async def _reserve(self, continuation_id, generation):
         async with self.db._engine.begin() as conn:
+            # Join PostgreSQL's lock queue before transaction reads. A listener
+            # draining a backlog must hand off to this waiter between batches.
+            await lock_graph(conn, queued=True, timeout=RESUME_GRAPH_LOCK_TIMEOUT)
             wait_id = await conn.scalar(select(continuations.c.wait_id).where(
                 continuations.c.id == continuation_id,
             ))
@@ -324,6 +329,9 @@ class ResumeTransaction:
     async def requeue(self, args, *, principal, scope, handler):
         """Supervisor repair of a resolved wait's held resume, fenced by generation."""
         async with self.db._engine.begin() as conn:
+            # Join the same fair queue as automatic resume. Acquire before any
+            # read or mutation so refusal/cancellation leaves the hold intact.
+            await lock_graph(conn, queued=True)
             task, wait, intent = await locked_suspension(conn, args['wait_id'])
             if scope.get('project_id') not in (None, task['project_id']):
                 raise WaitError('wait.out_of_scope', 'continuation is outside supervisor scope')

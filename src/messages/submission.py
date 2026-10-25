@@ -127,6 +127,16 @@ async def prepare_submission(handler, args, *, conn=None):
         }
     if not to_id:
         return {"success": False, "error": "to_id is required"}
+    if to_kind == "user" and to_id != "dashboard":
+        return {
+            "success": False,
+            "error_code": "unsupported_user_destination",
+            "error": (
+                f"No message delivery path for user:{to_id}. Use user:dashboard for the "
+                "human inbox, or aq supervisor-inbox say --conversation-id <id> "
+                "--text <text> --idempotency-key <key> for Discord."
+            ),
+        }
 
     from_kind = (args.get("from_kind") or "user").strip()
     from_id = (args.get("from_id") or "").strip()

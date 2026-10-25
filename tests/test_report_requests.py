@@ -1,10 +1,11 @@
-"""Durable hourly author requests, CAS submission and deterministic fallback."""
+"""Durable hourly author requests, CAS submission and minimal no-report fallback."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -124,6 +125,10 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert window["due_at"] == BASE + HOUR + 300
     assert request["brief"]["facts"][0]["delivery"] == "unknown"
     assert request["brief"]["facts"][0]["source_url"].endswith("/focus/tasks/t1")
+    assert request["brief"]["counts"] == {"facts": 1, "completed": 1, "active": 0}
+    assert window["payload"]["text"] == request["fallback_text"] == (
+        "No report this hour: the supervisor update is unavailable."
+    )
 
     queued = await db.request_report(request["id"], now=clock.now)
     repeated = await db.request_report(request["id"], now=clock.now)
@@ -144,11 +149,19 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     second = await digest.tick()
     assert second.sent == 1
     posted = next(iter(transport.messages.values())).content
-    assert "Completed t1; delivery to main is pending." in posted
+    # The delivered body is precisely the author's prose plus server additions,
+    # never the assembled digest or the JSON evidence brief.
+    assert posted == (
+        "Completed t1; delivery to main is pending.\n"
+        f"{request['brief']['dashboard_url']}{marker_for(window['id'])}"
+    )
     marker = marker_for(window["id"])
     assert posted.endswith(marker) and posted.count(marker) == 1
     assert "aq-dig:" not in posted
     assert len(posted) <= MAX_CHARS
+    assert request["fallback_text"] not in posted
+    assert (await digest.tick()).sent == 0
+    assert len(transport.messages) == 1
     assert (await db.get_report_request(request["id"]))["state"] == "submitted"
     assert (await db.get_report_request(request["id"]))["source_links"] == [
         "https://queue.example.test/focus/tasks/t1"
@@ -249,11 +262,15 @@ async def test_deadline_falls_back_and_late_submission_cannot_edit(db, monkeypat
     monkeypatch.setattr("src.commands.report_commands.time.time", clock)
     digest, transport, _ = service(db, clock)
     await digest.tick()
-    _window, request = await request_for(db, digest)
+    window, request = await request_for(db, digest)
     queued = await db.request_report(request["id"], now=clock.now)
     clock.now = BASE + HOUR + 301
     assert (await digest.tick()).sent == 1
     assert (await db.get_report_request(request["id"]))["state"] == "fallback"
+    assert next(iter(transport.messages.values())).content == (
+        "No report this hour: the supervisor update is unavailable."
+        f"{marker_for(window['id'])}"
+    )
     with principal_context(TRUSTED_LOCAL):
         result = await Commands(db)._cmd_report_submit(
             {
@@ -265,6 +282,66 @@ async def test_deadline_falls_back_and_late_submission_cannot_edit(db, monkeypat
         )
     assert result["error_code"] == "report.closed"
     assert len(transport.messages) == 1
+
+
+@pytest.mark.parametrize(
+    "skip_reason", ["playbook_inactive", "deadline_elapsed", "quiet_hours", "author_busy"]
+)
+async def test_unavailable_author_never_delivers_concatenated_facts(db, skip_reason):
+    await completed_task(db, "t1", BASE + 600)
+    clock = Clock(BASE + HOUR + 30)
+    digest, transport, config = service(db, clock)
+    if skip_reason == "playbook_inactive":
+        digest._authoring_ready = lambda: False
+    elif skip_reason == "deadline_elapsed":
+        clock.now = BASE + HOUR + 301
+    elif skip_reason == "quiet_hours":
+        config.reports.hourly.quiet_hours = ReportQuietHoursConfig("00:00", "23:59")
+    else:
+        # Hold the first author's slot through the next window.
+        await digest.evaluate()
+        _, first = await request_for(db, digest)
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(supervisor_report_requests)
+                .where(supervisor_report_requests.c.id == first["id"])
+                .values(deadline=BASE + 3 * HOUR)
+            )
+        await completed_task(db, "t2", BASE + HOUR + 600)
+        clock.now = BASE + 2 * HOUR + 30
+        await digest.evaluate()
+    await digest.tick()
+    window, request = await request_for(db, digest)
+    assert request is None
+    assert window["payload"]["author_skip_reason"] == skip_reason
+    assert window["payload"]["text"] == (
+        "No report this hour: the supervisor update is unavailable."
+    )
+    assert next(
+        msg.content for msg in transport.messages.values()
+        if msg.content.endswith(marker_for(window["id"]))
+    ) == window["payload"]["text"] + marker_for(window["id"])
+
+
+async def test_active_work_without_new_facts_stays_silent(db):
+    clock = Clock(BASE + HOUR + 30)
+    digest, transport, _ = service(db, clock)
+    active = (ActiveTask(task_id="ongoing", project_id="p", title="Ongoing", started_at=BASE),)
+    digest._evaluate_window = AsyncMock(return_value=DigestResult(
+        send=True,
+        reason="active_execution",
+        text="Deterministic active-work counts must not be delivered",
+        active_count=1,
+        eligibility=Eligibility(send=True, reason="active_execution", facts=(), active=active),
+    ))
+    assert (await digest.tick()).sent == 0
+    window, request = await request_for(db, digest)
+    assert request is None
+    assert window["send_status"] == "suppressed"
+    assert window["suppression_reason"] == "no_new_facts"
+    assert window["payload"] is None
+    assert transport.messages == {}
+    assert (await digest.tick()).evaluated == 0
 
 
 async def test_disable_releases_fallback_without_waiting_for_deadline(db):
@@ -336,6 +413,9 @@ async def test_daily_cap_counts_a_failed_author_reservation(db):
     newest = windows[0]
     assert newest["id"] != first["id"]
     assert newest["payload"]["author_skip_reason"] == "daily_cap"
+    assert newest["payload"]["text"] == (
+        "No report this hour: the supervisor update is unavailable."
+    )
     assert len(transport.messages) == 2
 
 
