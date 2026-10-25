@@ -12,7 +12,7 @@ from sqlalchemy import insert, select, update
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.database.tables import (
     admission_reservations, agents, continuations, events, messages, provider_availability,
-    tasks, sessions,
+    tasks, sessions, workspaces,
 )
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
@@ -375,7 +375,7 @@ class ResumeTransaction:
                     'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
 
     async def bind_launch(self, action, record):
-        """Commit the next process identity and immutable envelope before spawn."""
+        """Commit the next writer's acquisition receipt and outcome before spawn."""
         async with self.db._engine.begin() as conn:
             wait_id = await conn.scalar(select(continuations.c.wait_id).where(
                 continuations.c.id == action.continuation_id,
@@ -392,6 +392,21 @@ class ResumeTransaction:
                     or task['assigned_agent_id'] != action.agent_id
                     or task['claim_epoch'] != record.last_claim_epoch):
                 raise WaitError('continuation.stale_generation', 'launch reservation changed')
+            workspace = (await conn.execute(select(workspaces).where(
+                workspaces.c.workspace_path == record.work_dir,
+            ).with_for_update())).mappings().one_or_none()
+            if (workspace is None or not workspace['enabled']
+                    or workspace['project_id'] != task['project_id']
+                    or workspace['locked_by_task_id'] != task['id']
+                    or workspace['locked_by_agent_id'] != action.agent_id
+                    or record.task_id != task['id'] or record.agent_id != action.agent_id
+                    or record.project_id != task['project_id']):
+                raise WaitError('continuation.stale_generation', 'launch workspace binding changed')
+            await self.db.set_task_meta(task['id'], 'claim_workspace', {
+                'workspace_id': workspace['id'], 'generation': workspace['generation'],
+                'session_id': record.id, 'instance_token': record.instance_token,
+                'claim_epoch': record.last_claim_epoch,
+            }, conn=conn)
             held = await held_messages(conn, wait)
             ids = [m['id'] for m in held]
             envelope = wait_outcome_envelope(wait, intent, held_messages=ids)

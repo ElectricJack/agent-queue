@@ -107,6 +107,11 @@ A fresh continuation reuses the workspace row at a newly provisioned path. After
 reprovisioning, both the initial launch and restart recovery stamp `task_id`,
 `branch` and `assigned_at` for the resumed assignment, preserving the provisioned
 workspace identity and setup hash before launching or retiring the old checkout.
+When binding the new session before spawn, resume locks and verifies the registered
+workspace's task, agent, project and path, then records `claim_workspace` with its
+current generation, the new session and instance token, and the resumed claim epoch.
+The receipt and continuation launch binding commit together; predecessor receipts
+are never reused for the resumed writer.
 
 ---
 

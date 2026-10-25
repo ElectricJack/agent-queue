@@ -1402,6 +1402,7 @@ async def bound_resume(env):
     from src.database.tables import admission_reservations, agents
     from src.scheduler import AssignAction
     from src.wait_runtime.resume import ResumeTransaction
+    from src.models import RepoSourceType, Workspace
 
     await capture(env)
     await mail(env, 'held-task', to_kind='task', to_id='owner')
@@ -1430,6 +1431,9 @@ async def bound_resume(env):
     service = SimpleNamespace(orch=SimpleNamespace(db=env.db))
     driver = ResumeTransaction(service, clock=lambda: NOW + 30)
     action = AssignAction('a', 'owner', 'p', 'c', 1)
+    await env.db.create_workspace(Workspace(
+        id='resume-slot', project_id='p', workspace_path=record.work_dir,
+        source_type=RepoSourceType.CLONE, locked_by_task_id='owner', locked_by_agent_id='a'))
     await driver.bind_launch(action, record)
     await env.db.create_session(record)
     scope = replace(env.scope, session_id='fresh', instance_token='fresh-token', claim_epoch=2)
@@ -1731,6 +1735,8 @@ async def test_failed_resume_retries_once_then_holds_without_frontier_requeue(en
 
     driver, action, _ = await bound_resume(env)
     await env.db.update_session('fresh', state='stopped', desired_state='stopped')
+    # This retry case starts after the failed writer's checkout was released.
+    await env.db.update_workspace('resume-slot', locked_by_task_id=None, locked_by_agent_id=None)
     service = driver.service
     service.lifecycle = SimpleNamespace(hibernate=HibernationTransaction(service))
     driver.orch.token_store = SimpleNamespace(revoke_session=AsyncMock())
@@ -2087,6 +2093,46 @@ def assert_fresh_checkout(env, rig, target):
     assert not rig.old.exists()
 
 
+async def assert_resumed_binding(env, rig, target):
+    """Bind the new process and prove the sentinel plus durable receipt agree."""
+    from src.claim_file import write_claim_file
+    from src.database.tables import admission_reservations, workspaces
+    from src.models import RepoSourceType, Workspace
+    from src.orchestrator.workspace_binding_audit import reconcile_slot_bindings
+    from src.scheduler import AssignAction
+
+    del env.db.get_workspace
+    await env.db.create_workspace(Workspace(
+        id='base', project_id='p', workspace_path=str(rig.base),
+        source_type=RepoSourceType.CLONE))
+    await env.db.create_workspace(Workspace(
+        id='slot', project_id='p', workspace_path=target,
+        source_type=RepoSourceType.WORKTREE, slot_index=0, base_workspace_id='base',
+        locked_by_task_id='owner', locked_by_agent_id='a'))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(workspaces).where(workspaces.c.id == 'slot').values(generation=103))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            assigned_agent_id='a', status='RESUME_PENDING'))
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 25))
+        await conn.execute(insert(admission_reservations).values(
+            id='reservation', project_id='p', continuation_id='c', scope={},
+            effective_priority=100, provenance='resume', deadline_at=NOW + 300,
+            state='granted', created_at=NOW + 30))
+    record = SessionRecord(
+        id='fresh', task_id='owner', agent_id='a', project_id='p', profile_id='worker-codex',
+        harness='codex', provider='fake', name='fresh', lifecycle='task', state='running',
+        work_dir=target, epoch='boot', instance_token='fresh-token',
+        last_claim_epoch=2, started_at=NOW + 30)
+    await env.db.set_task_meta('owner', 'claim_workspace', {'session_id': 'predecessor'})
+    await rig.driver.bind_launch(AssignAction('a', 'owner', 'p', 'c', 1), record)
+    assert await env.db.get_task_meta('owner', 'claim_workspace') == {
+        'workspace_id': 'slot', 'generation': 103, 'session_id': 'fresh',
+        'instance_token': 'fresh-token', 'claim_epoch': 2}
+    await env.db.create_session(record)
+    write_claim_file(target, {'task_id': 'owner', 'claim_epoch': 2, 'session_id': 'fresh'})
+    assert await reconcile_slot_bindings(env.db, rig.slots, 'p') == []
+
+
 async def test_fresh_resume_reprovisions_through_real_slot_manager_without_pruning(env, tmp_path):
     rig = await fresh_rig(env, tmp_path)
 
@@ -2101,6 +2147,7 @@ async def test_fresh_resume_reprovisions_through_real_slot_manager_without_pruni
     assert (await intent(env))['facts']['fresh_workspace'] == {
         'old_path': str(rig.old), 'new_path': str(rig.target), 'workspace_id': 'slot',
         'attempt': 1}
+    await assert_resumed_binding(env, rig, target)
 
 
 async def test_restart_recovery_adopts_added_checkout_and_retires_old_folder(env, tmp_path):
@@ -2114,6 +2161,7 @@ async def test_restart_recovery_adopts_added_checkout_and_retires_old_folder(env
     registered = await rig.registered()
     assert rig.peer.resolve() in registered and rig.old.resolve() not in registered
     assert await rig.git._arun(['rev-parse', 'HEAD'], cwd=target) == rig.head
+    await assert_resumed_binding(env, rig, target)
 
 
 @pytest.mark.parametrize('drift', ['dirty', 'branch', 'ancestry'])
@@ -2447,6 +2495,31 @@ async def workspace_resume(env):
     service.orch._launch_session_for_task_locked = AsyncMock()
     service.lifecycle.resume.fresh_workspace = AsyncMock(return_value='/tmp/preserved')
     return service, action, now
+
+
+@pytest.mark.parametrize('mutation', ['path', 'agent', 'task', 'disabled'])
+async def test_resume_launch_receipt_refuses_changed_workspace_binding(env, mutation):
+    from dataclasses import replace
+    from src.database.tables import admission_reservations, workspaces
+
+    service, action, _ = await workspace_resume(env)
+    fields = {
+        'path': {'workspace_path': '/tmp/another-checkout'},
+        'agent': {'locked_by_agent_id': None},
+        'task': {'locked_by_task_id': None},
+        'disabled': {'enabled': False},
+    }[mutation]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(workspaces).where(workspaces.c.id == 'resume-slot').values(**fields))
+    before = await env.db.get_task_meta('owner', 'claim_workspace')
+    record = replace(await env.db.get_session('fresh'), id='replacement')
+    with pytest.raises(WaitError, match='launch workspace binding changed'):
+        await service.lifecycle.resume.bind_launch(action, record)
+    assert await env.db.get_task_meta('owner', 'claim_workspace') == before
+    assert (await intent(env))['resume_state'] == 'reserved'
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(admission_reservations.c.state)) == 'granted'
+        assert await conn.scalar(select(messages.c.id).where(messages.c.to_id == 'replacement')) is None
 
 
 @pytest.mark.parametrize('error', [WaitError('wait.graph_busy', 'lock timeout'), TimeoutError()])
