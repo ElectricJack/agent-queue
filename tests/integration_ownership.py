@@ -933,7 +933,22 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2426,
+ 'authorized_owned_delta': 2400,
+ 'responsive_dashboard_reduction': {'current_charged_files': {'dashboard/src/pages/BatchDetail.tsx': 33},
+ 'measured_engine_lines': 82649,
+ 'measured_owned_total': 157899,
+ 'measured_table_count': 45,
+ 'previous_charged_files': {'dashboard/src/pages/focus/FocusBatch.tsx': 36,
+                            'dashboard/src/pages/focus/focusFormat.ts': 23},
+ 'previous_measured_owned_total': 157925,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2028',
+ 'reason': 'Retire Focus UI and simplify its surviving batch helpers in the main dashboard. '
+           'Lower the exact cap by 26 removed owned lines; preserve historical grants, fixed '
+           'baselines, integration ownership, equality assertions and zero remaining '
+           'headroom. No cap growth or new storage category.',
+ 'reclaimed_owned_lines': 26,
+ 'source_revision': 'db4c9af789df269ba20ddcaa30143ccc7137cd5c',
+ 'task_id': 'grand-ember-55'},
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 15,
  'authorized_shared_owned_delta': 15,
@@ -1092,7 +1107,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82649,
- 'measured_owned_total': 157925,
+ 'measured_owned_total': 157899,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,

@@ -4512,7 +4512,7 @@
       },
       {
         "protocol": "delegated_producer: dictionary expansion retains producer outcome",
-        "return": "{**_error('ask.context_missing', 'Review the request effects and pass its expected version; use prepare first'), 'ask_id': ask['id'], 'ask_url': f'/focus/asks/{ask['id']}', 'expected': {k: ask[k] for k in ('decision_generation', 'source_fingerprint', 'feedback_version')}}"
+        "return": "{**_error('ask.context_missing', 'Review the request effects and pass its expected version; use prepare first'), 'ask_id': ask['id'], 'ask_url': f'/asks/{ask['id']}', 'expected': {k: ask[k] for k in ('decision_generation', 'source_fingerprint', 'feedback_version')}}"
       },
       {
         "protocol": "delegated_producer",
@@ -4523,9 +4523,9 @@
         "return": "{'success': True, 'ask_id': ask['id'], 'preview': preview, 'expected': args['expected']}"
       }
     ],
-    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed canonical /focus/asks compatibility URL; outcome protocol, resource gates and typed contract unchanged.",
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed grand-ember-55 canonical /asks URL migration; success/error branches, original-principal resource gates and typed contract are unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:a06e77eb4ed436ca45caa9a3e61bbea29ca38c6f1b1fdd52dfdd74b28529e51a",
+    "source_digest": "sha256:aaf6e3674fca77288f06c50c526901506ae563994c58d0b8e908eb367a3a7e1c",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -4608,9 +4608,9 @@
         "return": "error"
       }
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed grand-ember-55 canonical /asks URL migration; success/error branches, original-principal resource gates and typed contract are unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:0b7e7bfb3269992a37444b90b7df60c3bbe6915dc496d362d6ddb5a8e16bc5b7",
+    "source_digest": "sha256:a9196482bbf04f09797a89aa943d0f9e8b5259d38abe4e28ea2ca8c1a6020e39",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",

@@ -34,3 +34,11 @@ selected conversation query. There is no separate mobile mode or link policy.
 Validation uses dashboard typecheck, build and Vitest, Python posted-link and
 doctor tests, and the browser layout harness at 390px (including menu behavior,
 task, ask, review, session and conversation screens).
+
+The CI repair updates the reviewed escalation handler audits for the canonical
+`/asks` URLs. Integration ownership follows the surviving batch scan, member
+schema, projection types and reference helper into `BatchDetail.tsx`. Their
+charged footprint falls from 59 to 33 lines, so the exact transition ceiling
+falls by 26 to 157,899 owned lines; engine lines remain 82,649 and tables remain
+45. Historical grants and baseline measurements stay intact, and the size tests
+retain their equality assertions and zero remaining headroom.
