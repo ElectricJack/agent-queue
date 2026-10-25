@@ -2803,7 +2803,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2411,
+    "authorized_owned_delta": 2426,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2824,6 +2824,30 @@
       "thread_id": "wise-crest-14-ci-size"
     },
     "expires_at": "s4_modules",
+    "fresh_continuation_sentinel_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 15,
+      "authorized_shared_owned_delta": 15,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/wait_runtime/resume.py": 15
+      },
+      "decision_message_id": "msg-d4963b0d021949979babe990b4d8fe31",
+      "dev_source_revision": "94f4c82ee1898298711498c93ca90cb459816db6",
+      "measured_engine_lines": 82532,
+      "measured_owned_total": 157808,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82532,
+      "previous_measured_owned_total": 157793,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2008",
+      "reason": "Exact supervisor-approved +15 shared owned lines for the fresh-continuation workspace acquisition receipt before spawn. Sentinel stamping and prime/ack guidance remain intact. Preserve original baselines, every historical grant and ownership classification, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "490a0b1d82633cf41a071af421726fd9842c9d78",
+      "task_id": "wise-cascade-80",
+      "thread_id": "wise-cascade-80-ci-size"
+    },
     "held_ingestion_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 14,
@@ -2928,7 +2952,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 82649,
-    "measured_owned_total": 157910,
+    "measured_owned_total": 157925,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -16438,7 +16462,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2411,
+      "authorized_owned_delta": 2426,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16459,6 +16483,30 @@
         "thread_id": "wise-crest-14-ci-size"
       },
       "expires_at": "s4_modules",
+      "fresh_continuation_sentinel_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 15,
+        "authorized_shared_owned_delta": 15,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/wait_runtime/resume.py": 15
+        },
+        "decision_message_id": "msg-d4963b0d021949979babe990b4d8fe31",
+        "dev_source_revision": "94f4c82ee1898298711498c93ca90cb459816db6",
+        "measured_engine_lines": 82532,
+        "measured_owned_total": 157808,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82532,
+        "previous_measured_owned_total": 157793,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2008",
+        "reason": "Exact supervisor-approved +15 shared owned lines for the fresh-continuation workspace acquisition receipt before spawn. Sentinel stamping and prime/ack guidance remain intact. Preserve original baselines, every historical grant and ownership classification, with zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "490a0b1d82633cf41a071af421726fd9842c9d78",
+        "task_id": "wise-cascade-80",
+        "thread_id": "wise-cascade-80-ci-size"
+      },
       "held_ingestion_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 14,
@@ -16563,7 +16611,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 82649,
-      "measured_owned_total": 157910,
+      "measured_owned_total": 157925,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16786,7 +16834,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157910,
+    "owned_total_cap": 157925,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

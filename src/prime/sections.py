@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -539,7 +540,13 @@ def build_wait_outcome_section(context: dict) -> PrimeSection:
     if context["continuation"]["resume_state"] == "acknowledged":
         body += "\nThis outcome was already acknowledged by this session."
     else:
-        body += "\nAcknowledge this outcome with `aq wait ack` before continuing task mutations."
+        intent = context["continuation"]
+        command = shlex.join([
+            'aq', 'wait', 'ack', '--wait-id', intent['wait_id'],
+            '--continuation-id', intent['id'],
+            '--generation', str(intent['suspension_generation']),
+        ])
+        body += f"\nRun `{command}`, then `aq prime` again before continuing task work."
     return PrimeSection(key="wait_outcome", title="Wait outcome", body=body)
 
 
