@@ -1,7 +1,7 @@
 {
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2354,
+    "authorized_owned_delta": 3380,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -105,8 +105,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82530,
-    "measured_owned_total": 157853,
+    "measured_engine_lines": 83556,
+    "measured_owned_total": 158879,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -187,6 +187,52 @@
       "source_revision": "2643673db9887dab9585df454efa2e26d16b7e02",
       "task_id": "bright-bridge-75.2",
       "thread_id": "batch-e93b49-size-cap"
+    },
+    "train_signature_packing_composition": {
+      "approved_deltas": {
+        "bright-bridge-75.1": {
+          "engine": 506,
+          "owned": 506,
+          "tables": 0
+        },
+        "bright-bridge-75.3": {
+          "engine": 520,
+          "owned": 520,
+          "tables": 0
+        }
+      },
+      "authorized_engine_delta": 1026,
+      "authorized_owned_delta": 1026,
+      "authorized_table_delta": 0,
+      "batch_id": "train-61c9e9190cb47788e11d2cf2b6522fd5",
+      "charged_files": {
+        "src/integration/batches.py": 20,
+        "src/integration/git_truth.py": 86,
+        "src/integration/selection_metrics.py": 11,
+        "src/integration/signatures.py": 420,
+        "src/integration/train_packing.py": 129,
+        "src/integration/train_packing_sources.py": 287,
+        "src/integration/train_sources.py": 73
+      },
+      "decision_message_id": "msg-e00fc75ca30a49f4a04f07ef3c6fc780",
+      "measured_source_revision": "5e34c71c860303606561881b8b2046747ed858ad",
+      "member_scopes": {
+        "bright-bridge-75.1": "T1 signatures",
+        "bright-bridge-75.3": "T2 packing"
+      },
+      "member_sources": {
+        "bright-bridge-75.1": "94b86397deaff9aa9112f279abcc47637d693207",
+        "bright-bridge-75.3": "9a78f0d8a137aec63b3d877e0a6501dfd6329650"
+      },
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82530,
+      "previous_measured_owned_total": 157853,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +1,026 owned / +1,026 engine / +0 tables for T1 signatures and T2 packing on the retained frozen batch. Compose with the existing T3 grant; preserve original baselines, historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "request_message_id": "msg-30801260a1c8439e9b6ba9feac15bd2c",
+      "starting_revision": "3e850bfdf244d07c9de79486e745a4c5508f3d06",
+      "thread_id": "batch-61c9e919-size-cap"
     },
     "wait_admission_reobservation_composition": {
       "authorized_engine_delta": 0,
