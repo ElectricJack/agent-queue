@@ -191,13 +191,13 @@ class WaitService:
 
     async def tick(self):
         if await self.processing_enabled():
-            # Drain before maintenance; the live listener never waits on lifecycle I/O.
-            drained = await self.listener.tick()
+            # A manual tick publishes observations before draining them. The live
+            # loops below run independently, so maintenance cannot stall draining.
             await self.observe_sources_once()
             if self.enabled:
                 await self._bounded_bridge()
             await self.lifecycle.tick()
-            return drained
+            return await self.listener.tick()
         return False
 
     async def run(self):

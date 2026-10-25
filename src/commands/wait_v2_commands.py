@@ -482,14 +482,11 @@ class WaitV2CommandsMixin:
                         raise WaitError("wait.out_of_scope", "select a project or fleet")
                     scope = {"project_id": project}
                     params["project_id"] = project
-                elif name == "wait_source_redispatch":
-                    scope = {"project_id": params["project_id"]}
                 else:
+                    # Source re-dispatch shares the project filter without a wait id.
                     scope = await self._wait_v2_authorize_target(params)
             elif name in SERVICE_WAIT_COMMANDS or name == "wait_legacy_bridge":
                 scope = None
-            elif name == "wait_source_redispatch":
-                scope = {"project_id": params["project_id"]}
             elif name == "wait_graph":
                 scope = {"project_id": values.project_id, "fleet": values.fleet}
             else:

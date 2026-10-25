@@ -388,5 +388,44 @@
       "tests/test_wait_surfaces.py",
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
+  },
+  "wait_source_redispatch": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_source_redispatch",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._wait_v2_command('wait_source_redispatch', args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('wait.unavailable', 'source re-dispatch exceeded its work budget')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('wait.unavailable', str(exc))"
+      }
+    ],
+    "review_notes": "Normal dispatch retains the typed command envelope. Timeout and listener lease/unavailability failures delegate to refusal(), which returns success false with wait.unavailable; recovery never fabricates a wake.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:083a3b2d906e990fcff9826fbb69b849f53ed719c84e203ec1b2d3726c24afb2",
+    "tests": [
+      "tests/test_wait_commands.py::test_source_redispatch_requires_live_scoped_supervisor",
+      "tests/test_wait_dispatch.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
   }
 }
