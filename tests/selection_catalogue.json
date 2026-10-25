@@ -666,6 +666,7 @@
         "tests/test_integration_root_noop.py",
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
+        "tests/test_integration_signatures.py",
         "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stacked_branches.py",
@@ -10112,6 +10113,23 @@
         "parametrize"
       ],
       "summary": "Bounded durable integration reconciliation service."
+    },
+    "tests/test_integration_signatures.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d945183bd44d541beb08d4798e2a1561307ffd4beb5dfa9010685523890b2705",
+      "imports": [
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.signatures"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Conservative exact-head signatures and immutable train JSON contracts."
     },
     "tests/test_integration_size.py": {
       "areas": [
