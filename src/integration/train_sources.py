@@ -2800,7 +2800,9 @@ class DaemonLanes:
                  review_requirements: ReviewRequirements | None = None) -> None:
         self.orchestrator, self.batches, self.clock = orchestrator, batches, clock
         self.db, self.git = orchestrator.db, orchestrator.git
-        self.truth = GitTruth(orchestrator.git, share_fetches=True)
+        reconciler = getattr(orchestrator, "git_truth_reconciler", None)
+        self.truth = (reconciler.observer.truth if reconciler is not None else
+                      GitTruth(orchestrator.git, share_fetches=True, skip_unchanged=True))
         self.store = BatchStore(self.db, clock=clock, require_enabled=True)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
         if self.batches is not None:

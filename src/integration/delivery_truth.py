@@ -1134,7 +1134,7 @@ async def undeliverable_repairs_on(db, conn, ids, *, repository_id) -> dict[str,
 
 
 async def delivery_snapshot(git, store, *, project_id, repository_id, repository_url,
-                            target_ref):
+                            target_ref, skip_unchanged=False):
     """Fetch once and pin all batch observations to its exact target OID.
 
     Git failure yields an unknown snapshot even if stale tracking refs exist.
@@ -1151,7 +1151,8 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         await _run(git, store, "check-ref-format", target_ref)
         try:
             await fetch_retained_origin(git, store, repository_url=repository_url,
-                                        project_id=project_id, repository_id=repository_id)
+                                        project_id=project_id, repository_id=repository_id,
+                                        skip_unchanged=skip_unchanged)
         except GitError as exc:
             # Ref retirement requires no readable objects. A clean, independent
             # remote read can diagnose absence even when the retained cache
