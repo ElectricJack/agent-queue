@@ -47,3 +47,9 @@ Merging dev's separately approved historical root PR diagnostics adds its
 recorded 86 owned/engine lines to that reduced ceiling: 157,985 owned lines and
 82,735 engine lines, still with 45 tables and zero remaining headroom. Both
 composition records retain their original measurements and decision evidence.
+
+The next dev merge retains the approved PR retirement snapshot grant (+41
+owned/engine lines) and terminal hibernation hold grant (+25 shared owned
+lines). Composed with this dashboard's unchanged 26-line reduction, the exact
+ceiling is 158,051 owned lines and 82,776 engine lines, with 45 tables and zero
+remaining headroom. All historical composition records remain unchanged.
