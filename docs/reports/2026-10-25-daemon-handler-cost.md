@@ -75,3 +75,39 @@ Supervisor reply `msg-4feb0206ae2d4485a3786f7a8a8235cf` on
 and assigned deployment and CPU soak to the supervisor. The incident's
 below-30% idle CPU target under normal load remains a live acceptance check;
 this report does not claim that target has been reached.
+
+## CI repair follow-up
+
+PR #2031 at `29e52187f` failed four default shards. Two failures charged the
+handler additions against fixed integration size caps; another detected the
+unrefreshed train command audit. The final failure was a timing-dependent test
+setup: separate delivery backdating transactions could consume its one-second
+margin and make supposedly old traffic compete with a human chat.
+
+After merging `origin/dev` at `5ff637f73`, the repair simplifies the handler
+without changing its single-flight behavior, removes redundant comments, and
+refreshes the reviewed command audit and its generated projection. The exact
+existing caps remain satisfied: 82,735 engine lines and 158,011 total owned
+lines. No ownership grant or cap is changed by this repair. Both message
+timestamps now use one reference clock, retaining their 361-second separation
+and every causal-binding assertion.
+
+Focused validation on the merged branch, using the disposable PostgreSQL
+service on port 5534:
+
+```bash
+aq test tests/test_integration_size.py \
+  tests/test_generated_command_contracts.py::test_builtin_audit_is_complete \
+  tests/test_message_delivery.py::TestTranscriptTailCausalBinding \
+  tests/test_integration_train.py tests/test_integration_pr_delivery.py \
+  tests/test_wait_hibernation.py::test_turn_measurement_counts_all_calls_and_streaming_maxima \
+  tests/test_wait_hibernation.py::test_turn_cost_cache_reuses_missing_usage_and_invalidates_changed_files \
+  tests/test_wait_hibernation.py::test_turn_cost_cache_tolerates_eviction_during_stat \
+  tests/test_wait_hibernation.py::test_turn_cost_reduction_runs_off_the_event_loop \
+  tests/test_wait_hibernation.py::test_completed_turn_costs_arriving_after_ack_are_recorded -x
+```
+
+Result: 297 passed in 63.73 seconds, with 14 dependency deprecation warnings.
+Ruff on changed Python files, `git diff --check`, the selected command audit
+digest check, bookkeeping assembly check and recorded-artifact check also pass.
+The full CI sweep and the supervisor's live CPU soak remain separate checks.

@@ -180,8 +180,6 @@ class DeliveredPullRequestClosure:
         if live_task_ids:
             return self._held_by_tasks(base, live_task_ids), None
         try:
-            # Most sweep entries still have a writer or target another lane.
-            # Reject them before waiting for the retained store's train lock.
             resolved = await self.promotion._resolve_repository(repo.id)
             await self.promotion._ensure_retained_repository(resolved)
             store = str(resolved.retained_git_dir)
