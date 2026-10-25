@@ -129,7 +129,7 @@ async def _send(db, **overrides):
     return await db.create_message(**params)
 
 
-async def _age_delivery(db, message_ids, *, seconds=None, reply_timeout=120.0):
+async def _age_delivery(db, message_ids, *, seconds=None, reply_timeout=120.0, now=None):
     """Backdate ``delivered_at`` past ``reply_timeout`` but inside the reply
     window (``reply_timeout x reply_window_multiplier``) — the shape of a
     message whose turn has not come round yet.  Defaults to one timeout plus
@@ -140,7 +140,7 @@ async def _age_delivery(db, message_ids, *, seconds=None, reply_timeout=120.0):
         await conn.execute(
             sa_update(messages)
             .where(messages.c.id.in_(list(message_ids)))
-            .values(delivered_at=time.time() - seconds)
+            .values(delivered_at=(time.time() if now is None else now) - seconds)
         )
 
 
@@ -1017,8 +1017,11 @@ class TestTranscriptTailCausalBinding:
         chat = await _send(db, thread_id="discord:t1")
         await db.mark_delivered(old.id, via="read")
         await db.mark_delivered(chat.id, via="read")
-        await _age_delivery(db, [chat.id])
-        await _age_delivery(db, [old.id], seconds=121.0 + 360.0 + 1.0)
+        # Keep the one-second separation outside the window independent of
+        # database latency between the two updates.
+        now = time.time()
+        await _age_delivery(db, [chat.id], now=now)
+        await _age_delivery(db, [old.id], seconds=121.0 + 360.0 + 1.0, now=now)
 
         assert await make_engine(db, sessions).check_reply_timeouts() == 1
         (reply,) = await db.list_messages(to_kind="user")
