@@ -471,6 +471,7 @@ async def _docker_output(*args: str) -> str:
 async def _check_shared_memory(ctx: DoctorContext) -> CheckResult:
     """Measure the serving container's tmpfs, never the daemon host's /dev/shm."""
     from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
 
     check_id = "db.shared_memory"
     data = {}
@@ -523,7 +524,9 @@ async def _check_shared_memory(ctx: DoctorContext) -> CheckResult:
         data.update(total_bytes=total, used_bytes=used, used_percent=percent)
         if used * 100 > total * 80:
             warnings.append(f"/dev/shm is {percent:.1f}% used (above 80%)")
-    except (ObservationUnavailable, TimeoutError, ValueError, KeyError, TypeError, IndexError) as exc:
+    except (
+        ObservationUnavailable, TimeoutError, ArgumentError, ValueError, KeyError, TypeError, IndexError,
+    ) as exc:
         reason = str(exc) if isinstance(exc, ObservationUnavailable) else "unreadable Docker probe"
         return CheckResult(
             id=check_id, severity=Severity.WARN if warnings else Severity.INFO,

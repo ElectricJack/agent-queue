@@ -84,6 +84,7 @@ class TestSharedMemory:
             assert "shm_size: 1g" in result.detail
 
     @pytest.mark.parametrize("url", [
+        "not-a-url",
         "postgresql://db.internal:5533/aq",
         "postgresql:///aq",
         "postgresql://localhost:5533/aq?host=db.internal",
