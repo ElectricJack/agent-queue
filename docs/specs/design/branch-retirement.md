@@ -20,8 +20,9 @@ uses the observed SHA as an exact lease. Reopened or re-claimed work invalidates
 an older decision. A moved head is a conflict; transport failures and temporarily
 held branches retry with backoff. The audit is retained after successful removal.
 Batch abort intent overrides a stale active lifecycle when checking live refs.
-Explicitly deferred fixer batches and retained companions still hold their refs,
-as do promoted batches whose cleanup has not finished.
+Deferred fixer batches and companions still hold their refs while their cleanup
+state explicitly retains them; historical queue markers alone are not liveness.
+Promoted batches whose cleanup has not finished also hold their refs.
 Local removal visits registered AQ checkout common directories for the same
 repository and the retained integration and publisher stores. It never detaches
 another writer. It removes audited `origin` tracking refs alongside local heads,

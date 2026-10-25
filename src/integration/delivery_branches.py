@@ -330,12 +330,15 @@ async def live_branch_references(
     for row in await rows(
         select(integration_batches.c.id, integration_batches.c.integration_branch).where(
             # Intent is authoritative even before legacy lifecycle reconciliation.
-            # Deferred fixer companions below deliberately retain their refs.
+            # Fixer queue markers only hold refs while retention is still current.
             (
                 (integration_batches.c.intent != "aborted")
                 & integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES)
             )
-            | (integration_batches.c.fixer_queue["status"].astext.in_(("deferred", "companion")))
+            | (
+                (integration_batches.c.cleanup_state == "retained")
+                & integration_batches.c.fixer_queue["status"].astext.in_(("deferred", "companion"))
+            )
             | (
                 (integration_batches.c.lifecycle == "promoted")
                 & (integration_batches.c.cleanup_state != "complete")
