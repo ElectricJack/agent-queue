@@ -253,7 +253,7 @@ class PoolsMixin:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
         The loop is still per project — one ``count_ready_by_profile`` and
-        one ``count_available_workspaces`` per active project with a pool
+        per-kind ``count_available_workspaces`` checks per active project with a pool
         profile — but each project now folds into the *aggregate* key rather
         than minting one of its own, and also records its own breakdown
         (``PoolSupply.by_project``) and its standing as a placement
@@ -301,11 +301,14 @@ class PoolsMixin:
         measurement.pool_sessions = await self.db.list_sessions(
             lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
         )
-        from src.waits.occupancy import (
-            continuation_occupancy, evictable_sessions, queued_continuation_demand,
-        )
+        from src.waits.occupancy import continuation_capacity, evictable_sessions
+        from src.routing.readiness import orchestrator_ready_projects
+
+        ready_projects = await orchestrator_ready_projects(self)
         evictable = await evictable_sessions(self.db, self.config)
-        resuming, reserved = await continuation_occupancy(self.db, self.config)
+        resuming, reserved, resume_demand = await continuation_capacity(
+            self.db, pool_profiles=pool_profiles, ready_projects=ready_projects,
+        )
         known = {session.id for session in measurement.pool_sessions}
         for session_id in resuming - known:
             session = await self.db.get_session(session_id)
@@ -314,12 +317,6 @@ class PoolsMixin:
         task_statuses = await self.db.get_task_statuses([
             s.task_id for s in measurement.pool_sessions if s.task_id
         ])
-        from src.routing.readiness import orchestrator_ready_projects
-
-        ready_projects = await orchestrator_ready_projects(self)
-        resume_demand = await queued_continuation_demand(
-            self.db, pool_profiles=pool_profiles, ready_projects=ready_projects,
-        )
         sessions_by_project: dict[str, list[SessionRecord]] = {}
         for session in measurement.pool_sessions:
             status = task_statuses.get(session.task_id)
