@@ -321,6 +321,20 @@ async def test_stale_work_respects_daemon_explanation(context, reasons, completi
     assert [item["kind"] for item in result] == ([expected] if expected else [])
 
 
+@pytest.mark.parametrize("unavailable", ["observer absent", "cache cold", "fetch failed"])
+async def test_unproven_delivery_edge_is_visible_in_stall_sweep(context, unavailable):
+    detail = f"Delivery prerequisite source unproven ({unavailable})"
+    reasons = [reason("prerequisite_delivery", detail, "source")]
+    context.handler = Handler({"child": reasons})
+    [finding] = await module._work_findings(
+        context, [task("child")], NOW, module._Explains(context),
+    )
+    assert finding["kind"] == "WAITING-ON-DELIVERY"
+    assert finding["blockers"] == ["source"]
+    assert detail in finding["detail"]
+    assert finding["reasons"] == reasons
+
+
 async def test_explain_calls_are_bounded_and_cached(context):
     rows = [task(f"work-{i}") for i in range(20)]
     explains = module._Explains(context)

@@ -429,8 +429,8 @@ class AdmissionSnapshot:
         required = self.required.get(task_id, set()) if task_id else None
         if self.delivery_view is not None:
             await self.delivery_view.fresh()
-            if not await self._delivery_matches(task_id=task_id):
-                return False
+        if not await self._delivery_matches(task_id=task_id):
+            return False
         if self.pr is not None and not await self.pr.is_fresh(task_id):
             return False
         if task_id is None or self.hierarchy_required.get(task_id):
@@ -531,16 +531,17 @@ class AdmissionSnapshot:
 
 
     async def _delivery_matches(self, *, conn=None, task_id=None):
-        if self.delivery_view is None:
+        dependents = {task_id} if task_id else self.allowed
+        required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
+        if not required:
             return True
+        if self.delivery_view is None:
+            return False
         if conn is None:
             async with self.db._engine.connect() as conn:
                 return await self._delivery_matches(conn=conn, task_id=task_id)
-        dependents = {task_id} if task_id else self.allowed
-        required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
         verified = await self.delivery_view.verified_on(conn, required)
-        return all(verified[t].satisfied or verified[t].unloaded if t in verified
-                   else t not in self.delivery_view.evidence for t in required)
+        return all(t in verified and verified[t].satisfied for t in required)
 
 
 async def _observe_sources(
@@ -806,17 +807,33 @@ async def _observe_delivery_edges(batch, *, cached_only):
             await batch.delivery_view.fresh()
         async with batch.db._engine.connect() as conn:
             verified = await batch.delivery_view.verified_on(conn, source_ids)
+    retry_ids = set()
     for tid, sources in batch.delivery_required.items():
         for source in sorted(sources):
             proof = verified.get(source)
-            if proof is None or proof.satisfied or proof.unloaded:
+            if proof is not None and proof.satisfied:
                 continue
+            if observer is None:
+                reason = "observer absent"
+            elif source not in batch.delivery_view.targets:
+                reason = "delivery target unavailable"
+            elif proof is None or proof.unloaded:
+                retry_ids.add(source)
+                reason = ("cache cold or expired" if cached_only else "fetch failed or evidence changed")
+                if proof is not None:
+                    reason += f": {proof.reason}"
+            else:
+                reason = proof.reason
+            unproven = proof is None or proof.unloaded
             batch.allowed.discard(tid)
             batch.reasons.setdefault(tid, []).append({
                 "code": "prerequisite_delivery",
                 "ref": source,
-                "detail": f"Delivery prerequisite {source}: {proof.state} ({proof.reason})",
+                "detail": f"Delivery prerequisite {source} "
+                          f"{'unproven' if unproven else proof.state} ({reason})",
             })
+    if retry_ids:
+        observer.request_delivery_refresh(retry_ids)
 
 
 async def structural_candidates(db, project_id, *, page_size=128):
