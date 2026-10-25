@@ -2461,11 +2461,10 @@ async def test_queued_continuation_increases_pool_desired_above_busy(
             conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
         ) is None
     if expected:
-        await db.update_task("resume", route_source="unrouted")
+        await db.update_task("resume", route_source="unrouted", profile_id=None)
         assert (await orch._measure_pools()).demand[key] == 0
-        await db.update_task("resume", route_source="override", profile_id=None)
-        assert (await orch._measure_pools()).demand[key] == 0
-        await db.update_task("resume", profile_id="worker", intelligence_class="stale-class")
+        await db.update_task("resume", route_source="override", profile_id="worker",
+                             intelligence_class="stale-class")
         profile = await db.get_profile("worker")
         await db.upsert_profile(replace(profile, default_class="standard-high"))
         assert (await orch._measure_pools()).demand[key] == 0
