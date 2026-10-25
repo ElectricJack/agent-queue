@@ -933,7 +933,20 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2426,
+ 'authorized_owned_delta': 2403,
+ 'focus_view_retirement_reduction': {'measured_engine_delta': 0,
+ 'measured_owned_delta': -23,
+ 'measured_owned_total': 157902,
+ 'measured_table_delta': 0,
+ 'previous_measured_owned_total': 157925,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2029',
+ 'reason': 'Retire Focus-specific batch display helpers; retain the moved BatchPage '
+           'ownership. Lower the exact cap by the measured reduction, preserving '
+           'historical grants, baselines and classifications with zero reusable '
+           'headroom.',
+ 'removed_owned_files': {'dashboard/src/pages/focus/focusFormat.ts': 23},
+ 'source_revision': '1ed3e1fe7d2d271f2d03b1081eb110f09b0e0187',
+ 'task_id': 'azure-delta-20'},
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 15,
  'authorized_shared_owned_delta': 15,
@@ -1092,7 +1105,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82649,
- 'measured_owned_total': 157925,
+ 'measured_owned_total': 157902,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
