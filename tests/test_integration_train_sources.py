@@ -11643,6 +11643,130 @@ def test_packing_registry_never_subtracts_unproven_generated_or_unknown_paths():
     assert unknown.universal
 
 
+async def landed_refresh_case(world, monkeypatch, *, kind="overlap"):
+    origin = world.origin
+    base_text = "".join(f"line {i}\n" for i in range(20))
+    git(origin.clone, "checkout", "main")
+    (origin.clone / "src").mkdir(exist_ok=True)
+    (origin.clone / "src/shared.py").write_text(base_text)
+    git(origin.clone, "add", "src/shared.py")
+    git(origin.clone, "commit", "-qm", "shared base")
+    git(origin.clone, "push", "-q", "origin", "main")
+    await packed_source(world, "landed", path="src/shared.py",
+                        content=base_text.replace("line 0\n", "landed\n"))
+    train, github, _ = await hosted_train(world, settling=True)
+    view = enable_packing(monkeypatch, max_members=1)
+    train.batches.conflict_handler = AsyncMock(wraps=root_pr_refresher(world))
+    first = await train.visit(MAIN)
+    assert first.state == "testing", first
+    path = {"overlap": "src/shared.py", "unknown": "unknown.bin",
+            "disjoint": "src/queued.py"}[kind]
+    head = await packed_source(world, "queued", path=path,
+        content=base_text.replace("line 19\n", "queued\n") if kind == "overlap" else "queued\n")
+    github.runs[first.candidate_sha] = "success"
+    landed = await train._visit_target(MAIN, depart_next=False)
+    assert landed.state == "delivered", landed
+    return SimpleNamespace(train=train, github=github, view=view, head=head,
+                           landed=first.candidate_sha, first=first)
+
+
+@pytest.mark.parametrize("kind", ["overlap", "unknown", "disjoint"])
+async def test_postlanding_refresh_preserves_exact_candidate_gate(world, monkeypatch, kind):
+    case = await landed_refresh_case(world, monkeypatch, kind=kind)
+    train = case.train
+    probe = AsyncMock(wraps=train.batches._local_pr_conflict)
+    train.batches._local_pr_conflict = probe
+    following = await train.visit(MAIN)
+    assert following.state == "testing", following
+    refreshed = git(world.origin.url, "rev-parse", "aq/queued")
+    handler = train.batches.conflict_handler
+    if kind == "disjoint":
+        handler.assert_not_awaited()
+        assert refreshed == case.head
+    else:
+        handler.assert_awaited_once()
+        assert refreshed != case.head
+        assert git(world.origin.url, "show", "-s", "--format=%P", refreshed).split() == [
+            case.head, case.landed,
+        ]
+    assert any(call.args[1].task_id == "queued" for call in probe.await_args_list)
+    assert following.candidate_sha != case.landed
+    assert git(world.origin.url, "rev-parse", "main") == case.landed
+    # Repeated visits and reconstruction do not duplicate mechanical refresh.
+    again = await train.visit(MAIN)
+    assert again.state == "testing" and again.candidate_sha == following.candidate_sha
+    train.batches._landing_refresh_seen.clear()
+    await train.visit(MAIN)
+    assert handler.await_count == (0 if kind == "disjoint" else 1)
+    assert (await world.db.get_task("queued")).status is TaskStatus.COMPLETED
+    assert not [t for t in await world.db.list_tasks("p") if t.id.startswith("repair-")]
+    case.github.runs[following.candidate_sha] = "success"
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert git(world.origin.url, "rev-parse", "main") == following.candidate_sha
+
+
+@pytest.mark.parametrize("change", ["source", "base", "target", "policy"])
+async def test_postlanding_refresh_dedup_reobserves_changed_inputs(world, monkeypatch, change):
+    case = await landed_refresh_case(world, monkeypatch)
+    owner = case.train.batches
+    # The command already handled this pair: no second worker or raw state write.
+    owner.conflict_handler = AsyncMock(return_value={"success": True, "outcome": "already_handled"})
+    service = (await case.train.lane_for(MAIN)).service
+    observed = await snapshot(world)
+    pending = await owner.pending(MAIN, observed)
+
+    async def refresh():
+        return await owner._refresh_after_landing(MAIN, observed, service, case.view, pending,
+                                                 deadline=time.monotonic() + 60)
+
+    assert await refresh()
+    assert not await refresh()
+    assert owner.conflict_handler.await_count == 1
+    if change == "policy":
+        case.view = replace(case.view, policy_revision="packing-test-v2")
+        monkeypatch.setattr("src.integration.train_policy.load_train_policy",
+                            AsyncMock(return_value=case.view))
+    elif change == "base":
+        # Exercise the cache identity without mutating an immutable materialized origin.
+        base = git(world.origin.clone, "rev-parse", f"{pending[0][0].base_sha}^")
+        pending = ([replace(pending[0][0], source_base_sha=base)], pending[1])
+    else:
+        branch = "aq/queued" if change == "source" else "main"
+        git(world.origin.clone, "checkout", branch)
+        if change == "target":
+            git(world.origin.clone, "fetch", "-q", "origin", "main")
+            git(world.origin.clone, "merge", "--ff-only", "origin/main")
+        (world.origin.clone / "src/new.py").write_text("new\n")
+        git(world.origin.clone, "add", "src/new.py")
+        git(world.origin.clone, "commit", "-qm", "changed refresh identity")
+        git(world.origin.clone, "push", "-q", "origin", branch)
+        if change == "source":
+            head = git(world.origin.clone, "rev-parse", "HEAD")
+            await close(world.db, "queued", [head], close_id="queued-next", origin=world.origin)
+            case.github.pr_runs[head] = "success"
+        observed = await snapshot(world)
+        pending = await owner.pending(MAIN, observed)
+    assert await refresh()
+    assert owner.conflict_handler.await_count == 2
+
+
+async def test_postlanding_refresh_rechecks_policy_before_dispatch(world, monkeypatch):
+    from src.integration.batches import SelectionIdentityChanged
+
+    case = await landed_refresh_case(world, monkeypatch)
+    owner = case.train.batches
+    service = (await case.train.lane_for(MAIN)).service
+    observed = await snapshot(world)
+    pending = await owner.pending(MAIN, observed)
+    monkeypatch.setattr("src.integration.train_policy.load_train_policy",
+                        AsyncMock(return_value=replace(case.view, policy_revision="changed")))
+    with pytest.raises(SelectionIdentityChanged):
+        await owner._refresh_after_landing(MAIN, observed, service, case.view, pending,
+                                          deadline=time.monotonic() + 60)
+    owner.conflict_handler.assert_not_awaited()
+
+
 @pytest.mark.parametrize("stage", ["observation", "freeze"])
 async def test_packing_restarts_once_after_stale_freeze(world, monkeypatch, stage):
     from src.integration.batches import SelectionIdentityChanged

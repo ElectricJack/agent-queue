@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -829,6 +830,145 @@ class DatabaseBatches:
         self._frontier_observations: dict[tuple[str, str, str], tuple[dict, ...]] = {}
         self.conflict_handler = None
         self._refresh_backoff = {}
+        # Dispatch suppression only; neither a skip nor a refresh admits a source.
+        # CommandHandler retains durable Phase A pair deduplication across restart.
+        self._landing_refresh_seen = OrderedDict()
+
+    async def _refresh_after_landing(self, target, snapshot, service, view, pending, *, deadline):
+        """Refresh overlapping admitted roots before the next freeze, within its budget.
+
+        Read the settled landing on every visit, including after restart. Compare
+        its actual base-to-target diff (including repairs) with current source
+        signatures. A disjoint observation never bypasses ordinary selection.
+        """
+        if target.kind != "root" or self.conflict_handler is None:
+            return False
+        from src.integration.signatures import (
+            SIGNATURE_CACHE_LIMIT, SIGNATURE_CACHE_SECONDS, PathChange,
+            SignatureIdentity, build_source_signature,
+        )
+        from src.integration.train_packing_sources import path_rules
+        from src.integration.train_policy import load_train_policy
+
+        async with self.db._engine.connect() as conn:
+            landed = (await conn.execute(select(
+                integration_batches.c.id, integration_batches.c.base_sha,
+                integration_batches.c.final_main_sha,
+            ).where(
+                integration_batches.c.project_id == target.project_id,
+                integration_batches.c.repository_id == target.repository_id,
+                integration_batches.c.target_ref == target.target_ref,
+                integration_batches.c.lifecycle == "promoted",
+                integration_batches.c.final_main_sha.is_not(None),
+            ).order_by(integration_batches.c.updated_at.desc(), integration_batches.c.id)
+              .limit(1))).first()
+            if landed is None:
+                return False
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == target.project_id))).mappings().one()
+            urls = dict((await conn.execute(select(tasks.c.id, tasks.c.pr_url).where(
+                tasks.c.id.in_([m.task_id for m in pending[0]])))).all())
+        repo = await service.gitops.repository(target)
+        await service.gitops.validate_repository(repo)
+        observed = snapshot.observation
+
+        async def changes(base, head):
+            result = await observed.git.arun_git_result([
+                "--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
+                "--no-renames", "--name-only", "-z", base, head, "--",
+            ], cwd=observed.store)
+            if result.returncode:
+                raise GitError("landing diff unavailable")
+            output = result.stdout
+            if output and not output.endswith("\0"):
+                raise ValueError("incomplete landing diff")
+            return {path for path in output.split("\0") if path}
+
+        # A stored promoted row alone is no proof of landing on this target.
+        if await observed.git.ais_ancestor(
+            observed.store, landed.final_main_sha, snapshot.target_oid, strict=True,
+        ) is not True:
+            return False
+        try:
+            if await service.gitops.run(repo, "rev-parse", "--is-shallow-repository") != "false":
+                raise ValueError("incomplete landing history")
+            landed_paths = await changes(landed.base_sha, snapshot.target_oid)
+        except (GitError, OSError, ValueError, TypeError):
+            landed_paths = None
+        now = self.clock()
+        for key, expires in list(self._landing_refresh_seen.items()):
+            if expires <= now:
+                self._landing_refresh_seen.pop(key)
+        changed = False
+        for member in pending[0]:
+            if self._selection_clock() >= deadline:
+                selection_count("landing_refresh_deferred")
+                break
+            request = pending[1][member.task_id]
+            if not urls.get(member.task_id):
+                continue
+            # Already current sources must not receive an empty bot merge.
+            if await observed.git.ais_ancestor(
+                observed.store, snapshot.target_oid, member.source_sha, strict=True,
+            ) is True:
+                continue
+            key = (target.key, member, request.completion_id, urls[member.task_id],
+                   snapshot.target_oid, view.policy_revision,
+                   project["hierarchical_integration_generation"],
+                   json.dumps(project["hierarchical_integration_policy"], sort_keys=True))
+            if key in self._landing_refresh_seen:
+                continue
+            paths, base = None, member.base_sha
+            try:
+                base = await service.gitops.run(repo, "merge-base", "--all",
+                                               member.source_sha, snapshot.target_oid)
+                if "\n" not in base:
+                    paths = await changes(base, member.source_sha)
+                all_paths = (landed_paths or set()) | (paths or set())
+                generated = await generated_paths(observed.git, Path(observed.store),
+                                                  member.source_sha, all_paths)
+                generated |= await generated_paths(observed.git, Path(observed.store),
+                                                   snapshot.target_oid, all_paths)
+                rules = path_rules(all_paths, generated)
+                identity = SignatureIdentity(
+                    target.project_id, target.repository_id, member.task_id,
+                    urls[member.task_id], _branch(request.branch_name), target.target_ref,
+                    base, member.source_sha, snapshot.target_oid,
+                    view.policy_revision or "unknown", rules.digest,
+                )
+                source = build_source_signature(identity, None if paths is None else
+                    [PathChange("M", p) for p in sorted(paths)], rules)
+                landing = build_source_signature(replace(identity,
+                    task_id=landed.id, source_ref=target.target_ref,
+                    source_head=snapshot.target_oid, merge_base=landed.base_sha or ""),
+                    None if landed_paths is None else
+                    [PathChange("M", p) for p in sorted(landed_paths)], rules)
+                overlaps = source.conflicts_with(landing)
+            except (GitError, OSError, ValueError, TypeError):
+                overlaps = True
+            if not overlaps:
+                selection_count("landing_refresh_disjoint")
+                continue
+            if (await load_train_policy(self.db, target.project_id) != view
+                    or not await snapshot.is_fresh()
+                    or await service.gitops.remote(repo, _branch(request.branch_name))
+                    != member.source_sha):
+                raise SelectionIdentityChanged("landing refresh inputs moved")
+            blockers = [{"code": "postlanding_refresh", "task_id": member.task_id,
+                         "source_sha": member.source_sha, "pr_url": urls[member.task_id],
+                         "detail": "Landed and queued signatures overlap or are unknown"}]
+            await _finish_on_cancel(self._refresh_conflicting_prs(
+                target, snapshot, blockers, service))
+            result = blockers[0].get("refresh") or {}
+            selection_count("landing_refresh_requested")
+            if result.get("success"):
+                # A stale command result needs reobservation, never suppression.
+                if result.get("outcome") != "stale":
+                    self._landing_refresh_seen[key] = now + SIGNATURE_CACHE_SECONDS
+                    while len(self._landing_refresh_seen) > SIGNATURE_CACHE_LIMIT:
+                        self._landing_refresh_seen.popitem(last=False)
+                changed = True
+        return changed
 
     async def refresh_pair_conflicts(self, target):
         """Retry the durable source-refresh request, never a batch fixer."""
@@ -963,7 +1103,9 @@ class DatabaseBatches:
         from src.integration.root_pr_refresh import RootPRConflict
 
         for index, blocker in enumerate(blockers):
-            if blocker.get("code") not in {"pr_conflicting", "root_pr_refresh_pending"}:
+            if blocker.get("code") not in {
+                "pr_conflicting", "root_pr_refresh_pending", "postlanding_refresh",
+            }:
                 continue
             task_id = blocker["task_id"]
             pair = (task_id, blocker["source_sha"], blocker.get("default_sha", snapshot.target_oid))
@@ -1262,6 +1404,13 @@ class DatabaseBatches:
         if view.policy and view.policy.packing and view.policy.packing.enabled:
             from src.integration.train_packing_sources import select_packed
 
+            try:
+                if await self._refresh_after_landing(
+                    target, snapshot, service, view, pending, deadline=selection_deadline,
+                ):
+                    return await restart_packing()
+            except SelectionIdentityChanged:
+                return await restart_packing()
             for blocker in blockers:
                 selection_outcome({"stage": "admission", "outcome": blocker["code"],
                                    "task_ids": [blocker["task_id"]]
