@@ -882,6 +882,7 @@ async def test_channel_message_without_a_mention_reaches_the_supervisor_tmux(
 
 
 @pytest.mark.parametrize("state", ["running", "stopped", "sleeping"])
+@pytest.mark.timeout(120)
 async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state):
     handler, db = env
     await db.create_project(Project(id="agent-queue", name="AQ", supervisor_enabled=True))
@@ -892,7 +893,7 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
     handler.orchestrator.bus = bus
     handler.config.messages.delivery_interval = 3600
     handler.config.messages.transcript_tail_fallback = False
-    idle_pass, nudged = asyncio.Event(), asyncio.Event()
+    completed_passes = asyncio.Queue()
     seen = []
 
     async def nudge(**target):
@@ -904,7 +905,6 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
         assert target["target_id"] == "supervisor-global"
         assert pending[0].id in target["text"]
         seen.append(pending[0].id)
-        nudged.set()
         return True
 
     lens = SimpleNamespace(
@@ -917,16 +917,20 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
 
     async def observed_pass():
         result = await run_pass()
-        idle_pass.set()
+        completed_passes.put_nowait(result)
         return result
 
     engine.run_delivery_pass = observed_pass
     service = MessageDeliveryService(engine, lambda: handler.config.messages, bus)
     service.start()
     try:
-        await asyncio.wait_for(idle_pass.wait(), 2)
+        # Synchronize on complete passes, including the real database work.
+        # The test timeout guards deadlock; the 3600s routine interval cannot
+        # satisfy this test without the committed input's immediate wake.
+        await completed_passes.get()
+        assert seen == []
         accepted = await post(handler)
-        await asyncio.wait_for(nudged.wait(), 2)
+        await completed_passes.get()
         assert seen == [accepted["supervisor_message_id"]]
         if state != "running":
             lens.ensure_started.assert_awaited_once_with(
