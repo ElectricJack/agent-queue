@@ -1265,7 +1265,58 @@ async def test_lag_alert_includes_deferred_rows_and_deduplicates_after_restart(r
     notices = [r for r in await records(env, messages) if r["body_kind"] == "wait_listener_lag"]
     assert len(notices) == 1
     assert notices[0]["to_id"] == "supervisor-p"
+    assert len(await records(env, wait_source_events)) == 2
     assert '"pending_events": 2' in notices[0]["body"]
+
+
+@pytest.mark.parametrize("minutes", [15, 3])
+async def test_sustained_lag_alerts_coalesce_advancing_oldest_per_project_and_bucket(
+    runtime_env, minutes,
+):
+    env = runtime_env
+    await register(env)
+    await register(env, {"kind": "timer", "due_at": NOW + 9000},
+                   scope=Scope("q", "scheduler", "foreign", principal="service"),
+                   idempotency_key="foreign")
+    # Start at a bucket boundary so the checks span exactly one configured interval.
+    interval = minutes * 60
+    start = NOW // interval * interval
+    now = [start]
+
+    def restart():
+        service = runtime(env, clock=lambda: now[0])
+        service.orch.config.wait_policy.listener_lag_events = 1
+        service.orch.config.wait_policy.listener_lag_alert_minutes = minutes
+        return service
+
+    for n in range(18):
+        await env.db.wait_source_commit(source_key="test:lag", generation=0, revision=str(n),
+                                       outcome_ref="test", payload={})
+    service = restart()
+    source_rows = sorted(await records(env, wait_source_events), key=lambda r: r["seq"])
+    for step in range(16):
+        now[0] = start + step * interval / 16
+        # Oldest sequence changes every check while at least two events remain.
+        if step:
+            async with env.db._engine.begin() as conn:
+                await conn.execute(update(wait_source_events).where(
+                    wait_source_events.c.seq == source_rows[step - 1]["seq"],
+                ).values(dispatched_at=now[0]))
+        if step == 8:
+            service = restart()
+        await service.orch._command_handler.wait_service_report_lag(service.listener)
+        notices = [r for r in await records(env, messages) if r["body_kind"] == "wait_listener_lag"]
+        assert sorted(r["to_id"] for r in notices) == ["supervisor-p", "supervisor-q"]
+        assert len(await records(env, wait_source_events)) == len(source_rows)
+
+    now[0] = start + interval
+    await service.orch._command_handler.wait_service_report_lag(service.listener)
+    notices = [r for r in await records(env, messages) if r["body_kind"] == "wait_listener_lag"]
+    for project in ("p", "q"):
+        assert sorted(r["created_at"] for r in notices if r["project_id"] == project) == [
+            start, start + interval,
+        ]
+    assert len(await records(env, wait_source_events)) == len(source_rows)
 
 
 async def test_manual_source_redispatch_reobserves_without_moving_cursor(runtime_env):

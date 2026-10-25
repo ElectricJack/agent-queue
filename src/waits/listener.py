@@ -487,10 +487,11 @@ class WaitSourceListener:
     async def report_lag(self):
         """Count retained retries as well as unread events, without taking graph locks."""
         from src.database.tables import messages
-        from src.waits.sources import insert_message_with_source_event
 
         now = self.clock()
-        threshold = self.service.orch.config.wait_policy.listener_lag_events
+        policy = self.service.orch.config.wait_policy
+        threshold = policy.listener_lag_events
+        bucket = int(now // (policy.listener_lag_alert_minutes * 60))
         async with self.db._engine.begin() as conn:
             pending, oldest, committed = (await conn.execute(select(
                 func.count(), func.min(wait_source_events.c.seq),
@@ -506,8 +507,10 @@ class WaitSourceListener:
                 wait_records.c.verification_state == "verified",
             ).distinct())).scalars().all()
             for project_id in projects:
-                await insert_message_with_source_event(conn, insert(messages).values(
-                    id=f"wait-listener:lag:{oldest}:{project_id}", project_id=project_id,
+                # Diagnostics must not feed the outbox backlog they report.
+                # The persisted bucket key also deduplicates across restarts.
+                await conn.execute(insert(messages).values(
+                    id=f"wait-listener:lag:{bucket}:{project_id}", project_id=project_id,
                     from_kind="system", from_id="waits-listener", to_kind="session",
                     to_id=f"supervisor-{project_id}", body_kind="wait_listener_lag",
                     subject="Wait source listener is falling behind", created_at=now,

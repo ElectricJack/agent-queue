@@ -27,6 +27,10 @@ contention and absent leadership return a refusal; no wake is fabricated.
 An independent listener monitor checks undispatched row count and oldest commit age,
 including deferred rows behind the cursor. Alert when count exceeds configurable
 `wait_policy.listener_lag_events` (default 500) or age exceeds 120 seconds. Persist one
-supervisor notice per project and oldest-event episode; restart and repeated checks
-must not duplicate it. Monitoring needs no graph fence and must continue while drain
-or maintenance is blocked. Messages contain sequence/age/count and recovery guidance.
+supervisor notice per project and time bucket of
+`wait_policy.listener_lag_alert_minutes` (positive integer, default 15). Advancing
+the oldest sequence, restart, and repeated checks within a bucket must not duplicate
+it; continued lag may produce another notice in the next bucket. Lag notices are
+diagnostic messages and must not create wait source events themselves. Monitoring
+needs no graph fence and must continue while drain or maintenance is blocked.
+Messages contain sequence/age/count and recovery guidance.
