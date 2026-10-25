@@ -336,23 +336,42 @@ and covers the remaining integration tests.
 
 ### Environment
 
-* Each job starts a disposable `postgres:18` container with `docker run`, with
-  `POSTGRES_TEST_DSN` pointed at its localhost port. The image, like the
-  `E2E CLI` jobs' service image, is pulled from Google's Docker Hub mirror,
-  `mirror.gcr.io/library/postgres:18`: anonymous Docker Hub pulls are rate
-  limited per runner IP, and a login secret would not reach pull requests from
-  forks. The test matrix explicitly pulls the image before starting the
-  container, retrying up to three times with five seconds between attempts to
-  recover from transient mirror errors such as `unknown blob`. Exhausted pulls
-  fail the job; container-start errors are not retried. GitHub Actions service
-  containers do not accept PostgreSQL server arguments. The server runs with
-  `max_connections=300` so concurrent xdist workers can lease databases without
-  exhausting the default 100 connections. It also uses `fsync=off`,
-  `synchronous_commit=off`, and `full_page_writes=off` to reduce checkpoint and
-  database-teardown costs for this disposable data. These settings are confined
-  to CI. A bounded TCP readiness check runs before migrations or tests; failed
-  jobs print the PostgreSQL logs, and an always-run step removes the container
-  and its volumes.
+* Both Python test and `E2E CLI` jobs explicitly start a disposable PostgreSQL
+  18 container with `docker run`, with `POSTGRES_TEST_DSN` pointed at its
+  localhost port. Each pull round tries
+  `ghcr.io/<lowercase-repository-owner>/agent-queue-postgres:18` first, then
+  `mirror.gcr.io/library/postgres:18` and
+  `public.ecr.aws/docker/library/postgres:18`. Every reference includes the same
+  pinned SHA-256 index digest from `tests.yml`; no pull follows a moving tag.
+  Both jobs log into GHCR with `GITHUB_TOKEN` and `packages: read`; the reusable
+  caller in `main-attestation.yml` passes that permission through. A failed
+  login still permits public-mirror fallback, including for fork PRs without
+  package access. Up to three rounds, with five seconds between rounds,
+  recover from registry errors. Exhausted pulls fail the job; container-start
+  errors are not retried. E2E uses the same startup steps because implicit
+  service pulls cannot fall back to another registry.
+
+  [`mirror-postgres.yml`](../../.github/workflows/mirror-postgres.yml) seeds the
+  owner-scoped GHCR package using `GITHUB_TOKEN` with `packages: write`. It runs
+  on changes to the mirror or tests workflow on `dev`/`main`, weekly on the
+  default branch, or by manual dispatch. It copies the official multi-platform
+  index and blobs with `skopeo copy --all --preserve-digests`, using the public
+  mirrors with Docker Hub as a final publisher source, and verifies the copied
+  digest. It never publishes on pull requests. Keep `POSTGRES_DIGEST` identical
+  in the mirror and test workflows when updating the pin; the CI policy tests
+  enforce this. Run the mirror once after landing to seed GHCR if the push run
+  has not done so. Packages initially inherit the publishing repository's
+  access; allow this repository Actions read access if inheritance is disabled.
+  Public package visibility also permits anonymous pulls from fork workflows.
+  Before the package exists or when access is unavailable, CI tries the public
+  mirrors. The required check names and trust manifest version stay unchanged.
+  The server runs with `max_connections=300` so concurrent xdist workers can
+  lease databases without exhausting the default 100 connections. It also uses
+  `fsync=off`, `synchronous_commit=off`, and `full_page_writes=off` to reduce
+  checkpoint and database-teardown costs for this disposable data. These
+  settings are confined to CI. A bounded TCP readiness check runs before
+  migrations or tests; failed jobs print the PostgreSQL logs, and an always-run
+  step removes the container and its volumes.
   [`tests/pg_dsn.py`](../../tests/pg_dsn.py) rewrites that DSN per xdist worker
   (`…_gw0`, `…_gw1`, …) and creates each worker's database on first use —
   sharing one database across concurrent workers would let one worker's reset

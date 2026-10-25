@@ -1865,7 +1865,9 @@ async def test_gc_win_does_not_freeze_an_unusable_artifact_manifest(db, tmp_path
     assert pending["artifact_sha256"] == new_sha
 
 
-async def test_reconciler_recovers_after_transient_pending_list_failure(db, tmp_path):
+async def test_reconciler_recovers_after_transient_pending_list_failure(
+    db, tmp_path, monkeypatch
+):
     compiled = tmp_path / "compiled"
     activation_id, artifact_sha256 = await _activate(
         db, compiled, "integration-train", "integration.sealed"
@@ -1896,17 +1898,38 @@ async def test_reconciler_recovers_after_transient_pending_list_failure(db, tmp_
             raise RuntimeError("transient pending read")
         return await original(**kwargs)
 
-    db.list_pending_integration_events = transient_failure
+    monkeypatch.setattr(db, "list_pending_integration_events", transient_failure)
     runtime = _runtime(db, compiled)
+    replay_scheduled = asyncio.Event()
+    wait_delays = []
+    dispatch_tasks = []
+
+    async def wait_for_next_pass(delay):
+        wait_delays.append(delay)
+        if len(wait_delays) == 1:
+            # Advance the failure backoff without measuring database throughput.
+            return
+        # The recovered pass has scheduled its dispatch tasks. Hold the loop
+        # here so the test can await those tasks instead of polling the DB.
+        dispatch_tasks.extend(runtime._integration_tasks.values())
+        replay_scheduled.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "_wait_for_integration_wakeup", wait_for_next_pass)
     await runtime.refresh()
     try:
-        async with asyncio.timeout(2):
-            while not (await _pending_rows(db))[0]["resolved_at"]:
-                await asyncio.sleep(0.02)
+        async with asyncio.timeout(30):  # Deadlock guard, not a recovery latency budget.
+            await replay_scheduled.wait()
+            assert not fail_once
+            assert wait_delays == [runtime_module._INTEGRATION_RECONCILE_INTERVAL_SECONDS] * 2
+            assert len(dispatch_tasks) == 1
+            await asyncio.gather(*dispatch_tasks)
     finally:
         await runtime.shutdown()
 
-    assert (await _pending_rows(db))[0]["resolution"] == "dispatched"
+    [pending] = await _pending_rows(db)
+    assert pending["resolved_at"] is not None
+    assert pending["resolution"] == "dispatched"
 
 
 async def test_refresh_restarts_a_completed_reconciler(db, tmp_path):

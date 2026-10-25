@@ -11,12 +11,16 @@ Covers docs/specs/implementation/work-graph.md §6.2 and §11:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig
 from src.models import DepType, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from src.event_bus import EventBus
 from tests.db_fixtures import lease_dsn
 
 
@@ -44,6 +48,85 @@ async def mktask(orch, tid, status=TaskStatus.DEFINED, **kw):
 
 async def status_of(orch, tid) -> TaskStatus:
     return (await orch.db.get_task(tid)).status
+
+
+@pytest.fixture
+async def event_gate_listener():
+    listener = SimpleNamespace(
+        db=SimpleNamespace(list_open_gates_by_type=AsyncMock(return_value=[])),
+        bus=EventBus(validate_events=False), _gate_event_unsub=None,
+        _resolve_gate_and_emit=AsyncMock(),
+    )
+    await Orchestrator._subscribe_event_gates(listener)
+    return listener
+
+
+async def test_unmatched_notification_burst_reads_event_gates_once(event_gate_listener):
+    listener = event_gate_listener
+    for _ in range(200):
+        await listener.bus.emit("notify.task_message", {"task_id": "t"})
+    listener.db.list_open_gates_by_type.assert_awaited_once_with("event")
+    listener._resolve_gate_and_emit.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mutation", ["gate.created", "gate.resolved", "gate.expired"])
+async def test_event_gate_changes_invalidate_interest_immediately(event_gate_listener, mutation):
+    listener = event_gate_listener
+    await listener.bus.emit("notify.task_message")
+    listener.db.list_open_gates_by_type.return_value = [
+        {"id": "g", "await_id": "notify.task_message"},
+    ]
+    await listener.bus.emit(mutation, {"gate_type": "event"})
+    await listener.bus.emit("notify.task_message")
+    listener._resolve_gate_and_emit.assert_awaited_once_with(
+        "g", resolved_by="bus:event", resolution="notify.task_message",
+    )
+
+
+async def test_matching_event_gates_are_reread_before_resolution(event_gate_listener):
+    listener = event_gate_listener
+    listener.db.list_open_gates_by_type.return_value = [{"id": "g", "await_id": "custom"}]
+    await listener.bus.emit("unrelated")
+    listener.db.list_open_gates_by_type.return_value = []  # resolved outside the bus
+    await listener.bus.emit("custom")
+    assert listener.db.list_open_gates_by_type.await_count == 2
+    listener._resolve_gate_and_emit.assert_not_awaited()
+
+
+async def test_event_gate_interest_expires_and_recovers_missed_mutations(
+    event_gate_listener, monkeypatch,
+):
+    listener = event_gate_listener
+    clock = SimpleNamespace(monotonic=lambda: 10.0)
+    monkeypatch.setattr("src.orchestrator.core.time", clock)
+    await listener.bus.emit("custom")
+    listener.db.list_open_gates_by_type.return_value = [{"id": "g", "await_id": "custom"}]
+    clock.monotonic = lambda: 15.0
+    await listener.bus.emit("custom")
+    listener._resolve_gate_and_emit.assert_awaited_once()
+
+
+async def test_event_gate_query_failure_does_not_cache_empty_interest(event_gate_listener):
+    listener = event_gate_listener
+    listener.db.list_open_gates_by_type.side_effect = [RuntimeError("unavailable"), []]
+    await listener.bus.emit("custom")
+    await listener.bus.emit("custom")
+    assert listener.db.list_open_gates_by_type.await_count == 2
+
+
+async def test_event_gate_mutation_during_query_keeps_cache_invalid(event_gate_listener):
+    listener = event_gate_listener
+
+    async def read_before_creation(gate_type):
+        await listener.bus.emit("gate.created", {"gate_type": "event"})
+        return []
+
+    listener.db.list_open_gates_by_type.side_effect = read_before_creation
+    await listener.bus.emit("custom")
+    listener.db.list_open_gates_by_type.side_effect = None
+    listener.db.list_open_gates_by_type.return_value = [{"id": "g", "await_id": "custom"}]
+    await listener.bus.emit("custom")
+    listener._resolve_gate_and_emit.assert_awaited_once()
 
 
 # ── Promotion behaviour under the projection ─────────────────────────────
@@ -298,9 +381,15 @@ class TestGateSweepBehavior:
         immediately, without waiting for the sweep."""
         await orch._subscribe_event_gates()
         await mktask(orch, "t")
-        gid, _ = await orch.db.create_gate(
-            "p-1", "event", "await-x", await_id="my.custom", waiter_task_ids=["t"]
-        )
+        # Create through the command boundary so the live listener receives
+        # the committed gate.created notification, including on a warm cache.
+        handler = CommandHandler(orch, orch.config)
+        result = await handler.execute("gate_create", {
+            "project_id": "p-1", "gate_type": "event", "title": "await-x",
+            "await_id": "my.custom", "waiter_task_ids": ["t"],
+        })
+        assert result["success"] is True
+        gid = result["gate_id"]
         await orch.bus.emit("my.custom", {"project_id": "p-1"})
         # give bus a chance to drain (sync-dispatch in tests, but async safety)
         import asyncio as _a

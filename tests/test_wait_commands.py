@@ -1346,3 +1346,30 @@ def test_cli_requeue_sends_continuation_and_generation(cli_transport):
     assert result.exit_code == 0, result.output
     assert calls[0] == ('wait_decide', dict(wait_id='w', decision='requeue', continuation_id='c',
         expected_generation=2, note='Infrastructure repaired'))
+
+
+async def test_source_redispatch_requires_live_scoped_supervisor(commands, env):
+    name = "wait_source_redispatch"
+    callback = AsyncMock(return_value={"success": True, "result": {}})
+    commands.orchestrator.wait_v2_handlers[name] = callback
+    args = {"project_id": "p", "source_seq": 1, "note": "recover completion"}
+    denied = await execute(commands, name, args)
+    assert denied["error_code"] == "wait.out_of_scope"
+    denied = await execute(commands, name, args, replace(WORKER, elevated=True))
+    assert denied["error_code"] == "wait.out_of_scope"
+    callback.assert_not_awaited()
+    principal = await supervisor(env)
+    foreign = await execute(commands, name, {**args, "project_id": "q"}, principal)
+    assert foreign["error_code"] == "wait.out_of_scope"
+    assert (await execute(commands, name, args, principal))["success"]
+    assert callback.await_args.kwargs["scope"] == {"project_id": "p"}
+    assert name not in AGENT_COMMAND_SET
+
+
+def test_cli_source_redispatch_uses_scoped_command(cli_transport):
+    group, calls = cli_transport
+    result = CliRunner().invoke(group, ["source-redispatch", "--source-seq", "42",
+                                       "--project", "p", "--note", "retry completion"])
+    assert result.exit_code == 0, result.output
+    assert calls == [("wait_source_redispatch", {"source_seq": 42, "project_id": "p",
+                                               "note": "retry completion"})]

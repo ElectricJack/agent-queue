@@ -146,11 +146,12 @@ does not release integration ownership or resolve gates and dependencies.
 
 Worker file reads admit `read_file` through the shared command surface. In addition
 to registered repositories and workspaces belonging to the session's project,
-workers may read `vault/projects/<project_id>/plans/` and `specs/` through
+workers may read `vault/projects/<project_id>/plans/`, `specs/` and `notes/` through
 `aq file read`, using either an absolute path or a `projects/...` vault-relative
 path. Resolve traversal and symlinks against these document roots before reading;
 foreign projects, other vault areas and write access remain outside this grant.
-Project document reads do not depend on knowledge-record activation.
+Project notes include the recorded `full-suite-baseline-<date>.md` used to assess
+test failures. Project document reads do not depend on knowledge-record activation.
 
 ### 3.2 Human surface
 
@@ -162,7 +163,7 @@ Project document reads do not depend on knowledge-record activation.
 | `aq session nudge` | `<session_id> <text>` | H | `{submitted: bool}` |
 | `aq session logs` | `<session_id> [-f]` | H | transcript entries (follow via SSE) |
 | `aq session kill` | `<session_id> [-y]` | H | `{killed: true}` |
-| `aq task list` | `[--project] [--status] [--label] [--brief]` | A/H | list of tasks |
+| `aq task list` | `[--project\|--all-projects] [--status] [--limit N] [--label] [--brief]` | A/H | list of tasks |
 | `aq task explain` | `<task_id>` | H | blocker analysis per [work-graph](work-graph.md) |
 | `aq task graph` | `[--project] [--format ascii\|dot\|json]` | H | dependency graph |
 | `aq project ready` | `[<project_id>]` | H | ready tasks + not-ready reasons |
@@ -174,6 +175,16 @@ Project document reads do not depend on knowledge-record activation.
 | `aq doctor` | `[--fix]` | H | system health findings (G.1) |
 | `aq chat` | `<project>` | H | interactive REPL to the project supervisor session ([supervisor-agent](supervisor-agent.md)) |
 | `aq schema` | — | A/H | enum catalog (§4.3) |
+
+`aq task list --all-projects` explicitly omits the project filter; it is mutually
+exclusive with `--project`. Local operators and global supervisors can list across
+projects; a project supervisor remains pinned to its token's project. Omitting both
+options preserves the existing scope behavior. `--limit N` accepts a positive integer
+and caps the flat live list after status and completion filtering, including active
+tasks. The matching `total` remains uncapped, so JSON pagination reports truncation.
+Without a limit, the existing active-task and finished-task cap behavior is preserved.
+The `list_tasks` command contract also accepts `limit` for flat live reads; tree and
+compact reads reject it, and snapshot reads use `page_size` instead.
 
 ### 3.3 Preserved existing commands
 
@@ -460,20 +471,26 @@ LLM calls and no writes.
 Slots 7–8 exist in the section model from day one so the memory comeback is a renderer
 change, not a protocol change.
 
-Task Context includes every comment on the current task, newest first, with author,
-timestamp and the complete quoted body. Read all project-scoped comment pages; neither
-the comment count nor body length is capped in prime. Worker context previews apply to
-other context, with comment history appended in full outside that budget. Comments remain
-labelled as historical reports, not instructions or approval. Prime and `aq task comment`
+Ordinary Task Context includes at most the newest 20 complete task comments, newest first,
+with author, timestamp and quoted body, within a separate 16 KiB UTF-8 history budget
+(including headings and retrieval guidance). Read only the first project-scoped page.
+Report the number shown and total; omitted history includes an omitted count and
+`aq task comments <task_id>` pointer. A comment that cannot fit is omitted along with
+older comments, preserving a contiguous newest-first prefix without partial bodies.
+Prime does not change stored comments; full history remains available through
+`aq task comments`. Continuation prime retains its separate chronological history budget.
+Comments remain labelled as historical reports, not instructions or approval.
+Prime and `aq task comment`
 help ask agents to keep comments concise: state what changed, decisions and blockers;
 link evidence instead of pasting logs or repeating status.
 
 Pilot workers with knowledge context enabled also fit the aggregate required
 document to the configured byte budget: ordinary context, description and
 historical handoff excerpts may shrink to explicit lossless continuation reads.
-Complete comments remain outside those excerpts, along with live repair fences,
+After reducing pageable excerpts, fitting may remove more of the oldest retained ordinary
+comments, updating the count and full-history pointer. Live repair fences,
 profile Role/Rules, pending messages, current facts, result/wait pointers and the
-completion protocol. Reassemble overrides and the pause notice before accounting;
+completion protocol stay intact. Reassemble overrides and the pause notice before accounting;
 unpageable required content still triggers `context.required_over_budget`.
 
 Sections 1–2 render exactly the *prime-visible* profile headings —
