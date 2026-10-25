@@ -37,6 +37,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             settlement = _delivered_design_changes()
             assert _digest(settlement["previous_definition"]) == digest
             digest = _digest(settlement["definition"])
+        if name == "session_nudge":
+            approved = _session_nudge_recovery_changes()["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
     actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()

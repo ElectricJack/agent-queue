@@ -548,6 +548,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             settlement = _delivered_design_changes()
             assert _digest(settlement["previous_definition"]) == digest
             digest = _digest(settlement["definition"])
+        if name == "session_nudge":
+            approved = _session_nudge_recovery_changes()["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
     actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
@@ -1624,7 +1628,7 @@ def _supervisor_say_changes():
 
 
 def _before_supervisor_say_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_session_nudge_recovery_catalogue()
     evidence = _supervisor_say_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
@@ -1639,7 +1643,8 @@ def test_supervisor_say_catalogue_only_adds_initiated_conversation_post():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+    original = json.dumps(_before_session_nudge_recovery_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
     previous = json.dumps(_before_supervisor_say_catalogue(), indent=2) + "\n"
@@ -1757,3 +1762,37 @@ def test_project_schedules_only_add_scoped_notification_commands():
     catalogue = _before_project_schedules_catalogue(_before_delivered_design_catalogue())
     previous = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+
+
+def _session_nudge_recovery_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/session-nudge-recovery-contract-changes.json").read_text()
+    )
+
+
+def _before_session_nudge_recovery_catalogue():
+    """Undo only optional nudge recovery before checking frozen catalogue history."""
+    catalogue = json.loads(render_command_catalogue())
+    evidence = _session_nudge_recovery_changes()
+    schema = catalogue["fallback"][evidence["command"]]["input_schema"]
+    [(prop, definition)] = evidence["added_property"].items()
+    assert schema["properties"].pop(prop) == definition
+    assert prop not in schema.get("required", ())
+    return catalogue
+
+
+def test_session_nudge_catalogue_only_adds_optional_pending_recovery():
+    evidence = _session_nudge_recovery_changes()
+    assert evidence["command"] == "session_nudge"
+    assert set(evidence["added_property"]) == {"submit_pending"}
+    assert set(evidence["transport_definitions"]) == {"session_nudge"}
+    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
+    previous = json.dumps(_before_session_nudge_recovery_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+    assert evidence["previous_cli_catalogue_sha256"] == (
+        _supervisor_say_changes()["cli_catalogue_sha256"]
+    )
