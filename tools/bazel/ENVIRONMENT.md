@@ -67,6 +67,15 @@ mounts are never imported.
 Existing callers keep their same-absolute-path input binds. B1 supplied this
 H1/H2 extension with supervisor authorization because the H epic was closed.
 
+B1 also preserves H1's native installation prefix: Conda PostgreSQL embeds that
+prefix for server data, timezone files and loadable libraries. Before mounting,
+`pytest_main.native_runtime_inputs` verifies every file in each native subtree
+against the declared runfiles and rejects undeclared siblings or escaping
+symlinks. Those complete subtrees use the existing `Runtime.read_only` input
+binds at their original absolute paths. The enclosing cache/repository and
+excluded `conda-meta` metadata remain absent. This prefix preservation is covered
+by the same supervisor authorization; it adds no writable mount or host fallback.
+
 To verify the pinned ABI, supply the already materialized, locked runtime roots
 alongside AQ admission (these settings are never discovered from host paths):
 
