@@ -23,7 +23,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             _hibernation_changes(), _dispatch_changes(), _merge_changes(),
             _leaf_changes(), _completion_changes(), _restart_hold_changes(),
             _updater_changes(), _held_release_changes(), _workspace_changes(),
-            _git_first_changes(), _obsolete_child_changes(),
+            _git_first_changes(), _obsolete_child_changes(), _task_list_limit_changes(),
         ):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]

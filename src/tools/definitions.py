@@ -1284,6 +1284,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Filter by project ID (optional, but required for tree/compact modes)",
                 },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": (
+                        "Maximum tasks in a flat live listing, after filtering. "
+                        "The total remains uncapped. Use page_size for snapshots."
+                    ),
+                },
                 "status": {
                     "type": "string",
                     "description": (
