@@ -309,6 +309,49 @@ async def test_private_key_health_probes_use_live_key_ring(monkeypatch, enabled)
             assert base64.b64encode(b"x" * 32).decode() not in response.text
 
 
+async def test_scheduler_health_endpoint_reports_failures_and_recovery(monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api import dependencies as deps
+    from src.api.health import router
+    from src.main import _health_checks
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    orch = _make_orchestrator()
+    orch.config.playbooks.enabled = False
+    orch.required_playbook_status = {"ok": True}
+    scheduler = orch.wait_scheduler_service = SchedulerWaitService(orch, reader=object())
+
+    async def provider():
+        return await _health_checks(orch, FakeAdapter())
+
+    monkeypatch.setattr(deps, "_health_provider", provider)
+    monkeypatch.setattr(deps, "_health_monitor", None)
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        response = await client.get("/health")
+        assert response.status_code == 200
+        assert response.json()["checks"]["wait_scheduler"] == {
+            "ok": True, "failed_projects": {},
+        }
+        for count in (1, 2):
+            scheduler.record_sync_result("p", {"success": False, "error_code": "sync_failed"})
+            response = await client.get("/health")
+            assert response.status_code == 503
+            health = response.json()["checks"]["wait_scheduler"]
+            assert health["ok"] is False
+            assert health["failed_projects"]["p"]["consecutive_failures"] == count
+            assert health["failed_projects"]["p"]["error_code"] == "sync_failed"
+        scheduler.record_sync_result("p", {"success": True})
+        response = await client.get("/health")
+        assert response.status_code == 200
+        assert response.json()["checks"]["wait_scheduler"] == {
+            "ok": True, "failed_projects": {},
+        }
+
+
 class TestReadyEndpointMessaging:
     """Verify the /ready endpoint uses 'messaging' instead of 'discord'."""
 
