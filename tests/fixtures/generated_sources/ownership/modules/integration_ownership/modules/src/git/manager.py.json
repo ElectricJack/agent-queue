@@ -4,6 +4,7 @@
     "src/git/manager.py::APP_AUTH_PUSH_TIMEOUT_SECONDS": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::GitError": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::GitManager": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/git/manager.py::GitManager._als_remote_inventory": "Generic authenticated ls-remote transport and validation; the integration snapshot namespace policy is charged independently.",
     "src/git/manager.py::RemoteRefState": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/git/manager.py::_object_store_fingerprint": "Returns sorted object-file path, size and inode tuples for any Git object store; it neither selects integration refs nor interprets delivery evidence.",
     "src/git/manager.py::_validate_ref": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -55,6 +56,9 @@
         3071
       ],
       "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
+    "src/git/manager.py::GitManager.als_remote_snapshot_refs": {
+      "reason": "Integration snapshot acquisition inventories every retained branch, tag and provenance namespace before skipping transport."
     },
     "src/git/manager.py::GitManager.aprepare_child_branch": {
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."

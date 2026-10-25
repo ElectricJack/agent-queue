@@ -163,7 +163,10 @@ it. A permanently refused deadline is quarantined with a recorded refusal and a
 project-supervisor notice, allowing later deadlines to proceed. A supervisor can
 use `aq wait cancel <wait-id>` to cancel an orphaned task wait before escalation;
 this clears its old execution state without changing a replacement claim or
-resuming its task.
+resuming its task. Cancellation also retires a held orphan continuation when
+the wait already resolved, preserving its committed outcome. Historical terminal
+task holds are retired by the next hibernation dispatch, including cleared waits;
+retirement does not claim stop proof or release a checkout.
 
 The Metrics page shows pending waits, observed slot time, wake causes and resume
 costs. Missing measurements remain null. Released slot time starts at proven
