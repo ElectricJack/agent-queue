@@ -68,6 +68,11 @@ If knowledge context preparation refuses a fresh `RESUME_PENDING` holder with
 `aq wait ack`, then retry `aq prime`. Prime records delivery of the bound outcome
 before preparing knowledge context, so acknowledgement is available after that
 refusal. Knowledge context retains its `IN_PROGRESS` claim requirement.
+The fresh continuation bootstrap makes this handshake explicit before task work:
+prime once to receive the outcome, run its exact ack command even when knowledge
+preparation reports the pre-ack `record.stale_claim`, then prime again. An initial
+ack before outcome delivery remains refused; the bootstrap never directs the
+worker to stop on this recoverable pre-ack refusal.
 
 No database DDL, claim/pool scheduling or public API model change is made here.
 The tests cover the SQL checkpoint/deadline race on disposable PostgreSQL,

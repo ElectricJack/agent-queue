@@ -329,6 +329,8 @@ async def test_resume_prime_outcome_summary_ticket_all_comments_and_held_mail(
     assert all(f"comment-{n:02}" in body for n in range(12))
     assert ("summary_degraded" in body) == degraded
     assert "Server facts captured" in body and "task:source:COMPLETED" in body
+    assert f"aq wait ack --wait-id {env.wait_id} --continuation-id c --generation 1" in body
+    assert "then `aq prime` again" in body
     assert (
         "held-body-old-session" in body
         and "held-body-task-mail" in body
