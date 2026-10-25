@@ -7262,13 +7262,15 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:607511aae8482a348b027c23ff7b5f321b5c56bdfdd3f1a298e8eab7f0304037",
+      "digest": "sha256:2c02ea5ff9c7faed25017b279f93e263681921b221192c8912b351cd9dd96e1a",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.asks.operations",
+        "src.commands",
         "src.commands.fidelity_review_commands",
         "src.commands.principal",
+        "src.commands.task_changes",
         "src.database.queries",
         "src.database.queries.claim_queries",
         "src.database.queries.ingest_batch_queries",
