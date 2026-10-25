@@ -11589,6 +11589,7 @@
       "display_mode",
       "include_completed",
       "labels",
+      "limit",
       "project_id",
       "show_all",
       "show_dependencies",
@@ -11625,14 +11626,28 @@
       {
         "protocol": "delegated_producer",
         "return": "context"
+      },
+      {
+        "protocol": "explicit_boolean_false",
+        "return": "{'success': False, 'error': 'limit must be a positive integer'}"
+      },
+      {
+        "protocol": "explicit_boolean_false",
+        "return": "{'success': False, 'error': 'Use page_size instead of limit for snapshots'}"
+      },
+      {
+        "protocol": "explicit_boolean_false",
+        "return": "{'success': False, 'error': 'limit is only supported for flat listings'}"
       }
     ],
-    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Task-list limit: reviewed three explicit refusal exits for nonpositive/noninteger limits, snapshot limits and hierarchical limits. Flat live lists apply the cap after filters and preserve uncapped total; no-limit behavior and authorization are unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:49ee843726c3a54c254a33b94d1352edaf5f416ef1565552b9c68507498811dd",
+    "source_digest": "sha256:c58071cf7af7b2fda237bbfffbd93b7ae00fc48878bcf5f5476a3086b71297fe",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
-      "tests/test_observation_snapshots.py"
+      "tests/test_observation_snapshots.py",
+      "tests/test_task_deps_command.py",
+      "tests/test_fidelity_review.py"
     ]
   },
   "list_workflows": {

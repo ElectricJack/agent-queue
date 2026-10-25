@@ -757,11 +757,9 @@ class TaskCommandsMixin:
         if args.get("limit") is not None:
             capped_tasks = tasks[:args["limit"]]
         else:
-            # Preserve the default: show all active tasks and cap finished ones.
             active = [t for t in tasks if t.status not in self._FINISHED_STATUSES]
             finished = [t for t in tasks if t.status in self._FINISHED_STATUSES]
-            cap = max(0, 200 - len(active))
-            capped_tasks = active + finished[:cap]
+            capped_tasks = active + finished[:max(0, 200 - len(active))]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
         await attach_activity(self.db, task_dicts)
         from src.task_graph.readiness import attach_readiness
