@@ -1,0 +1,90 @@
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
+load(":prebuilt_cc.bzl", "prebuilt_cc_config")
+load("@rules_python//python:defs.bzl", "py_binary")
+load("@pypi//:requirements.bzl", "all_requirements")
+load(":generators.bzl", "aq_generate")
+load("//tools/bazel/smoke:defs.bzl", "py_smoke")
+
+exports_files(["requirements_linux_x86_64.txt"])
+
+exports_files(["toolchains.lock.json", "native_toolchain.bzl"])
+exports_files(["generator_npm.lock.json", "generator_inputs.bzl"])
+toolchain_type(name = "native_toolchain_type", visibility = ["//visibility:public"])
+
+filegroup(name = "no_compiler_files")
+prebuilt_cc_config(name = "prebuilt_cc_config")
+cc_toolchain(
+    name = "prebuilt_cc",
+    toolchain_identifier = "aq-prebuilt-only",
+    toolchain_config = ":prebuilt_cc_config",
+    all_files = ":no_compiler_files",
+    ar_files = ":no_compiler_files",
+    as_files = ":no_compiler_files",
+    compiler_files = ":no_compiler_files",
+    dwp_files = ":no_compiler_files",
+    linker_files = ":no_compiler_files",
+    objcopy_files = ":no_compiler_files",
+    strip_files = ":no_compiler_files",
+)
+toolchain(
+    name = "prebuilt_cc_toolchain",
+    toolchain = ":prebuilt_cc",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+# The locked Python wheels include the generator, templates, Ruff and the
+# offline spec's application dependencies. Nothing is installed into a venv.
+py_binary(
+    name = "generate",
+    srcs = ["generate.py"],
+    deps = all_requirements,
+    legacy_create_init = False,
+)
+
+aq_generate(
+    name = "generated",
+    kind = "tracked",
+    srcs = ["//:generator_sources", "requirements_linux_x86_64.txt", "toolchains.lock.json"],
+)
+
+aq_generate(
+    name = "typescript",
+    kind = "typescript",
+    srcs = [
+        "//:scripts/regenerate-ts-client.sh", "//:packages/aq-ts-client/package.json",
+        "//:package-lock.json", "generator_npm.lock.json",
+    ],
+    upstream = ":generated",
+    npm = "@aq_generator_npm//:node_modules",
+    npm_entry = "@aq_generator_npm//:node_modules/@hey-api/openapi-ts/bin/index.cjs",
+    visibility = ["//visibility:public"],
+)
+
+aq_generate(
+    name = "typescript_reference",
+    kind = "typescript_reference",
+    srcs = ["//:generator_sources", "generator_npm.lock.json"],
+    upstream = ":generated",
+    npm = "@aq_generator_npm//:node_modules",
+    npm_entry = "@aq_generator_npm//:node_modules/@hey-api/openapi-ts/bin/index.cjs",
+)
+
+py_smoke(
+    name = "generated_check",
+    srcs = ["generator_check.py", "generate.py", "generator_inputs.py"],
+    main = "generator_check.py",
+    legacy_create_init = False,
+    args = [
+        "--tracked", "$(rootpath :generated)",
+        "--typescript", "$(rootpath :typescript)",
+        "--reference", "$(rootpath :typescript_reference)",
+    ],
+    data = [
+        "//:generator_sources", ":generated", ":typescript", ":typescript_reference",
+        "generator_inputs.bzl", "generator_npm.lock.json",
+    ],
+    size = "small",
+    visibility = ["//visibility:public"],
+)

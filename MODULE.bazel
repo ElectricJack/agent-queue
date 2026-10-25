@@ -1,0 +1,61 @@
+# Generated from tools/bazel/MODULE.bazel.template and toolchains.lock.json.
+# Run python tools/bazel/lock.py --render-module after a reviewed pin change.
+module(name = "agent_queue", version = "0.1.1")
+
+bazel_dep(name = "rules_cc", version = "0.2.16")
+bazel_dep(name = "rules_python", version = "1.8.2")
+bazel_dep(name = "aspect_rules_js", version = "3.5.1")
+bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
+bazel_dep(name = "rules_nodejs", version = "6.7.3")
+bazel_dep(name = "platforms", version = "1.1.0")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.single_version_platform_override(
+    python_version = "3.12.12",
+    platform = "x86_64-unknown-linux-gnu",
+    sha256 = "80c3882f14e15cef8260ef5257d198e8f4371ca265887431d939e0d561de3253",
+    urls = ["https://github.com/astral-sh/python-build-standalone/releases/download/20251031/cpython-3.12.12+20251031-x86_64-unknown-linux-gnu-install_only.tar.gz"],
+)
+python.toolchain(python_version = "3.12.12", is_default = True)
+use_repo(python, "python_3_12")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "pypi",
+    python_version = "3.12.12",
+    requirements_lock = "//tools/bazel:requirements_linux_x86_64.txt",
+    extra_pip_args = ["--require-hashes", "--only-binary=:all:"],
+)
+use_repo(pip, "pypi")
+
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(
+    node_version = "24.10.0",
+    node_urls = ["https://nodejs.org/dist/v24.10.0/node-v24.10.0-linux-x64.tar.xz"],
+    node_repositories = {
+        "24.10.0-linux_amd64": [
+            "node-v24.10.0-linux-x64.tar.xz",
+            "node-v24.10.0-linux-x64",
+            "2642f4428869aca32443660fd71b3918e2be1277a899bdcaeb64c93b54b5af17",
+        ],
+    },
+)
+use_repo(node, "nodejs_toolchains")
+register_toolchains("@nodejs_toolchains//:all")
+
+# H1 smoke only. B3 derives the full npm graph from package-lock.json.
+typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript")
+typescript.deps(
+    version = "5.7.3",
+    integrity = "sha512-84MVSjMEHP+FQRPy3pX9sTVV/INIex71s9TL2Gm5FG/WG1SqXeKyZ0k7/blY/4FdOzI12CBy1vGc4og/eus0fw==",
+)
+use_repo(typescript, "npm_typescript")
+
+native = use_extension("//tools/bazel:repositories.bzl", "tools")
+use_repo(native, "aq_native", "aq_uv")
+register_toolchains("@aq_native//:toolchain")
+
+register_toolchains("//tools/bazel:prebuilt_cc_toolchain")
+
+generators = use_extension("//tools/bazel:generator_repositories.bzl", "generators")
+use_repo(generators, "aq_generator_npm")

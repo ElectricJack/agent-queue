@@ -1,0 +1,61 @@
+# Generated from tools/bazel/MODULE.bazel.template and toolchains.lock.json.
+# Run python tools/bazel/lock.py --render-module after a reviewed pin change.
+module(name = "agent_queue", version = "0.1.1")
+
+bazel_dep(name = "rules_cc", version = "${rules_cc}")
+bazel_dep(name = "rules_python", version = "${rules_python}")
+bazel_dep(name = "aspect_rules_js", version = "${aspect_rules_js}")
+bazel_dep(name = "aspect_rules_ts", version = "${aspect_rules_ts}")
+bazel_dep(name = "rules_nodejs", version = "${rules_nodejs}")
+bazel_dep(name = "platforms", version = "${platforms}")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.single_version_platform_override(
+    python_version = "${python_version}",
+    platform = "x86_64-unknown-linux-gnu",
+    sha256 = "${python_sha256}",
+    urls = ["${python_url}"],
+)
+python.toolchain(python_version = "${python_version}", is_default = True)
+use_repo(python, "python_3_12")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "pypi",
+    python_version = "${python_version}",
+    requirements_lock = "//tools/bazel:requirements_linux_x86_64.txt",
+    extra_pip_args = ["--require-hashes", "--only-binary=:all:"],
+)
+use_repo(pip, "pypi")
+
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(
+    node_version = "${node_version}",
+    node_urls = ["${node_url}"],
+    node_repositories = {
+        "${node_version}-linux_amd64": [
+            "node-v${node_version}-linux-x64.tar.xz",
+            "node-v${node_version}-linux-x64",
+            "${node_sha256}",
+        ],
+    },
+)
+use_repo(node, "nodejs_toolchains")
+register_toolchains("@nodejs_toolchains//:all")
+
+# H1 smoke only. B3 derives the full npm graph from package-lock.json.
+typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript")
+typescript.deps(
+    version = "${typescript_version}",
+    integrity = "${typescript_integrity}",
+)
+use_repo(typescript, "npm_typescript")
+
+native = use_extension("//tools/bazel:repositories.bzl", "tools")
+use_repo(native, "aq_native", "aq_uv")
+register_toolchains("@aq_native//:toolchain")
+
+register_toolchains("//tools/bazel:prebuilt_cc_toolchain")
+
+generators = use_extension("//tools/bazel:generator_repositories.bzl", "generators")
+use_repo(generators, "aq_generator_npm")
