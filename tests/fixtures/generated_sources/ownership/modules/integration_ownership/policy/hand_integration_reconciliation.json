@@ -1,7 +1,7 @@
 {
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2277,
+    "authorized_owned_delta": 2278,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -106,7 +106,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 82524,
-    "measured_owned_total": 157776,
+    "measured_owned_total": 157777,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -182,6 +182,23 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "supervisor_decision_comment_id": "comment-26bf155ce932484188a12ac8776616fd",
       "task_id": "sharp-delta-65"
+    },
+    "wait_ci_timeout_backoff_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 1,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/waits/watchers/ci.py": 1
+      },
+      "dev_source_revision": "c413b548b78926032681cb99b410451f288a2bfe",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82524,
+      "previous_measured_owned_total": 157776,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +1 owned line: CI watcher backs off after an observation timeout so the wait listener drain does not pay a 5s timeout per CI event, hand-landed on dev by the global supervisor 2026-10-25. Zero remaining headroom.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "c413b548b78926032681cb99b410451f288a2bfe",
+      "task_id": "supervisor-global"
     },
     "wait_listener_fence_inherited_composition": {
       "authorized_engine_delta": 0,
