@@ -354,6 +354,40 @@ async def test_slow_batches_commit_only_processed_prefix_and_renew_before_contin
                for row in await records(runtime_env, wait_source_events))
 
 
+async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_event(runtime_env):
+    env = runtime_env
+    for n in range(3):
+        await env.db.wait_source_commit(source_key='test:prefix', generation=0,
+            revision=str(n), outcome_ref=f'test:{n}', payload={})
+    expected = sorted(row['seq'] for row in await records(env, wait_source_events))
+    service = runtime(env)
+    seen = []
+
+    async def dispatch(conn, event):
+        seen.append(event['seq'])
+        if event['seq'] == expected[1]:
+            raise RuntimeError('second event failed')
+
+    service.listener._dispatch = dispatch
+    with pytest.raises(RuntimeError, match='second event failed'):
+        await service.listener.tick()
+    cursor = (await records(env, wait_listener_cursors))[0]
+    assert cursor['last_seq'] == expected[0]
+    rows = sorted(await records(env, wait_source_events), key=lambda row: row['seq'])
+    assert rows[0]['dispatched_at'] is not None
+    assert all(row['dispatched_at'] is None for row in rows[1:])
+    await service.lease(release=True)
+    restarted = runtime(env)
+
+    async def replay(conn, event):
+        seen.append(event['seq'])
+
+    restarted.listener._dispatch = replay
+    assert await restarted.listener.tick()
+    assert seen == [expected[0], expected[1], expected[1], expected[2]]
+    assert (await records(env, wait_listener_cursors))[0]['last_seq'] == expected[-1]
+
+
 async def test_deadline_command_can_exceed_renewal_cadence(runtime_env):
     service = runtime(runtime_env)
     service.listener.renewal_seconds = 0.01
@@ -903,3 +937,71 @@ async def test_deadline_waits_for_graph_without_blocking_lease_renewal(runtime_e
         if pending and not pending.done():
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_listener_prepares_only_matching_waits_beyond_unrelated_prefix(runtime_env, monkeypatch):
+    from src.waits import loops
+    from src.waits.graph import graph_locked
+
+    env = runtime_env
+    receipt = await register(env)
+    base = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_records), [
+            {**base, "id": f"000-unrelated-{n:03}", "owner_id": f"unrelated-{n}",
+             "source_key": "task:unrelated"}
+            for n in range(205)
+        ])
+    prepared = []
+    original = loops.prepare_progress
+
+    async def prepare(conn, owners):
+        assert not graph_locked(conn)
+        prepared.extend(owner["id"] for owner in owners)
+        await original(conn, owners)
+
+    monkeypatch.setattr(loops, "prepare_progress", prepare)
+    dispatcher = ObservingDispatcher(env.registry)
+    service = runtime(env, dispatcher=dispatcher)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.tick()
+    assert prepared == [receipt["wait_id"]]
+    assert dispatcher.calls[0][0] == receipt["wait_id"]
+    assert next(row for row in await records(env) if row["id"] == receipt["wait_id"])[
+        "outcome"
+    ] == "satisfied"
+
+
+async def test_listener_retries_preparation_if_cursor_advances_during_git(runtime_env, monkeypatch):
+    from src.waits import loops
+
+    env = runtime_env
+    service = runtime(env)
+    assert await service.lease()
+    for n in range(2):
+        await env.db.wait_source_commit(source_key="test:cursor-race", generation=0,
+            revision=str(n), outcome_ref=f"test:{n}", payload={})
+    source = sorted(await records(env, wait_source_events), key=lambda row: row["seq"])
+    calls = 0
+
+    async def prepare(conn, owners):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # A competing drain committed the first event while this drain
+            # prepared Git. Its cursor must be re-read under the lease lock.
+            async with env.db._engine.begin() as other:
+                await other.execute(update(wait_listener_cursors).where(
+                    wait_listener_cursors.c.listener_key == "source",
+                ).values(last_seq=source[0]["seq"]))
+
+    monkeypatch.setattr(loops, "prepare_progress", prepare)
+    seen = []
+
+    async def dispatch(conn, event):
+        seen.append(event["seq"])
+
+    service.listener._dispatch = dispatch
+    assert await service.drain(await env.db.wait_source_watermark()) == 1
+    assert calls == 2
+    assert seen == [source[1]["seq"]]
