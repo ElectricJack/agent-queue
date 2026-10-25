@@ -57,6 +57,11 @@ def test_daily_cron_trigger_accepts_only_valid_local_times():
 #: than silently invalidating every stored artifact hash.
 # Refreshed with the combined list_tasks observation and gate_create contract changes in the golden.
 GOLDEN_DIGEST = "sha256:b894e6bc791942583a9ab4afa8a0731d9f036d20e7f0136bbc00103933cb2bd9"
+# The optional list_tasks limit changes its command pin. Keep the prior bytes
+# under their original digest and pin the refreshed artifact independently.
+TASK_LIST_LIMIT_GOLDEN_DIGEST = (
+    "sha256:2a8e08bf1ed328ef2ad37072bee6b28d4e028201ea3bdfa227baa3f09e89288b"
+)
 
 
 @pytest.fixture
@@ -156,8 +161,19 @@ class TestCanonicalSerialization:
             golden
         )
 
-    def test_canonical_bytes_are_stable_across_processes(self, golden):
-        assert artifact_sha256(golden) == GOLDEN_DIGEST
+    @pytest.mark.parametrize(
+        ("artifact", "digest"),
+        [
+            pytest.param(
+                GOLDEN.parent.parent / "task-list-limit-before" / GOLDEN.name,
+                GOLDEN_DIGEST,
+                id="before-task-list-limit",
+            ),
+            pytest.param(GOLDEN, TASK_LIST_LIMIT_GOLDEN_DIGEST, id="task-list-limit"),
+        ],
+    )
+    def test_canonical_bytes_are_stable_across_processes(self, artifact, digest):
+        assert artifact_sha256(load_definition_json(artifact.read_text())) == digest
 
     def test_canonical_bytes_omit_nulls(self, golden):
         assert b"null" not in canonical_bytes(golden)

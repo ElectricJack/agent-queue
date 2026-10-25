@@ -2022,7 +2022,7 @@
   },
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2358,
+    "authorized_owned_delta": 2368,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2107,6 +2107,26 @@
       "source_revision": "5e33516f93715b484eb15c2525d050ac303d5ee4",
       "task_id": "swift-lantern-21"
     },
+    "legacy_abandon_keep_branch_composition": {
+      "authorized_engine_delta": 10,
+      "authorized_owned_delta": 10,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/legacy_backfill.py": 10
+      },
+      "decision_message_id": "msg-42d72c76b0464cf79d519048e57985ac",
+      "dev_source_revision": "00b7a51cf",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82532,
+      "previous_measured_owned_total": 157793,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1990",
+      "reason": "Exact supervisor-approved +10 owned/engine lines for explicit keep-branch legacy source abandonment after merging current dev. Preserve all historical grants, original baselines and ownership classifications, with zero remaining headroom and no new tables or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "92326912dcff1bed5ca8bd5e7ab7c4f587ec9f5d",
+      "task_id": "eager-grove-95",
+      "thread_id": "eager-grove-95-ci-size-epoch4"
+    },
     "legacy_bookkeeping_refresh_composition": {
       "authorized_engine_delta": 24,
       "authorized_owned_delta": 24,
@@ -2144,8 +2164,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82595,
-    "measured_owned_total": 157857,
+    "measured_engine_lines": 82605,
+    "measured_owned_total": 157867,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,

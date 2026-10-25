@@ -27,7 +27,8 @@ async def ready(handler, db, project_id=None, *, kind="channel"):
     if project_id:
         await db.create_project(Project(id=project_id, name=project_id))
         handler.config.discord.project_id = project_id
-    _, principal = await supervisor(db, project_id)
+        await supervisor(db, project_id)
+    _, principal = await supervisor(db)
     principal = replace(principal, policy=CapabilityPolicy.from_namespaces(
         aq_commands=["supervisor_inbox_say", "supervisor_inbox_reply"],
     ))
@@ -65,7 +66,7 @@ async def test_initiated_post_after_answer_is_durable_concurrent_and_delivered_o
     request = values(first)
     if project_id:
         scope = RequestScope(kind="session", session_id=principal.session_id,
-                             project_id=project_id, elevated=True)
+                             project_id=None, elevated=True)
         assert await check_request_scope("supervisor_inbox_say", dict(request), scope, db=db) is None
     one, two = await asyncio.gather(say(handler, request, principal), say(handler, request, principal))
     assert one["success"] and two["success"], (one, two)
@@ -161,16 +162,20 @@ async def test_post_refuses_changed_authority_and_visibility(env, failure):
     ) if r["dedup_key"].startswith("conv-say:")]
 
 
-async def test_foreign_project_and_worker_cannot_initiate(env):
+@pytest.mark.parametrize("project_id", ["p", "other"])
+async def test_project_and_worker_cannot_initiate(env, project_id):
     handler, db = env
-    first, _, _, _ = await ready(handler, db, "p")
-    await db.create_project(Project(id="other", name="Other"))
-    _, foreign = await supervisor(db, "other")
+    first, global_principal, _, _ = await ready(handler, db, "p")
+    if project_id == "other":
+        await db.create_project(Project(id="other", name="Other"))
+        _, foreign = await supervisor(db, project_id)
+    else:
+        foreign = replace(global_principal, session_id="launch-supervisor-p", project_id="p")
     foreign = replace(foreign, policy=CapabilityPolicy.from_namespaces(
         aq_commands=["supervisor_inbox_say"],
     ))
     scope = RequestScope(kind="session", session_id=foreign.session_id,
-                         project_id="other", elevated=True)
+                         project_id=project_id, elevated=True)
     assert await check_request_scope("supervisor_inbox_say", values(first), scope, db=db)
     denied = await say(handler, values(first), foreign)
     assert denied["error_code"] == "out_of_scope", denied
