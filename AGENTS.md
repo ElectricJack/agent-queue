@@ -99,6 +99,9 @@ Tests are one file per area (`tests/test_<area>.py`, plus `tests/perf/`, `tests/
 The suite is ~14k tests; a full run is a whole-box, many-minute affair that stalls every
 agent on the machine. Rationale and the baseline workflow:
 [docs/guides/resource-gating.md](docs/guides/resource-gating.md).
+Testing confidence, retained obligations and replacement-coverage evidence are
+documented in [the accepted testing strategy](docs/guides/testing-strategy.md)
+(`rev-agile-ember` r1; A2 acceptance recorded before Bazel BUILD authoring).
 
 - **`aq test`, not bare `pytest`, for anything past one file.** It takes a box-wide test
   slot, applies the per-session worker cap and the default marker deselect
