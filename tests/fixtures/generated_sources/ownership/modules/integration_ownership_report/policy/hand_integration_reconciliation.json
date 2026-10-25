@@ -24,7 +24,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2426,
+    "authorized_owned_delta": 2512,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -99,6 +99,23 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "task_id": "bright-quest-30"
     },
+    "historical_root_pr_diagnostics_composition": {
+      "authorized_engine_delta": 86,
+      "authorized_owned_delta": 86,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-1da1b007351f478493b5681519dcc45c",
+      "dev_source_revision": "5d995a8378e53acd797b19e5b8d0fb2263156c2a",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82532,
+      "previous_measured_owned_total": 157785,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1991",
+      "reason": "Exact supervisor-approved +86 owned/engine lines for historical root PR diagnostics in the existing root_pull_requests receipt owner. Preserve all historical grants, original baselines and ownership classifications, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "0a81ecabe1d1dcdfd22ac7a0d75187c8bf406702",
+      "task_id": "bold-delta-18",
+      "thread_id": "bold-delta-18-ci-contracts"
+    },
     "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
     "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
     "large_session_prompt_composition": {
@@ -172,8 +189,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82649,
-    "measured_owned_total": 157925,
+    "measured_engine_lines": 82735,
+    "measured_owned_total": 158011,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
