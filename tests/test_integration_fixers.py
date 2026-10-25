@@ -147,6 +147,84 @@ async def register(db, state, session_state):
     ))
 
 
+async def test_abort_withdraws_registered_fixer_but_preview_and_pause_keep_it(db, fixer):
+    service, _, _ = fixer
+    await allocate(service)
+    original = await state(db)
+    await register(db, original, "running")
+    store = BatchStore(db)
+    await store.set_intent("batch-fix", "aborted", dry_run=True)
+    await store.set_intent("batch-fix", "paused")
+    assert (await db.get_session(original["session_id"])).desired_state == "running"
+    await store.set_intent("batch-fix", "aborted")
+    await store.set_intent("batch-fix", "aborted")  # replay retains checkout identity
+    row = await db.get_session(original["session_id"])
+    assert row.desired_state == "stopped"
+    assert row.state == "running"  # a database decision is not process-exit proof
+    assert await state(db) == original
+
+
+@pytest.mark.parametrize("mismatch", ["instance", "task", "project", "lifecycle"])
+async def test_abort_does_not_stop_a_session_outside_the_fixer_binding(db, fixer, mismatch):
+    from src.models import Task
+
+    service, _, _ = fixer
+    await allocate(service)
+    original = await state(db)
+    await register(db, original, "running")
+    fields = {"instance_token": "new-instance"}
+    if mismatch == "task":
+        await db.create_task(Task(id="other", project_id="p", title="Other work", description=""))
+        fields = {"task_id": "other"}
+    elif mismatch == "project":
+        await db.create_project(Project(id="other", name="Other project"))
+        fields = {"project_id": "other"}
+    elif mismatch == "lifecycle":
+        fields = {"lifecycle": "pool"}
+    await db.update_session(original["session_id"], **fields)
+    await BatchStore(db).set_intent("batch-fix", "aborted")
+    assert (await db.get_session(original["session_id"])).desired_state == "running"
+
+
+@pytest.mark.parametrize("queue_status", ["deferred", "companion"])
+async def test_deferred_writer_survives_recovery_until_explicit_abort(db, fixer, queue_status):
+    service, _, _ = fixer
+    await allocate(service)
+    original = await state(db)
+    await register(db, original, "running")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch-fix",
+        ).values(intent="aborted", lifecycle="aborted", cleanup_state="retained",
+                 fixer_queue={"status": queue_status, "family_id": "batch-fix"}))
+    store = BatchStore(db)
+    await store.reconcile_aborted()
+    assert (await db.get_session(original["session_id"])).desired_state == "running"
+    await store.set_intent("batch-fix", "aborted", operator_id="operator", reason="Stop repair")
+    assert (await db.get_session(original["session_id"])).desired_state == "stopped"
+
+
+@pytest.mark.parametrize("cleanup_state", ["pending", "complete", "retained"])
+async def test_recovery_stops_historical_aborted_fixer_even_after_cleanup(db, fixer, cleanup_state):
+    from src.integration.train import TrainTarget
+
+    service, _, _ = fixer
+    await allocate(service)
+    original = await state(db)
+    await register(db, original, "running")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch-fix",
+        ).values(intent="aborted", lifecycle="aborted", cleanup_state=cleanup_state))
+    store = BatchStore(db)
+    await store.reconcile_aborted(target=TrainTarget("p", "r", "refs/heads/other"))
+    assert (await db.get_session(original["session_id"])).desired_state == "running"
+    await store.reconcile_aborted(target=TrainTarget("p", "r", "refs/heads/dev"))
+    await store.reconcile_aborted()
+    assert (await db.get_session(original["session_id"])).desired_state == "stopped"
+    assert (await db.get_integration_batch("batch-fix"))["cleanup_state"] == cleanup_state
+
+
 @pytest.mark.parametrize("notification", ["red", "rebind", "green"])
 async def test_fixer_notifications_are_readable_by_registered_session(db, fixer, notification):
     service, _, _ = fixer
@@ -903,6 +981,57 @@ async def test_real_push_is_scoped_cas_idempotent_and_green_revokes_it(db, live_
     assert (await db.get_session(row.id)).desired_state == "running"
     await service.settle_delivered("real", fixed)
     assert (await db.get_session(row.id)).desired_state == "stopped"
+
+
+@pytest.mark.parametrize("local_work", ["clean", "published", "unpublished", "dirty"])
+async def test_aborted_fixer_stops_and_releases_only_preserved_checkout(db, live_fixer, local_work):
+    import json
+    from pathlib import Path
+
+    from src.sessions.provider import SessionHandle
+    from src.sessions.reconciler import SessionReconciler
+    from src.warm_workspaces import WarmWorkspacePool
+    from tests.test_integration_gitops import commit, git
+
+    service, runtime, orch, row, _, source, _ = live_fixer
+    path = Path(row.work_dir)
+    if local_work in {"published", "unpublished"}:
+        saved = commit(path, {"fix.txt": "preserve me\n"})
+        if local_work == "published":
+            await service.command(principal_for(row), action="push")
+    elif local_work == "dirty":
+        (path / "unsaved.txt").write_text("preserve me\n")
+    record = path.parent / ".owners" / (path.name + ".json")
+    manifest = json.loads(record.read_text())
+    pool = WarmWorkspacePool(runtime.git, manifest["store"], path.parent)
+    await BatchStore(db).set_intent("real", "aborted")
+    assert (await service.command(principal_for(row), action="push"))["outcome"] == "held"
+    assert not await runtime._checkout_released(manifest, path, git(path, "rev-parse", "HEAD"))
+
+    # Exercise production stop-intent reconciliation and its subsequent exit
+    # classification, rather than declaring the process stopped in the test.
+    reconciler = SessionReconciler(db, orch.config, orch.session_providers,
+                                  harnesses=orch.harness_registry)
+    live = [await db.get_session(row.id)]
+    await reconciler._step_idle_stop_intent(live, 1000)
+    await reconciler._step_idle_stop_intent(live, 1000 + reconciler._idle_stop_grace())
+    provider = orch.session_providers.create("fake")
+    assert not await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+    await reconciler._step_exits(live, 2000)
+    stopped = await db.get_session(row.id)
+    assert stopped.state == stopped.desired_state == "stopped"
+
+    acquired = await pool.acquire({"session_id": "next", "instance_token": "next"}, source,
+                                  released=runtime._checkout_released, branch="next-batch")
+    if local_work in {"clean", "published"}:
+        assert acquired == path
+        assert git(path, "branch", "--show-current") == "next-batch"
+    else:
+        assert acquired != path
+        if local_work == "dirty":
+            assert (path / "unsaved.txt").read_text() == "preserve me\n"
+        else:
+            assert git(path, "rev-parse", "HEAD") == saved
 
 
 @pytest.mark.parametrize("failure", ["spawn_or_wait", "timeout", "git_exit", "broker_not_served"])

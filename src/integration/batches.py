@@ -763,6 +763,8 @@ class BatchStore:
 
     async def reconcile_aborted(self, *, target=None, limit=100):
         """Release compatibility seals left by pre-fix aborts; never undo promotion."""
+        from src.integration.fixers import stop_aborted_fixers_on
+
         pending = select(integration_batches.c.id).where(
             integration_batches.c.target_ref.is_not(None),
             integration_batches.c.intent == "aborted",
@@ -784,6 +786,9 @@ class BatchStore:
                     human_abort_reason=func.coalesce(
                         integration_batches.c.human_abort_reason, "Batch aborted"),
                     updated_at=self.clock()))
+            # Already-terminal batches may predate fixer stop intent, including
+            # batches whose candidate/PR cleanup is already complete.
+            await stop_aborted_fixers_on(conn, target=target)
 
 
 class ManagedPublish(Protocol):

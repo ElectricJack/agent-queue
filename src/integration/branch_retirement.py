@@ -186,8 +186,10 @@ async def request_task_retirement_on(conn, task_id, *, request_id, reason, now=N
 async def request_batch_retirement_on(conn, batch, *, reason, now=None):
     """Queue only the private refs of a committed abort or supersede decision."""
     from src.integration.batches import candidate_ref
+    from src.integration.fixers import stop_aborted_fixers_on
     from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
 
+    await stop_aborted_fixers_on(conn, batch_id=batch["id"])
     for branch in (candidate_ref(batch["id"]), RETAINED_CANDIDATE_PREFIX + batch["id"]):
         await request_branch_retirement_on(
             conn, request_id="abort:" + batch["id"], project_id=batch["project_id"],

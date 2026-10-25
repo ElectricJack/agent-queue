@@ -311,6 +311,13 @@ Attributed failure groups can split the failing subset and its transitive
 dependents from independent members. Companion/successor batches retain family
 identity and reuse the same fixer. Unknown attribution retains the group.
 
+A terminal abort atomically stops wanting its exact bound, task-free fixer
+session. Session reconciliation stops the process, after which the warm checkout
+is reusable only with confirmed exit, preserved HEAD and no other owners or pins.
+Dirty or unpublished work stays retained. Deferred and companion writers remain
+wanted until family delivery or an explicit operator abort. Abort reconciliation
+repairs historical stop intent even after candidate cleanup has completed.
+
 `CandidateBaselineService` distinguishes introduced failures from target failures.
 An epic first tries default-branch synchronization. A sealed epic candidate can
 repair proven inherited failures in place, including through the guarded

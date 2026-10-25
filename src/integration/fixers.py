@@ -31,6 +31,36 @@ _LAUNCH_ESCALATE_AFTER = 3
 _LAUNCH_GRACE_SECONDS = 120
 
 
+async def stop_aborted_fixers_on(conn, *, batch_id=None, target=None):
+    """Withdraw terminal writers; the session reconciler proves process exit.
+
+    Deferred and companion batches deliberately retain their writer until a
+    successor rebinds it or the family settles. An operator abort replaces that
+    queue status, so it withdraws even a previously deferred writer. Keep the
+    binding for the warm-checkout release fence and preservation of local work.
+    """
+    batch = integration_batches
+    bound = select(batch.c.id).where(
+        batch.c.intent == "aborted",
+        batch.c.lifecycle != "promoted",
+        func.coalesce(batch.c.fixer_queue["status"].astext, "").not_in(
+            ("deferred", "companion")),
+        batch.c.fixer_state["session_id"].astext == sessions.c.id,
+        batch.c.fixer_state["instance_token"].astext == sessions.c.instance_token,
+        batch.c.project_id == sessions.c.project_id,
+    )
+    if batch_id is not None:
+        bound = bound.where(batch.c.id == batch_id)
+    if target is not None:
+        bound = bound.where(batch.c.project_id == target.project_id,
+                            batch.c.repository_id == target.repository_id,
+                            batch.c.target_ref == target.target_ref)
+    await conn.execute(update(sessions).where(
+        sessions.c.lifecycle == "named", sessions.c.task_id.is_(None),
+        sessions.c.desired_state != "stopped", bound.exists(),
+    ).values(desired_state="stopped"))
+
+
 class BatchFixerService:
     """Train allocation port; all mutations run inside CommandHandler.
 

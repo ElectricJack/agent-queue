@@ -9262,7 +9262,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f9f19d4d0869fe43b2c591f886adf1ba47666874a45877a800245323b69e3024",
+      "digest": "sha256:120c6fc7770ffec40d3f1b9514b4c958471f8d40c95fbb6d8c2d435165c9a0ed",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -9289,7 +9289,9 @@
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.spec"
+        "src.sessions.reconciler",
+        "src.sessions.spec",
+        "src.warm_workspaces"
       ],
       "markers": [
         "parametrize"
