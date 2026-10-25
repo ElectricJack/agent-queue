@@ -58,11 +58,17 @@ class PrimePreview:
     suffix: str
     field: str
     max_bytes: int
+    comments: tuple[str, ...] = ()
+    comment_total: int = 0
 
     def render(self, task_id: str, limit: int) -> str:
-        from .budgets import text_preview
+        from .budgets import comment_history, text_preview
 
-        return self.prefix + text_preview(self.text, limit, task_id, self.field) + self.suffix
+        history = comment_history(task_id, self.comments, self.comment_total)
+        return (
+            self.prefix + text_preview(self.text, limit, task_id, self.field) + self.suffix
+            + ("\n\n" + history if history else "")
+        )
 
 
 @dataclass(frozen=True)
