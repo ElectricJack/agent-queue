@@ -1350,9 +1350,11 @@ async def test_transcript_fences_upgrade_from_deployed_repair_revision():
         await conn.close()
     upgraded = _alembic_pg(dsn, "upgrade", "head")
     assert upgraded.returncode == 0, upgraded.stderr
+    heads = _alembic_pg(dsn, "heads")
+    assert heads.returncode == 0, heads.stderr
     conn = await _pg_conn(dsn)
     try:
-        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000122"
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == heads.stdout.split()[0]
         assert await conn.fetchval("SELECT to_regclass('transcript_usage_fences')")
         assert await conn.fetchval("SELECT to_regclass('idx_transcript_usage_calls_updated')")
         assert await conn.fetchval("SELECT to_regclass('idx_transcript_usage_fences_keys')")

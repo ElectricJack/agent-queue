@@ -2135,3 +2135,22 @@ async def test_global_supervisor_status_read_stops_nudges(setup, monkeypatch, re
     assert bus.of_type("message.delivered") == [{
         "message_id": message.id, "project_id": project_id, "method": "read",
     }]
+
+
+@pytest.mark.parametrize("destination", ["discord:395982012789293056", "discord", "unknown"])
+async def test_send_refuses_user_without_delivery_path_before_queueing(setup, destination):
+    handler, db, bus = setup
+    result = await handler._cmd_message_send(_send_args(to_kind="user", to_id=destination))
+    assert result["success"] is False
+    assert result["error_code"] == "unsupported_user_destination"
+    assert "aq supervisor-inbox say" in result["error"]
+    assert not await db.list_messages(to_kind="user", to_id=destination)
+    assert not bus.of_type("message.sent")
+
+
+async def test_send_to_dashboard_retains_human_inbox_delivery(setup):
+    handler, db, bus = setup
+    result = await handler._cmd_message_send(_send_args(to_kind="user", to_id="dashboard"))
+    assert result["success"], result
+    assert (await db.get_message(result["message_id"])).to_id == "dashboard"
+    assert len(bus.of_type("message.sent")) == 1

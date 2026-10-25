@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
@@ -33,6 +33,18 @@ from src.integration.delivery_truth import (
 )
 from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.selection_metrics import selection_count
+from src.integration.signatures import (
+    SIGNATURE_CACHE_LIMIT,
+    SIGNATURE_VERSION,
+    GeneratedProvenance,
+    GraphObservation,
+    PathChange,
+    SignatureCache,
+    SignatureIdentity,
+    SignatureRules,
+    SourceSignature,
+    build_source_signature,
+)
 
 logger = logging.getLogger(__name__)
 LEGACY_CONTRACT_VERSION = "legacy-equivalence-v1"
@@ -135,6 +147,7 @@ class GitTruth:
         self._failures: dict[tuple[str, str], tuple[float, float, str]] = {}
         self.share_fetches = share_fetches
         self._fetches: dict[tuple[str, str, str, str], _SharedFetch] = {}
+        self.signatures = SignatureCache(limit=min(cache_limit, SIGNATURE_CACHE_LIMIT), clock=clock)
 
     async def snapshot(
         self, store: str, *, project_id: str, repository_id: str,
@@ -272,6 +285,79 @@ class GitTruthSnapshot:
     retry_at: float | None = None
     #: Diagnostics can consume only proofs populated by a background reader.
     cached_only: bool = False
+
+    async def source_signature(
+        self, identity: SignatureIdentity, rules: SignatureRules, *,
+        recheck: Callable[[], Awaitable[SignatureIdentity | None]],
+        provenance: GeneratedProvenance | None = None,
+        graph: GraphObservation | None = None,
+    ) -> SourceSignature:
+        """Observe exact source changes, with identity checks on cache hits too.
+
+        ``recheck`` reloads task/PR, remote source/target and policy/producer
+        identities. None/failure/movement invalidates cached evidence. The caller
+        must recheck again immediately before a later freeze; this is no grant.
+        Neither this observer nor the pure builder selects members or tests.
+        """
+        observed, cache = self.observation, self.truth.signatures
+
+        def unknown(reason):
+            cache.invalidate(identity)
+            return SourceSignature(identity, reasons=(reason,))
+
+        if not identity.valid:
+            return unknown("invalid_identity")
+        source_ref = "refs/remotes/origin/" + identity.source_ref.removeprefix("refs/heads/")
+        if (observed.error
+                or (identity.project_id, identity.repository_id, identity.target_ref,
+                    identity.target_sha, identity.source_head) != (
+                        observed.project_id, observed.repository_id, observed.target_ref,
+                        observed.target_oid, observed.source_heads.get(source_ref))):
+            return unknown("snapshot_identity_mismatch")
+        key = (SIGNATURE_VERSION, observed.store, observed.repository_url,
+               identity, rules, provenance, graph)
+        try:
+            if await recheck() != identity:
+                return unknown("identity_stale")
+            signature = cache.get(key)
+            built = signature is None
+            if built:
+                if self.cached_only:
+                    return SourceSignature(identity, reasons=("signature_not_cached",))
+                # Reject shallow or ambiguous merge bases instead of making a
+                # partial history look like a smaller independent change.
+                if (await _run(observed, "rev-parse", "--is-shallow-repository")).strip() != "false":
+                    return unknown("incomplete_history")
+                for oid in (identity.merge_base, identity.source_head, identity.target_sha):
+                    await self.truth.exact(observed, oid)
+                bases = (await _run(observed, "merge-base", "--all", identity.source_head,
+                                    identity.target_sha)).splitlines()
+                if bases != [identity.merge_base]:
+                    return unknown("merge_base_mismatch")
+                # --no-renames expresses a rename as deletion + addition, so
+                # neither name disappears. NUL framing preserves odd filenames.
+                output = await _run(observed, "diff", "--no-ext-diff", "--no-textconv",
+                                    "--no-renames", "--name-only", "-z",
+                                    identity.merge_base, identity.source_head, "--")
+                if output and not output.endswith("\0"):
+                    return unknown("unknown_diff")
+                changes = [PathChange("M", path) for path in output.split("\0")[:-1]]
+                signature = build_source_signature(
+                    identity, changes, rules, provenance=provenance, graph=graph,
+                )
+            if await recheck() != identity:
+                return unknown("identity_stale")
+            # Unknown results are not sticky; the producer may recover next visit.
+            if built and not signature.universal:
+                cache.put(key, signature)
+            return signature
+        except asyncio.CancelledError:
+            cache.invalidate(identity)
+            raise
+        except Exception:
+            # Recheck/producer failures may contain credentials or untrusted Git
+            # detail. Only a fixed conservative reason leaves this boundary.
+            return unknown("signature_unavailable")
 
     @property
     def target_oid(self) -> str | None:
