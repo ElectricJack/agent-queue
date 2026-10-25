@@ -13,3 +13,10 @@ py_library(
     deps = [requirement("attrs"), requirement("httpx")],
     visibility = ["//tools/bazel/smoke:__pkg__"],
 )
+
+# Every PG target rebuilds its template when any migration input changes.
+filegroup(
+    name = "postgres_test_migrations",
+    srcs = ["alembic.ini"] + glob(["migrations/**"], exclude = ["**/__pycache__/**"]),
+    visibility = ["//visibility:public"],
+)

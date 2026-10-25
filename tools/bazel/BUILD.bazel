@@ -35,3 +35,11 @@ toolchain(
     exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
+
+py_library(
+    name = "postgres_cluster",
+    srcs = ["postgres_cluster.py"],
+    deps = [":test_environment"],
+    data = ["//:postgres_test_migrations"],
+    visibility = ["//visibility:public"],
+)

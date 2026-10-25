@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import sys
 from pathlib import Path
 
@@ -252,3 +253,203 @@ else:
         before = heartbeat.read_text() if heartbeat.exists() else None
         await asyncio.sleep(.15)
         assert (heartbeat.read_text() if heartbeat.exists() else None) == before
+
+
+@pytest.fixture
+def postgres_runtime(tmp_path):
+    """Explicit H1 closure for real PG acceptance; never discover ambient PG."""
+    from tools.bazel.postgres_cluster import PostgresBinaries
+
+    location = os.environ.get("AQ_BAZEL_POSTGRES_RUNTIME")
+    if not location:
+        pytest.skip("set AQ_BAZEL_POSTGRES_RUNTIME to H1's locked native runtime")
+    native = Path(location).resolve()
+    binary = native / "bin"
+    binaries = PostgresBinaries(*(binary / name for name in ("initdb", "postgres", "pg_ctl", "psql")))
+    runtime = isolated.Runtime(
+        Path(sys.executable).resolve(), (native, Path(sys.executable).resolve().parent),
+        (binary,), library_dirs=(native / "lib",),
+    )
+    return runtime, binaries
+
+
+async def test_real_pg_clusters_are_private_and_preserve_parent(tmp_path, postgres_runtime):
+    import asyncpg
+    from tools.bazel.postgres_cluster import postgres_cluster
+
+    runtime, binaries = postgres_runtime
+    before = {key: os.environ.get(key) for key in
+              ("POSTGRES_TEST_DSN", "AQ_DB_SCOPE", "AQ_DATABASE_URL", "AGENT_QUEUE_DB")}
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as first_env:
+        with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as second_env:
+            async with postgres_cluster(first_env, binaries, socket_alias_root=Path("/tmp")) as one:
+                async with postgres_cluster(second_env, binaries, tcp=True,
+                                            socket_alias_root=Path("/tmp")) as two:
+                    assert one.port != two.port and one.socket_dir != two.socket_dir
+                    assert one.root != two.root and one.dsn != two.dsn
+                    assert one.root.is_relative_to(first_env.root)
+                    assert two.root.is_relative_to(second_env.root)
+                    a = await asyncpg.connect(one.dsn.replace("+asyncpg", ""))
+                    b = await asyncpg.connect(two.dsn.replace("+asyncpg", ""))
+                    try:
+                        await a.execute("CREATE TABLE private_target (value text)")
+                        assert await b.fetchval("SELECT to_regclass('private_target')") is None
+                        assert await a.fetchval("SHOW listen_addresses") == ""
+                        with socket.create_connection(("127.0.0.1", two.port), timeout=1):
+                            pass
+                        with socket.socket() as connection:
+                            assert connection.connect_ex(("127.0.0.1", one.port)) != 0
+                        assert one.environ["AQ_TEST_PG_MODE"] == "postgres"
+                        assert one.environ["AQ_DB_SCOPE"] == "test"
+                    finally:
+                        await a.close()
+                        await b.close()
+                assert two.process.returncode is not None
+                assert not two.root.exists() and not two.socket_dir.exists()
+                # The other target's shutdown cannot disturb the surviving cluster.
+                a = await asyncpg.connect(one.dsn.replace("+asyncpg", ""))
+                try:
+                    assert await a.fetchval("SELECT to_regclass('private_target')") is not None
+                finally:
+                    await a.close()
+            assert one.process.returncode is not None
+            assert not one.root.exists() and not one.socket_dir.exists()
+    assert {key: os.environ.get(key) for key in before} == before
+
+
+async def test_real_pg_cluster_cancellation_kills_connected_backends(tmp_path, postgres_runtime):
+    import asyncpg
+    from tools.bazel.postgres_cluster import postgres_cluster
+
+    runtime, binaries = postgres_runtime
+    ready = asyncio.Event()
+    clusters, connections = [], []
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as environment:
+        async def work():
+            async with postgres_cluster(environment, binaries, grace=.2,
+                                        socket_alias_root=Path("/tmp")) as cluster:
+                clusters.append(cluster)
+                connection = await asyncpg.connect(cluster.dsn.replace("+asyncpg", ""))
+                connections.append(connection)
+                ready.set()
+                await asyncio.Event().wait()
+        task = asyncio.create_task(work())
+        try:
+            async with asyncio.timeout(40):
+                while not ready.is_set() and not task.done():
+                    await asyncio.sleep(.02)
+            if task.done():
+                await task
+            assert ready.is_set()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            cluster = clusters[0]
+            assert cluster.process.returncode is not None
+            assert not cluster.root.exists() and not cluster.socket_dir.exists()
+            async with asyncio.timeout(5):
+                while not connections[0].is_closed():
+                    await asyncio.sleep(.02)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            for connection in connections:
+                connection.terminate()
+
+
+async def _pytest_probe(tmp_path, source, *, mode="pure", collect=False):
+    """Load real root fixtures in a child with explicit Python/config inputs."""
+    repo = Path(__file__).resolve().parents[1]
+    packages = Path(pytest.__file__).resolve().parents[1]
+    runtime = isolated.Runtime(
+        Path(sys.executable), (repo, Path(sys.prefix)), (Path(sys.executable).parent,),
+    )
+    sample = tmp_path / "test_sample.py"
+    sample.write_text(source)
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as environment:
+        env = environment.child_env()
+        env["AQ_TEST_PG_MODE"] = mode
+        args = [str(sample), "-p", "tests.conftest", "-p", "pytest_asyncio.plugin",
+                "-c", str(repo / "pyproject.toml"), "-o", "addopts=", "-q"]
+        if collect:
+            args.append("--collect-only")
+        script = (f"import sys; sys.path.insert(0, {str(packages)!r}); "
+                  f"import pytest; raise SystemExit(pytest.main({args!r}))")
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", script, cwd=repo, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), 30)
+            return process.returncode, output.decode()
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+
+@pytest.mark.parametrize("collect", [False, True])
+async def test_pure_pytest_without_dsn_runs_real_root_fixtures(tmp_path, collect):
+    status, output = await _pytest_probe(
+        tmp_path, "def test_pure():\n    assert 2 + 2 == 4\n", collect=collect,
+    )
+    assert status == 0, output
+    assert ("1 test collected" if collect else "1 passed") in output
+
+
+@pytest.mark.parametrize("source,outcome", [
+    ("def test_pg():\n    from tests.db_fixtures import lease_dsn; lease_dsn()\n", "1 failed"),
+    ("def test_pg():\n    from tests.pg_dsn import ensure_worker_postgres_dsn; "
+     "ensure_worker_postgres_dsn()\n", "1 failed"),
+    ("def test_pg(reuse_database):\n    pass\n", "1 error"),
+])
+async def test_pure_pytest_rejects_accidental_pg_dependency(tmp_path, source, outcome):
+    status, output = await _pytest_probe(tmp_path, source)
+    assert status == 1, output
+    assert "PostgreSQL dependency requested by a pure target" in output, output
+    assert outcome in output and "skipped" not in output
+
+
+async def test_declared_pg_target_requires_dsn_but_collection_does_not(tmp_path):
+    source = "def test_pg():\n    pass\n"
+    status, output = await _pytest_probe(tmp_path, source, mode="postgres")
+    assert status == 4, output
+    assert "POSTGRES_TEST_DSN is not set" in output
+    status, output = await _pytest_probe(tmp_path, source, mode="postgres", collect=True)
+    assert status == 0, output
+    assert "1 test collected" in output
+
+
+async def test_actual_postgres_target_starts_inside_namespace(
+    tmp_path, namespace_runtime, postgres_runtime,
+):
+    from tools.bazel.postgres_cluster import run_postgres_target
+
+    native_runtime, binaries = postgres_runtime
+    native = binaries.postgres.parent.parent
+    repo = Path(__file__).resolve().parents[1]
+    runtime = isolated.Runtime(
+        namespace_runtime.python, (*namespace_runtime.read_only, native, repo),
+        (native / "bin", namespace_runtime.python.parent),
+        library_dirs=native_runtime.library_dirs, shell=namespace_runtime.shell,
+    )
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as environment:
+        result = environment.root / "result.json"
+        script = """
+import json, os, pathlib, socket, subprocess
+assert socket.if_nameindex() == [(1, 'lo')]
+assert os.environ['AQ_TEST_PG_MODE'] == 'postgres'
+assert os.environ['AQ_DB_SCOPE'] == 'test'
+assert not {'AQ_SESSION_ID', 'AQ_API_TOKEN', 'AGENT_QUEUE_DB', 'AQ_DATABASE_URL'} & os.environ.keys()
+dsn = os.environ['POSTGRES_TEST_DSN'].replace('+asyncpg', '')
+value = subprocess.check_output([%r, '-XAt', '-d', dsn, '-c', 'SELECT version()'], text=True)
+assert 'PostgreSQL 18.1' in value
+pathlib.Path(%r).write_text(json.dumps({'dsn': dsn, 'version': value}))
+""" % (str(binaries.psql), str(result))
+        status = await run_postgres_target(
+            environment, binaries, [str(runtime.python), "-I", "-c", script],
+            cwd=environment.root, timeout=30,
+        )
+        assert status == 0
+        assert "PostgreSQL 18.1" in json.loads(result.read_text())["version"]
+        assert not list(environment.root.glob("pg-*"))
