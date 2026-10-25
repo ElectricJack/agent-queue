@@ -5,7 +5,7 @@ def _supervisor_say_changes():
 
 
 def _before_supervisor_say_catalogue():
-    catalogue = _before_unread_inbox_catalogue()
+    catalogue = _before_task_list_limit_catalogue(_before_unread_inbox_catalogue())
     evidence = _supervisor_say_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
@@ -20,7 +20,9 @@ def test_supervisor_say_catalogue_only_adds_initiated_conversation_post():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = json.dumps(_before_unread_inbox_catalogue(), indent=2) + "\n"
+    catalogue = json.dumps(
+        _before_task_list_limit_catalogue(_before_unread_inbox_catalogue()), indent=2
+    ) + "\n"
     assert hashlib.sha256(catalogue.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )

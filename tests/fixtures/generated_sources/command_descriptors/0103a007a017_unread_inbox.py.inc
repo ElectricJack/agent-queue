@@ -4,8 +4,9 @@ def _unread_inbox_changes():
     )
 
 
-def _before_unread_inbox_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+def _before_unread_inbox_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = json.loads(render_command_catalogue())
     approved = _unread_inbox_changes()["transport_definitions"]["message_inbox"]
     [definition] = [row for row in catalogue["explicit"] if row["name"] == "message_inbox"]
     assert definition == approved["current"]
@@ -23,8 +24,10 @@ def test_unread_inbox_only_changes_transport_description():
     )
     assert _digest(approved["previous"]) == approved["previous_sha256"]
     assert _digest(approved["current"]) == approved["sha256"]
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+    catalogue = _before_task_list_limit_catalogue()
+    rendered = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
-    previous = json.dumps(_before_unread_inbox_catalogue(), indent=2) + "\n"
+    previous = json.dumps(_before_unread_inbox_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
