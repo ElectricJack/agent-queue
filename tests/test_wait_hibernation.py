@@ -21,7 +21,9 @@ from src.database.queries.continuation_queries import (
     wait_outcome_envelope,
 )
 from src.database.queries.wait_queries import register_wait
-from src.database.tables import continuations, messages, sessions, tasks, wait_records
+from src.database.tables import (
+    continuations, messages, sessions, tasks, wait_listener_cursors, wait_records, wait_source_events,
+)
 from src.models import Project, SessionRecord, Task
 from src.prime import PrimeRenderer
 from src.prime.budgets import CONTINUATION_COMMENTS_BYTES
@@ -34,23 +36,33 @@ from tests.test_wait_queries import NOW, Policy, owner
 
 
 @pytest.fixture
-async def env():
+async def env(request):
     db = Database(lease_dsn("wait-checkpoints"))
     await db.initialize()
     await db.create_project(Project(id="p", name="P"))
     scope = await owner(db)
     await db.create_task(Task(id="source", project_id="p", title="Source", description=""))
+    condition = {"kind": "task", "task_id": "source"}
+    message_wait = getattr(request, "param", None) == "message"
+    if message_wait:
+        question = await db.create_message(
+            project_id="p", from_kind="session", from_id="s", to_kind="session",
+            to_id="supervisor-p", thread_id="interview-q4", body="Question",
+        )
+        condition = {"kind": "message", "thread_id": question.thread_id,
+                     "after_seq": question.created_seq}
+    watermark = await db.wait_source_watermark()
     async with db._engine.begin() as conn:
         result = await register_wait(
             conn,
             scope=scope,
-            condition={"kind": "task", "task_id": "source"},
+            condition=condition,
             idempotency_key="hibernate",
             registry=build_registry(clock=lambda: NOW),
             policy=Policy(),
             decide_sleep=lambda *_: SleepDecision("hibernate", "duration", {}),
             now=NOW,
-            source_watermark=0,
+            source_watermark=watermark,
         )
         await conn.execute(
             insert(continuations).values(
@@ -658,6 +670,67 @@ async def test_outcome_during_stop_queues_only_after_park(env):
     await park(env)
     assert (await env.db.get_task('owner')).status.value == 'RESUME_PENDING'
     assert (await intent(env))['resume_state'] == 'queued'
+
+
+@pytest.mark.parametrize("env", ["message"], indirect=True)
+@pytest.mark.parametrize("recipient", ["task", "session"])
+@pytest.mark.parametrize("ceiling", [False, True])
+async def test_held_thread_reply_resolves_hibernated_wait_and_queues_resume(
+    env, recipient, ceiling, monkeypatch,
+):
+    from src.waits.holding import message_is_held
+    from src.waits.source_sql import source_batch_statement
+    from tests.test_wait_dispatch import runtime
+
+    service = runtime(env, registry=build_registry(clock=lambda: NOW))
+    service.orch.wait_dispatcher = service._dispatcher
+    if ceiling:
+        service.orch.config.wait_policy.hibernation_enabled = True
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(sleep_decision="in_place"))
+            wait = (await conn.execute(select(wait_records))).mappings().one()
+            assert (await service.lifecycle.ceiling(
+                conn, {}, wait, now=NOW + 1800, handler=None))["suspended"]
+    await capture(env)
+    await park(env)
+    # Reproduce the live incident's CI/pool flood ahead of the reply. The
+    # operation bound is deterministic, rather than a loaded-box latency budget.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(source_batch_statement([
+            dict(source_key="ci_check:repo:sha:unit" if n % 2 else
+                 "resource_invalidation:pool:worker", generation=0, revision=str(n),
+                 outcome_ref=f"noise:{n}", payload={})
+            for n in range(2000)
+        ]))
+    dispatch = service.listener._dispatch
+
+    async def only_relevant(conn, event):
+        assert not event["source_key"].startswith(("ci_check:", "resource_invalidation:pool:"))
+        await dispatch(conn, event)
+
+    monkeypatch.setattr(service.listener, "_dispatch", only_relevant)
+    lease = AsyncMock(wraps=service.lease)
+    monkeypatch.setattr(service, "lease", lease)
+    reply = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="supervisor-p", to_kind=recipient,
+        to_id="owner" if recipient == "task" else "s", thread_id="interview-q4", body="Answer",
+    )
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(messages.c.id).where(
+            messages.c.id == reply.id, message_is_held())) == reply.id
+    assert await service.listener.tick()
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert await conn.scalar(select(wait_listener_cursors.c.last_seq)) >= await conn.scalar(
+            select(wait_source_events.c.seq).where(
+                wait_source_events.c.outcome_ref == f"message:{reply.id}"))
+    assert lease.await_count <= 20
+    assert wait["outcome"] == "satisfied"
+    assert wait["result_ref"] == f"message:{reply.id}"
+    assert (await intent(env))["resume_state"] == "queued"
+    assert (await env.db.get_task("owner")).status.value == "RESUME_PENDING"
+    queued = await env.db.get_message(reply.id)
+    assert queued.delivered_at is None and queued.read_at is None
 
 
 async def test_live_service_resumes_parked_outcome_without_orchestrator_cycle(env):

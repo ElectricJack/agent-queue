@@ -269,6 +269,11 @@ def test_generator_manifests_detect_removed_files_and_root_dependent_bytes(tmp_p
     (second / "client.ts").write_text(str(tmp_path))
     with pytest.raises(ValueError, match="temporary/execroot"):
         generate.assert_portable(second, [tmp_path])
+    (second / "client.ts").unlink()
+    (second / "client.ts").symlink_to(first / "client.ts")
+    with pytest.raises(ValueError, match="symlink"):
+        generate.manifest(second)
+    generate.compare(first, second, allow_symlinks=True)
 
 
 def test_clean_root_generator_acceptance():

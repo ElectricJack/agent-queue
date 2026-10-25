@@ -27,8 +27,9 @@ def manifest(root: Path, *, allow_symlinks: bool = False) -> dict[str, str]:
     return result
 
 
-def compare(expected: Path, actual: Path) -> None:
-    left, right = manifest(expected), manifest(actual)
+def compare(expected: Path, actual: Path, *, allow_symlinks: bool = False) -> None:
+    left = manifest(expected, allow_symlinks=allow_symlinks)
+    right = manifest(actual, allow_symlinks=allow_symlinks)
     differences = [name for name in sorted(left.keys() | right.keys())
                    if left.get(name) != right.get(name)]
     if differences:
