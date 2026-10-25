@@ -17,10 +17,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.config import AppConfig, DatabaseConfig
-from src.database.tables import task_branch_origins, tasks
+from src.database.tables import (
+    admission_reservations,
+    continuations,
+    task_branch_origins,
+    tasks,
+    wait_records,
+)
 from src.integration.lock import DEFAULT_TTL_SECONDS, RENEWAL_MARGIN_SECONDS, BranchLock
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, StaleFence
@@ -3796,6 +3802,54 @@ class TestOrphanStep:
         await releasing_reconciler.tick(now=NOW)
         assert (await db.get_session("s1")).state == "running"
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    @pytest.mark.parametrize("new_session_id", ["s1", "old-session"])
+    async def test_resume_pending_retains_only_the_continuations_new_session(
+        self, db, provider, reconciler, lifecycle, new_session_id
+    ):
+        await db.create_task(Task(
+            id="t1", project_id="p1", title="Resuming", description="",
+            status=TaskStatus.RESUME_PENDING,
+        ))
+        row = await _session(db, provider, lifecycle=lifecycle, claim_phase="active")
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(wait_records).values(
+                id="resume-wait", project_id="p1", owner_kind="task", owner_id="t1",
+                origin="agent", session_id="old-session", condition_kind="timer",
+                condition={}, source_key="timer", source_generation=1, source_watermark_seq=0,
+                verification_state="verified", evidence_ref="timer", verified_at=NOW,
+                created_at=NOW, request_hash="resume", outcome="satisfied", resolved_at=NOW,
+                sleep_decision="hibernate",
+            ))
+            await conn.execute(insert(continuations).values(
+                id="continuation", task_id="t1", wait_id="resume-wait", suspension_generation=1,
+                facts={}, branch="aq/t1", prior_status="IN_PROGRESS", held_cursor_seq=0,
+                resume_state="launching", new_session_id=new_session_id,
+            ))
+            await conn.execute(insert(admission_reservations).values(
+                id="reservation", project_id="p1", task_id="t1", continuation_id="continuation",
+                scope={"profile_id": row.profile_id}, effective_priority=100, provenance="resume",
+                deadline_at=NOW + 1800, state="consumed", created_at=NOW,
+            ))
+
+        live = await reconciler._step_observe(NOW)
+        await reconciler._step_orphans(live, NOW)
+
+        session = await db.get_session(row.id)
+        if new_session_id == row.id:
+            assert (session.state, session.task_id, session.claim_phase) == (
+                "running", "t1", "active",
+            )
+            assert await provider.list_running("s-")
+            assert await db.get_pending_messages("session", row.id) == []
+        elif lifecycle == "task":
+            assert session.state == "stopped"
+            assert await provider.list_running("s-") == []
+        else:
+            assert session.task_id is None
+            assert len(await db.get_pending_messages("session", row.id)) == 1
+        assert (await db.get_task("t1")).status is TaskStatus.RESUME_PENDING
 
     async def test_named_sessions_have_no_task_to_disagree_with(
         self, db, provider, releasing_reconciler
