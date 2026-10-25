@@ -3622,13 +3622,25 @@ async def test_unreferenced_exact_shortcut_verifies_actual_lender(tmp_path, monk
 
 @pytest.mark.parametrize('result_runner', [False, True])
 @pytest.mark.parametrize('command', ['gc', 'repack', 'maintenance'])
+@pytest.mark.parametrize('prepacked', [False, True])
 async def test_full_verification_excludes_linked_worktree_maintenance(
-    tmp_path, monkeypatch, result_runner, command,
+    tmp_path, monkeypatch, result_runner, command, prepacked,
 ):
     work, _source, _store = _exact_fetch_case(tmp_path)
+    if prepacked:
+        _git(['repack', '-ad'], work)
+    # Setup or ambient auto-maintenance may already have packed the history.
+    # Leave a reachable loose commit so the tested repack must change the store.
+    _git([
+        '-c', 'maintenance.auto=false', '-c', 'gc.auto=0',
+        'commit', '--allow-empty', '-m', 'unpacked maintenance tip',
+    ], work)
+    loose_tip = _git(['rev-parse', 'HEAD'], work)
     linked = tmp_path / 'linked'
     _git(['worktree', 'add', '--detach', str(linked), 'HEAD'], work)
     gitdir = _git(['rev-parse', '--absolute-git-dir'], work)
+    assert (Path(gitdir) / 'objects' / loose_tip[:2] / loose_tip[2:]).is_file()
+    before = manager_module._object_store_fingerprint(gitdir)
     manager = GitManager()
     checking = asyncio.Event()
     release = asyncio.Event()
@@ -3680,6 +3692,7 @@ async def test_full_verification_excludes_linked_worktree_maintenance(
         assert not lock.locked()
         # A repack changes the store and invalidates the previous clean baseline.
         if command == 'repack':
+            assert manager_module._object_store_fingerprint(gitdir) != before
             assert not manager.retained_store_verified(gitdir)
     finally:
         release.set()

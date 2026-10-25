@@ -469,6 +469,9 @@ class TestDeliveryPolicy:
                 self.marked: list = []
                 self.archived: list = []
 
+            async def route_queued_conversation_inputs(self):
+                return 0
+
             async def redirect_disabled_supervisor_messages(self):
                 return 0
 
@@ -1470,6 +1473,17 @@ async def test_wait_result_never_fabricates_transcript_reply(db, body_kind):
 
 
 class TestIndependentDelivery:
+    async def test_conversation_recovery_failure_does_not_block_other_mail(self, db, monkeypatch):
+        monkeypatch.setattr(db, "route_queued_conversation_inputs", AsyncMock(
+            side_effect=RuntimeError("routing unavailable"),
+        ))
+        msg = await _send(db)
+        manager = FakeSessionManager(activity_map={
+            ("session", "supervisor-p1", "p1"): "idle",
+        })
+        await make_engine(db, manager).run_delivery_pass()
+        assert len(manager.nudges) == 1 and msg.id in manager.nudges[0][3]
+
     async def test_refused_pointer_retries_without_any_prompt_or_new_event(self, db, monkeypatch):
         monkeypatch.setattr("src.messages.delivery.NOTIFICATION_RETRY_SECONDS", 0.1)
         msg = await _send(db)
