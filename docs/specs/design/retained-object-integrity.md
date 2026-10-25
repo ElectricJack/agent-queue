@@ -16,8 +16,12 @@ lock or persistent integrity cache is introduced. Full verification has a cost
 proportional to the retained object store; timeout leaves that observation
 unavailable. Independent stores retain their existing concurrency.
 
-A failed full verification is retried once within the same acquisition deadline:
-linked worktree writers can change packs or refs during the first observation.
+A failed full verification is retried up to three times with one-, two- and
+four-second backoff within the same acquisition deadline (including lock waits
+and backoff). Verification and GitManager's foreground `gc`, `repack` and
+`maintenance` share per-common-store exclusion, including linked worktrees and
+commands inside repository transactions. Independent Git processes do not take
+this in-process lock; their pack/ref changes can still invalidate an observation.
 Only a subsequent full clean check authorizes use; persistent errors remain
 unavailable. Diagnostics retain safe error categories and failing object IDs,
 without emitting untrusted paths, ref names or credentials. Object fingerprints

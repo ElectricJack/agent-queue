@@ -48,6 +48,11 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
+
+env:
+  # Official PostgreSQL 18 multi-platform index; mirror-postgres.yml copies these exact bytes.
+  POSTGRES_DIGEST: sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
 
 jobs:
   test:
@@ -137,14 +142,23 @@ jobs:
 
       # Service containers cannot pass server arguments. Preserve PR #640's
       # connection headroom and disable durability only for disposable CI data.
-      # Both registries mirror the official image without Docker Hub's anonymous
-      # pull limit or secrets. Fall back when a mirror serves missing blobs.
+      # GHCR is primary; public mirrors cover bootstrap and unavailable package access.
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
       - name: Start PostgreSQL
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
         run: |
-          # Run 40164398170 exhausted Google retries with `unknown blob`.
-          # Try an independent mirror before repeating the bounded pull round.
+          # GHCR paths are lowercase even when the repository owner is not.
+          ghcr_image="ghcr.io/${GHCR_OWNER,,}/agent-queue-postgres:18@$POSTGRES_DIGEST"
           for pull_attempt in 1 2 3; do
-            for postgres_image in mirror.gcr.io/library/postgres:18 public.ecr.aws/docker/library/postgres:18; do
+            for postgres_image in "$ghcr_image" "mirror.gcr.io/library/postgres:18@$POSTGRES_DIGEST" "public.ecr.aws/docker/library/postgres:18@$POSTGRES_DIGEST"; do
               if docker pull "$postgres_image"; then
                 break 2
               else
@@ -153,7 +167,7 @@ jobs:
               echo "::warning::PostgreSQL image pull failed from $postgres_image (round $pull_attempt/3)"
             done
             if (( pull_attempt == 3 )); then
-              echo "::error::PostgreSQL image pull failed from both mirrors after $pull_attempt rounds"
+              echo "::error::PostgreSQL image pull failed from all registries after $pull_attempt rounds"
               exit "$pull_status"
             fi
             sleep 5
@@ -348,12 +362,22 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
       - name: Start PostgreSQL
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
         run: |
-          # Run 40164398170 exhausted Google retries with `unknown blob`.
-          # Try an independent mirror before repeating the bounded pull round.
+          # GHCR paths are lowercase even when the repository owner is not.
+          ghcr_image="ghcr.io/${GHCR_OWNER,,}/agent-queue-postgres:18@$POSTGRES_DIGEST"
           for pull_attempt in 1 2 3; do
-            for postgres_image in mirror.gcr.io/library/postgres:18 public.ecr.aws/docker/library/postgres:18; do
+            for postgres_image in "$ghcr_image" "mirror.gcr.io/library/postgres:18@$POSTGRES_DIGEST" "public.ecr.aws/docker/library/postgres:18@$POSTGRES_DIGEST"; do
               if docker pull "$postgres_image"; then
                 break 2
               else
@@ -362,7 +386,7 @@ jobs:
               echo "::warning::PostgreSQL image pull failed from $postgres_image (round $pull_attempt/3)"
             done
             if (( pull_attempt == 3 )); then
-              echo "::error::PostgreSQL image pull failed from both mirrors after $pull_attempt rounds"
+              echo "::error::PostgreSQL image pull failed from all registries after $pull_attempt rounds"
               exit "$pull_status"
             fi
             sleep 5

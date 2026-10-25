@@ -310,7 +310,8 @@ users and roles.
 
 With `discord.conversation.enabled` (default off; it also needs an
 allowlist, a guild and a channel), a plain message in the channel becomes a
-conversation with the supervisor. The route fails closed on an empty
+conversation with the global supervisor, regardless of `discord.project_id`.
+That setting still scopes asks and escalations. The route fails closed on an empty
 allowlist.
 
 1. `src/conversations/` checks intake and preconditions. Limits
@@ -320,16 +321,26 @@ allowlist.
    the input in `conversation_inputs`, deduplicated on
    `(transport, external_message_id)`. Text is nulled after 30 days.
 3. `src/asks/intake.py` inserts a message `msg-<input_id>` with
-   `body_kind=conversation_input`, addressed to the supervisor, or to
-   `conversation-queued` only if no addressed supervisor exists. Resolution and
+   `body_kind=conversation_input`, addressed to `supervisor-global`, or to
+   `conversation-queued` only if the global named session does not exist.
+   Project supervisors never receive ordinary chat or reference notices directly;
+   global can consult them through internal messages. Resolution and
    notice insertion share the acceptance transaction. A stopped supervisor retains
    its address and is woken through the named-session delivery path. A cycle step
-   (`route_queued_conversation_inputs`) recovers genuinely unassigned notices.
+   (`route_queued_conversation_inputs`) recovers unassigned notices and retargets
+   undelivered, unarchived legacy project chat and reference notices to global.
    After commit, intake emits `message.sent`; conversation inputs wake the independent
    delivery service immediately, bypassing its routine delivery interval. Replays
    repair a missed wake using the original notice and notification deduplication.
    Another supervisor may inspect the notice but cannot consume it through inbox
    injection or mark it read.
+   The independent delivery pass also reconciles routing before scanning its
+   backlog, including its first pass after restart; it needs no scheduler cycle
+   or replayed event. An undelivered, unarchived notice with a read stamp is
+   returned to pending only when its durable input is still accepted in an
+   active conversation and has no recorded reply. Answered, expired, revoked,
+   archived and delivered inputs retain their consumption history. Recording a
+   conversation reply stamps both read and delivery atomically.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
    `outbound_deliveries`. For channel and DM conversations, the Discord reply
@@ -337,10 +348,9 @@ allowlist.
    inputs. The conversation's root and destination stay unchanged.
 5. `supervisor_inbox_say` starts a message in an existing active conversation
    without an `input_id`, including when all earlier inputs are answered.
-   It requires the live project supervisor addressed by the latest ordinary
-   input, a live global supervisor, or the local operator. Project request
-   scope resolves the same latest notice. Conversation preconditions, the
-   configured guild/channel (or opted-in DM), and the entire current audience
+   It requires the live global supervisor or the local operator, as do replies.
+   Project supervisors are refused even for legacy project-addressed chat.
+   Conversation preconditions, the configured guild/channel (or opted-in DM), and the entire current audience
    are checked before persistence and again by the delivery adapter.
    `(conversation_id, idempotency_key)` identifies a durable `conversation_say`
    message; its first body and sender win on retry, including after a crash
@@ -352,6 +362,16 @@ allowlist.
    conversation; a new channel message also continues that conversation.
    Earlier inputs keep their state. Closed or delivery-blocked conversations
    and thread conversations without a bound thread refuse initiated posts.
+
+**Existing conversations.** IDs, destinations, input evidence and reply keys stay
+unchanged. The routing sweep moves pending legacy notices to global; consumed or
+archived notices retain their historical address and are never reopened. Global
+can reply to those older inputs immediately, even before the sweep, subject to the
+existing closed/revoked/answered guards. New replies are attributed to global;
+already-recorded replies retain their original author and idempotent replay.
+Project supervisors cannot consume ordinary chat notices, including legacy ones.
+Ask discussions and decision authority keep their existing project-scoped resolver.
+No schema migration or operator data rewrite is required.
 
 `supervisor_conversations` tracks each conversation. On bot `READY`, a
 backfill reads up to 24 hours or 1000 missed messages

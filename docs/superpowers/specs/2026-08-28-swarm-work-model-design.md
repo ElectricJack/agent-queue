@@ -728,6 +728,9 @@ Mirrors `_launch_session_for_task` step for step, differences only:
 
 `POOL_BOOTSTRAP_PROMPT`:
 
+The prompt identifies the project by its exact `project.id`, matching `AQ_PROJECT_ID`
+and the session token's project scope. Never substitute the display name or a shortened id.
+
 ```
 You are a {profile} pool worker for project {project} in {work_dir}.
 Loop:

@@ -1,5 +1,17 @@
 # Wait outcome integration contract
 
+## Previously dispatched CI evidence — 2026-10-25
+
+The listener also reconciles pending verified CI check/run waits whose latest
+dispatched source event is newer than their registration watermark. Older
+dispatch stamps do not prove that a wait consumed an observation. Reconciliation
+shares the bounded retry budget and the normal lease, graph, source and owner
+fences, observes the current exact-head condition, and never moves the main
+cursor backwards. A dispatched hint cannot itself prove success. Pending or
+unavailable observations retain the wait, respect provider retry intervals, and
+remain eligible after restart without a new provider revision. Successful
+settlement uses ordinary outcome delivery and remains idempotent.
+
 ## Temporary CI observation failures — 2026-10-25
 
 A train visit that cannot freshly observe a disappearing pending wait preserves

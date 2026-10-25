@@ -185,7 +185,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "policy_apply",
             "wait_register", "wait_get", "wait_list", "wait_cancel",
             "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
-            "wait_decide", "wait_lift", "wait_legacy_bridge",
+            "wait_decide", "wait_lift", "wait_legacy_bridge", "wait_source_redispatch",
         }
     )
     | DASHBOARD_STATE_COMMANDS
