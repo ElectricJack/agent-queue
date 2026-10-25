@@ -99,6 +99,12 @@
         "tests/test_bazel_metrics.py"
       ]
     },
+    "bazel-parity": {
+      "description": "Exact candidate JUnit, canonical pytest outcomes, shards and dashboard artifact parity.",
+      "modules": [
+        "tests/test_bazel_parity.py"
+      ]
+    },
     "bazel-runtime": {
       "description": "Bazel pytest node sharding, phase budgets, target lifecycle deadlines and flake evidence.",
       "modules": [
@@ -3381,6 +3387,18 @@
         "parametrize"
       ],
       "summary": "Inventory boundary and delivery-accounting regressions on synthetic evidence."
+    },
+    "tests/test_bazel_parity.py": {
+      "areas": [
+        "bazel-parity"
+      ],
+      "default_arm": true,
+      "digest": "sha256:956bcaae8728c57018b727163cd99edacbd048f25de65e16681a1ae1736a176d",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact parity evidence, real pytest sidecars and deliberately incomplete pairs."
     },
     "tests/test_bazel_runtime.py": {
       "areas": [
