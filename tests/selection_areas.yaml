@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: bazel-parity
+    description: "Exact candidate JUnit, canonical pytest outcomes, shards and dashboard artifact parity."
+    match: [tests/test_bazel_parity.py]
   - id: bazel-runtime
     description: "Bazel pytest node sharding, phase budgets, target lifecycle deadlines and flake evidence."
     match: [tests/test_bazel_runtime.py]

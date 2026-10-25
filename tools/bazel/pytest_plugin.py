@@ -29,6 +29,162 @@ from tools.bazel.runtime import (
 )
 
 
+def identity_properties(item, report):
+    """Properties survive xdist transport and pytest's JUnit finalization."""
+    marker = item.get_closest_marker("xfail")
+    strict = (
+        bool(marker.kwargs.get("strict", item.config.getini("xfail_strict"))) if marker else None
+    )
+    if marker is None and hasattr(report, "wasxfail"):
+        strict = False  # imperative pytest.xfail has no unexpected-pass branch
+    values = {
+        "aq_nodeid": normalize_nodeid(item.nodeid),
+        "aq_parameter_id": json.dumps(getattr(getattr(item, "callspec", None), "id", None)),
+        "aq_xfail_strict": json.dumps(strict),
+    }
+    report.user_properties = [
+        (key, value) for key, value in report.user_properties if key not in values
+    ] + list(values.items())
+
+
+def phase_result(report, strict):
+    reason = str(report.longrepr) if report.longrepr else None
+    if report.skipped and isinstance(report.longrepr, tuple):
+        reason = str(report.longrepr[2])  # skip location is not the skip reason
+    if hasattr(report, "wasxfail"):
+        result = "xfail" if report.skipped else "xpass"
+        reason = str(report.wasxfail)
+    elif report.failed and str(report.longrepr).startswith("[XPASS(strict)]"):
+        result, strict = "xpass", True
+    elif report.failed:
+        result = "fail" if report.when == "call" else "error"
+    else:
+        result = "skip" if report.skipped else "pass"
+    return {
+        "duration": report.duration,
+        "outcome": report.outcome,
+        "result": result,
+        "reason": reason,
+        "xfail_strict": strict,
+    }
+
+
+def node_outcome(phases):
+    results = {phase["result"] for phase in phases.values()}
+    return next(
+        (
+            value
+            for value in ("error", "fail", "xpass", "xfail", "skip", "pass")
+            if value in results
+        ),
+        "error",
+    )
+
+
+def pytest_addoption(parser):
+    parser.addoption("--aq-outcomes", help="Write canonical parity outcomes (no execution policy)")
+
+
+def pytest_configure(config):
+    output = config.getoption("--aq-outcomes")
+    if output:
+        config.pluginmanager.register(OutcomePlugin(Path(output)), "aq-parity-outcomes")
+
+
+class OutcomePlugin:
+    """Legacy recorder: -p tools.bazel.pytest_plugin --aq-outcomes FILE.
+
+    Does not alter markers, selection, budgets, retries or parallelism. Only the
+    controller writes; workers carry parameter/strictness metadata in reports.
+    The comparator rejects retries, partial runs and collection-only evidence.
+    """
+
+    def __init__(self, output):
+        self.output = output
+        self.collected = None
+        self.nodes = []
+        self.active = {}
+        self.errors = []
+        self.collection_errors = []
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_collection_finish(self, session):
+        self.collected = [normalize_nodeid(item.nodeid) for item in session.items]
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_xdist_node_collection_finished(self, node, ids):
+        ids = [normalize_nodeid(identity) for identity in ids]
+        if self.collected is not None and self.collected != ids:
+            self.errors.append("xdist workers disagree on collection")
+        self.collected = ids
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_runtest_makereport(self, item, call):
+        report = yield
+        identity_properties(item, report)
+        return report
+
+    def pytest_runtest_logreport(self, report):
+        properties = dict(report.user_properties)
+        nodeid = normalize_nodeid(report.nodeid)
+        if properties.get("aq_nodeid") != nodeid:
+            self.errors.append(f"missing canonical report identity: {nodeid}")
+            return
+        if report.when == "setup":
+            node = {
+                "nodeid": nodeid,
+                "parameter_id": json.loads(properties["aq_parameter_id"]),
+                "phases": {},
+            }
+            self.nodes.append(node)
+            self.active[nodeid] = node
+        node = self.active.get(nodeid)
+        if node is None or report.when in node["phases"]:
+            self.errors.append(f"duplicate or orphan phase: {nodeid} {report.when}")
+            return
+        node["phases"][report.when] = phase_result(
+            report, json.loads(properties["aq_xfail_strict"])
+        )
+        node["outcome"] = node_outcome(node["phases"])
+
+    def pytest_collectreport(self, report):
+        if report.failed or report.skipped:
+            self.collection_errors.append(
+                {
+                    "nodeid": normalize_nodeid(report.nodeid) if report.nodeid else "",
+                    "outcome": report.outcome,
+                    "reason": str(report.longrepr),
+                }
+            )
+
+    def pytest_internalerror(self, excrepr, excinfo):
+        self.errors.append(str(excrepr))
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_sessionfinish(self, session, exitstatus):
+        if hasattr(session.config, "workerinput"):
+            return
+        if self.collected is None or not self.collected:
+            self.errors.append("missing or empty suite collection")
+        if session.config.option.collectonly:
+            self.errors.append("collection-only does not verify execution")
+        if Counter(node["nodeid"] for node in self.nodes) != Counter(self.collected or []):
+            self.errors.append("selected nodes did not execute exactly once")
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "shard": {"index": 0, "count": 1},
+            "collected": self.collected or [],
+            "selected": self.collected or [],
+            "nodes": sorted(self.nodes, key=lambda node: node["nodeid"]),
+            "errors": self.errors,
+            "collection_errors": self.collection_errors,
+            "exit_status": int(session.exitstatus),
+        }
+        temporary = self.output.with_suffix(self.output.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, self.output)
+
+
 @contextmanager
 def signal_deadline(deadline: Deadline):
     """Interrupt a hung phase; pytest still runs fixture finalizers on failure."""
@@ -113,8 +269,10 @@ class RuntimePlugin:
         self.collection_finished = True
 
     def pytest_collectreport(self, report):
-        if report.failed:
-            self.collection_errors.append({"nodeid": report.nodeid, "reason": str(report.longrepr)})
+        if report.failed or report.skipped:
+            self.collection_errors.append(
+                {"nodeid": report.nodeid, "outcome": report.outcome, "reason": str(report.longrepr)}
+            )
 
     def pytest_internalerror(self, excrepr, excinfo):
         self.errors.append(str(excrepr))
@@ -139,14 +297,7 @@ class RuntimePlugin:
         finally:
             self.current["elapsed"] = self.deadline.elapsed
             phases = self.current["phases"]
-            results = [phase["result"] for phase in phases.values()]
-            self.current["outcome"] = (
-                "error"
-                if "error" in results
-                else "fail"
-                if "fail" in results
-                else phases.get("call", phases.get("setup", {"result": "error"}))["result"]
-            )
+            self.current["outcome"] = node_outcome(phases)
             self.current["budget_exceeded"] = self.expired or self.deadline.elapsed > TEST_SECONDS
             if self.current["budget_exceeded"]:
                 self.errors.append(f"test exceeded 60s: {nodeid}")
@@ -217,26 +368,11 @@ class RuntimePlugin:
                 del report.wasxfail
         if report.when in self.current["phases"]:
             self.errors.append(f"duplicate phase/retry: {item.nodeid} {report.when}")
-        xfail = item.get_closest_marker("xfail")
-        strict = (
-            bool(xfail.kwargs.get("strict", item.config.getini("xfail_strict"))) if xfail else None
-        )
-        reason = str(report.longrepr) if report.longrepr else None
-        if hasattr(report, "wasxfail"):
-            outcome = "xfail" if report.skipped else "xpass"
-            reason = str(report.wasxfail)
-        elif report.failed and "[XPASS(strict)]" in str(report.longrepr):
-            outcome, strict = "xpass", True
-        elif report.failed:
-            outcome = "fail" if report.when == "call" else "error"
-        else:
-            outcome = "skip" if report.skipped else "pass"
+        identity_properties(item, report)
+        strict = json.loads(dict(report.user_properties)["aq_xfail_strict"])
         self.current["phases"][report.when] = {
+            **phase_result(report, strict),
             "duration": self.phase_durations[report.when],
-            "outcome": report.outcome,
-            "result": outcome,
-            "reason": reason,
-            "xfail_strict": strict,
         }
         return report
 
