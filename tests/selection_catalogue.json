@@ -9272,7 +9272,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:3c1c9ae16a1db00cba0d3a120ac473efdbd2d2ca164bbd7c87b47da4bc048639",
+      "digest": "sha256:22fc7b1d00dbc9f9b406331d56361f59f2443d19289dc5d22529b499f3df0db9",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -9288,9 +9288,12 @@
         "src.integration.train",
         "src.wait_runtime.service",
         "src.waits.conditions",
-        "src.waits.graph"
+        "src.waits.graph",
+        "src.waits.listener"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The train's shared waits use verified sources and survive policy replacement."
     },
     "tests/test_integration_eject.py": {

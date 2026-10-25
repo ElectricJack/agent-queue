@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2281,
+ 'authorized_owned_delta': 2286,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1048,8 +1048,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82527,
- 'measured_owned_total': 157780,
+ 'measured_engine_lines': 82532,
+ 'measured_owned_total': 157785,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1191,6 +1191,22 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
       'referenced_decision': 'size-cap-delegation-2026-10-23',
       'source_revision': '677da30953d618601b049f4b4eb78c48d8269098',
       'task_id': 'supervisor-global'},
+ 'wait_ci_observation_retry_composition': {     'authorized_engine_delta': 5,
+      'authorized_owned_delta': 5,
+      'authorized_table_delta': 0,
+      'charged_files': {'src/waits/listener.py': 5},
+      'dev_source_revision': '1b65b85de2ca2a0b9f7ac13a8841e76c558ace56',
+      'operator_decision': '6679052c',
+      'previous_measured_engine_lines': 82527,
+      'previous_measured_owned_total': 157780,
+      'previous_measured_table_count': 45,
+      'reason': 'Exact supervisor-approved +5 engine/owned lines: fresh-glacier-53 retries skipped '
+                'CI source observations in the wait listener instead of discarding them, '
+                'hand-landed on dev by the global supervisor 2026-10-25 while the train was '
+                'starved. Zero remaining headroom.',
+      'referenced_decision': 'size-cap-delegation-2026-10-23',
+      'source_revision': '1b65b85de2ca2a0b9f7ac13a8841e76c558ace56',
+      'task_id': 'fresh-glacier-53'},
  'wait_ci_timeout_backoff_composition': {'authorized_engine_delta': 0,
       'authorized_owned_delta': 1,
       'authorized_table_delta': 0,
