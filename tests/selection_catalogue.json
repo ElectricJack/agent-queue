@@ -50,6 +50,7 @@
         "tests/test_wait_hibernation.py",
         "tests/test_wait_holding.py",
         "tests/test_wait_legacy_bridge.py",
+        "tests/test_wait_listener.py",
         "tests/test_wait_metrics.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_outcomes.py",
@@ -20319,6 +20320,20 @@
         "parametrize"
       ],
       "summary": "Legacy adoption preserves age, ownership and exactly one outcome path."
+    },
+    "tests/test_wait_listener.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:ace1960f57f6b36f4349132aa8dfd50991a7d7b5844acefc26a7c927c64ca4e9",
+      "imports": [
+        "src.waits.listener"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."
     },
     "tests/test_wait_metrics.py": {
       "areas": [
