@@ -39,6 +39,7 @@ class WaitSourceListener:
     renewal_seconds = 10
     safety_seconds = 60
     batch_size = 200
+    retry_batch_size = 20
 
     def __init__(self, service, *, clock=time.time, owner=None, connect=None):
         self.service = service
@@ -50,6 +51,10 @@ class WaitSourceListener:
         self.deadlines_changed = asyncio.Event()
         self._tick_lock = asyncio.Lock()
         self._graph_busy = False
+        # The outbox's undispatched stamp is durable retry ownership. This
+        # process-local cadence only avoids hammering a temporarily unavailable
+        # provider; restart makes retained events immediately eligible again.
+        self._retry_due = {}
 
     async def _connect(self):
         import asyncpg
@@ -144,7 +149,7 @@ class WaitSourceListener:
                     # bridge evidence is a candidate, never a committed outcome.
                     await self._commit(dispatcher, conn, row, event, evidence=evidence)
                 after = candidates[-1]["id"]
-            return
+            return 0
         rows = (await conn.execute(select(wait_records).where(
             wait_records.c.outcome == "pending",
             wait_records.c.verification_state == "verified",
@@ -154,14 +159,18 @@ class WaitSourceListener:
         ).order_by(wait_records.c.id))).mappings().all()
         if rows and dispatcher is None:
             raise ListenerUnavailable("WakeDispatcher is required")
+        retry_after = 0
         for row in rows:
-            await self._commit(dispatcher, conn, dict(row), event)
+            result = await self._commit(dispatcher, conn, dict(row), event)
+            retry_after = max(retry_after, result.get("retry_after", 0))
+        return retry_after
 
     @staticmethod
     async def _commit(dispatcher, conn, row, event, **kwargs):
         result = await dispatcher.commit(conn, row, event, **kwargs)
         if not isinstance(result, dict) or result.get("success") is not True:
             raise ListenerUnavailable(f"wait dispatch refused: {result}")
+        return result
 
     async def _unobserved_prefix(self, conn, position, watermark):
         """Retire only a contiguous irrelevant prefix, under the graph fence.
@@ -200,7 +209,8 @@ class WaitSourceListener:
     @admission_pass("service.scheduler.reader")
     async def drain(self, watermark):
         """Called only at the command boundary, with a prefetched fenced bound."""
-        count = 0
+        count = retries = 0
+        retry_pending = True
         while True:
             async with self.db._engine.begin() as conn:
                 from src.waits.loops import prepare_progress
@@ -208,10 +218,27 @@ class WaitSourceListener:
                 position = await conn.scalar(select(wait_listener_cursors.c.last_seq).where(
                     wait_listener_cursors.c.listener_key == "source",
                 ))
-                candidate = (await conn.execute(select(wait_source_events).where(
-                    wait_source_events.c.seq > (position or 0),
-                    wait_source_events.c.seq <= watermark,
-                ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
+                self._retry_due = {seq: due for seq, due in self._retry_due.items()
+                                   if due > self.clock()}
+                # Retry earlier skipped observations without holding later
+                # messages or task transitions behind a provider outage.
+                retry = None
+                if retry_pending and retries < self.retry_batch_size:
+                    retry = (await conn.execute(select(wait_source_events).where(
+                        wait_source_events.c.seq <= (position or 0),
+                        wait_source_events.c.seq <= watermark,
+                        wait_source_events.c.dispatched_at.is_(None),
+                        wait_source_events.c.seq.not_in(self._retry_due),
+                    ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
+                    # New failures in this pass already receive a backoff;
+                    # do not rescan the retry index for every forward event.
+                    retry_pending = retry is not None
+                candidate = retry
+                if candidate is None:
+                    candidate = (await conn.execute(select(wait_source_events).where(
+                        wait_source_events.c.seq > (position or 0),
+                        wait_source_events.c.seq <= watermark,
+                    ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
                 if candidate:
                     if candidate["source_key"].startswith("resource_invalidation:"):
                         payload = _invalidation(candidate) or {}
@@ -248,26 +275,43 @@ class WaitSourceListener:
                 # Relevant events commit separately; irrelevant prefixes retire
                 # in bounded batches. Renewal cadence never defines lock scope.
                 async with asyncio.timeout(self.lease_seconds):
-                    processed = await self._unobserved_prefix(conn, cursor["last_seq"], watermark)
+                    retry_after = 0
+                    processed = [] if retry else await self._unobserved_prefix(
+                        conn, cursor["last_seq"], watermark)
                     if not processed:
-                        rows = (await conn.execute(select(wait_source_events).where(
-                            wait_source_events.c.seq > cursor["last_seq"],
-                            wait_source_events.c.seq <= watermark,
-                        ).order_by(wait_source_events.c.seq).limit(1))).mappings().all()
+                        rows = [retry] if retry else (await conn.execute(
+                            select(wait_source_events).where(
+                                wait_source_events.c.seq > cursor["last_seq"],
+                                wait_source_events.c.seq <= watermark,
+                            ).order_by(wait_source_events.c.seq).limit(1))).mappings().all()
                         if not rows:
                             return count
                         event = rows[0]
-                        await self._dispatch(conn, dict(event))
+                        retry_after = await self._dispatch(conn, dict(event)) or 0
                         processed = [event["seq"]]
                     if cursor["lease_expires_at"] <= self.clock():
                         raise LeaseLost("wait source lease expired during dispatch")
-                    await conn.execute(update(wait_source_events).where(
-                        wait_source_events.c.seq.in_(processed),
-                    ).values(dispatched_at=self.clock()))
+                    if not retry_after:
+                        await conn.execute(update(wait_source_events).where(
+                            wait_source_events.c.seq.in_(processed),
+                        ).values(dispatched_at=self.clock()))
                     await conn.execute(update(wait_listener_cursors).where(
                         wait_listener_cursors.c.listener_key == "source",
                         wait_listener_cursors.c.lease_owner == self.owner,
-                    ).values(last_seq=processed[-1], updated_at=self.clock()))
+                    ).values(last_seq=max(cursor["last_seq"], processed[-1]),
+                             updated_at=self.clock()))
+            if retry_after:
+                self._retry_due[processed[-1]] = self.clock() + retry_after
+                logger.warning(
+                    "wait.source_observation_deferred seq=%s source_key=%s "
+                    "retry_after=%s age_seconds=%.1f",
+                    event["seq"], event["source_key"], retry_after,
+                    max(0, self.clock() - event["occurred_at"]),
+                )
+            if retry:
+                retries += 1
+                if not retry_after:
+                    logger.info("wait.source_observation_retried seq=%s", retry["seq"])
             count += len(processed)
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
