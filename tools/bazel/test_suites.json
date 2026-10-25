@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "f6d3cd4d9becb118e88ed4ae349df081b012ad0a",
+      "source_head": "c3b5fff1f33c7ee5299137571572747f2174216d",
       "tool_sha256": "50719aace6bcb916a8c81be1958fdba6fd79957d75e5392095f8c076135c1199"
     },
     "nodes": [
@@ -38424,7 +38424,7 @@
       "tests/test_batch_checks.py": "ad67bd108e90c92b9f2b0b0d358c63f59aa015ff39b5a6054774fa4b31f2948e",
       "tests/test_batch_digest.py": "22f89a66aa6ff09690431653bf09364b6366f73ff5c14aca0732eb588eab7a4f",
       "tests/test_bazel_environment.py": "5c7e0b1266b85c1605412802b01c1e7c59887b7e3adc47f270ec448a4b0fbbe5",
-      "tests/test_bazel_manifest.py": "af5be20bc693109bc2e75e7825510535cbb2b690adace07866a61d5848c53547",
+      "tests/test_bazel_manifest.py": "b5f68fcc96769de7c387d633387cedf91d25869b158f036a8772ba14b4d24a02",
       "tests/test_bazel_metrics.py": "2759b7432b7e4629de44477a94b7072213f14f0271ced2b33ee2e5e55bddd237",
       "tests/test_bazel_runtime.py": "c55e514824ccdeca08d0914f8039abdcd9dea0ad2869d7ff4533e68bc9921462",
       "tests/test_blocked_state.py": "c6b44ab6f09d5f5d48ddfd2fd5d83a5774e83f0f909f50988702bfb8e035e841",

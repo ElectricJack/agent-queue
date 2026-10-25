@@ -150,6 +150,7 @@ def test_clean_root_toolchain_smoke(root_number):
             result = subprocess.run(
                 [bazel, "--batch", f"--output_user_root={base / 'output'}", *command],
                 cwd=checkout,
+                check=False,
                 env=env,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -174,6 +175,7 @@ def test_clean_root_toolchain_smoke(root_number):
                     "--lockfile_mode=error",
                 ],
                 cwd=checkout,
+                check=False,
                 env=env,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -195,6 +197,7 @@ def test_clean_root_toolchain_smoke(root_number):
                     "@aq_native//:runtime",
                 ],
                 cwd=checkout,
+                check=False,
                 env=env,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -344,8 +347,9 @@ def test_deleted_renamed_and_initializer_inputs_change_the_graph(tmp_path):
 
 
 def test_launcher_rejects_node_drift_before_selecting_split():
-    from tools.bazel.pytest_main import ObligationPlugin
     from types import SimpleNamespace
+
+    from tools.bazel.pytest_main import ObligationPlugin
 
     spec = {
         "module_nodes": ["tests/test_x.py::test_a", "tests/test_x.py::test_b"],
@@ -401,7 +405,7 @@ async def test_launcher_lifecycle_receipt_includes_failure_and_partial_cleanup(
 
 
 def test_declared_runtime_cannot_escape_runfiles(tmp_path):
-    from tools.bazel.pytest_main import runfile
+    from tools.bazel.pytest_main import native_runtime_inputs, runfile
     from tools.bazel.test_environment import IsolationError
 
     workspace = tmp_path / "_main"
@@ -412,6 +416,27 @@ def test_declared_runtime_cannot_escape_runfiles(tmp_path):
     assert runfile(workspace, "../python/bin/python") == declared
     with pytest.raises(IsolationError, match="escapes"):
         runfile(workspace, "../../operator/python")
+
+    installed = tmp_path / "installation"
+    (installed / "bin").mkdir(parents=True)
+    (installed / "bin/git").touch()
+    (installed / "conda-meta").mkdir()
+    (installed / "conda-meta/private.json").touch()
+    native = tmp_path / "native/runtime"
+    (native / "bin").mkdir(parents=True)
+    (native / "bin/git").symlink_to(installed / "bin/git")
+    prefix, roots = native_runtime_inputs(workspace, "../native/runtime/bin/git")
+    assert prefix == installed
+    assert roots == (installed / "bin",)
+    # A directory bind must never admit an undeclared sibling or symlink target.
+    (installed / "bin/undeclared").touch()
+    with pytest.raises(IsolationError, match="undeclared"):
+        native_runtime_inputs(workspace, "../native/runtime/bin/git")
+    (installed / "bin/undeclared").unlink()
+    (installed / "bin/escape").symlink_to(declared)
+    (native / "bin/escape").symlink_to(declared)
+    with pytest.raises(IsolationError, match="escapes"):
+        native_runtime_inputs(workspace, "../native/runtime/bin/git")
 
 
 @pytest.mark.parametrize("module", ["test_env_scrub", "test_resolve_repo_path"])
@@ -434,6 +459,7 @@ def test_admitted_bazel_module_acceptance(module, tmp_path):
             f"//tests:{module}",
         ],
         cwd=ROOT,
+        check=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

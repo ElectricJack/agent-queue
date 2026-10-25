@@ -8,7 +8,6 @@ PostgreSQL context when declared by the generated module obligation.
 from __future__ import annotations
 
 # ruff: noqa: E402 -- entry timestamp must precede launcher imports
-
 import time
 
 ENTRY_TIME = time.monotonic()  # includes imports, environment construction and cleanup
@@ -62,6 +61,7 @@ class ObligationPlugin:
 
 def pytest_child(spec: dict, output: Path) -> int:
     import pytest
+
     from tools.bazel.pytest_plugin import RuntimePlugin
 
     plugin = RuntimePlugin(
@@ -149,6 +149,37 @@ def runfile(workspace: Path, relative: str) -> Path:
     return path
 
 
+def native_runtime_inputs(workspace: Path, relative: str) -> tuple[Path, tuple[Path, ...]]:
+    """Keep H1's installation prefix without importing its repository/cache.
+
+    Conda PostgreSQL embeds this prefix for server data and loadable libraries.
+    Mount only complete declared subtrees, proving every file and symlink is a
+    runfile first. In particular the excluded conda-meta directory stays absent.
+    """
+    declared = runfile(workspace, relative).parent.parent
+    installed = runfile(workspace, relative).resolve().parent.parent
+    roots = []
+    for entry in sorted(declared.iterdir()):
+        actual = installed / entry.name
+        candidates = [actual]
+        if actual.is_dir():
+            candidates = [Path(current) / name
+                          for current, _, names in os.walk(actual, followlinks=True)
+                          for name in names]
+        expected = {p.relative_to(entry) for p in entry.rglob("*") if p.is_file()}
+        if entry.is_file():
+            expected = {Path(".")}
+        if {p.relative_to(actual) for p in candidates} != expected:
+            raise isolation.IsolationError("native runtime contains undeclared files")
+        for path in candidates:
+            runfile_path = entry / path.relative_to(actual)
+            if (not path.resolve().is_relative_to(installed)
+                    or runfile_path.resolve() != path.resolve()):
+                raise isolation.IsolationError("native runtime escapes its declared installation")
+        roots.append(actual)
+    return installed, tuple(roots)
+
+
 def install_project_runtime(python: Path, workspace: Path, inputs: Path) -> Path:
     """Prepare a declared, target-private installation for Python subprocesses."""
     site = python.parent.parent / "lib/python3.12/site-packages"
@@ -212,11 +243,17 @@ class Launch:
         # Materialize only the declared runfiles. Following the symlinks into a
         # read-only mount would otherwise expose undeclared checkout/cache paths.
         source = Path(os.environ["TEST_SRCDIR"]).absolute()
+        source_workspace = source / os.environ["TEST_WORKSPACE"]
+        native, native_roots = native_runtime_inputs(
+            source_workspace, self.description["native_git"]
+        )
+        native_runfiles = runfile(source_workspace, self.description["native_git"]).parent.parent
         inputs = base / "inputs"
         inputs.mkdir()
         copied = 0
         for current, directories, files in os.walk(source, followlinks=True):
-            directories[:] = sorted(d for d in directories if d != "__pycache__")
+            directories[:] = sorted(d for d in directories
+                                    if d != "__pycache__" and Path(current) / d != native_runfiles)
             destination = inputs / Path(current).relative_to(source)
             destination.mkdir(parents=True, exist_ok=True)
             for name in sorted(files):
@@ -226,9 +263,11 @@ class Launch:
                 copied += 1
                 if copied % 64 == 0:
                     await asyncio.sleep(0)
+        native_link = inputs / native_runfiles.relative_to(source)
+        native_link.parent.mkdir(parents=True, exist_ok=True)
+        native_link.symlink_to(native, target_is_directory=True)
         workspace = inputs / os.environ["TEST_WORKSPACE"]
         python = runfile(workspace, self.description["python"])
-        native = runfile(workspace, self.description["native_git"]).parent.parent
         node = runfile(workspace, self.description["node"])
         project_bin = install_project_runtime(python, workspace, inputs)
         # H1 must supply an ELF loader/libc closure and H2 must mount its ABI
@@ -238,7 +277,7 @@ class Launch:
             raise isolation.IsolationError(
                 "locked native toolchain lacks declared ELF loader/libc sysroot"
             )
-        read_only = (inputs,)
+        read_only = (inputs, *native_roots)
         runtime = isolation.Runtime(
             python,
             read_only,

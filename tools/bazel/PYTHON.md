@@ -47,6 +47,12 @@ its obligation. The target retains `pytest.json`, `target.json`, and JUnit;
 incomplete coverage or missing evidence fails. Neither namespaces nor missing
 native ABI inputs fall back to the host runtime.
 
+Native tools retain H1's installation prefix because PostgreSQL embeds its data,
+timezone and library paths. The launcher checks that every file in each mounted
+native subtree is a declared runfile, rejects escaping symlinks and undeclared
+siblings, then mounts those subtrees read-only at their original absolute paths.
+The enclosing repository/cache and excluded installation metadata are absent.
+
 Module actions carry Bazel's `no-sandbox` execution tag because the outer Linux
 sandbox prevents H2's nested namespace setup. H2 owns the action's user, mount,
 network, IPC and PID namespaces and refuses execution if its isolation checks
