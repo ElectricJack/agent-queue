@@ -963,6 +963,8 @@ class MessageCommandsMixin:
         scope = self._current_scope
         if not scope or scope.get("kind") != "session" or not scope.get("session_id"):
             return False
+        if message.body_kind == "conversation_input" and scope.get("project_id") is not None:
+            return False
         session_id = scope["session_id"]
         if message.to_kind == "session" and message.to_id == session_id:
             return True
