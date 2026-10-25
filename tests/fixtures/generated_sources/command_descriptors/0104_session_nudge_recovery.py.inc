@@ -9,7 +9,7 @@ def _session_nudge_recovery_changes():
 def _before_session_nudge_recovery_catalogue(catalogue=None):
     """Undo only optional nudge recovery before checking frozen catalogue history."""
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_wait_source_redispatch_catalogue()
     evidence = _session_nudge_recovery_changes()
     schema = catalogue["fallback"][evidence["command"]]["input_schema"]
     [(prop, definition)] = evidence["added_property"].items()

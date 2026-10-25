@@ -643,6 +643,8 @@ async def test_matrix_two_launch_failures_then_provider_event_releases_without_r
     env = hibernation_env
     driver, action, _ = await bound_resume(env)
     await env.db.update_session("fresh", state="stopped", desired_state="stopped")
+    # This retry case starts after the failed writer's checkout was released.
+    await env.db.update_workspace('resume-slot', locked_by_task_id=None, locked_by_agent_id=None)
     driver.service.lifecycle = SimpleNamespace(hibernate=HibernationTransaction(driver.service))
     driver.orch.token_store = SimpleNamespace(revoke_session=AsyncMock())
     env.registry = build_registry(clock=lambda: NOW)
@@ -767,7 +769,7 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
 
     from src.database.tables import agents
     from src.git.manager import GitManager
-    from src.models import RepoSourceType, SessionRecord, Workspace
+    from src.models import RepoSourceType, SessionRecord, Workspace, WorktreeSentinel
     from src.prime import PrimeRenderer
     from src.scheduler import AssignAction
     from src.wait_runtime.resume import ResumeTransaction
@@ -818,7 +820,11 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
     monkeypatch.setattr(env.db, "get_workspace", AsyncMock(return_value=base))
     monkeypatch.setattr(env.db, "resolve_workspace_kind", AsyncMock(return_value=SimpleNamespace()))
     monkeypatch.setattr(env.db, "update_workspace", AsyncMock())
-    slots = SimpleNamespace(reprovision_slot=AsyncMock())
+    slots = SimpleNamespace(
+        reprovision_slot=AsyncMock(),
+        read_sentinel=lambda _: WorktreeSentinel('slot-0', 0, 'base', 'p'),
+        write_sentinel=lambda *_: None,
+    )
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(return_value=str(old)),
                            _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots,
                            _worktree_base_paths={})
@@ -834,6 +840,9 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
         harness="codex", provider="fake", name="new", lifecycle="task", state="running",
         desired_state="running", work_dir=fresh, epoch="new-boot", instance_token="new-token",
         last_claim_epoch=2, started_at=NOW + 30)
+    await env.db.create_workspace(Workspace(
+        id='resume-slot', project_id='p', workspace_path=fresh,
+        source_type=RepoSourceType.CLONE, locked_by_task_id='owner', locked_by_agent_id='a'))
     await resume.bind_launch(action, record)
     await env.db.create_session(record)
     assert len([r for r in await records(env, sessions) if r["state"] == "running"]) == 1
@@ -949,6 +958,8 @@ async def test_matrix_accounting_from_park_through_sampler_api_and_display_contr
 
     async def prepare(*args):
         clock.now += 5
+        await env.db.update_workspace('available', locked_by_task_id='owner',
+                                      locked_by_agent_id=args[0].agent_id)
         return "/tmp/accounting-fresh"
 
     async def launch(action, task, unused, path):

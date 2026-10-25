@@ -425,6 +425,15 @@ class AdmissionSnapshot:
     delivery_required: dict = field(default_factory=dict)
     delivery_view: object = None
 
+    def record_change(self, code, detail, task_id=None):
+        """Explain a failed guard before callers discard the allowed set."""
+        for tid in ({task_id} if task_id else self.candidate_ids):
+            reason = {"code": code, "ref": tid, "detail": detail}
+            reasons = self.reasons.setdefault(tid, [])
+            if reason not in reasons:
+                reasons.append(reason)
+        return False
+
     async def is_fresh(self, task_id=None):
         required = self.required.get(task_id, set()) if task_id else None
         if self.delivery_view is not None:
@@ -487,7 +496,11 @@ class AdmissionSnapshot:
                     )
             except DBAPIError as exc:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
-                    return False
+                    return self.record_change(
+                        "admission_lock_unavailable",
+                        "Admission task/project/repository input lock unavailable (55P03); retry",
+                        task_id,
+                    )
                 raise
         if not await self._delivery_matches(conn=conn, task_id=task_id):
             return False
@@ -495,7 +508,14 @@ class AdmissionSnapshot:
         if self.policy_inputs:
             policy, _ = await _frontier_inputs(conn, self.candidate_ids)
             if policy != self.policy_inputs:
-                return False
+                groups = ("candidate routing/parent", "project/repository policy", "edges",
+                          "sources", "completions", "metadata")
+                changed = ", ".join(name for name, before, after in zip(
+                    groups, self.policy_inputs, policy, strict=True) if before != after)
+                return self.record_change(
+                    "admission_policy_changed", f"Admission frontier inputs changed: {changed}; retry",
+                    task_id,
+                )
         for pid, view in self.hierarchy_views.items():
             mode = self.hierarchy_modes[pid]
             current_mode = await view.mode(mode, conn=conn)
@@ -507,10 +527,21 @@ class AdmissionSnapshot:
                 if (before & ids if ids is not None else before) != (
                     after & ids if ids is not None else after
                 ):
-                    return False
+                    changed_ids = sorted((before ^ after) & ids)
+                    return self.record_change(
+                        "admission_hierarchy_changed",
+                        f"Hierarchy project {pid} comparison {name} changed for "
+                        f"{', '.join(changed_ids)}; retry", task_id,
+                    )
             if task_id and any((task_id in getattr(mode, n)) != (task_id in getattr(current_mode, n))
                                for n in ("parent_contained_task_ids", "unknown_parent_task_ids")):
-                return False
+                changed = ", ".join(n for n in (
+                    "parent_contained_task_ids", "unknown_parent_task_ids"
+                ) if (task_id in getattr(mode, n)) != (task_id in getattr(current_mode, n)))
+                return self.record_change(
+                    "admission_hierarchy_changed",
+                    f"Hierarchy project {pid} comparison {changed} changed; retry", task_id,
+                )
         for pid, view in self.stack_views.items():
             verified = frozenset(await view.verified_on(conn))
             before = self.hierarchy_modes[pid].stackable_prerequisite_ids
@@ -519,15 +550,29 @@ class AdmissionSnapshot:
             if (before & ids if ids is not None else before) != (
                 verified & ids if ids is not None else verified
             ):
-                return False
-        return self.inputs == current[-1] and (
-            self.pr is None
-            or await self.pr.matches(
-                conn=conn,
-                lock=lock,
-                task_id=task_id,
+                return self.record_change(
+                    "admission_stack_changed",
+                    f"Stack project {pid} comparison stackable_prerequisite_ids changed for "
+                    f"{', '.join(sorted((before ^ verified) & ids))}; retry",
+                    task_id,
+                )
+        if self.inputs != current[-1]:
+            groups = ("edges", "children", "gates", "obsolete markers", "delivery requests",
+                      "project configuration", "repository configuration", "labels")
+            changed = ", ".join(name for name, before, after in zip(
+                groups, self.inputs, current[-1], strict=True) if before != after)
+            return self.record_change(
+                "admission_inputs_changed", f"Admission source inputs changed: {changed}; retry",
+                task_id,
             )
-        )
+        if self.pr is not None and not await self.pr.matches(
+            conn=conn, lock=lock, task_id=task_id,
+        ):
+            for tid, reasons in self.pr.reasons.items():
+                own = self.reasons.setdefault(tid, [])
+                own.extend(reason for reason in reasons if reason not in own)
+            return False
+        return True
 
 
     async def _delivery_matches(self, *, conn=None, task_id=None):
@@ -539,8 +584,17 @@ class AdmissionSnapshot:
         dependents = {task_id} if task_id else self.allowed
         required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
         verified = await self.delivery_view.verified_on(conn, required)
-        return all(verified[t].satisfied or verified[t].unloaded if t in verified
-                   else t not in self.delivery_view.evidence for t in required)
+        failed = sorted(t for t in required if not (
+            verified[t].satisfied or verified[t].unloaded if t in verified
+            else t not in self.delivery_view.evidence
+        ))
+        if failed:
+            return self.record_change(
+                "admission_delivery_changed",
+                f"Delivery evidence comparison changed for prerequisites {', '.join(failed)}; retry",
+                task_id,
+            )
+        return True
 
 
 async def _observe_sources(
