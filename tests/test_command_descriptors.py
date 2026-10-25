@@ -1642,7 +1642,9 @@ def _supervisor_say_changes():
 
 
 def _before_supervisor_say_catalogue():
-    catalogue = _before_task_list_limit_catalogue(_before_unread_inbox_catalogue())
+    catalogue = _before_task_list_limit_catalogue(
+        _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
+    )
     evidence = _supervisor_say_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
@@ -1658,7 +1660,10 @@ def test_supervisor_say_catalogue_only_adds_initiated_conversation_post():
         evidence["contract_fingerprint"]
     )
     catalogue = json.dumps(
-        _before_task_list_limit_catalogue(_before_unread_inbox_catalogue()), indent=2
+        _before_task_list_limit_catalogue(
+            _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
+        ),
+        indent=2,
     ) + "\n"
     assert hashlib.sha256(catalogue.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
@@ -1811,6 +1816,38 @@ def test_unread_inbox_only_changes_transport_description():
     )
     previous = json.dumps(_before_unread_inbox_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+def _wait_source_redispatch_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/wait-source-redispatch-contract-changes.json").read_text()
+    )
+
+
+def _before_wait_source_redispatch_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    evidence = _wait_source_redispatch_changes()
+    [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
+    assert definition == evidence["explicit_entry"]
+    catalogue["explicit"].remove(definition)
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_wait_source_redispatch_only_adds_scoped_recovery_command():
+    evidence = _wait_source_redispatch_changes()
+    assert evidence["command"] == "wait_source_redispatch"
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    catalogue = _before_task_list_limit_catalogue(_before_unread_inbox_catalogue())
+    rendered = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    previous = json.dumps(
+        _before_task_list_limit_catalogue(
+            _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
+        ),
+        indent=2,
+    ) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
 
 
 def _task_list_limit_changes():
@@ -1820,8 +1857,9 @@ def _task_list_limit_changes():
 
 
 def _before_task_list_limit_catalogue(catalogue=None):
+    # Compose independent catalogue deltas while preserving their frozen hashes.
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_wait_source_redispatch_catalogue()
     evidence = _task_list_limit_changes()["transport_definitions"]["list_tasks"]
     [definition] = [row for row in catalogue["explicit"] if row["name"] == "list_tasks"]
     assert definition == evidence["definition"]
@@ -1853,7 +1891,7 @@ def test_task_list_limit_only_adds_optional_positive_limit():
     assert definition == transport["previous_definition"]
     assert _digest(transport["definition"]) == transport["sha256"]
     assert _digest(transport["previous_definition"]) == transport["previous_sha256"]
-    catalogue = _before_unread_inbox_catalogue()
+    catalogue = _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
     rendered = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]

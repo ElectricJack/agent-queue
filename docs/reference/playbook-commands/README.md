@@ -624,6 +624,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`wait_resume_dispatch`](wait_resume_dispatch.md) | Wait Resume Dispatch | Wait resume dispatch through verified wait state. |
 | [`wait_sleep_decide`](wait_sleep_decide.md) | Wait Sleep Decide | Wait sleep decide through verified wait state. |
 | [`wait_source_commit`](wait_source_commit.md) | Wait Source Commit | Wait source commit through verified wait state. |
+| [`wait_source_redispatch`](wait_source_redispatch.md) | Wait Source Redispatch | Wait source redispatch through verified wait state. |
 | [`workflow_pipeline_view`](workflow_pipeline_view.md) | Workflow Pipeline View | Return structured pipeline view data for dashboard rendering of a workflow. |
 | [`workspace_clear_sentinel`](workspace_clear_sentinel.md) | Workspace Clear Sentinel | Clear a slot sentinel that still names a terminal task. |
 | [`workspace_cutover`](workspace_cutover.md) | Workspace Cutover | Execute the workspace_cutover command. |

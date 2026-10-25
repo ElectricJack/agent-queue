@@ -23503,6 +23503,53 @@
         }
       }
     },
+    "/api/wait/source-redispatch": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Reobserve one durable source event in a supervisor project.",
+        "description": "Reobserve one durable source event in a supervisor project.",
+        "operationId": "wait_source_redispatch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitSourceRedispatchArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitBridgeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ws/terminal/{session_id}": {
       "get": {
         "summary": "Terminal Access",
@@ -90118,6 +90165,34 @@
         },
         "type": "object",
         "title": "WaitSlotSeconds"
+      },
+      "WaitSourceRedispatchArgs": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Project Id"
+          },
+          "source_seq": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Source Seq"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_seq",
+          "note"
+        ],
+        "title": "WaitSourceRedispatchArgs"
       },
       "WaitTaskExplanation": {
         "properties": {
