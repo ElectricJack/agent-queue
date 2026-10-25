@@ -105,8 +105,9 @@ async def execute_task_status_mutation(conn, statement):
 async def insert_message_with_source_event(conn, statement):
     """Execute message INSERTs, preserving single-row RETURNING and bulk rowcount.
 
-    All message writers use this seam, including internal durable notifications and
-    collaboration replies. Inspect the persisted metadata only after an actual insert;
+    Message writers use this seam, including internal durable notifications and
+    collaboration replies; listener lag diagnostics deliberately omit source events.
+    Inspect the persisted metadata only after an actual insert;
     ON CONFLICT no-ops never manufacture a second event. The bound id is required
     because the original RETURNING result belongs to the caller, not this helper.
     Bulk notification writers have no RETURNING consumers; add one there to identify
