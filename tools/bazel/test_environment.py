@@ -70,6 +70,14 @@ def _within(path: Path, roots: Sequence[Path]) -> bool:
 
 
 @dataclass(frozen=True)
+class ReadOnlyMapping:
+    """A locked sysroot directory mounted at its conventional ELF ABI path."""
+
+    source: Path
+    target: Path
+
+
+@dataclass(frozen=True)
 class Runtime:
     """Complete declared runtime closure; no ambient executable/library discovery.
 
@@ -84,6 +92,8 @@ class Runtime:
     library_dirs: tuple[Path, ...] = ()
     git_exec_path: Path | None = None
     shell: Path | None = None
+    sysroot: Path | None = None
+    read_only_mappings: tuple[ReadOnlyMapping, ...] = ()
 
     def validate(self) -> None:
         if not self.bin_dirs:
@@ -102,6 +112,28 @@ class Runtime:
                 raise IsolationError("runtime path is missing from declared inputs")
         if not self.python.is_file() or not os.access(self.python, os.X_OK):
             raise IsolationError("declared Python is not executable")
+        if self.sysroot is not None:
+            if (not _within(_absolute(self.sysroot), self.read_only)
+                    or not _within(self.sysroot.resolve(), tuple(p.resolve() for p in self.read_only))
+                    or not self.sysroot.is_dir()):
+                raise IsolationError("sysroot is missing from declared locked inputs")
+        targets = set()
+        for mapping in self.read_only_mappings:
+            source, target = _absolute(mapping.source), _absolute(mapping.target)
+            if (self.sysroot is None or not source.is_dir()
+                    or not source.resolve().is_relative_to(self.sysroot.resolve())
+                    or not _within(source, self.read_only)):
+                raise IsolationError("mapping source is outside the declared locked sysroot")
+            # An additive ABI mapping can never replace workspace, /etc, /proc,
+            # /dev, private home/tmp, or arbitrary runtime paths.
+            if target not in {Path('/lib'), Path('/lib64'), Path('/usr/lib'), Path('/usr/lib64')}:
+                raise IsolationError("mapping target must be a conventional ELF ABI directory")
+            if target in targets:
+                raise IsolationError("duplicate read-only mapping target")
+            targets.add(target)
+            if any(_within(target, (root,)) or _within(root, (target,))
+                   for root in self.read_only):
+                raise IsolationError("mapping target shadows declared runtime inputs")
 
 
 @dataclass(frozen=True)
@@ -191,6 +223,10 @@ def test_environment(
         # Prevent an input mount from exposing the parent TMPDIR or shadowing
         # the private state (and vice versa). Sibling targets share no writes.
         roots = (*runtime.read_only, *environment.writable)
+        for mapping in runtime.read_only_mappings:
+            if any(_within(mapping.target, (root,)) or _within(root, (mapping.target,))
+                   for root in environment.writable):
+                raise IsolationError("mapping target shadows private writable state")
         for i, first in enumerate(roots):
             for second in roots[i + 1:]:
                 if _within(first, (second,)) or _within(second, (first,)):
@@ -255,6 +291,8 @@ def _enter_namespaces(config: dict) -> int:
     jail = Path(config["jail"])
     for source in config["read_only"]:
         _bind(Path(source), jail / source.lstrip("/"), readonly=True)
+    for source, target in config.get("read_only_mappings", []):
+        _bind(Path(source), jail / target.lstrip("/"), readonly=True)
     for source in config["writable"]:
         _bind(Path(source), jail / source.lstrip("/"), readonly=False)
     for device in ("null", "zero", "random", "urandom"):
@@ -416,6 +454,8 @@ async def run_isolated(
             "read_only": list(map(str, environment.runtime.read_only)),
             "writable": list(map(str, environment.writable)),
             "shell": str(environment.runtime.shell) if environment.runtime.shell else None,
+            "read_only_mappings": [[str(m.source), str(m.target)]
+                                   for m in environment.runtime.read_only_mappings],
         }
         plan = private / "launch.json"
         plan.write_text(json.dumps(config), encoding="utf-8")

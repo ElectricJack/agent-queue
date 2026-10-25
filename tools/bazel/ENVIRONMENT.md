@@ -57,6 +57,28 @@ connection has no route. Namespace, mount or self-test failure returns 125;
 there is no host-network fallback. Unsupported platforms receive an explicit
 instruction to select the legacy backend.
 
+`Runtime.read_only_mappings` is an additive interface for the locked H1 sysroot.
+Each `ReadOnlyMapping(source, target)` source must resolve inside the explicit
+`Runtime.sysroot`, itself inside declared inputs. Targets are restricted to
+`/lib`, `/lib64`, `/usr/lib`, and `/usr/lib64`; duplicates, undeclared sources,
+symlink escapes, and shadowing declared inputs or private outputs are refused.
+Mappings are always read-only binds and have no writable option; nested host
+mounts are never imported.
+Existing callers keep their same-absolute-path input binds. B1 supplied this
+H1/H2 extension with supervisor authorization because the H epic was closed.
+
+To verify the pinned ABI, supply the already materialized, locked runtime roots
+alongside AQ admission (these settings are never discovered from host paths):
+
+```bash
+AQ_BAZEL_NATIVE_RUNTIME=/absolute/locked/aq_native/runtime \
+AQ_BAZEL_PYTHON_RUNTIME=/absolute/locked/python \
+aq test tests/test_bazel_environment.py -k locked_sysroot
+```
+
+This executes the declared Python and native tools in H2's real jail, checks
+glibc 2.28, refuses writes through the mappings, and proves host libc paths absent.
+
 The public launch deadline includes namespace setup and execution, with two
 bounded cleanup grace periods. The total must fit 300 seconds (default 290 +
 2×2). Timeout returns 124; signals return 128 + signal; other target statuses
