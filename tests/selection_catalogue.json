@@ -86,10 +86,28 @@
         "tests/test_worker_git_scope.py"
       ]
     },
+    "bazel-environment": {
+      "description": "Credential-free child environments, namespace isolation and bounded process cleanup.",
+      "modules": [
+        "tests/test_bazel_environment.py"
+      ]
+    },
+    "bazel-metrics": {
+      "description": "Verification obligation inventory and exact-identity delivery metric accounting.",
+      "modules": [
+        "tests/test_bazel_metrics.py"
+      ]
+    },
     "bazel-runtime": {
       "description": "Bazel pytest node sharding, phase budgets, target lifecycle deadlines and flake evidence.",
       "modules": [
         "tests/test_bazel_runtime.py"
+      ]
+    },
+    "bazel-toolchains": {
+      "description": "Pinned toolchain, dependency lock and Linux ABI integrity boundaries.",
+      "modules": [
+        "tests/test_bazel_manifest.py"
       ]
     },
     "capabilities": {
@@ -3306,6 +3324,42 @@
         "parametrize"
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
+    "tests/test_bazel_environment.py": {
+      "areas": [
+        "bazel-environment"
+      ],
+      "default_arm": true,
+      "digest": "sha256:64ebc1c762b1d5c134bd7cd62868d9939ee437c3b8c36fec1b1cefac321149b7",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "H2 environment boundary and real Linux namespace/process acceptance."
+    },
+    "tests/test_bazel_manifest.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2669f7605d8f5cbe70f349cfb090cbef8746aa7950d5e34ab0a9ed298fdd9e47",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "H1 lock/ABI boundaries and opt-in, admitted clean-root toolchain verification."
+    },
+    "tests/test_bazel_metrics.py": {
+      "areas": [
+        "bazel-metrics"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c267969578d4ccb9e7fd080acc1b37aecf24beff7a4b83b021b48589b7c411f4",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Inventory boundary and delivery-accounting regressions on synthetic evidence."
     },
     "tests/test_bazel_runtime.py": {
       "areas": [
