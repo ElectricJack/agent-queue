@@ -5216,7 +5216,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:45d65278b3bab7c109cb19587f87ae4f95102d1c536691f99ff3a158a77e3268",
+      "digest": "sha256:5258c51fa3cff32309002960aa06cfa07529dd3e8352b945a8eb97914bdfa2c5",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -5239,7 +5239,6 @@
       ],
       "markers": [
         "parametrize",
-        "timeout",
         "tmux"
       ],
       "summary": "Production outbox binding and global-supervisor conversation round trips."
@@ -10097,12 +10096,13 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:260d76a8f3c27cf0adeef969722615705feae4eccadf13caefea426547fa818e",
+      "digest": "sha256:89cec1d248fe9a98eaa1c824dec28dff472d6c7e648a5a35a8c1040d08c3f26b",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.root_pull_requests",
+        "src.integration.status",
         "src.models"
       ],
       "markers": [
