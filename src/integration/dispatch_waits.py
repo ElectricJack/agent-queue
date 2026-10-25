@@ -140,8 +140,13 @@ class DispatchWaits:
                         async with self.db._engine.connect() as conn:
                             observed = await service.registry.observe(
                                 conn, Condition.from_record(row["condition"]))
-                    except WaitError:
-                        continue  # unobservable now; keep it rather than abort the visit
+                    except WaitError as exc:
+                        # Observation failure cannot prove this subscription is
+                        # obsolete. Preserve it for the listener and keep the
+                        # train visit moving, including other owners' waits.
+                        ids.append(row["id"])
+                        errors.append({"wait_id": row["id"], **exc.as_dict()})
+                        continue
                     if observed.state == "satisfied":
                         continue
             result = await command("wait_cancel", {
