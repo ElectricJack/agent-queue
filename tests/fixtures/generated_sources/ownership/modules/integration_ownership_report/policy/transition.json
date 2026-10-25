@@ -19,7 +19,7 @@
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2228,
+      "authorized_owned_delta": 2257,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -142,7 +142,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 82504,
-      "measured_owned_total": 157727,
+      "measured_owned_total": 157756,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -200,6 +200,25 @@
       "source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
       "supervisor_decision_message_id": "msg-2077aa41ec2c4f8685869fa59596627b",
       "task_id": "smart-nexus-83",
+      "wait_admission_reobservation_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 29,
+        "authorized_shared_owned_delta": 29,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/waits/admission.py:AdmissionReader.observe_task": 29
+        },
+        "decision_message_id": "msg-093cb31dec41486ba5891e1b8bb20c7d",
+        "dev_source_revision": "cc66aec8460d14d67473c1d67f876717fd65a5b6",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82504,
+        "previous_measured_owned_total": 157727,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +29 shared owned lines for constraint-specific admission reobservation, reducing redundant work inside graph-fenced transactions. Preserve original baselines, historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "supervisor_decision_comment_id": "comment-26bf155ce932484188a12ac8776616fd",
+        "task_id": "sharp-delta-65"
+      },
       "wait_listener_fence_inherited_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 3,
@@ -260,7 +279,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157727,
+    "owned_total_cap": 157756,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

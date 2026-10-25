@@ -194,6 +194,21 @@ or reset the wait's age.
 
 ### Short graph transactions — 2026-10-22
 
+Resource subscription verification reads only the named admission constraint.
+The initial scheduler/resume admission observation still evaluates all constraints;
+verifying a subscription is not an admission grant. Each verification and
+post-subscribe observation reads current owner, claim, project, profile and config
+bindings, plus the SQL inputs for that constraint, on the caller's connection.
+Frontier predicates, workspace capacity and fleet token aggregation are not
+repeated for unrelated blockers. Token aggregation is omitted when neither a
+global nor a project budget is configured. No constraint verdict is cached across
+observations, transactions or passes; committed source changes remain visible.
+Before acquiring the graph fence, the listener prepares Git progress only for
+task waits matching its next source event (resource waits for an invalidation).
+It rechecks the cursor under the lease lock and retries preparation if another
+drain advanced it. The candidate set is not truncated to the first 200 unrelated
+pending waits; dispatch still revalidates current source and owner rows.
+
 The graph fence protects database revalidation and mutations. Git, filesystem,
 provider/terminal operations, router artifact loading and observations using
 other database connections run before acquiring it. An admission pass captures

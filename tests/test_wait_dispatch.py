@@ -937,3 +937,71 @@ async def test_deadline_waits_for_graph_without_blocking_lease_renewal(runtime_e
         if pending and not pending.done():
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_listener_prepares_only_matching_waits_beyond_unrelated_prefix(runtime_env, monkeypatch):
+    from src.waits import loops
+    from src.waits.graph import graph_locked
+
+    env = runtime_env
+    receipt = await register(env)
+    base = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_records), [
+            {**base, "id": f"000-unrelated-{n:03}", "owner_id": f"unrelated-{n}",
+             "source_key": "task:unrelated"}
+            for n in range(205)
+        ])
+    prepared = []
+    original = loops.prepare_progress
+
+    async def prepare(conn, owners):
+        assert not graph_locked(conn)
+        prepared.extend(owner["id"] for owner in owners)
+        await original(conn, owners)
+
+    monkeypatch.setattr(loops, "prepare_progress", prepare)
+    dispatcher = ObservingDispatcher(env.registry)
+    service = runtime(env, dispatcher=dispatcher)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.tick()
+    assert prepared == [receipt["wait_id"]]
+    assert dispatcher.calls[0][0] == receipt["wait_id"]
+    assert next(row for row in await records(env) if row["id"] == receipt["wait_id"])[
+        "outcome"
+    ] == "satisfied"
+
+
+async def test_listener_retries_preparation_if_cursor_advances_during_git(runtime_env, monkeypatch):
+    from src.waits import loops
+
+    env = runtime_env
+    service = runtime(env)
+    assert await service.lease()
+    for n in range(2):
+        await env.db.wait_source_commit(source_key="test:cursor-race", generation=0,
+            revision=str(n), outcome_ref=f"test:{n}", payload={})
+    source = sorted(await records(env, wait_source_events), key=lambda row: row["seq"])
+    calls = 0
+
+    async def prepare(conn, owners):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # A competing drain committed the first event while this drain
+            # prepared Git. Its cursor must be re-read under the lease lock.
+            async with env.db._engine.begin() as other:
+                await other.execute(update(wait_listener_cursors).where(
+                    wait_listener_cursors.c.listener_key == "source",
+                ).values(last_seq=source[0]["seq"]))
+
+    monkeypatch.setattr(loops, "prepare_progress", prepare)
+    seen = []
+
+    async def dispatch(conn, event):
+        seen.append(event["seq"])
+
+    service.listener._dispatch = dispatch
+    assert await service.drain(await env.db.wait_source_watermark()) == 1
+    assert calls == 2
+    assert seen == [source[1]["seq"]]
