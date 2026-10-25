@@ -1,0 +1,5 @@
+test_suite(
+    name = "generated",
+    tests = ["//tools/bazel:generated_check"],
+    visibility = ["//visibility:public"],
+)
