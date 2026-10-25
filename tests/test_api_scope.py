@@ -384,6 +384,18 @@ class TestCheckCommandScope:
         msg = check_command_scope("task_heartbeat", {"session_id": "sX"}, plain)
         assert msg is not None and "session_id mismatch" in msg
 
+    def test_cross_project_task_listing_preserves_authority(self):
+        args = {"status": "READY", "limit": 5}
+        global_supervisor = RequestScope(kind="session", session_id="global", elevated=True)
+        assert check_command_scope("list_tasks", args, global_supervisor) is None
+        assert args == {"status": "READY", "limit": 5}
+        project_supervisor = RequestScope(
+            kind="session", session_id="project", project_id="p1", elevated=True,
+        )
+        assert check_command_scope("list_tasks", args, project_supervisor) is None
+        assert args == {"status": "READY", "limit": 5, "project_id": "p1"}
+        assert check_command_scope("list_tasks", {"limit": 5}, SESSION) is not None
+
     def test_agent_command_set_contents(self):
         assert set(AGENT_COMMAND_SET) == EXPECTED_AGENT_COMMANDS
 
