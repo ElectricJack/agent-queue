@@ -1,4 +1,7 @@
-"""``db.alembic_orphan`` — the repair path for the 2026-09-02 incident.
+"""Database integrity and container shared memory diagnostics.
+
+``db.shared_memory`` reports Docker tmpfs capacity and usage without modifying it.
+``db.alembic_orphan`` is the repair path for the 2026-09-02 incident:
 
 Symptom: the daemon will not start, with ``Alembic preflight failed:
 alembic_version references unknown revision(s) ['f2a4c6e8b0d2']``.  Cause: a
@@ -34,12 +37,20 @@ Nobody can know that from the outside, so it requires
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 
-from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
+from src.doctor.models import (
+    CheckResult,
+    DoctorCheck,
+    DoctorContext,
+    ObservationUnavailable,
+    Severity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -421,5 +432,111 @@ def db_checks() -> list[DoctorCheck]:
             fix=_fix_alembic_orphan,
             timeout_s=90.0,
             owner=OWNER,
-        )
+        ),
+        DoctorCheck(
+            id="db.shared_memory",
+            run=_check_shared_memory,
+            timeout_s=15.0,
+            owner=OWNER,
+        ),
     ]
+
+
+async def _docker_output(*args: str) -> str:
+    """Bound read-only Docker probes, including runner cancellation cleanup."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", *args,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise ObservationUnavailable("Docker shared memory probe could not start") from exc
+    try:
+        output, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+    except (TimeoutError, asyncio.CancelledError):
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.communicate()
+        raise
+    if proc.returncode:
+        raise ObservationUnavailable("Docker shared memory probe failed (container or access)")
+    return output.decode("utf-8", errors="replace").strip()
+
+
+async def _check_shared_memory(ctx: DoctorContext) -> CheckResult:
+    """Measure the serving container's tmpfs, never the daemon host's /dev/shm."""
+    from sqlalchemy.engine import make_url
+
+    check_id = "db.shared_memory"
+    data = {}
+    warnings = []
+    try:
+        url = make_url(ctx.config.database.url)
+        if (url.get_backend_name() not in {"postgres", "postgresql"}
+                or url.host not in {"localhost", "127.0.0.1", "::1"}
+                or "host" in url.query or "port" in url.query):
+            raise ObservationUnavailable("shared memory requires a local TCP Docker endpoint")
+        if not shutil.which("docker"):
+            raise ObservationUnavailable("Docker unavailable; server shared memory unobserved")
+        # A remote Docker context could have the same published port as a local DB.
+        endpoint = json.loads(await _docker_output(
+            "context", "inspect", "--format", "{{json .Endpoints.docker.Host}}",
+        ))
+        if not isinstance(endpoint, str) or not endpoint.startswith("unix://"):
+            raise ObservationUnavailable("Docker endpoint is not a local Unix socket")
+        if os.environ.get("DOCKER_HOST", endpoint) != endpoint:
+            raise ObservationUnavailable("Docker host override prevents local endpoint matching")
+        port = str(url.port or 5432)
+        matches = (await _docker_output(
+            "ps", "--filter", f"publish={port}", "--format", "{{.ID}}",
+        )).splitlines()
+        if len(matches) != 1:
+            raise ObservationUnavailable("no unique Docker container serves the configured port")
+        container = matches[0]
+        info = json.loads(await _docker_output(
+            "inspect", container, "--format",
+            '{"size":{{json .HostConfig.ShmSize}},"ports":{{json .NetworkSettings.Ports}}}',
+        ))
+        if not isinstance(info["ports"], dict):
+            raise ValueError("invalid published ports")
+        if not any(p["HostPort"] == port and p["HostIp"] in {
+            "0.0.0.0", "::", "127.0.0.1", "::1",
+        } for p in (info["ports"].get("5432/tcp") or [])):
+            raise ObservationUnavailable("container does not publish the PostgreSQL endpoint")
+        size = int(info["size"])
+        if size <= 0:
+            raise ValueError("invalid shared memory allocation")
+        data.update(container=container, shm_size_bytes=size)
+        if size < 256 * 1024 * 1024:
+            warnings.append(f"shm_size is {size / 1024**2:g} MiB (below 256 MiB)")
+        output = await _docker_output("exec", container, "df", "-Pk", "/dev/shm")
+        fields = output.splitlines()[-1].split()
+        total, used = int(fields[1]) * 1024, int(fields[2]) * 1024
+        if total <= 0 or not 0 <= used <= total or fields[-1] != "/dev/shm":
+            raise ValueError("invalid shared memory usage")
+        percent = used * 100 / total
+        data.update(total_bytes=total, used_bytes=used, used_percent=percent)
+        if used * 100 > total * 80:
+            warnings.append(f"/dev/shm is {percent:.1f}% used (above 80%)")
+    except (ObservationUnavailable, TimeoutError, ValueError, KeyError, TypeError, IndexError) as exc:
+        reason = str(exc) if isinstance(exc, ObservationUnavailable) else "unreadable Docker probe"
+        return CheckResult(
+            id=check_id, severity=Severity.WARN if warnings else Severity.INFO,
+            detail="; ".join([*warnings, reason]), data=data,
+            execution_status="unavailable", reasons=["shared_memory_unobserved"],
+        )
+    advice = (
+        "; use shm_size: 1g in docker-compose.yml; an operator must recreate the container"
+        if warnings else ""
+    )
+    return CheckResult(
+        id=check_id, severity=Severity.WARN if warnings else Severity.OK,
+        detail=("; ".join(warnings) if warnings else
+                f"/dev/shm is {percent:.1f}% used; shm_size is {size / 1024**2:g} MiB") + advice,
+        data=data, execution_status="succeeded", complete=True,
+    )
