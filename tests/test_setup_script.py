@@ -120,12 +120,12 @@ def test_the_ask_helper_takes_the_default_with_no_terminal(tmp_path: Path) -> No
 
     helper = SETUP_SH.read_text().split("# --- Detect Python 3.12+ ---")[0]
     script = helper + '\nif ask "Add it?" Y; then echo YES; else echo NO; fi\n'
-    # The prefix resolves its checkout through BASH_SOURCE[0], which is unset
-    # under `bash -c`. A real file matches `bash setup.sh` without installing anything.
+    # The prefix resolves its checkout through BASH_SOURCE[0], which is not defined
+    # under `bash -c` on every Bash version. A file matches `bash setup.sh` safely.
     script_path = tmp_path / "setup helper.sh"
     for default, expected in (("Y", "YES"), ("N", "NO")):
         body = script.replace('ask "Add it?" Y', f'ask "Add it?" {default}')
-        script_path.write_text(body)
+        script_path.write_text(body, encoding="utf-8")
         result = subprocess.run(
             ["bash", str(script_path)],
             capture_output=True,
