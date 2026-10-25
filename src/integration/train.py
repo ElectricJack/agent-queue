@@ -820,6 +820,16 @@ class IntegrationTrain:
             visit = replace(self._visit(target, state, snapshot=snapshot), detail=opened.detail)
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
+            if ejection := (visit.detail or {}).get("ejection"):
+                # Red-target attribution creates an unbuilt survivor. Discard
+                # the aborted candidate's check identity in dispatch and waits.
+                current = await lane.service.store.get(ejection["replacement_batch_id"])
+                opened = replace(opened,
+                    batch=current if current and current.intent == "open" else None,
+                    members=await lane.service.store.members(current.id)
+                    if current and current.intent == "open" else ())
+                visit = replace(visit, batch_id=current.id if opened.batch else None,
+                                candidate_sha=None, checks=None)
             if (visit.detail or {}).get("ejections"):
                 # A build conflict replaced the frozen input. Dispatch and
                 # speculative work must follow the new batch, never the abort.
@@ -1162,6 +1172,18 @@ class IntegrationTrain:
         sealed_target = (await self.baseline.sealed_target(batch)
                          if target.kind == "epic" and not batch.epic_refresh
                          and baseline.pre_existing else None)
+        eject_red = getattr(self.batches, "eject_red", None)
+        if (eject_red is not None and not baseline.unavailable
+                and baseline.target_state == "green" and baseline.target_sha == observation.target_sha
+                and not baseline.pre_existing and not baseline.unproven):
+            ejected = await eject_red(
+                target, batch, members, observation, result, checks, lane.service,
+            )
+            if ejected is not None:
+                # The replacement has no candidate or inherited check evidence.
+                # A normal visit assembles it and runs the complete exact gate.
+                return replace(self._visit(target, "ejected", batch, observation, result),
+                               detail={**baseline.detail(), "ejection": ejected})
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,

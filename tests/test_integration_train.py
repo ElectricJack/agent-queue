@@ -2154,3 +2154,260 @@ async def test_slow_speculative_build_never_delays_predecessor(speculative_env):
     delivered = await asyncio.wait_for(env.train.visit(ROOT), 10)
     assert delivered.state == "delivered"
     assert not release.is_set()
+
+
+def failure_evidence(frozen=None, members=CONFLICTING_MEMBERS, *, base=TARGET_SHA,
+                     candidate_sha=CANDIDATE, shared=False, unknown=False):
+    """Trusted post-cutover producer fixture, distinct from shadow parity output."""
+    from src.integration.signatures import (
+        SignatureIdentity, SourceSignature, freeze_signature_documents,
+    )
+
+    frozen = frozen or batch()
+    signatures = []
+    for index, member in enumerate(members):
+        identity = SignatureIdentity(
+            frozen.project_id, frozen.repository_id, member.task_id, None,
+            f"refs/heads/aq/{member.task_id}", frozen.target_ref, member.base_sha,
+            member.source_sha, base, "policy-v1", "1" * 64, "2" * 64, "default",
+        )
+        signatures.append(SourceSignature(
+            identity, paths=(f"src/{member.task_id}.py",),
+            reverse_test_targets=("//tests:bad" if index == 0 or shared else
+                                  f"//tests:{member.task_id}",),
+            graph_state="observational", universal=unknown,
+            reasons=("path_signature",),
+        ))
+    document, _ = freeze_signature_documents(
+        {}, {}, signatures, current_identities=[s.identity for s in signatures],
+        selection_reasons=["fixture"],
+    )
+    document["train_packing"] = {"policy_revision": "policy-v1"}
+    red = result(ChecksState.RED)
+    report = {
+        "version": 1, "batch_id": frozen.id, "revision": frozen.repair_attempt_count,
+        "candidate_sha": candidate_sha, "target_sha": base,
+        "sources": {m.task_id: m.source_sha for m in members},
+        "graph_digest": "2" * 64, "suite": "default", "run_id": "run-1", "attempt": 1,
+        "required_check_version": "v1", "classification": "product", "complete": True,
+        "targets": ["//tests:bad"],
+    }
+    red = red.model_copy(update={"sha": candidate_sha, "checks": (
+        red.checks[0].model_copy(update={"sha": candidate_sha, "run_id": "run-1", "attempt": 1,
+                                       "detail": {"target_failures": report}}),
+    )})
+    green = red.model_copy(update={"sha": base, "state": ChecksState.GREEN, "checks": (
+        red.checks[0].model_copy(update={"sha": base, "conclusion": Conclusion.SUCCESS,
+                                       "detail": {}}),
+    )})
+    return frozen, members, document, red, green
+
+
+@pytest.mark.parametrize("scenario", [
+    "unique", "baseline_red", "baseline_missing", "baseline_pending", "baseline_wrong_base",
+    "shared", "unknown", "missing_report", "flaky", "infra", "incomplete", "wrong_candidate",
+    "wrong_revision", "wrong_run", "wrong_attempt", "wrong_sources", "wrong_graph",
+    "wrong_suite", "wrong_version", "unmapped", "shadow", "policy_changed", "corrupt",
+    "missing_check", "foreign_check", "pending_check", "repaired", "missing_signatures",
+    "multiple_owners", "duplicate_targets", "baseline_forged_green", "wrong_source_base",
+])
+def test_unique_target_attribution_requires_complete_exact_evidence(scenario):
+    from src.integration.train_controls import unique_failure_member
+
+    frozen, members, document, red, green = failure_evidence(
+        shared=scenario == "shared", unknown=scenario == "unknown",
+    )
+    suites, policy = ("default",), "policy-v1"
+    report = red.checks[0].detail["target_failures"]
+    changes = {
+        "flaky": ("classification", "flaky"), "infra": ("classification", "infrastructure"),
+        "incomplete": ("complete", False), "wrong_candidate": ("candidate_sha", SOURCE),
+        "wrong_revision": ("revision", 1), "wrong_run": ("run_id", "old-run"),
+        "wrong_attempt": ("attempt", 2), "wrong_sources": ("sources", {}),
+        "wrong_graph": ("graph_digest", "3" * 64), "wrong_suite": ("suite", "slow"),
+        "wrong_version": ("required_check_version", "v2"),
+        "unmapped": ("targets", ["//tests:unmapped"]),
+        "multiple_owners": ("targets", ["//tests:bad", "//tests:t-2"]),
+        "duplicate_targets": ("targets", ["//tests:bad", "//tests:bad"]),
+    }
+    if scenario in changes:
+        key, value = changes[scenario]
+        report[key] = value
+    if scenario == "baseline_forged_green":
+        green = green.model_copy(update={"checks": ()})
+    elif scenario.startswith("baseline_"):
+        if scenario == "baseline_wrong_base":
+            green = green.model_copy(update={"sha": SOURCE})
+        else:
+            state, conclusion = {
+                "baseline_red": (ChecksState.RED, Conclusion.FAILURE),
+                "baseline_missing": (ChecksState.RED, Conclusion.MISSING),
+                "baseline_pending": (ChecksState.PENDING, Conclusion.PENDING),
+            }[scenario]
+            green = green.model_copy(update={"state": state, "checks": (
+                green.checks[0].model_copy(update={"conclusion": conclusion}),
+            )})
+    if scenario == "missing_report":
+        red.checks[0].detail.clear()
+    if scenario == "shadow":
+        suites = ()
+    if scenario == "policy_changed":
+        policy = "other-policy"
+    if scenario == "corrupt":
+        document["train_signatures"]["digest"] = "0" * 64
+    if scenario == "missing_signatures":
+        document.clear()
+    if scenario == "missing_check":
+        red = red.model_copy(update={"checks": ()})
+    if scenario == "foreign_check":
+        red = red.model_copy(update={"checks": (
+            red.checks[0].model_copy(update={"sha": SOURCE}),
+        )})
+    if scenario == "pending_check":
+        red = red.model_copy(update={"checks": (
+            red.checks[0].model_copy(update={"conclusion": Conclusion.PENDING}),
+        )})
+    if scenario == "repaired":
+        frozen = replace(frozen, repair_attempt_count=1)
+    if scenario == "wrong_source_base":
+        members = (replace(members[0], source_base_sha=SOURCE), *members[1:])
+    attributed = unique_failure_member(
+        frozen, members, document, red, green, target_sha=TARGET_SHA,
+        policy_revision=policy, authoritative_suites=suites,
+    )
+    if scenario == "unique":
+        assert attributed["task_id"] == members[0].task_id
+        assert attributed["targets"] == ["//tests:bad"]
+    else:
+        assert attributed is None
+
+
+@pytest.mark.parametrize("state", ["green", "red", "unknown", "unavailable"])
+async def test_red_compares_baseline_before_attempting_ejection(state):
+    from src.integration.candidate_baseline import Baseline
+
+    events = []
+
+    async def verdict(*args, **kwargs):
+        events.append("baseline")
+        return Baseline(TARGET_SHA, state, ("unit",) if state == "green" else (),
+                        ("unit",) if state == "red" else (),
+                        ("unit",) if state == "unknown" else (), unavailable=state == "unavailable")
+
+    async def eject(*args):
+        events.append("eject")
+        return {"replacement_batch_id": "survivor"}
+
+    batches = Batches({ROOT.key: (batch(), CONFLICTING_MEMBERS)})
+    batches.eject_red = eject
+    baseline = SimpleNamespace(verdict=verdict, re_request=AsyncMock(return_value={}))
+    repair = Repair()
+    service = Service("testing")
+    service.store = SimpleNamespace(get=AsyncMock(return_value=batch("survivor")),
+                                    members=AsyncMock(return_value=MEMBERS))
+    t = train(Targets(ROOT), batches, {ROOT.key: lane(service, Checks(ChecksState.RED))},
+              repair, baseline=baseline)
+    visit = await t.visit(ROOT)
+    assert events == (["baseline", "eject"] if state == "green" else ["baseline"])
+    assert (visit.state == "ejected") == (state == "green")
+    if state == "green":
+        assert not repair.calls
+        assert visit.batch_id == "survivor" and visit.candidate_sha is None and visit.checks is None
+        assert visit.detail["ejection"]["replacement_batch_id"] == "survivor"
+
+
+@pytest.mark.parametrize("scenario", ["survivor", "changed_evidence", "no_survivor"])
+async def test_attributed_ejection_preserves_members_and_rechecks_survivor(world, monkeypatch,
+                                                                         scenario):
+    from pathlib import Path
+
+    from src.integration.candidate_baseline import Baseline
+    from src.integration.train_controls import TrainControls
+    from src.integration.train_policy import TrainPolicyView
+    from src.playbooks.train_policy import TrainPolicy
+    from tests.test_integration_train_sources import MAIN, LocalGit, completed, lane as real_lane
+
+    for tid, needs in (("a", ()), ("b", ("a",)), ("c", ("b",)),
+                       ("d", ("c",) if scenario == "no_survivor" else ())):
+        await completed(world, tid, needs=needs)
+    t, checks, _ = real_lane(world, LocalGit(Path(world.origin.url)))
+    lane_ = await t.lane_for(MAIN)
+    store = lane_.service.store
+    freeze = store.freeze
+
+    async def freeze_with_signatures(batch, members, **kwargs):
+        _, _, document, _, _ = failure_evidence(
+            batch, tuple(members), base=git(world.origin.url, "rev-parse", MAIN.target_ref),
+        )
+        kwargs["selection_snapshot"] = document
+        return await freeze(batch, members, **kwargs)
+
+    monkeypatch.setattr(store, "freeze", freeze_with_signatures)
+    first = await t.visit(MAIN)
+    frozen = await store.get(first.batch_id)
+    members = await store.members(first.batch_id)
+    _, _, document, red, green = failure_evidence(
+        frozen, members, base=first.target_sha, candidate_sha=first.candidate_sha,
+    )
+    policy = TrainPolicyView(policy=TrainPolicy(), policy_revision="policy-v1")
+    monkeypatch.setattr("src.integration.train_policy.load_train_policy",
+                        AsyncMock(return_value=policy))
+    checks.provider = SimpleNamespace(authoritative_target_suites=("default",))
+    reads = 0
+
+    async def read(head):
+        nonlocal reads
+        reads += 1
+        if head.sha == red.sha:
+            if scenario == "changed_evidence" and reads > 2:
+                return red.model_copy(update={"checks": ()})
+            return red
+        assert head.sha == green.sha
+        return green
+
+    checks.read = read
+    checks.refresh = read
+    t.baseline = SimpleNamespace(verdict=AsyncMock(return_value=Baseline(
+        first.target_sha, "green", ("unit",), (), (),
+    )))
+    if scenario == "no_survivor":
+        assert await TrainControls(world.db).eject_red(
+            frozen, members, first, red, checks, service=lane_.service,
+        ) is None
+        assert (await store.get(frozen.id)).intent == "open"
+        assert await store.members(frozen.id) == members
+        return
+    if scenario == "changed_evidence":
+        with pytest.raises(ValueError, match="changed"):
+            await TrainControls(world.db).eject_red(
+                frozen, members, first, red, checks, service=lane_.service,
+            )
+        assert (await store.get(frozen.id)).intent == "open"
+        assert await store.members(frozen.id) == members
+        return
+    ejected = await t.visit(MAIN)
+    assert ejected.state == "ejected", ejected
+    replacement_id = ejected.detail["ejection"]["replacement_batch_id"]
+    assert ejected.detail["ejection"]["ejected_members"] == ["a", "b", "c"]
+    assert ejected.candidate_sha is None and ejected.checks is None
+    assert ejected.detail["dispatch"]["batch_id"] == replacement_id
+    assert [m["task_id"] for m in ejected.detail["dispatch"]["members"]] == ["d"]
+    assert await store.members(frozen.id) == members
+    assert (await store.get(frozen.id)).intent == "aborted"
+    assert [m.task_id for m in await store.members(replacement_id)] == ["d"]
+    old = await world.db.get_integration_batch(frozen.id)
+    assert old["artifact_snapshot"] == document
+    assert old["ejection_record"]["target_failure"]["candidate_sha"] == first.candidate_sha
+    assert old["ejection_record"]["dependent_ids"] == ["b", "c"]
+    # Restart over durable replacement state, with only the OLD candidate green.
+    restarted, checks2, _ = real_lane(world, LocalGit(Path(world.origin.url)))
+    checks2.green.add(first.candidate_sha)
+    survivor = await restarted.visit(MAIN)
+    assert survivor.batch_id == replacement_id and survivor.state == "testing"
+    assert survivor.candidate_sha != first.candidate_sha
+    assert git(world.origin.url, "rev-parse", MAIN.target_ref) == first.target_sha
+    assert (await restarted.visit(MAIN)).state == "testing"
+    checks2.green.add(survivor.candidate_sha)
+    settled = await restarted.visit(MAIN)
+    assert settled.detail["settled_batch_id"] == replacement_id
+    assert git(world.origin.url, "rev-parse", MAIN.target_ref) == survivor.candidate_sha

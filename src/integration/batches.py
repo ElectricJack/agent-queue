@@ -487,7 +487,8 @@ class BatchStore:
                                               "green_sha": delivered_sha}))
 
     async def eject(self, batch, task_id, replacement, members, *, trees, authorize,
-                    dry_run, operator_id, reason, dependent_ids=(), pair_conflict=None):
+                    dry_run, operator_id, reason, dependent_ids=(), pair_conflict=None,
+                    target_failure=None):
         """Abort and replace under the publisher's lock; never edit membership.
 
         The batch owns the operator's release instruction. It changes neither
@@ -538,6 +539,9 @@ class BatchStore:
                            "operator_id": operator_id, "reason": reason}
             if pair_conflict is not None:
                 instruction["pair_conflict"] = dict(pair_conflict)
+            if target_failure is not None:
+                instruction["target_failure"] = dict(target_failure)
+            if pair_conflict is not None or target_failure is not None or dependent_ids:
                 instruction["dependent_ids"] = sorted(set(dependent_ids))
             await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,

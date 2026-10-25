@@ -211,6 +211,29 @@ returns to pending, and can enter a new batch on a later eligible visit. An ordi
 abort continues to withhold its frozen sources. Ejection refuses removal of an
 undelivered prerequisite that the remaining members need.
 
+Automatic red-target attribution uses the same control and atomic store path.
+It first requires the complete required checks to pass on the candidate's exact
+base. Every failed check must supply a complete product-failure report whose
+targets each belong uniquely to the same frozen member signature. Shared,
+missing, stale, flaky or infrastructure evidence preserves ordinary repair.
+The control removes that member and its transitive dependency and Git-ancestry
+dependents, leaving the original membership intact. If no survivor remains,
+ordinary repair continues. The new batch carries no candidate check evidence:
+it must assemble and pass the complete exact candidate gate before publication.
+Evidence and dependency edges are checked again at the store authorization fence.
+
+This mechanism is inactive for current shadow producers. A trusted checks
+provider must explicitly advertise `authoritative_target_suites` after suite
+cutover; observational graph/parity artifacts alone never enable blame. Its
+failed `CommitCheck.detail.target_failures` report has version `1`, a nonempty
+unique `targets` list, `classification: product`, `complete: true`, and exact
+`batch_id`, `revision` (repair attempt), `candidate_sha`, `target_sha`, `sources`
+(task-to-frozen-head map), `graph_digest`, `suite`, `run_id`, `attempt` and
+`required_check_version` bindings. The enclosing trusted check supplies the
+repository, producer and check name. The frozen packing policy revision must
+still be current. Repaired candidates retain ordinary repair because their
+original source signatures no longer describe the complete candidate.
+
 The ejection instruction belongs to the batch and binds its project, frozen
 member, operator and reason. It survives member archival and deletion. Task
 metadata cannot release an aborted batch: the `integration_train_ejection`

@@ -859,6 +859,16 @@ class DatabaseBatches:
                     table.c.id == batch_id_, table.c.ejection_record == record,
                 ).values(ejection_record={**record, "pair_conflict": conflict}))
 
+    async def eject_red(self, target, batch, members, observation, result, checks, service):
+        """Reuse the control/store path under the train-tick CommandHandler."""
+        from src.integration.train_controls import TrainControls
+
+        if target.kind not in {"root", "development"}:
+            return None
+        return await TrainControls(self.db, clock=self.clock).eject_red(
+            batch, members, observation, result, checks, service=service,
+        )
+
     async def drop_conflict(self, target, batch, members, observation, snapshot, service):
         """Replace a root batch with its dependency-closed healthy remainder.
 

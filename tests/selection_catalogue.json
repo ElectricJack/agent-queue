@@ -10418,7 +10418,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:397e918acbd6e0e38298ff5f2931ad03e5559f3356b3622ea65510f02f711ae8",
+      "digest": "sha256:eeb712b9072b115e4211573136c9fe4cb0d89211c6f1a426747e4504b46f9e2a",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -10431,6 +10431,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.batches",
+        "src.integration.candidate_baseline",
         "src.integration.checks",
         "src.integration.git_truth",
         "src.integration.lock",
@@ -10438,11 +10439,15 @@
         "src.integration.provenance",
         "src.integration.repair",
         "src.integration.selection_metrics",
+        "src.integration.signatures",
         "src.integration.train",
+        "src.integration.train_controls",
+        "src.integration.train_policy",
         "src.integration.train_sources",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
+        "src.playbooks.train_policy",
         "src.profiles.capabilities",
         "src.tools.definitions"
       ],

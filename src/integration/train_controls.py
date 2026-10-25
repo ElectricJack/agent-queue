@@ -35,6 +35,99 @@ class TrainControlError(ValueError):
         self.outcome = outcome
 
 
+def unique_failure_member(batch, members, document, candidate, baseline, *,
+                          target_sha, policy_revision, authoritative_suites):
+    """Conservative attribution from a trusted producer's complete failure report.
+
+    ``target_failures`` in CommitCheck.detail is versioned and bound to the
+    enclosing check attempt as well as the frozen inputs. Producers must only
+    advertise ``authoritative_target_suites`` after those suites pass cutover;
+    shadow/parity reports and path-only signatures cannot authorize ejection.
+    Missing or mixed evidence returns None, preserving ordinary repair policy.
+    """
+    from src.integration.candidate_baseline import candidate_head, target_head
+    from src.integration.checks import ChecksState, Conclusion, evaluate
+    from src.integration.signatures import SignatureIdentity, read_signature_documents
+
+    if (batch.intent != "open" or batch.repair_attempt_count or batch.epic_sync
+            or batch.epic_refresh or len(members) < 2 or not policy_revision
+            or not authoritative_suites or not target_sha
+            or baseline.sha != target_sha or baseline.repository_id != batch.repository_id
+            or candidate.repository_id != batch.repository_id
+            or candidate.required != baseline.required
+            or candidate.state != ChecksState.RED or not baseline.green):
+        return None
+    # Do not trust a result's aggregate state without its complete exact rows.
+    for result, head in ((candidate, candidate_head(batch, candidate.sha)),
+                         (baseline, target_head(batch, target_sha))):
+        if (len(result.checks) != len(result.required.names)
+                or {c.name for c in result.checks} != set(result.required.names)
+                or evaluate(result.required, head, result.checks, now=0).state != result.state
+                or any((c.repository_id, c.sha, c.producer_id, c.required_check_version) != (
+                    result.repository_id, result.sha, result.required.producer_id,
+                    result.required.version) for c in result.checks)):
+            return None
+    try:
+        identities = tuple(SignatureIdentity(**row["identity"])
+                           for row in document["train_signatures"]["sources"])
+        signatures = read_signature_documents(document, document, current_identities=identities)
+        if (not signatures or len(signatures) != len(members)
+                or document["train_packing"]["policy_revision"] != policy_revision):
+            return None
+        for signature, member in zip(signatures, members, strict=True):
+            identity = signature.identity
+            if (signature.universal or signature.uncovered_paths
+                    or signature.graph_state != "observational"
+                    or identity.suite not in authoritative_suites
+                    or (identity.project_id, identity.repository_id, identity.task_id,
+                        identity.source_head, identity.target_ref, identity.target_sha,
+                        identity.merge_base, identity.policy_revision) != (
+                        batch.project_id, batch.repository_id, member.task_id,
+                        member.source_sha, batch.target_ref, target_sha, member.base_sha,
+                        policy_revision)):
+                return None
+        sources = {m.task_id: m.source_sha for m in members}
+        owners, failures, reports = set(), set(), []
+        for check in candidate.checks:
+            if check.conclusion == Conclusion.SUCCESS:
+                continue
+            if (check.conclusion != Conclusion.FAILURE or check.classification != "conclusive"
+                    or not check.run_id or check.attempt < 1):
+                return None
+            report = check.detail["target_failures"]
+            identity = signatures[0].identity
+            expected = {
+                "version": 1, "batch_id": batch.id, "revision": batch.repair_attempt_count,
+                "candidate_sha": candidate.sha, "target_sha": target_sha, "sources": sources,
+                "graph_digest": identity.graph_digest, "suite": identity.suite,
+                "run_id": check.run_id, "attempt": check.attempt,
+                "required_check_version": candidate.required.version,
+                "classification": "product", "complete": True,
+            }
+            if (any(type(report.get(k)) is not type(v) or report[k] != v
+                    for k, v in expected.items())
+                    or not isinstance(report["targets"], list) or not report["targets"]
+                    or any(not isinstance(t, str) or not t for t in report["targets"])
+                    or len(set(report["targets"])) != len(report["targets"])):
+                return None
+            for failed in report["targets"]:
+                matches = {s.identity.task_id for s in signatures
+                           if failed in (*s.owning_targets, *s.reverse_test_targets)}
+                if len(matches) != 1:
+                    return None
+                owners.update(matches)
+                failures.add(failed)
+            reports.append({"check": check.name, **report})
+        if len(owners) != 1:
+            return None
+        return {"task_id": owners.pop(), "candidate_sha": candidate.sha,
+                "target_sha": target_sha, "sources": sources,
+                "signature_digest": document["train_signatures"]["digest"],
+                "targets": sorted(failures), "reports": reports}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
 async def _refresh_contains(snapshot, members, *, same_tree=False):
     """Strict ancestry of each frozen default head in the observed epic.
 
@@ -726,7 +819,51 @@ class TrainControls:
             "dry_run": dry_run,
         }
 
-    async def eject(self, batch_id, task_id, *, service, dry_run, operator_id, reason):
+    async def eject_red(self, batch, members, observation, result, checks, *, service):
+        """Called by the train-tick command after its baseline comparison.
+
+        Re-read exact cached evidence inside the store's authorization fence.
+        The ordinary operator eject command and this daemon path share eject().
+        """
+        from src.integration.candidate_baseline import candidate_head, target_head
+        from src.integration.train_policy import load_train_policy
+
+        suites = getattr(getattr(checks, "provider", None), "authoritative_target_suites", ())
+        if not suites or observation.candidate_sha != result.sha:
+            return None
+
+        async def evidence():
+            row = await self.db.get_integration_batch(batch.id)
+            policy = await load_train_policy(self.db, batch.project_id)
+            if (not row or Batch.from_row(row) != batch or row["intent"] != "open"
+                    or row["fixer_state"] or row["fixer_queue"]
+                    or not policy.enabled or not policy.policy
+                    or policy.policy.action("red") != "repair"):
+                return None
+            candidate = await checks.read(candidate_head(batch, result.sha))
+            baseline = await checks.read(target_head(batch, observation.target_sha))
+            return unique_failure_member(
+                batch, members, row["artifact_snapshot"], candidate, baseline,
+                target_sha=observation.target_sha, policy_revision=policy.policy_revision,
+                authoritative_suites=suites,
+            )
+
+        attribution = await evidence()
+        if attribution is None:
+            return None
+
+        async def verify_failure():
+            return await evidence() == attribution
+
+        return await self.eject(
+            batch.id, attribution["task_id"], service=service, dry_run=False,
+            operator_id="service:integration-train", reason="unique failing target: " +
+            ", ".join(attribution["targets"]), attribution=attribution,
+            verify_failure=verify_failure,
+        )
+
+    async def eject(self, batch_id, task_id, *, service, dry_run, operator_id, reason,
+                    attribution=None, verify_failure=None):
         if not dry_run and not reason.strip():
             raise ValueError("ejection requires a nonblank reason")
         batch = await service.store.get(batch_id)
@@ -738,14 +875,53 @@ class TrainControls:
         if task_id not in {m.task_id for m in frozen}:
             raise TrainControlError("not_a_member", "task is not a frozen batch member")
         batch, snapshot, candidate, unchanged = await self._abort_observation(batch_id)
+        removed, edges = {task_id}, set()
+
+        async def dependency_edges():
+            async with self.db._engine.connect() as conn:
+                return set((await conn.execute(select(
+                    task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+                ).join(tasks, tasks.c.id == task_dependencies.c.task_id).where(
+                    tasks.c.project_id == batch.project_id,
+                    task_dependencies.c.dep_type == "blocks",
+                ))).all())
+
+        if attribution is not None:
+            if (verify_failure is None or batch.intent != "open"
+                    or candidate != attribution["candidate_sha"]
+                    or snapshot.target_oid != attribution["target_sha"]
+                    or {m.task_id: m.source_sha for m in frozen} != attribution["sources"]):
+                raise ValueError("failure attribution changed")
+            edges = await dependency_edges()
+            repo = await service.gitops.repository(batch)
+            # Include dependencies through tasks outside the batch and stacked
+            # Git sources even when no explicit dependency edge was authored.
+            while True:
+                closure = removed | {tid for tid, need in edges if need in removed}
+                for source in frozen:
+                    if source.task_id in removed:
+                        for member in frozen:
+                            if member.task_id not in closure and await service.gitops.is_ancestor(
+                                repo, source.source_sha, member.source_sha,
+                            ):
+                                closure.add(member.task_id)
+                if closure == removed:
+                    break
+                removed = closure
+            removed &= {m.task_id for m in frozen}
+            if len(removed) == len(frozen):
+                return None  # Keep the full candidate for ordinary repair.
         requests = await load_delivery_requests(self.db, [m.task_id for m in frozen],
             repository_id=batch.repository_id, target_ref=batch.target_ref, reduced=True)
         _, trees = await service.freeze_inputs(batch, frozen, requests=requests, snapshot=snapshot)
         members = tuple(replace(m, order=i) for i, m in enumerate(
-            m for m in frozen if m.task_id != task_id))
+            m for m in frozen if m.task_id not in removed))
         replacement = None
         if members:
-            digest = hashlib.sha256(repr((batch_id, task_id, members)).encode()).hexdigest()
+            identity = (batch_id, task_id, members)
+            if attribution is not None:
+                identity += (attribution,)
+            digest = hashlib.sha256(repr(identity).encode()).hexdigest()
             replacement = Batch("train-eject-" + digest[:32], batch.project_id,
                 batch.repository_id, batch.target_ref, intent=batch.intent, created_at=self.clock())
             async with self.db._engine.connect() as conn:
@@ -763,15 +939,20 @@ class TrainControls:
             current = await load_delivery_requests(self.db, list(requests),
                 repository_id=batch.repository_id, target_ref=batch.target_ref, reduced=True)
             return (current == requests and await unchanged()
-                    and await service.eligible(batch, frozen))
+                    and await service.eligible(batch, frozen)
+                    and (attribution is None or (
+                        await dependency_edges() == edges and await verify_failure()
+                        and await service.repair_authorized(batch, frozen, candidate))))
 
         await service.store.eject(batch, task_id, replacement, members, trees=trees,
-            authorize=authorize, dry_run=dry_run, operator_id=operator_id, reason=reason)
+            authorize=authorize, dry_run=dry_run, operator_id=operator_id, reason=reason,
+            dependent_ids=removed - {task_id}, target_failure=attribution)
         return {
             "outcome": "preview" if dry_run else "ejected", "project_id": batch.project_id,
             "batch_id": batch_id, "task_id": task_id, "dry_run": dry_run,
             "replacement_batch_id": replacement.id if replacement else None,
             "members": [m.task_id for m in members], "candidate_sha": candidate,
+            "ejected_members": sorted(removed),
             "target_sha": snapshot.target_oid, "target_ref": batch.target_ref,
             "intent": batch.intent if dry_run else "aborted",
         }
