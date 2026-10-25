@@ -923,9 +923,12 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
     service = MessageDeliveryService(engine, lambda: handler.config.messages, bus)
     service.start()
     try:
-        await asyncio.wait_for(idle_pass.wait(), 2)
-        accepted = await post(handler)
-        await asyncio.wait_for(nudged.wait(), 2)
+        # Deadlock guard for real database I/O under CI load, not a latency
+        # budget. A missing committed-input wake still stalls for the 1h interval.
+        async with asyncio.timeout(30):
+            await idle_pass.wait()
+            accepted = await post(handler)
+            await nudged.wait()
         assert seen == [accepted["supervisor_message_id"]]
         if state != "running":
             lens.ensure_started.assert_awaited_once_with(
