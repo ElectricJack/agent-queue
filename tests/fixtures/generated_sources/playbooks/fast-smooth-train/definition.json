@@ -3,15 +3,36 @@
     "commands": {},
     "profiles": {}
   },
-  "compiled_at": "2026-10-22T16:04:04.212424Z",
+  "compiled_at": "2026-10-25T04:50:04.828387Z",
   "compiler_build": "playbook-v2-compiler/1",
   "id": "fast-smooth-train",
   "integration_policy": {
     "max_wait_seconds": 3600,
     "tables": {},
     "train": {
+      "bisection": {
+        "enabled": false,
+        "max_probes": 3
+      },
       "conflict": "repair",
       "idle": "merge",
+      "packing": {
+        "age_per_hour": 1.0,
+        "enabled": false,
+        "green_weight": 100,
+        "hotness_window_batches": 50,
+        "max_age_score": 80,
+        "max_members": 4,
+        "merge_clean_weight": 40,
+        "nonhot_weight": 10,
+        "oldest_slot_after_seconds": 7200,
+        "pass_rate_min_checks": 20,
+        "pass_rate_neutral": 5,
+        "pass_rate_weight": 10,
+        "policy_version": 1,
+        "signature_size_weight": 10,
+        "signature_version": 1
+      },
       "red": "repair",
       "wait_seconds": 30
     },
@@ -24,11 +45,11 @@
       "id": "observe-policy",
       "name": "observe-policy",
       "source": {
-        "end_line": 30,
+        "end_line": 101,
         "excerpt": "## Rule: observe-policy",
         "heading": "Rule: observe-policy",
         "path": "fast-smooth-train.md",
-        "start_line": 30
+        "start_line": 101
       },
       "trigger": {
         "event_type": "integration.readiness_changed"
@@ -39,17 +60,17 @@
   "scope": {
     "type": "system"
   },
-  "source_hash": "sha256:850a53de226ec1e9343e833c5054eab726cf86cedfbd978d65af724509208088",
+  "source_hash": "sha256:6be5c462268830e2a2dfb38dbc423150a4b2bdaabd43ac562f56bc469eb0f559",
   "steps": {
     "completed": {
       "outcome": "completed",
       "rule": "observe-policy",
       "source": {
-        "end_line": 30,
+        "end_line": 101,
         "excerpt": "## Rule: observe-policy",
         "heading": "Rule: observe-policy",
         "path": "fast-smooth-train.md",
-        "start_line": 30
+        "start_line": 101
       },
       "title": "Completed",
       "type": "terminal"

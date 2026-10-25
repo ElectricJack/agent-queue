@@ -14,9 +14,9 @@ triggers:
 Optional authoring policy; disabled until the operator explicitly enables it
 and `reports.hourly.enabled`. It is never a required readiness playbook.
 Eligible digest windows already contain a frozen brief, visibility snapshot,
-deadline and deterministic fallback before either rule runs. A completion event
+deadline and a one-line no-report fallback before either rule runs. A completion event
 never wakes the supervisor. Request reservations cap author turns and do not
-backlog them. A missing playbook uses immediate deterministic delivery.
+backlog them. A missing playbook uses an immediate one-line no-report notice.
 
 The only author is the assigned supervisor-global session. No LLM step, worker
 task, arbitrary Discord post or model fallback belongs to this policy. It reads
@@ -26,6 +26,15 @@ expected_version, text and evidence_refs. Explain what completed, what was
 published and what delivered to main separately. Every shipment claim needs a
 delivery reference; label inference and pending/unknown delivery. Omitted facts
 are omissions, not proof that nothing happened. Prior narrative is context only.
+The brief is INPUT ONLY. Write a short first-person developer-style progress
+update for Jack in plain English, covering what changed since the last update,
+highlights, blocked/needs you, and next steps. Prioritize meaningful changes and
+human decisions, combine related work and deduplicate noise. Ground progress
+and next steps in the evidence; label unknowns. Never relay the brief or
+concatenate its facts. The daemon delivers the submission, never the brief.
+Describe what changed for Jack without internal IDs or train, batch or loop
+jargon unless he must act on one. When blocked, ask the exact question he needs
+to answer. A window with no new facts stays silent even if work is still active.
 Do not initiate code work for a report. The server inserts links and the marker,
 neutralizes mentions, and enforces the digest budget (600 characters including
 links and marker). Deadline or pump claim freezes the winner; there is one
@@ -47,5 +56,5 @@ logical post and no later edit.
 
 Both rules end on `completed`; `rejected` or `runtime_error` fail visibly.
 No inline retry or author fallback exists. The next minute reconciles durable
-state. The existing digest pump delivers deterministic text at the deadline,
+state. The existing digest pump sends only a one-line no-report notice at the deadline,
 behind escalations and the transport rate guard.

@@ -256,6 +256,18 @@ class TestGoldenAssembly:
         assert "content hash" in body
         assert "Do not wait for approval" in body
 
+    @pytest.mark.parametrize("bounded", [False, True])
+    async def test_followup_task_does_not_get_revision_publication_guidance(
+        self, db, config, task, bounded
+    ):
+        await db.set_task_meta(task.id, "review_response", {
+            "review_id": "rev-approved", "revision": 2, "task_kind": "followup",
+        })
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=bounded)
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Review revision publication" not in body
+        assert "aq review submit --review-id rev-approved" not in body
+
     async def test_task_section_omits_subtasks_block_when_none_exist(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["task"]
