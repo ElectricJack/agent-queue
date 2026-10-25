@@ -111,3 +111,38 @@ Result: 297 passed in 63.73 seconds, with 14 dependency deprecation warnings.
 Ruff on changed Python files, `git diff --check`, the selected command audit
 digest check, bookkeeping assembly check and recorded-artifact check also pass.
 The full CI sweep and the supervisor's live CPU soak remain separate checks.
+
+## Command metadata repair
+
+CI run `40224005169` on `77c5c4679` failed all eight default shards on
+command catalogue and frozen descriptor evidence. The slow arm also found
+stale command docs and the packaged catalogue. The preceding size repair had
+shortened the train handler's docstring, whose first line supplies its public
+command description. This unintentionally changed transport metadata.
+
+The repair restores the original description in one physical line, preserving
+the size budget, single-flight behavior and existing golden evidence. The
+producer audit digest was refreshed after reviewing the documentation-only
+change. Running `scripts/regenerate-generated.sh` then reproduced all generated
+catalogue and documentation bytes without changes. No expected hashes, caps or
+test assertions were changed. The branch includes `origin/dev` through
+`16bc0b6cc`, merged in `e9a1d4ac9`; the guarded pull reported a client timeout
+after the server completed the merge, so it was not retried.
+
+Focused validation (with the disposable PostgreSQL service on port 5534):
+
+```bash
+aq test tests/test_command_descriptors.py tests/test_command_docs.py \
+  tests/test_cli_startup_offline.py::test_packaged_command_catalogue_matches_live_discovery \
+  tests/test_generated_command_contracts.py::test_builtin_audit_is_complete \
+  tests/test_integration_size.py tests/test_integration_train.py -x
+aq test tests/test_generated_artifacts.py::test_committed_generated_files_match_regeneration \
+  -m slow -x
+```
+
+Results: 327 passed in 93.61 seconds for the focused run; the exact slow drift
+check passed in 50.34 seconds. Both runs reported 14 dependency deprecation
+warnings. Ruff, `git diff --check` and the selected producer audit digest check
+also passed. Logs: `/tmp/prime-glacier-final-focused.log` and
+`/tmp/prime-glacier-final-generated.log`. Live CPU acceptance remains assigned
+to the supervisor as recorded above.

@@ -655,7 +655,7 @@ class IntegrationCommandsMixin:
         return {"success": True, **await reconciler.tick(time.time() if now is None else now)}
 
     async def _cmd_integration_train_tick(self, args: dict) -> dict:
-        """Daemon-only: report background target visits and rate-limit stall inventories."""
+        """Start one level-triggered visit per idle target (git_first: active)."""
         principal = current_principal()
         if principal is None or principal.kind is not PrincipalKind.SERVICE:
             return _failure("unauthorized", "only the daemon may tick the integration train")
