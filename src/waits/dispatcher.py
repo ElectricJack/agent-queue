@@ -115,7 +115,10 @@ class WakeDispatcher:
                 return {"success": True, "committed": False}
             observed = fresh.observation
         else:
-            observed = await self.registry.observe(conn, cond)
+            try:
+                observed = await self.registry.observe(conn, cond)
+            except WaitError:
+                return {"success": True, "committed": False}
         if observed.state == "unsatisfied":
             return {"success": True, "committed": False}
         outcome = "satisfied" if observed.state == "satisfied" else "source_unavailable"

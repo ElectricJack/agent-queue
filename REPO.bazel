@@ -1,0 +1,2 @@
+# npm's developer installs are never Bazel packages or action inputs.
+ignore_directories(["**/node_modules"])

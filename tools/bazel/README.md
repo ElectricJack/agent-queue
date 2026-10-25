@@ -2,7 +2,7 @@
 
 This is the first Bazel substrate from the approved Bazel-for-AQ plan. It does
 not switch `aq test`, CI, code generation or dashboard builds to Bazel. H2 owns
-the general isolated launcher; B3 owns the complete npm/pnpm dependency graph.
+the general isolated launcher. The dashboard shadow graph is described below.
 
 ## Supported execution platform and pins
 
@@ -100,3 +100,147 @@ libraries, archive corruption and unsupported ABI.
 Without `AQ_BAZEL_SMOKE`, the two acceptance cases explicitly skip; that is not
 evidence of toolchain acceptance. This smoke does not start PostgreSQL or tmux
 sessions and does not establish parity for the full application test suite.
+
+## B2 deterministic generator actions
+
+`//checks:generated` regenerates the tracked projections in a writable action
+scratch tree and compares filenames and bytes with the checked-in outputs.
+It also compares the ignored TypeScript sources with a separate invocation of
+the locked legacy generator. The reference runs the offline Python client script
+and umbrella `--check`, then requires an empty Git diff. Recorded playbooks keep
+their approved inputs and provenance; generation never reauthors approval data.
+
+The public `//tools/bazel:typescript` directory artifact contains
+`packages/aq-ts-client/src/**`. B3 can depend on its `DefaultInfo` files or
+`OutputGroupInfo.tree`; `OutputGroupInfo.manifest` provides relative filenames
+and SHA-256 digests. It depends on the generated OpenAPI artifact, locked Node,
+and the hash-verified npm closure. It does not install packages or mutate the
+shared editable Python environment. Python generation uses the pinned wheel
+closure, including openapi-python-client and Ruff, and declared native tools.
+
+`generator_inputs.bzl` follows transitive Python imports, discovery registries,
+scanned test/resources, templates, locks and recorded inputs. Its drift check
+rejects an outdated inventory. After intentional input/lock changes, run:
+
+```bash
+python tools/bazel/generator_inputs.py --write
+```
+
+`generator_npm.lock.json` is a derived subset of the authoritative root npm lock,
+including nested dependency locations. Repository resolution checks it against
+that lock and downloads exact integrity-verified archives, without a package
+solver or lifecycle scripts. This is only the generator closure; B3 owns the
+dashboard dependency graph described below.
+
+On a shared AQ box, admit the two-root acceptance through the existing gate:
+
+```bash
+POSTGRES_TEST_DSN=<disposable-test-dsn> \
+AQ_BAZEL_GENERATORS=/absolute/path/to/bazel-8.3.1 \
+AQ_BAZEL_GENERATOR_EVIDENCE=/absolute/path/to/evidence \
+aq test tests/test_bazel_manifest.py -k clean_root_generator -p no:xdist -s
+```
+
+Each root has a fresh HOME, repository cache and output base, consumes the same
+source snapshot, resolves in lockfile error mode and runs
+`bazel test --config=ci --jobs=1 //checks:generated`. Logs, BEP files and both
+normalized TypeScript manifests are retained in the evidence directory. Missing
+opt-in settings skip acceptance explicitly. Actions clear inherited credentials
+and select declared tools; broader H2 launch/network isolation remains separate.
+
+## B3 dashboard shadow checks
+
+`//checks:dashboard` mirrors `npm --prefix dashboard run typecheck` and
+`npm --prefix dashboard run build`. It compiles the existing test sources but
+does not add a Vitest execution gate. The `@aq/ts-client` workspace consumes
+`//tools/bazel:typescript`, so dashboard actions cannot use ignored generated
+sources from a developer checkout. npm remains the reference backend.
+
+The root `package-lock.json` is authoritative. `import_npm.py` is the pinned,
+versioned importer: it projects npm's installed-location graph to pnpm v9 lock
+syntax without registry queries or version resolution. This preserves aliases,
+nested versions, optional dependencies, peer edges, archive URLs and SHA-512
+integrities. Conflicting contexts or unsupported archives fail closed. The
+committed projection also records every npm installed location and the npm
+lock's SHA-256. A trial with stock pnpm 10.11.0 changed the `react-is` alias from
+19.2.8 to 19.3.1, dropped nested semver 7.7.4, and required registry metadata even
+for an offline import. This versioned, solver-free projector replaces that stock
+import step to meet the approved package/version/integrity equivalence contract.
+
+After an intentional npm dependency update, run:
+
+```bash
+python tools/bazel/import_npm.py --write
+python tools/bazel/lock.py --render-module
+/path/to/bazel-8.3.1 mod deps --lockfile_mode=update
+python tools/bazel/import_npm.py
+```
+
+`npm_translate_lock` consumes the reviewed projection with updates and lifecycle
+hooks disabled. The adjacent workspace file explicitly permits no lifecycle
+builds. All archive downloads retain npm's integrity checks. Actions copy declared
+sources into writable scratch, reconstruct npm's locked installed locations from
+declared package artifacts (including hoisted types), and use pinned
+Node and native tools with an allowlisted environment. Ambient `NODE_PATH`,
+`NODE_OPTIONS`, user npm configuration and ancestor `node_modules` are excluded.
+The declared dashboard inputs include scenario/layout files and environment
+configuration: Tailwind scans beyond the TypeScript project, so omitting a
+scenario class changes CSS and the resulting Vite chunk hashes.
+
+Admit the complete two-root comparison through AQ's test slot:
+
+```bash
+POSTGRES_TEST_DSN=<disposable-test-dsn> \
+AQ_BAZEL_DASHBOARD=/absolute/path/to/bazel-8.3.1 \
+AQ_BAZEL_DASHBOARD_EVIDENCE=/absolute/path/to/new-evidence-directory \
+aq test tests/test_bazel_manifest.py -k clean_root_dashboard_acceptance -p no:xdist -s
+```
+
+This retains two independent checkouts, HOME/repository/output roots, BEP and
+logs. Both run dashboard checks with poisoned ambient Node paths, consuming the
+B2 generator artifacts.
+The first also installs directly from the npm lock and runs the existing npm
+commands using the pinned Node 24 archive. TypeScript filename/byte manifests
+and Vite output manifests must match across both Bazel roots and npm. Missing
+opt-in settings explicitly skip this acceptance, rather than establishing parity.
+
+## V1 observational impact audit
+
+Use the project environment with the pinned `pytest-impacted` dependency and the
+locked Bazel executable to compare an ancestor base and an exact candidate head:
+
+```bash
+python scripts/bazel/impact.py --base BASE_SHA --head HEAD_SHA \
+  --bazel /absolute/path/to/bazel-8.3.1 --suite default_1 \
+  --output /absolute/path/to/impact.json
+```
+
+Repeat `--suite` for each manifest suite/marker arm, or use `dashboard` and
+`generated` for the non-Python checks. The audit creates clean local clones of
+both commits, checks their identities before and after queries, and never fetches
+Git refs or executes tests. A dirty caller checkout does not supply BUILD files.
+Each signature binds both commits, graph inputs and edges, dependency locks,
+generator registry inputs/version, selection rules, marker and audit tool version.
+Query diagnostics sit outside the deterministic signature digest.
+
+Reports retain per-path owners, reverse dependencies, static/mandatory target
+obligations and differences. Missing query/static evidence, unowned paths,
+unresolved dynamic loads/resources or missing obligations widen the entire
+requested suite and set `promotion_blocked`. Exit 0 means the observational audit
+is complete, 1 means evidence requires widening, and 2 means the audit was refused.
+These signatures do not change test selection, required checks or train eligibility.
+
+The real-query mutation matrix uses disposable pinned repositories and a
+self-contained graph with a generator output and unrelated test targets:
+
+```bash
+POSTGRES_TEST_DSN=<disposable-test-dsn> \
+AQ_BAZEL_IMPACT=/absolute/path/to/bazel-8.3.1 \
+AQ_BAZEL_IMPACT_EVIDENCE=/absolute/path/to/evidence \
+aq test tests/test_bazel_manifest.py -k impact
+```
+
+It covers fixture, prompt, migration, package initializer and generator input
+edits, plus deletions and renames using both old and new paths. Without the Bazel
+opt-in, the real-query cases explicitly skip; fast tests still verify exact-head
+isolation, deterministic identities and conservative fallback behavior.
