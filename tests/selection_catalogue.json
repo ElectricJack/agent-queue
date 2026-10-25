@@ -3706,7 +3706,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:a20d9a92dd9368bb4d7485b39c32559442f4ea3d26bea22e78a931ee0f146585",
+      "digest": "sha256:559c750b90172ed33154567ec0b3f032058c5ccc99844687d52f403b17270eed",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3719,6 +3719,7 @@
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
+        "src.database.queries.hierarchy_queries",
         "src.database.queries.ingest_hold",
         "src.database.queries.task_queries",
         "src.database.tables",
