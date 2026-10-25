@@ -11427,3 +11427,86 @@ async def test_root_pr_recovery_changed_head_uses_current_budget(world, earlier)
     assert history["heads"] == (["f" * 40, source] if earlier == "root_pr" else [source])
     assert (await train.visit(MAIN, seal_now=True)).state == "idle"
     assert (await world.db.get_task_meta("root", RECOVERY_KEY)) == history
+
+
+@pytest.mark.parametrize("change", ["restart", "default_advance", "source_rewrite", "hold",
+                                    "git_unavailable"])
+async def test_retained_epic_fixer_publication_refreshes_authority_after_restart(
+    collected_epic, tmp_path, change,
+):
+    from src.integration.fixer_runtime import DaemonFixerRuntime
+    from src.integration.fixers import BatchFixerService
+    from src.integration.lock import PublishWithdrawn
+    from src.integration.stacked_branches import EpicRefresh
+    from src.models import SessionRecord
+    from tests.test_integration_fixers import principal_for
+
+    case = collected_epic
+    await collect_epic(case)
+    default = commit(case.origin.clone, {"new-default.txt": "first advance\n"}, base=case.base)
+    git(case.origin.clone, "push", "origin", f"{default}:main")
+    started = await EpicRefresh(case.db).start("epic")
+    visit = await case.train.visit(case.target)
+    assert visit.state == "testing" and visit.batch_id == started["batch_id"], visit
+    batch_id, candidate = visit.batch_id, visit.candidate_sha
+    ref = candidate_ref(batch_id)
+    path = tmp_path / "fixer"
+    git(case.origin.clone, "worktree", "add", "-b", ref[11:], str(path), candidate)
+    fixed = commit(path, {"tests/test_fix.py": "assert True\n"})
+
+    # Construct the new daemon's production lanes, with no previous visit cache.
+    batches = DatabaseBatches(case.db)
+    lanes = DaemonLanes(case.train.lane_for.orchestrator, batches=batches)
+    runtime = DaemonFixerRuntime(lanes.orchestrator, lanes=lanes)
+    runtime.start = AsyncMock(return_value={"work_dir": str(path)})
+    service = BatchFixerService(case.db, runtime)
+    result = await service.allocate(batch_id, target_ref=ref, head_sha=candidate,
+                                    authorize=AsyncMock(return_value=True))
+    bound = (await case.db.get_integration_batch(batch_id))["fixer_state"]
+    session = SessionRecord(
+        id=result["session_id"], project_id="p", profile_id="fixer", harness="codex",
+        provider="fake", name=bound["session_name"], lifecycle="named", work_dir=str(path),
+        epoch="before-restart", instance_token=bound["instance_token"], started_at=1,
+        state="running", desired_state="running",
+    )
+    await case.db.create_session(session)
+    if change == "default_advance":
+        latest = commit(case.origin.clone, {"later.txt": "second advance\n"}, base=default)
+        git(case.origin.clone, "push", "origin", f"{latest}:main")
+    elif change == "source_rewrite":
+        git(case.origin.clone, "push", "--force", "origin", f"{case.base}:main")
+    elif change == "hold":
+        await case.db.add_task_label("epic", "hold:operator")
+    elif change == "git_unavailable":
+        observed = await snapshot(case.world, case.target)
+        lanes.truth.snapshot = AsyncMock(return_value=replace(observed,
+            observation=replace(observed.observation, error="snapshot_git_error:unavailable")))
+    assert batches._refresh_snapshots == {}
+    before = await case.db.get_integration_batch(batch_id)
+    if change in {"source_rewrite", "hold", "git_unavailable"}:
+        error = GitError if change == "git_unavailable" else PublishWithdrawn
+        reason = ("Git evidence is unavailable" if change == "git_unavailable"
+                  else "source or policy authority changed")
+        with pytest.raises(error, match=reason):
+            await service.command(principal_for(session), action="push")
+        with pytest.raises(error, match=reason):
+            await runtime.rebind_authority(before, operator_id="human:local-operator",
+                                           reason="restart", dry_run=False)
+        assert git(case.origin.url, "rev-parse", ref) == candidate
+    else:
+        preview = await runtime.rebind_authority(before, operator_id="human:local-operator",
+                                                 reason="restart")
+        assert preview["outcome"] == "preview"
+        assert (await case.db.get_integration_batch(batch_id))["fixer_state"] == bound
+        rebound = await runtime.rebind_authority(before, operator_id="human:local-operator",
+                                                 reason="restart", dry_run=False)
+        assert rebound["outcome"] == "rebound"
+        published = await service.command(principal_for(session), action="push")
+        assert published["head_sha"] == fixed
+        assert git(case.origin.url, "rev-parse", ref) == fixed
+        after = await case.db.get_integration_batch(batch_id)
+        assert after["repair_attempt_count"] == before["repair_attempt_count"]
+        assert after["fixer_state"]["session_id"] == session.id
+        assert after["fixer_state"]["starting_sha"] == candidate
+    assert git(path, "rev-parse", "HEAD") == fixed
+    assert batches._refresh_snapshots == {}

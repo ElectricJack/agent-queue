@@ -52,6 +52,21 @@ def integration_batch_fix(ctx, action):
     _execute(ctx, "integration_batch_fix", {"action": action})
 
 
+@integration.command("rebind-batch-authority")
+@click.argument("batch_id")
+@click.option("--reason", default="", help="Required audit reason when applying.")
+@click.option("--apply/--dry-run", default=False)
+@click.pass_context
+@_handle_errors
+def integration_rebind_batch_authority(ctx, batch_id, reason, apply):
+    """Refresh a retained fixer's publication authority after restart (supervisor)."""
+    if apply and not reason.strip():
+        raise click.UsageError("--apply requires --reason")
+    _execute(ctx, "integration_rebind_batch_authority", {
+        "batch_id": batch_id, "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("supersede-completion")
 @click.argument("task_id")
 @click.option("--project", "project_id", required=True)

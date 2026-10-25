@@ -1131,6 +1131,54 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_rebind_batch_authority": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_rebind_batch_authority",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', 'unknown batch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', refusal)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', 'apply requires a nonblank reason')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', 'the in-place batch fixer is not active')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await service.runtime.rebind_authority(batch, operator_id=operator, reason=request.reason, dry_run=request.dry_run)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', str(exc))"
+      }
+    ],
+    "review_notes": "Local operator or live owning project/global supervisor only. Preview rechecks fresh Git evidence and retained fixer/session binding. Apply requires an audit reason and records proof without moving refs, resetting work or granting future publication authority. Every refusal uses the explicit failure envelope.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:8a8b3f276e55dfe19c0fb0d6549a5508d0b25477ea7801a1a2b728193b42d135",
+    "tests": [
+      "tests/test_integration_fixers.py::test_rebind_authority_control_checks_live_owning_supervisor",
+      "tests/test_integration_train_sources.py::test_retained_epic_fixer_publication_refreshes_authority_after_restart",
+      "tests/test_cli_integration.py::test_rebind_batch_authority_forwards_preview_and_reason"
+    ]
+  },
   "integration_reconcile_expired_mutation": {
     "argument_reads_diagnostic_only": [],
     "denial_reason": null,
