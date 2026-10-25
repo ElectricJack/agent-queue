@@ -253,9 +253,9 @@ SUPERVISOR_PATROL_PROMPT = (
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
 #: scope at launch; the worker claims its own work in a loop.  ``{}`` fields:
-#: project_name, profile_id, message_wait_guidance.
+#: project_id, profile_id, message_wait_guidance.
 POOL_BOOTSTRAP_PROMPT = (
-    "You are a pool worker for project {project_name} (profile {profile_id}).\n"
+    "You are a pool worker for project {project_id} (profile {profile_id}).\n"
     "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
     "work, then `aq task close --outcome pass|fail --summary \"...\" --claim-next --wait 60`.\n"
     "On `no_ready_work`, claim again. On `session_exhausted` or `drain_requested`, exit 0.\n"
@@ -581,7 +581,6 @@ class SessionSpecBuilder:
         """
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
-        project_name = getattr(project, "name", "") or project_id
         from src.waits.policy import enabled as waits_enabled
 
         message_wait_guidance = (
@@ -591,7 +590,7 @@ class SessionSpecBuilder:
             "preserve it and end the turn awaiting the supervisor's inbox delivery."
         )
         bootstrap = prompt if prompt is not None else POOL_BOOTSTRAP_PROMPT.format(
-            project_name=project_name, profile_id=profile_id,
+            project_id=project_id, profile_id=profile_id,
             message_wait_guidance=message_wait_guidance,
         )
         extra_env = {
