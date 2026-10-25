@@ -158,6 +158,40 @@ class WaitSourceListener:
         if not isinstance(result, dict) or result.get("success") is not True:
             raise ListenerUnavailable(f"wait dispatch refused: {result}")
 
+    async def _unobserved_prefix(self, conn, position, watermark):
+        """Retire only a contiguous irrelevant prefix, under the graph fence.
+
+        CI checks have no consumer side effects without a subscription. Pool
+        snapshots only invalidate resource waits. In particular, task retirement
+        and provider recovery must still run even when no wait matches directly.
+        Broad resource matching is conservative: dispatch rechecks canonical scope.
+        """
+        subscribed = select(wait_records.c.id).where(
+            wait_records.c.outcome == "pending",
+            wait_records.c.verification_state == "verified",
+            wait_records.c.source_watermark_seq < wait_source_events.c.seq,
+            or_(
+                (wait_records.c.source_key == wait_source_events.c.source_key)
+                & (wait_records.c.source_generation == wait_source_events.c.source_generation),
+                wait_source_events.c.source_key.startswith("resource_invalidation:pool:")
+                & (wait_records.c.condition_kind == "resource"),
+            ),
+        ).exists()
+        rows = (await conn.execute(select(
+            wait_source_events.c.seq, wait_source_events.c.source_key,
+            subscribed.label("subscribed"),
+        ).where(
+            wait_source_events.c.seq > position, wait_source_events.c.seq <= watermark,
+        ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings()
+        prefix = []
+        for row in rows:
+            if row["subscribed"] or not row["source_key"].startswith((
+                "ci_check:", "resource_invalidation:pool:",
+            )):
+                break
+            prefix.append(row["seq"])
+        return prefix
+
     @admission_pass("service.scheduler.reader")
     async def drain(self, watermark):
         """Called only at the command boundary, with a prefetched fenced bound."""
@@ -206,28 +240,30 @@ class WaitSourceListener:
                 # not dispatch a different event with the wrong progress heads.
                 if cursor["last_seq"] != position:
                     continue
-                # Commit each event with its cursor before reacquiring the
-                # graph fence. Renewal cadence must never define lock scope.
-                # One slow event retains the lease budget and rolls back whole.
+                # Relevant events commit separately; irrelevant prefixes retire
+                # in bounded batches. Renewal cadence never defines lock scope.
                 async with asyncio.timeout(self.lease_seconds):
-                    rows = (await conn.execute(select(wait_source_events).where(
-                        wait_source_events.c.seq > cursor["last_seq"],
-                        wait_source_events.c.seq <= watermark,
-                    ).order_by(wait_source_events.c.seq).limit(1))).mappings().all()
-                    if not rows:
-                        return count
-                    event = rows[0]
-                    await self._dispatch(conn, dict(event))
+                    processed = await self._unobserved_prefix(conn, cursor["last_seq"], watermark)
+                    if not processed:
+                        rows = (await conn.execute(select(wait_source_events).where(
+                            wait_source_events.c.seq > cursor["last_seq"],
+                            wait_source_events.c.seq <= watermark,
+                        ).order_by(wait_source_events.c.seq).limit(1))).mappings().all()
+                        if not rows:
+                            return count
+                        event = rows[0]
+                        await self._dispatch(conn, dict(event))
+                        processed = [event["seq"]]
                     if cursor["lease_expires_at"] <= self.clock():
                         raise LeaseLost("wait source lease expired during dispatch")
                     await conn.execute(update(wait_source_events).where(
-                        wait_source_events.c.seq == event["seq"],
+                        wait_source_events.c.seq.in_(processed),
                     ).values(dispatched_at=self.clock()))
                     await conn.execute(update(wait_listener_cursors).where(
                         wait_listener_cursors.c.listener_key == "source",
                         wait_listener_cursors.c.lease_owner == self.owner,
-                    ).values(last_seq=event["seq"], updated_at=self.clock()))
-            count += 1
+                    ).values(last_seq=processed[-1], updated_at=self.clock()))
+            count += len(processed)
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
 
