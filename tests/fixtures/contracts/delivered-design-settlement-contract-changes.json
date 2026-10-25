@@ -1,0 +1,599 @@
+{
+  "task": "azure-apex-59",
+  "source_base": "c9655f3aae5de2327b39375879051b99a3eeed5c",
+  "reason": "Add explicit evidence-backed already-delivered design settlement to task_batch_propose; preserve every earlier frozen catalogue and transport definition.",
+  "previous_cli_catalogue_sha256": "9d09d85bd62eccd32badd6438bf305d63ebe2fc530d724e9b19e18b3802e44ea",
+  "cli_catalogue_sha256": "34c0efa240549bccc20f268398006fe46eb4e95e948e3b0487d6cc2b8a6e06b7",
+  "previous_definition": {
+    "name": "task_batch_propose",
+    "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "Project to propose into (defaults to the active one)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the proposal came from (e.g. a spec path or playbook id). Recorded as provenance on every task the commit creates."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Validate and return the diff without storing a proposal."
+        },
+        "edits": {
+          "type": "array",
+          "description": "Existing task edits and controls. Live control changes are refused.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "section_anchor": {
+                "type": "string"
+              },
+              "primary_outcome": {
+                "type": "string"
+              },
+              "acceptance": {
+                "description": "Required leaf acceptance criteria or validation commands.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "constraints": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "owned_modules": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "size": {
+                "type": "string",
+                "enum": [
+                  "s",
+                  "m",
+                  "l"
+                ]
+              },
+              "placement": {
+                "type": "string",
+                "enum": [
+                  "child",
+                  "operational_root"
+                ]
+              },
+              "delivery_targets": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "intelligence_class": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "pause",
+                  "resume",
+                  "block",
+                  "archive"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "description": "A valid state transition; use action for pause/resume/archive."
+              }
+            },
+            "required": [
+              "task_id"
+            ]
+          }
+        },
+        "remove_edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "dep_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          },
+          "description": "Typed edges to remove: from, to, dep_type (default blocks)."
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "note",
+                  "progress"
+                ]
+              }
+            },
+            "required": [
+              "task_id",
+              "body"
+            ]
+          },
+          "description": "Append comments to existing ids or tempIds. Author comes from the caller."
+        },
+        "tasks": {
+          "type": "array",
+          "description": "Tasks to create with temporary ids; optional for edit-only change sets.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tempId": {
+                "type": "string",
+                "description": "Caller-chosen id, unique within this batch, that edges reference."
+              },
+              "parent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Parent tempId or existing id; null for root."
+              },
+              "task_type": {
+                "type": "string",
+                "description": "Task kind hint for routing."
+              },
+              "title": {
+                "type": "string",
+                "description": "Task title."
+              },
+              "description": {
+                "type": "string",
+                "description": "Task description (required, may be empty)."
+              },
+              "priority": {
+                "type": "integer",
+                "description": "Priority (default 100)."
+              },
+              "deliverables": {
+                "type": "array",
+                "description": "Plan-derived implementation contract for this proposed task. Target shapes: file -> a path under the worktree; test -> a test module path, or the command line that runs the suites (met by a matching recorded --test); command -> a command line (met by a matching recorded --command/--test; '<placeholder>' matches any arguments) or a single identifier found in the repo; flag/registration -> an identifier found in the repo; review -> spec, plan, other or any (met by a document review the task submitted with review_submit).",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "file",
+                        "test",
+                        "command",
+                        "flag",
+                        "registration",
+                        "review"
+                      ]
+                    },
+                    "target": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "target"
+                  ]
+                }
+              },
+              "intelligence_class": {
+                "type": "string",
+                "description": "Intelligence-class hint for the router. A profile is refused (routing.choice_forbidden)."
+              }
+            },
+            "required": [
+              "tempId",
+              "title",
+              "description"
+            ]
+          }
+        },
+        "edges": {
+          "type": "array",
+          "description": "Dependency edges between the batch's tasks.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "Source tempId, or an existing task id."
+              },
+              "to": {
+                "type": "string",
+                "description": "Target tempId, or an existing task id."
+              },
+              "dep_type": {
+                "type": "string",
+                "description": "Dependency type (default 'blocks')."
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          }
+        }
+      },
+      "required": [
+        "source"
+      ]
+    }
+  },
+  "definition": {
+    "name": "task_batch_propose",
+    "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. For an already delivered design, explicit no_op records delivered evidence without creating work; only its live ingester may settle an empty change set. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "description": "Project to propose into (defaults to the active one)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the proposal came from (e.g. a spec path or playbook id). Recorded as provenance on every task the commit creates."
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Validate and return the diff without storing a proposal."
+        },
+        "no_op": {
+          "type": "object",
+          "description": "Design-ingest settlement when every approved goal is already delivered; requires no change operations.",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "delivered_evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Merged PR or commit citations checked by the ingester."
+            }
+          },
+          "required": [
+            "reason",
+            "delivered_evidence"
+          ],
+          "additionalProperties": false
+        },
+        "edits": {
+          "type": "array",
+          "description": "Existing task edits and controls. Live control changes are refused.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "section_anchor": {
+                "type": "string"
+              },
+              "primary_outcome": {
+                "type": "string"
+              },
+              "acceptance": {
+                "description": "Required leaf acceptance criteria or validation commands.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "constraints": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "owned_modules": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "size": {
+                "type": "string",
+                "enum": [
+                  "s",
+                  "m",
+                  "l"
+                ]
+              },
+              "placement": {
+                "type": "string",
+                "enum": [
+                  "child",
+                  "operational_root"
+                ]
+              },
+              "delivery_targets": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "intelligence_class": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "parent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "pause",
+                  "resume",
+                  "block",
+                  "archive"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "description": "A valid state transition; use action for pause/resume/archive."
+              }
+            },
+            "required": [
+              "task_id"
+            ]
+          }
+        },
+        "remove_edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "dep_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          },
+          "description": "Typed edges to remove: from, to, dep_type (default blocks)."
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "note",
+                  "progress"
+                ]
+              }
+            },
+            "required": [
+              "task_id",
+              "body"
+            ]
+          },
+          "description": "Append comments to existing ids or tempIds. Author comes from the caller."
+        },
+        "tasks": {
+          "type": "array",
+          "description": "Tasks to create with temporary ids; optional for edit-only change sets.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tempId": {
+                "type": "string",
+                "description": "Caller-chosen id, unique within this batch, that edges reference."
+              },
+              "parent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Parent tempId or existing id; null for root."
+              },
+              "task_type": {
+                "type": "string",
+                "description": "Task kind hint for routing."
+              },
+              "title": {
+                "type": "string",
+                "description": "Task title."
+              },
+              "description": {
+                "type": "string",
+                "description": "Task description (required, may be empty)."
+              },
+              "priority": {
+                "type": "integer",
+                "description": "Priority (default 100)."
+              },
+              "deliverables": {
+                "type": "array",
+                "description": "Plan-derived implementation contract for this proposed task. Target shapes: file -> a path under the worktree; test -> a test module path, or the command line that runs the suites (met by a matching recorded --test); command -> a command line (met by a matching recorded --command/--test; '<placeholder>' matches any arguments) or a single identifier found in the repo; flag/registration -> an identifier found in the repo; review -> spec, plan, other or any (met by a document review the task submitted with review_submit).",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "file",
+                        "test",
+                        "command",
+                        "flag",
+                        "registration",
+                        "review"
+                      ]
+                    },
+                    "target": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "target"
+                  ]
+                }
+              },
+              "intelligence_class": {
+                "type": "string",
+                "description": "Intelligence-class hint for the router. A profile is refused (routing.choice_forbidden)."
+              }
+            },
+            "required": [
+              "tempId",
+              "title",
+              "description"
+            ]
+          }
+        },
+        "edges": {
+          "type": "array",
+          "description": "Dependency edges between the batch's tasks.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "Source tempId, or an existing task id."
+              },
+              "to": {
+                "type": "string",
+                "description": "Target tempId, or an existing task id."
+              },
+              "dep_type": {
+                "type": "string",
+                "description": "Dependency type (default 'blocks')."
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          }
+        }
+      },
+      "required": [
+        "source"
+      ]
+    }
+  }
+}

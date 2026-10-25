@@ -21,7 +21,9 @@ from src.database.queries.continuation_queries import (
     wait_outcome_envelope,
 )
 from src.database.queries.wait_queries import register_wait
-from src.database.tables import continuations, messages, sessions, tasks, wait_records
+from src.database.tables import (
+    continuations, messages, sessions, tasks, wait_listener_cursors, wait_records, wait_source_events,
+)
 from src.models import Project, SessionRecord, Task
 from src.prime import PrimeRenderer
 from src.prime.budgets import CONTINUATION_COMMENTS_BYTES
@@ -34,23 +36,33 @@ from tests.test_wait_queries import NOW, Policy, owner
 
 
 @pytest.fixture
-async def env():
+async def env(request):
     db = Database(lease_dsn("wait-checkpoints"))
     await db.initialize()
     await db.create_project(Project(id="p", name="P"))
     scope = await owner(db)
     await db.create_task(Task(id="source", project_id="p", title="Source", description=""))
+    condition = {"kind": "task", "task_id": "source"}
+    message_wait = getattr(request, "param", None) == "message"
+    if message_wait:
+        question = await db.create_message(
+            project_id="p", from_kind="session", from_id="s", to_kind="session",
+            to_id="supervisor-p", thread_id="interview-q4", body="Question",
+        )
+        condition = {"kind": "message", "thread_id": question.thread_id,
+                     "after_seq": question.created_seq}
+    watermark = await db.wait_source_watermark()
     async with db._engine.begin() as conn:
         result = await register_wait(
             conn,
             scope=scope,
-            condition={"kind": "task", "task_id": "source"},
+            condition=condition,
             idempotency_key="hibernate",
             registry=build_registry(clock=lambda: NOW),
             policy=Policy(),
             decide_sleep=lambda *_: SleepDecision("hibernate", "duration", {}),
             now=NOW,
-            source_watermark=0,
+            source_watermark=watermark,
         )
         await conn.execute(
             insert(continuations).values(
@@ -660,6 +672,67 @@ async def test_outcome_during_stop_queues_only_after_park(env):
     assert (await intent(env))['resume_state'] == 'queued'
 
 
+@pytest.mark.parametrize("env", ["message"], indirect=True)
+@pytest.mark.parametrize("recipient", ["task", "session"])
+@pytest.mark.parametrize("ceiling", [False, True])
+async def test_held_thread_reply_resolves_hibernated_wait_and_queues_resume(
+    env, recipient, ceiling, monkeypatch,
+):
+    from src.waits.holding import message_is_held
+    from src.waits.source_sql import source_batch_statement
+    from tests.test_wait_dispatch import runtime
+
+    service = runtime(env, registry=build_registry(clock=lambda: NOW))
+    service.orch.wait_dispatcher = service._dispatcher
+    if ceiling:
+        service.orch.config.wait_policy.hibernation_enabled = True
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(sleep_decision="in_place"))
+            wait = (await conn.execute(select(wait_records))).mappings().one()
+            assert (await service.lifecycle.ceiling(
+                conn, {}, wait, now=NOW + 1800, handler=None))["suspended"]
+    await capture(env)
+    await park(env)
+    # Reproduce the live incident's CI/pool flood ahead of the reply. The
+    # operation bound is deterministic, rather than a loaded-box latency budget.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(source_batch_statement([
+            dict(source_key="ci_check:repo:sha:unit" if n % 2 else
+                 "resource_invalidation:pool:worker", generation=0, revision=str(n),
+                 outcome_ref=f"noise:{n}", payload={})
+            for n in range(2000)
+        ]))
+    dispatch = service.listener._dispatch
+
+    async def only_relevant(conn, event):
+        assert not event["source_key"].startswith(("ci_check:", "resource_invalidation:pool:"))
+        await dispatch(conn, event)
+
+    monkeypatch.setattr(service.listener, "_dispatch", only_relevant)
+    lease = AsyncMock(wraps=service.lease)
+    monkeypatch.setattr(service, "lease", lease)
+    reply = await env.db.create_message(
+        project_id="p", from_kind="session", from_id="supervisor-p", to_kind=recipient,
+        to_id="owner" if recipient == "task" else "s", thread_id="interview-q4", body="Answer",
+    )
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(messages.c.id).where(
+            messages.c.id == reply.id, message_is_held())) == reply.id
+    assert await service.listener.tick()
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert await conn.scalar(select(wait_listener_cursors.c.last_seq)) >= await conn.scalar(
+            select(wait_source_events.c.seq).where(
+                wait_source_events.c.outcome_ref == f"message:{reply.id}"))
+    assert lease.await_count <= 20
+    assert wait["outcome"] == "satisfied"
+    assert wait["result_ref"] == f"message:{reply.id}"
+    assert (await intent(env))["resume_state"] == "queued"
+    assert (await env.db.get_task("owner")).status.value == "RESUME_PENDING"
+    queued = await env.db.get_message(reply.id)
+    assert queued.delivered_at is None and queued.read_at is None
+
+
 async def test_live_service_resumes_parked_outcome_without_orchestrator_cycle(env):
     from tests.test_wait_dispatch import runtime
     from src.models import TaskStatus
@@ -736,6 +809,46 @@ async def test_resume_stall_notice_retains_outcome_and_deduplicates_across_resta
     assert wait['outcome'] == 'satisfied' and wait['cleared_at'] is None
 
 
+async def test_restart_retries_resume_while_startup_bridge_is_stalled(env):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    before = await intent(env)
+    # Construct a fresh service twice over the same durable RESUME_PENDING row.
+    # Each process must retry refusals without waiting for legacy adoption.
+    for _ in range(2):
+        service = runtime(env, registry=build_registry())
+        service.listener.renewal_seconds = 0.01
+        bridge_started, attempted = asyncio.Event(), asyncio.Event()
+
+        async def bridge():
+            bridge_started.set()
+            await asyncio.Event().wait()
+
+        async def dispatch(name, args):
+            assert name == 'wait_resume_dispatch'
+            assert args == {'continuation_id': 'c', 'generation': 1}
+            if service.command.await_count >= 2:
+                attempted.set()
+            return {'success': False, 'error_code': 'wait.graph_busy'}
+
+        service.startup_bridge = bridge
+        service.listener.run = AsyncMock(side_effect=asyncio.Event().wait)
+        service.command = AsyncMock(side_effect=dispatch)
+        runner = asyncio.create_task(service.run())
+        try:
+            async with asyncio.timeout(5):
+                await bridge_started.wait()
+                await attempted.wait()
+            assert await intent(env) == before
+        finally:
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+        assert not service.lifecycle._resume_tasks
+
+
 async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried(env):
     from tests.test_wait_dispatch import runtime
 
@@ -765,6 +878,120 @@ async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried
         await asyncio.gather(*service.lifecycle._resume_tasks.values())
         assert service.command.await_count == 3
     finally:
+        await service.lifecycle.stop()
+
+
+async def test_resume_graph_busy_streak_is_scoped_reset_and_retired(env, caplog):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    service = runtime(env, registry=build_registry())
+    busy = {'success': False, 'error_code': 'wait.graph_busy'}
+    service.command = AsyncMock(side_effect=[busy, busy,
+        {'success': False, 'error_code': 'wait.unavailable'}, busy, {'success': True}, busy])
+    try:
+        for expected in (1, 2, 0, 1, 0, 1):
+            await service.lifecycle.resume_pending()
+            await asyncio.gather(*service.lifecycle._resume_tasks.values())
+            assert service.lifecycle._resume_graph_busy.get(('c', 1), 0) == expected
+        records = [r.message for r in caplog.records if 'wait.resume_graph_busy:' in r.message]
+        assert len(records) == 4
+        assert all('continuation_id=c generation=1' in r for r in records)
+        assert 'consecutive_refusals=2' in records[1]
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(suspension_generation=2))
+        service.command.side_effect = None
+        service.command.return_value = busy
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        assert service.lifecycle._resume_graph_busy == {('c', 2): 1}
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(resume_state='held'))
+        await service.lifecycle.resume_pending()
+        assert not service.lifecycle._resume_graph_busy
+    finally:
+        await service.lifecycle.stop()
+
+
+async def test_listener_batches_cannot_starve_queued_resume_dispatch(env, monkeypatch):
+    from sqlalchemy import text
+    from src.integration import delivery_observer
+    from src.models import AgentProfile
+    from tests.test_wait_dispatch import runtime
+
+    await env.db.create_profile(AgentProfile(id='worker-codex', name='Worker'))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker-codex', route_source='override'))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    service = runtime(env, registry=build_registry())
+    service.orch._task_control_lock = lambda _: asyncio.Lock()
+    service.scheduler.reader = SimpleNamespace(observe_task=AsyncMock(return_value=SimpleNamespace(
+        constraints={}, binding={'scope': {}},
+    )))
+    monkeypatch.setattr(delivery_observer, 'hierarchy_frontier_modes', AsyncMock())
+    service.lifecycle.resume.fresh_workspace = AsyncMock(return_value='/tmp/fresh')
+    service.orch._launch_session_for_task_locked = AsyncMock()
+    service.command = AsyncMock(wraps=service.command)
+    # Use the production batch size: even a backlog of fast events must release
+    # the graph fence after the first event, before the renewal interval elapses.
+    for n in range(12):
+        await env.db.wait_source_commit(source_key='test:backlog', generation=0,
+            revision=str(n), outcome_ref=f'test:{n}', payload={})
+    holding, release = asyncio.Event(), asyncio.Event()
+    batches = []
+    reservation_batches = []
+
+    async def observe(*args, **kwargs):
+        reservation_batches.append(len(batches))
+        return SimpleNamespace(constraints={}, binding={'scope': {}})
+
+    service.scheduler.reader.observe_task.side_effect = observe
+
+    async def dispatch(conn, event):
+        batches.append(event['seq'])
+        if len(batches) == 1:
+            holding.set()
+            await release.wait()
+
+    service.listener._dispatch = dispatch
+    listener = asyncio.create_task(service.listener.tick())
+    try:
+        async with asyncio.timeout(10):
+            await holding.wait()
+            await service.lifecycle.resume_pending()
+            async with env.db._engine.connect() as conn:
+                while not await conn.scalar(text("""
+                    SELECT EXISTS (SELECT 1 FROM pg_locks
+                    WHERE locktype = 'advisory' AND NOT granted
+                    AND database = (SELECT oid FROM pg_database
+                                    WHERE datname = current_database()))
+                """)):
+                    await asyncio.sleep(0.01)
+            release.set()
+            await asyncio.gather(*service.lifecycle._resume_tasks.values())
+            await listener
+        service.command.assert_awaited_once_with('wait_resume_dispatch', {
+            'continuation_id': 'c', 'generation': 1,
+        })
+        service.orch._launch_session_for_task_locked.assert_awaited_once()
+        assert reservation_batches == [1]  # Resume wins immediately after the held batch.
+        assert (await intent(env))['resume_state'] == 'reserved'
+        assert not service.lifecycle._resume_graph_busy
+        # If resume caused a nonblocking drain refusal, the cursor replays the
+        # rest of the backlog safely on the listener's next tick.
+        await service.listener.tick()
+        assert len(batches) >= 12
+        assert len(batches) == len(set(batches))
+    finally:
+        release.set()
+        listener.cancel()
+        await asyncio.gather(listener, return_exceptions=True)
         await service.lifecycle.stop()
 
 
@@ -1904,6 +2131,7 @@ async def test_retire_checkout_keeps_a_folder_a_row_names_or_that_holds_work(
 
 async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env, monkeypatch):
     from src.integration import delivery_observer
+    from src.wait_runtime import resume
     from src.wait_runtime.resume import ResumeTransaction
     from src.waits.graph import lock_graph
 
@@ -1911,6 +2139,7 @@ async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env
         await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
     await park(env)
     monkeypatch.setattr(delivery_observer, 'hierarchy_frontier_modes', AsyncMock())
+    monkeypatch.setattr(resume, 'RESUME_GRAPH_LOCK_TIMEOUT', 0.05)
     orch = SimpleNamespace(db=env.db, _task_control_lock=lambda _: asyncio.Lock())
     driver = ResumeTransaction(SimpleNamespace(orch=orch))
     driver.failed = AsyncMock()
@@ -1920,7 +2149,7 @@ async def test_busy_resume_reservation_remains_queued_without_launch_or_hold(env
 
     async with env.db._engine.begin() as holder:
         await lock_graph(holder)
-        with pytest.raises(WaitError, match='within 0.25s') as refused:
+        with pytest.raises(WaitError, match='within 0.05s') as refused:
             await asyncio.wait_for(driver.dispatch(
                 {'continuation_id': 'c', 'generation': 1},
                 principal=None, scope=None, handler=None,
@@ -2281,6 +2510,49 @@ async def test_requeue_of_a_launch_hold_returns_to_the_capacity_queue(env):
         assert (await service.orch._command_handler.execute('wait_decide', args))['success']
     row = await intent(env)
     assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
+
+
+@pytest.mark.parametrize('failure', ['graph_busy', 'cancel_after_write'])
+async def test_refused_or_cancelled_requeue_preserves_generation_and_hold(env, monkeypatch, failure):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.wait_runtime import resume
+    from src.waits.graph import lock_graph
+
+    service, _, _ = await workspace_resume(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='resume_workspace_failed'))
+    held = await intent(env)
+    args = dict(wait_id=env.wait_id, decision='requeue', continuation_id='c',
+                expected_generation=1, note='Setup repaired')
+    handler = service.orch._command_handler
+    with principal_context(TRUSTED_LOCAL):
+        with monkeypatch.context() as patch:
+            if failure == 'graph_busy':
+                async def short_lock(conn, **kwargs):
+                    assert kwargs == {'queued': True}
+                    await lock_graph(conn, queued=True, timeout=0.05)
+                patch.setattr(resume, 'lock_graph', short_lock)
+                async with env.db._engine.begin() as blocker:
+                    await lock_graph(blocker)
+                    result = await handler.execute('wait_decide', args)
+                    assert result['error_code'] == 'wait.graph_busy'
+            else:
+                # The audit insert follows the continuation UPDATE. Interrupt
+                # here to prove both writes belong to one rollback boundary.
+                def cancelled_insert(*args, **kwargs):
+                    raise asyncio.CancelledError()
+                patch.setattr(resume, 'insert', cancelled_insert)
+                with pytest.raises(asyncio.CancelledError):
+                    await handler.execute('wait_decide', args)
+        assert await intent(env) == held
+        # A retry uses the exact same expected generation, without a stale error.
+        result = await handler.execute('wait_decide', args)
+        assert result['success'] and result['generation'] == 1
+    repaired = await intent(env)
+    assert repaired['suspension_generation'] == held['suspension_generation']
+    assert repaired['version'] == held['version'] + 1
+    assert repaired['saved_head'] == held['saved_head']
 
 
 async def test_workspace_retry_recovers_actual_staged_checkout(env, tmp_path):
