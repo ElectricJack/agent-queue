@@ -417,7 +417,7 @@ class IntegrationCommandsMixin:
             if inspect.isawaitable(client):
                 client = await client
             admin_reader = None
-            if (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
+            if read_only or (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
                 admin_reader = LocalRulesetReader(self._promotion_user_client(binding))
             service = Cutover(self.db, CutoverGit(
                 self.db, client, ruleset_admin_reader=admin_reader,
@@ -682,12 +682,7 @@ class IntegrationCommandsMixin:
         return {"success": True, **await reconciler.tick(time.time() if now is None else now)}
 
     async def _cmd_integration_train_tick(self, args: dict) -> dict:
-        """Start one level-triggered visit per idle target (git_first: active).
-
-        Daemon-only: the integration service drives it under a service
-        principal.  The visits run in the background, so a slow target never
-        holds this command; it reports which targets started or still run.
-        """
+        """Start one level-triggered visit per idle target (git_first: active)."""
         principal = current_principal()
         if principal is None or principal.kind is not PrincipalKind.SERVICE:
             return _failure("unauthorized", "only the daemon may tick the integration train")
@@ -696,28 +691,29 @@ class IntegrationCommandsMixin:
             return _failure("unavailable", "the integration train is not active")
         visit_now = args.get("now")
         now = time.time() if visit_now is None else visit_now
-        # Durable batches expose stalls even when snapshots fail before selection;
-        # this check runs independently of lane errors and retry scheduling.
+        # Durable stall evidence remains independent of lane errors and retry scheduling.
         checked_at = getattr(self, "_train_stall_checked_at", None)
         if (getattr(self, "db", None) is not None
+                and not getattr(self, "_train_stall_checking", False)
                 and (checked_at is None or now < checked_at or now - checked_at >= 60)):
             from src.integration.stall_alerts import alert_stalled_batches
 
-            await alert_stalled_batches(self, now=now)
-            observer = getattr(self.orchestrator, "delivery_observer", None)
-            if observer is not None:
-                import logging
-
-                from src.integration.delivery_watchdog import scan_stuck_deliveries
-
-                try:
-                    await scan_stuck_deliveries(self.db, observer=observer, now=now,
-                                              hierarchy=self._hierarchy_integration_service())
-                except Exception:
-                    logging.getLogger(__name__).exception("delivery watchdog scan failed")
-            self._train_stall_checked_at = now
-        result = await train.tick(visit_now)
-        return {"success": True, **result}
+            # Reserve cadence and ownership before yielding, including scans over a minute.
+            self._train_stall_checked_at, self._train_stall_checking = now, True
+            try:
+                await alert_stalled_batches(self, now=now)
+                observer = getattr(self.orchestrator, "delivery_observer", None)
+                if observer is not None:
+                    from src.integration.delivery_watchdog import scan_stuck_deliveries
+                    try:
+                        await scan_stuck_deliveries(self.db, observer=observer, now=now,
+                                                  hierarchy=self._hierarchy_integration_service())
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception("delivery watchdog scan failed")
+            finally:
+                self._train_stall_checking = False
+        return {"success": True, **await train.tick(visit_now)}
 
     async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
 

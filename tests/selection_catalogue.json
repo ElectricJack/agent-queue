@@ -10342,7 +10342,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:397e918acbd6e0e38298ff5f2931ad03e5559f3356b3622ea65510f02f711ae8",
+      "digest": "sha256:c9fdf038f75b1bb8873dc8d42fd384c53062557eec95d215f8cf64035827d33d",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -10354,6 +10354,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.batches",
         "src.integration.checks",
         "src.integration.git_truth",
@@ -10362,6 +10363,7 @@
         "src.integration.provenance",
         "src.integration.repair",
         "src.integration.selection_metrics",
+        "src.integration.stall_alerts",
         "src.integration.train",
         "src.integration.train_sources",
         "src.mcp_registration",
@@ -20243,7 +20245,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:48f4ecad44c456b7a0dce80ba57e8ac5f686f746a4bcdccca9e241202514d2c6",
+      "digest": "sha256:602020802f41800f61ece44da1c6621716c9a1b0cf6658d4ea9d49a8e68d76dc",
       "imports": [
         "src.claim_file",
         "src.cli.waits",
@@ -20268,6 +20270,7 @@
         "src.profiles.capabilities",
         "src.scheduler",
         "src.sessions.transcripts",
+        "src.sessions.transcripts.claude",
         "src.wait_runtime",
         "src.wait_runtime.eviction",
         "src.wait_runtime.hibernate",
