@@ -11378,3 +11378,323 @@ async def test_root_pr_recovery_changed_head_uses_current_budget(world, earlier)
     assert history["heads"] == (["f" * 40, source] if earlier == "root_pr" else [source])
     assert (await train.visit(MAIN, seal_now=True)).state == "idle"
     assert (await world.db.get_task_meta("root", RECOVERY_KEY)) == history
+
+
+def packing_input(tid, paths=(), *, ready_at=10000, green=False, universal=False):
+    from src.integration.signatures import SignatureIdentity, SourceSignature
+    from src.integration.train_packing import PackingInput
+
+    identity = SignatureIdentity("p", "r", tid, None, f"refs/heads/aq/{tid}",
+                                 "refs/heads/main", "a" * 40, "b" * 40, "c" * 40,
+                                 "policy", "d" * 64)
+    signature = SourceSignature(identity, paths=tuple(sorted(paths)), universal=universal,
+                                reasons=("test",))
+    return PackingInput(BatchMember(tid, "b" * 40, "a" * 40), signature, ready_at,
+                        green=green, clean=True, hot_fraction=0)
+
+
+def test_packing_score_components_and_neutral_history():
+    from src.integration.train_packing import score
+    from src.playbooks.train_policy import TrainPackingPolicy
+
+    candidate = packing_input("a", ["src/a.py"], ready_at=0, green=True)
+    policy = TrainPackingPolicy()
+    assert score(candidate, policy, 3 * 3600) == {
+        "green": 100, "merge_clean": 40, "signature_size": 5, "nonhot": 10,
+        "age": 3, "pass_rate": 5,
+    }
+    assert score(replace(candidate, passed=19, checks=19), policy, 0)["pass_rate"] == 5
+    assert score(replace(candidate, passed=15, checks=20), policy, 0)["pass_rate"] == 7.5
+    assert score(candidate, policy, 1000 * 3600)["age"] == 80
+    assert score(replace(candidate, ready_at=100), policy, 0)["age"] == 0
+
+
+async def test_packing_oldest_slot_ties_and_capacity():
+    from src.integration.train_packing import pack
+    from src.playbooks.train_policy import TrainPackingPolicy
+
+    inputs = [packing_input("c", ["src/c.py"], green=True),
+              packing_input("b", ["src/b.py"], green=True),
+              packing_input("old", ["src/old.py"], ready_at=0)]
+    probe = AsyncMock(return_value=None)
+    selected, evidence = await pack(inputs, {}, TrainPackingPolicy(max_members=2),
+                                   now=10000, deadline=60, clock=lambda: 0, probe=probe)
+    assert {m.task_id for m in selected} == {"old", "b"}
+    assert evidence[0]["reserved_oldest"] and evidence[0]["task_ids"] == ["old"]
+    assert evidence[-1]["outcome"] == "capacity"
+    assert len(probe.call_args_list[-1].args[0]) == 2
+
+
+async def test_packing_closure_is_inseparable_and_overlap_is_only_between_units():
+    from src.integration.train_packing import pack
+    from src.playbooks.train_policy import TrainPackingPolicy
+
+    inputs = [packing_input("parent", ["src/shared.py"]),
+              packing_input("child", ["src/shared.py"], green=True),
+              packing_input("independent", ["src/shared.py"])]
+    probe = AsyncMock(return_value=None)
+    selected, evidence = await pack(inputs, {"child": {"parent"}}, TrainPackingPolicy(),
+                                   now=10000, deadline=60, clock=lambda: 0, probe=probe)
+    assert [m.task_id for m in selected] == ["parent", "child"]
+    assert evidence[1]["outcome"] == "signature_overlap"
+    assert [m.task_id for m in probe.call_args.args[0]] == ["parent", "child"]
+
+
+async def test_packing_oversized_closure_takes_ordinary_path():
+    from src.integration.train_packing import pack
+    from src.playbooks.train_policy import TrainPackingPolicy
+
+    inputs = [packing_input(str(i), ["src/shared.py"], ready_at=0) for i in range(9)]
+    inputs.append(packing_input("other", ["src/other.py"], green=True))
+    edges = {str(i): {str(i - 1)} for i in range(1, 9)}
+    selected, evidence = await pack(inputs, edges, TrainPackingPolicy(max_members=4),
+                                   now=10000, deadline=60, clock=lambda: 0,
+                                   probe=AsyncMock(return_value=None))
+    assert len(selected) == 9 and evidence[0]["outcome"] == "ordinary_oversized"
+    assert evidence[-1]["outcome"] == "capacity"
+
+
+async def test_packing_failed_reserved_probe_leaves_space_and_cumulative_prefix():
+    from src.integration.train_packing import pack
+    from src.playbooks.train_policy import TrainPackingPolicy
+
+    inputs = [packing_input("old", ["src/old.py"], ready_at=0),
+              packing_input("a", ["src/a.py"]), packing_input("b", ["src/b.py"]),
+              packing_input("c", ["src/c.py"])]
+    probe = AsyncMock(side_effect=["cumulative_conflict", None, "cumulative_conflict", None])
+    selected, evidence = await pack(inputs, {}, TrainPackingPolicy(), now=10000,
+                                   deadline=60, clock=lambda: 0, probe=probe)
+    assert [m.task_id for m in selected] == ["a", "c"]
+    assert [[m.task_id for m in call.args[0]] for call in probe.call_args_list] == [
+        ["old"], ["a"], ["a", "b"], ["a", "c"],
+    ]
+    assert evidence[0]["outcome"] == "cumulative_conflict"
+
+
+async def test_packing_missing_closure_and_deadline_never_freeze_unprobed_members():
+    from src.integration.train_packing import pack
+    from src.playbooks.train_policy import TrainPackingPolicy
+
+    inputs = [packing_input("child", green=True), packing_input("later")]
+    probe = AsyncMock(return_value=None)
+    selected, evidence = await pack(inputs, {"child": {"absent"}}, TrainPackingPolicy(),
+                                   now=10000, deadline=0, clock=lambda: 0, probe=probe)
+    assert not selected
+    assert [row["outcome"] for row in evidence] == ["prerequisite_pending", "deadline"]
+    probe.assert_not_awaited()
+
+
+def enable_packing(monkeypatch, **kwargs):
+    from src.integration.train_policy import TrainPolicyView
+    from src.playbooks.train_policy import TrainPackingPolicy, TrainPolicy
+
+    view = TrainPolicyView(policy=TrainPolicy(packing=TrainPackingPolicy(enabled=True, **kwargs)),
+                           policy_revision="packing-test-v1")
+    monkeypatch.setattr("src.integration.train_policy.load_train_policy",
+                        AsyncMock(return_value=view))
+    return view
+
+
+async def packed_source(world, tid, *, path=None, content=None, needs=()):
+    origin = world.origin
+    git(origin.clone, "checkout", "-q", "-B", f"aq/{tid}", "origin/main")
+    path = origin.clone / (path or f"src/{tid}.py")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content or f"# {tid}\n")
+    git(origin.clone, "add", "-A")
+    git(origin.clone, "commit", "-qm", tid)
+    git(origin.clone, "push", "-q", "origin", f"aq/{tid}")
+    return await completed(world, tid, head=git(origin.clone, "rev-parse", "HEAD"), needs=needs)
+
+
+async def test_enabled_packing_freezes_disjoint_members_and_scores(world, monkeypatch):
+    await packed_source(world, "a")
+    await packed_source(world, "b")
+    await packed_source(world, "c")
+    train, _, _ = await hosted_train(world, settling=True)
+    enable_packing(monkeypatch, max_members=2)
+    service = (await train.lane_for(MAIN)).service
+    metrics = SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        selected = await train.batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None, selected
+    assert len(selected.members) == 2
+    row = await world.db.get_integration_batch(selected.batch.id)
+    document = row["artifact_snapshot"]
+    assert document["train_signatures"]["signature_version"] == 1
+    assert len(document["train_signatures"]["sources"]) == 2
+    assert document["train_packing"]["policy_revision"] == "packing-test-v1"
+    assert metrics.counts["packing_accepted"] == 2
+    assert metrics.counts["packing_excluded_capacity"] == 1
+    assert all(row["scores"][row["task_ids"][0]]["green"] == 100
+               for row in metrics.outcomes)
+
+
+async def test_enabled_packing_does_not_separate_dependencies(world, monkeypatch):
+    await packed_source(world, "a")
+    await packed_source(world, "b", needs=("a",))
+    await packed_source(world, "c")
+    train, _, _ = await hosted_train(world, settling=True)
+    enable_packing(monkeypatch, max_members=1)
+    service = (await train.lane_for(MAIN)).service
+    selected = await train.batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None, selected
+    assert [m.task_id for m in selected.members] == ["a", "b"]
+    row = await world.db.get_integration_batch(selected.batch.id)
+    assert row["artifact_snapshot"]["train_packing"]["outcomes"][0]["outcome"] == "ordinary_oversized"
+
+
+@pytest.mark.parametrize("change", ["pr", "policy", "source", "target", "dependency", "base"])
+async def test_packing_final_recheck_refuses_changed_identity(world, monkeypatch, change):
+    from src.integration.batches import SelectionIdentityChanged
+    from src.integration.train_packing_sources import select_packed
+
+    await packed_source(world, "a")
+    train, _, _ = await hosted_train(world, settling=True)
+    view = enable_packing(monkeypatch)
+    service = (await train.lane_for(MAIN)).service
+    observed = await snapshot(world)
+    pending = await train.batches.pending(MAIN, observed)
+    chosen, evidence, recheck = await select_packed(
+        train.batches, MAIN, observed, service, view, pending,
+        deadline=time.monotonic() + 60,
+    )
+    assert chosen[0] and evidence
+    assert await recheck()
+    if change == "pr":
+        await world.db.update_task("a", pr_url="https://github.com/acme/widgets/pull/9999")
+    elif change == "policy":
+        monkeypatch.setattr("src.integration.train_policy.load_train_policy",
+                            AsyncMock(return_value=replace(view, policy_revision="new-policy")))
+    elif change in {"source", "target"}:
+        branch = "aq/a" if change == "source" else "main"
+        git(world.origin.clone, "checkout", branch)
+        (world.origin.clone / "moved").write_text("moved\n")
+        git(world.origin.clone, "add", "moved")
+        git(world.origin.clone, "commit", "-qm", "move observed identity")
+        git(world.origin.clone, "push", "origin", branch)
+    elif change == "dependency":
+        await completed(world, "missing", done=False)
+        await world.db.add_dependency("a", "missing")
+    else:
+        async with world.db.immediate() as conn:
+            await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.task_id == "a").values(retired_at=time.time()))
+            await conn.execute(insert(task_branch_origins).values(
+                id="a-next-origin", task_id="a", repository_id="r", branch_name="aq/a",
+                base_sha=chosen[0][0].source_sha, creation_generation=1, reserved=True,
+                materialized=True, created_at=time.time(),
+            ))
+    assert not await recheck()
+    batch = Batch("stale-" + change, "p", "r", MAIN.target_ref)
+    with pytest.raises(SelectionIdentityChanged):
+        await service.freeze(batch, chosen[0], requests=chosen[1], snapshot=observed,
+                             dependencies=chosen[2], selection_snapshot=evidence,
+                             selection_recheck=recheck)
+    assert await service.store.get(batch.id) is None
+
+
+async def test_packing_probe_uses_real_cumulative_merge_conflicts(world):
+    from src.integration.train_packing_sources import cumulative_probe
+
+    first = await packed_source(world, "a", path="src/shared.py", content="a\n")
+    second = await packed_source(world, "b", path="src/shared.py", content="b\n")
+    train, _, _ = await hosted_train(world, settling=True)
+    service = (await train.lane_for(MAIN)).service
+    repo = await service.gitops.repository(MAIN)
+    observed = await snapshot(world)
+    base = observed.target_oid
+    a, b = BatchMember("a", first, base), BatchMember("b", second, base)
+    assert await cumulative_probe(service.gitops, repo, base, (a,)) is None
+    assert await cumulative_probe(service.gitops, repo, base, (b,)) is None
+    assert await cumulative_probe(service.gitops, repo, base, (a, b)) == "cumulative_conflict"
+
+
+async def test_packing_probe_accepts_generated_overlap_using_production_driver(world):
+    from src.integration.train_packing_sources import cumulative_probe
+
+    catalogue_repository(world.origin)
+    first = catalogue_branch(world.origin, "a", "one")
+    second = catalogue_branch(world.origin, "b", "two")
+    train, _, _ = await hosted_train(world, settling=True)
+    service = (await train.lane_for(MAIN)).service
+    repo = await service.gitops.repository(MAIN)
+    observed = await snapshot(world)
+    base = observed.target_oid
+    members = (BatchMember("a", first, base), BatchMember("b", second, base))
+    assert await cumulative_probe(service.gitops, repo, base, members) is None
+    # Selection does not move a source or target branch or execute generators.
+    assert git(world.origin.url, "rev-parse", "main") == base
+    assert git(world.origin.url, "rev-parse", "aq/a") == first
+    assert git(world.origin.url, "rev-parse", "aq/b") == second
+
+
+def test_packing_registry_never_subtracts_unproven_generated_or_unknown_paths():
+    from src.integration.signatures import PathChange, build_source_signature
+    from src.integration.train_packing_sources import path_rules
+
+    rules = path_rules({"src/a.py", "tests/selection_catalogue.json", "unknown.bin"},
+                       {"tests/selection_catalogue.json"})
+    identity = replace(packing_input("a").signature.identity, generator_digest=rules.digest)
+    signature = build_source_signature(identity, [PathChange("M", "src/a.py"),
+        PathChange("M", "tests/selection_catalogue.json")], rules)
+    assert signature.universal and not signature.excluded_outputs
+    unknown = build_source_signature(identity, [PathChange("M", "unknown.bin")], rules)
+    assert unknown.universal
+
+
+@pytest.mark.parametrize("stage", ["observation", "freeze"])
+async def test_packing_restarts_once_after_stale_freeze(world, monkeypatch, stage):
+    from src.integration.batches import SelectionIdentityChanged
+    from src.integration import train_packing_sources
+
+    await packed_source(world, "a")
+    train, _, _ = await hosted_train(world, settling=True)
+    enable_packing(monkeypatch)
+    service = (await train.lane_for(MAIN)).service
+    owner, method = ((service, "freeze") if stage == "freeze"
+                     else (train_packing_sources, "select_packed"))
+    original = getattr(owner, method)
+    calls = 0
+
+    async def stale_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise SelectionIdentityChanged("moved")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, method, stale_once)
+    selected = await train.batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None and calls == 2
+
+
+async def test_packing_history_uses_exact_source_checks_and_frozen_profiles(world, monkeypatch):
+    from src.database.tables import integration_check_evidence
+    from src.integration.train_packing_sources import history_on
+    from src.models import AgentProfile
+
+    head = await packed_source(world, "a")
+    await world.db.create_profile(AgentProfile(id="packing-worker", name="Packing"))
+    await world.db.update_task("a", profile_id="packing-worker", route_source="router")
+    train, _, _ = await hosted_train(world, settling=True)
+    view = enable_packing(monkeypatch)
+    service = (await train.lane_for(MAIN)).service
+    selected = await train.batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None
+    async with world.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == selected.batch.id).values(lifecycle="promoted"))
+        await conn.execute(insert(integration_check_evidence), [{
+            "id": f"packing-check-{i}", "repository_id": "r", "sha": head,
+            "producer_id": "packing-history", "workflow_id": "w", "run_id": str(i),
+            "attempt": 1, "required_check_version": "v1", "check_name": f"check-{i}",
+            "checks": {}, "conclusion": "success" if i < 15 else "failure",
+            "classification": "observed", "observed_at": time.time() + i,
+        } for i in range(20)])
+    async with world.db._engine.connect() as conn:
+        hot, known, rates = await history_on(conn, MAIN, view.policy.packing)
+    assert known and "src/a.py" in hot
+    # The ordinary PR gate can have recorded another exact check as well.
+    assert rates["packing-worker"][1] >= 20
+    assert rates["packing-worker"][1] - rates["packing-worker"][0] == 5
