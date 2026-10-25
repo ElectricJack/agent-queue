@@ -48,6 +48,11 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
+
+env:
+  # Official PostgreSQL 18 multi-platform index; mirror-postgres.yml copies these exact bytes.
+  POSTGRES_DIGEST: sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6
 
 jobs:
   test:
@@ -135,8 +140,20 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      # Shared startup retries registry failures and preserves startup failures.
+      # Service containers cannot pass server arguments. Preserve PR #640's
+      # connection headroom and disable durability only for disposable CI data.
+      # GHCR is primary; public mirrors cover bootstrap and unavailable package access.
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
       - name: Start PostgreSQL
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
         run: bash .github/scripts/start-postgres.sh
 
       - name: Set up Python
@@ -307,7 +324,17 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Log in to GHCR
+        # Fork tokens may lack package access; public mirrors remain available.
+        continue-on-error: true
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_ACTOR" --password-stdin
+
       - name: Start PostgreSQL
+        env:
+          GHCR_OWNER: ${{ github.repository_owner }}
         run: bash .github/scripts/start-postgres.sh
 
       - name: Set up Python

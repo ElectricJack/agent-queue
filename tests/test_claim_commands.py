@@ -8696,3 +8696,160 @@ async def test_retained_binding_probe_can_exclude_the_claimants_owner_row(db, ow
     assert await slots._slot_has_retained_binding(
         "ws-slot", excluding_owner="t-next",
     ) is (owner != "t-next")
+
+
+@pytest.mark.parametrize("stage", ["source", "policy"])
+async def test_admission_clear_records_failed_inputs_in_view_and_explain(
+    handler, db, monkeypatch, stage,
+):
+    from src.integration import admission
+
+    for tid in ("candidate-a", "candidate-b"):
+        await mktask(db, tid, profile_id="worker")
+    reads = 0
+    original = admission._inputs if stage == "source" else admission._frontier_inputs
+
+    async def bump_generation():
+        async with db.immediate() as conn:
+            await conn.execute(update(projects).where(projects.c.id == PROJECT_ID).values(
+                hierarchical_integration_generation=projects.c.hierarchical_integration_generation + 1,
+            ))
+
+    async def move_generation(*args, **kwargs):
+        nonlocal reads
+        reads += 1
+        if stage == "source" and reads == 2:
+            await bump_generation()
+        result = await original(*args, **kwargs)
+        if stage == "policy" and reads == 1:
+            await bump_generation()
+        return result
+
+    monkeypatch.setattr(admission, "_inputs" if stage == "source" else "_frontier_inputs",
+                        move_generation)
+    view = await admission.observe_admission(db, ["candidate-a", "candidate-b"], None)
+    assert view.changed and not view.allowed
+    code = "admission_inputs_changed" if stage == "source" else "admission_policy_changed"
+    comparison = "project configuration" if stage == "source" else "project/repository policy"
+    for tid in view.candidate_ids:
+        assert view.reasons[tid][0]["code"] == code
+        assert view.reasons[tid][0]["ref"] == tid
+        assert comparison in view.reasons[tid][0]["detail"]
+    reads = 0
+    explained = await handler._cmd_explain_task({"task_id": "candidate-a"})
+    reasons = explained["reasons"]
+    assert any(r["code"] == code and comparison in r["detail"] for r in reasons), explained
+    assert not any(r["code"] == "development_snapshot_changed" for r in reasons), explained
+
+
+@pytest.mark.parametrize("comparison", [
+    "delivered_prerequisite_ids", "default_prerequisite_ids", "unknown_prerequisite_ids",
+    "unknown_default_prerequisite_ids", "stackable_prerequisite_ids",
+    "parent_contained_task_ids", "unknown_parent_task_ids",
+])
+async def test_admission_revalidation_names_hierarchy_or_stack_comparison(db, comparison):
+    from dataclasses import replace
+
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.integration.admission import AdmissionSnapshot, _inputs
+
+    for tid in ("candidate-a", "candidate-b"):
+        await mktask(db, tid, profile_id="worker")
+    ids = {"candidate-a", "candidate-b"}
+    mode = ProjectIntegrationMode.of(await db.get_project(PROJECT_ID))
+    parent = comparison in {"parent_contained_task_ids", "unknown_parent_task_ids"}
+    mode = replace(mode, **{comparison: frozenset({"candidate-a" if parent else "source"})})
+    async with db._engine.connect() as conn:
+        inputs = (await _inputs(db, ids, conn))[-1]
+        batch = AdmissionSnapshot(db, ids, set(ids), inputs,
+            hierarchy_modes={PROJECT_ID: mode},
+            hierarchy_required={tid: {"source"} for tid in ids})
+        if comparison == "stackable_prerequisite_ids":
+            batch.stack_views[PROJECT_ID] = SimpleNamespace(verified_on=AsyncMock(return_value=set()))
+        else:
+            batch.hierarchy_views[PROJECT_ID] = SimpleNamespace(
+                mode=AsyncMock(return_value=replace(mode, **{comparison: frozenset()})))
+        assert not await batch.matches(conn=conn, task_id="candidate-a" if parent else None)
+        # Rechecking the same fence does not duplicate the explanation.
+        assert not await batch.matches(conn=conn, task_id="candidate-a" if parent else None)
+    assert set(batch.reasons) == ({"candidate-a"} if parent else ids)
+    for reasons in batch.reasons.values():
+        assert len(reasons) == 1
+        assert reasons[0]["code"] == (
+            "admission_stack_changed" if comparison == "stackable_prerequisite_ids"
+            else "admission_hierarchy_changed")
+        assert PROJECT_ID in reasons[0]["detail"] and comparison in reasons[0]["detail"]
+
+
+@pytest.mark.parametrize("failure,code", [
+    ("identity", "pr_admission_identity_changed"),
+    ("unavailable", "pr_admission_freshness_unavailable"),
+    ("snapshot", "pr_admission_snapshot_changed"),
+])
+async def test_pr_admission_freshness_clear_has_reason_only_for_dependents(
+    db, pull_request_admission, monkeypatch, failure, code,
+):
+    from src.integration.admission import observe_admission
+    from src.integration.delivery_observer import DeliverySnapshot
+
+    env = pull_request_admission
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    await mktask(db, "independent", profile_id="worker")
+    calls = 0
+
+    async def pull(url):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            if failure == "identity":
+                return {**env.pull, "state": "closed"}
+            if failure == "unavailable":
+                raise OSError("offline")
+        return dict(env.pull)
+
+    env.client.pull_request.side_effect = pull
+    if failure == "snapshot":
+        monkeypatch.setattr(DeliverySnapshot, "is_fresh", AsyncMock(return_value=False))
+    view = await observe_admission(db, ["dependent", "independent"], env.service)
+    assert view.allowed == {"independent"}
+    assert view.changed
+    assert "independent" not in view.reasons
+    assert view.reasons["dependent"][0]["code"] == code
+    assert view.reasons["dependent"][0]["ref"] == "dependent"
+
+
+@pytest.mark.parametrize("failure", ["task-lock", "policy-lock", "inputs"])
+async def test_pr_gate_bookkeeping_clear_records_lock_or_input_failure(
+    db, pull_request_admission, failure,
+):
+    from src.integration.admission import observe_admission
+
+    env = pull_request_admission
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    await db.transition_task("prerequisite", TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task("prerequisite", TaskStatus.COMPLETED,
+                             pr_merge_gate="https://github.com/test/repo/pull/1")
+    if failure == "inputs":
+        calls = 0
+
+        async def move_branch(url):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                await db.update_task("dependent", branch_name="aq/changed")
+            return dict(env.pull)
+
+        env.client.pull_request.side_effect = move_branch
+        view = await observe_admission(db, ["dependent"], env.service)
+    else:
+        table, row_id = ((tasks, "prerequisite") if failure == "task-lock"
+                         else (projects, PROJECT_ID))
+        async with db.immediate() as conn:
+            await conn.execute(select(table.c.id).where(table.c.id == row_id).with_for_update())
+            view = await observe_admission(db, ["dependent"], env.service)
+    assert not view.allowed and view.changed
+    code = "pr_admission_inputs_changed" if failure == "inputs" else "pr_admission_lock_unavailable"
+    assert any(r["code"] == code for r in view.reasons["dependent"]), view.reasons
+    detail = next(r["detail"] for r in view.reasons["dependent"] if r["code"] == code)
+    assert ("candidate branches" if failure == "inputs" else "55P03") in detail
+    assert (await db.get_task("dependent")).is_blocked

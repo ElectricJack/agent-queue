@@ -2,34 +2,28 @@
 # Disposable CI database only. Keep registry failures separate from startup failures.
 set -euo pipefail
 
-# All sources publish Docker's official PostgreSQL image. Prefer mirrors to
-# Docker Hub's anonymous rate limit, but permit fallback when a mirror has
-# missing blobs or a hosted runner exhausts ECR Public's anonymous data quota.
-# Alpine keeps cold downloads small and matches the local test service.
-postgres_image=""
-pull_status=1
-for candidate_image in \
-  mirror.gcr.io/library/postgres:18-alpine \
-  public.ecr.aws/docker/library/postgres:18-alpine \
-  docker.io/library/postgres:18-alpine; do
-  for pull_attempt in 1 2 3; do
-    if docker pull "$candidate_image"; then
-      postgres_image="$candidate_image"
+# GHCR and the public mirrors serve the same pinned official PostgreSQL index.
+# Rotate sources each round so one unavailable registry cannot delay fallback.
+# GHCR paths are lowercase even when the repository owner is not.
+ghcr_image="ghcr.io/${GHCR_OWNER,,}/agent-queue-postgres:18@$POSTGRES_DIGEST"
+for pull_attempt in 1 2 3; do
+  for postgres_image in \
+    "$ghcr_image" \
+    "mirror.gcr.io/library/postgres:18@$POSTGRES_DIGEST" \
+    "public.ecr.aws/docker/library/postgres:18@$POSTGRES_DIGEST"; do
+    if docker pull "$postgres_image"; then
       break 2
     else
       pull_status=$?
     fi
-    if (( pull_attempt < 3 )); then
-      echo "::warning::PostgreSQL image pull failed ($candidate_image, attempt $pull_attempt/3); retrying in 5s"
-      sleep 5
-    fi
+    echo "::warning::PostgreSQL image pull failed from $postgres_image (round $pull_attempt/3)"
   done
-  echo "::warning::PostgreSQL registry exhausted ($candidate_image)"
+  if (( pull_attempt == 3 )); then
+    echo "::error::PostgreSQL image pull failed from all registries after $pull_attempt rounds"
+    exit "$pull_status"
+  fi
+  sleep 5
 done
-if [[ -z "$postgres_image" ]]; then
-  echo "::error::PostgreSQL image pull failed from all three registries"
-  exit "$pull_status"
-fi
 
 # A container-start error is fatal: fallback only repairs image fetching.
 docker run --pull=never --detach --name ci-postgres \

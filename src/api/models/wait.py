@@ -208,6 +208,7 @@ RESPONSE_MODELS = {
     "wait_decide": WaitDecideResponse,
     "wait_lift": WaitDecideResponse,
     "wait_legacy_bridge": WaitBridgeResponse,
+    "wait_source_redispatch": WaitBridgeResponse,
 }
 
 # Preserve closed models and their validators on HTTP, rather than rebuilding

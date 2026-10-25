@@ -1,4 +1,5 @@
 """Full CI runs on pull requests and integration boundaries, and on `main` only unattested."""
+import hashlib
 import json
 import math
 import os
@@ -22,11 +23,13 @@ from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUP
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
 BATCH_REF = candidate_ref('batch-1').removeprefix('refs/heads/')
+POSTGRES_DIGEST = 'sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6'
 POSTGRES_IMAGES = [
-    'mirror.gcr.io/library/postgres:18-alpine',
-    'public.ecr.aws/docker/library/postgres:18-alpine',
-    'docker.io/library/postgres:18-alpine',
+    'ghcr.io/acme/agent-queue-postgres:18',
+    'mirror.gcr.io/library/postgres:18',
+    'public.ecr.aws/docker/library/postgres:18',
 ]
+POSTGRES_IMAGES = [f'{image}@{POSTGRES_DIGEST}' for image in POSTGRES_IMAGES]
 POSTGRES_START = Path('.github/scripts/start-postgres.sh')
 
 
@@ -118,11 +121,15 @@ def test_push_ci_only_covers_integration_boundaries(branch, expected):
 
 
 @pytest.mark.parametrize('branch', ['dev', 'staging', 'main'])
-def test_only_the_attestation_audit_runs_on_a_push_to_delivery_branch(branch):
+def test_delivery_branch_pushes_only_audit_or_refresh_changed_dependencies(branch):
     files = sorted(WORKFLOWS.glob('*.yml')) + sorted(WORKFLOWS.glob('*.yaml'))
     assert files
     pushed = {path.name for path in files if _pushed(workflow(path.name)['on'], branch)}
-    assert pushed == {'main-attestation.yml'}
+    expected = {'main-attestation.yml'}
+    if branch in ('dev', 'main'):
+        # This path-filtered writer refreshes the image without running tests.
+        expected.add('mirror-postgres.yml')
+    assert pushed == expected
 
 
 def _venv_steps(name, job):
@@ -235,7 +242,7 @@ def test_main_attestation_is_the_specified_audit_workflow():
     audit = workflow('main-attestation.yml')
     assert audit['name'] == 'Main attestation'
     assert audit['on'] == {'push': {'branches': ['dev', 'staging', 'main']}}
-    assert audit['permissions'] == {'contents': 'read', 'checks': 'read'}
+    assert audit['permissions'] == {'contents': 'read', 'checks': 'read', 'packages': 'read'}
     # Its own group would share tests.yml's `tests-refs/heads/main` and deadlock the call.
     assert 'concurrency' not in audit
     assert list(audit['jobs']) == ['attestation', 'unattested-ci']
@@ -341,24 +348,34 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' in text
     assert 'ref: ${{ github.sha }}' in text
     assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in text
-    assert workflow()['permissions'] == {'contents': 'read'}
+    assert workflow()['permissions'] == {'contents': 'read', 'packages': 'read'}
     assert list(workflow()['jobs']) == ['test', 'e2e-cli', 'dashboard']
 
 
-def test_postgres_jobs_share_registry_fallback_and_disposable_container_cleanup():
-    # GCR returned unknown blob (40164456524), ECR hit its anonymous data limit
-    # (40166218319), and Docker Hub has previously rate limited hosted runners.
-    # Both job families need fallback before starting tests, including forks.
+def test_postgres_uses_pinned_ghcr_with_public_mirror_fallbacks():
+    # Public mirrors were also throttled in the staging promotion for PR 1981.
+    assert workflow()['env']['POSTGRES_DIGEST'] == POSTGRES_DIGEST
     jobs = workflow()['jobs']
-    for name in ('test', 'e2e-cli'):
-        job = jobs[name]
-        assert not job.get('services')
-        steps = job['steps']
-        start = next(step for step in steps if step['name'] == 'Start PostgreSQL')
+    for job_name in ('test', 'e2e-cli'):
+        job = jobs[job_name]
+        assert not job.get('services')  # Implicit service pulls cannot fall back.
+        start = next(step for step in job['steps'] if step['name'] == 'Start PostgreSQL')
+        login = next(step for step in job['steps'] if step['name'] == 'Log in to GHCR')
+        assert login['continue-on-error'] == 'true'
+        assert login['env'] == {
+            'GHCR_ACTOR': '${{ github.actor }}', 'GHCR_TOKEN': '${{ github.token }}',
+        }
+        assert '--password-stdin' in login['run']
+        assert job['steps'].index(login) < job['steps'].index(start)
+        assert start['env'] == {'GHCR_OWNER': '${{ github.repository_owner }}'}
         assert start['run'] == f'bash {POSTGRES_START}'
-        assert steps.index(start) > next(
-            i for i, step in enumerate(steps) if step['name'] == 'Verify exact checkout'
+        assert job['steps'].index(start) > next(
+            i for i, step in enumerate(job['steps']) if step['name'] == 'Verify exact checkout'
         )
+        assert job['steps'].index(start) < next(
+            i for i, step in enumerate(job['steps']) if step['name'] == 'Set up Python'
+        )
+        steps = job['steps']
         logs = next(step for step in steps if step['name'] == 'PostgreSQL logs on failure')
         assert logs['if'] == 'failure()' and logs['run'] == 'docker logs ci-postgres || true'
         cleanup = next(step for step in steps if step['name'] == 'Remove PostgreSQL')
@@ -384,6 +401,7 @@ def test_postgres_jobs_share_registry_fallback_and_disposable_container_cleanup(
         (2, 0, 0, 0),
         (3, 0, 0, 0),
         (4, 0, 0, 0),
+        (5, 0, 0, 0),
         (6, 0, 0, 0),
         (8, 0, 0, 0),
         (99, 0, 0, 125),
@@ -444,6 +462,8 @@ raise AssertionError(sys.argv)
         env={
             **os.environ,
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "POSTGRES_DIGEST": POSTGRES_DIGEST,
+            "GHCR_OWNER": "Acme",
             "CI_POSTGRES_PULL_FAILURES": str(pull_failures),
             "CI_POSTGRES_RUN_STATUS": str(run_status),
             "CI_POSTGRES_READINESS_FAILURES": str(readiness_failures),
@@ -459,14 +479,16 @@ raise AssertionError(sys.argv)
     pulls = [call for call in calls if call[0] == "pull"]
     starts = [call for call in calls if call[0] == "run"]
     probes = [call for call in calls if call[0] == "exec"]
-    sources = [image for image in POSTGRES_IMAGES for _ in range(3)]
-    assert pulls == [["pull", image] for image in sources[:min(pull_failures + 1, 9)]]
+    assert pulls == [
+        ["pull", POSTGRES_IMAGES[i % 3]] for i in range(min(pull_failures + 1, 9))
+    ]
     if pull_failures >= 9:
         assert not starts and not probes
         assert "::error::PostgreSQL image pull failed" in result.stdout
     else:
         assert len(starts) == 1
-        assert "--pull=never" in starts[0] and sources[pull_failures] in starts[0]
+        assert "--pull=never" in starts[0]
+        assert POSTGRES_IMAGES[pull_failures % 3] in starts[0]
         assert starts[0][starts[0].index('--publish') + 1] == '127.0.0.1:5432:5432'
         for setting in ('max_connections=300', 'fsync=off', 'synchronous_commit=off',
                         'full_page_writes=off'):
@@ -491,11 +513,116 @@ raise AssertionError(sys.argv)
             if readiness_failures >= 60:
                 assert "::error::PostgreSQL did not become ready" in result.stdout
     delays = tmp_path / "retry-delays"
-    expected_delays = ["5"] * sum(min(max(pull_failures - start, 0), 2)
-                                  for start in (0, 3, 6))
+    expected_delays = ["5"] * min(pull_failures // 3, 2)
     if pull_failures < 9 and not run_status:
         expected_delays += ["1"] * min(readiness_failures, 60)
     assert (delays.read_text().splitlines() if delays.exists() else []) == expected_delays
+
+
+def test_postgres_mirror_is_a_trusted_writer_with_the_same_pin_as_consumers():
+    mirror = workflow('mirror-postgres.yml')
+    assert mirror['permissions'] == {'contents': 'read', 'packages': 'write'}
+    assert set(mirror['on']) == {'push', 'schedule', 'workflow_dispatch'}
+    assert mirror['on']['push']['branches'] == ['dev', 'main']
+    assert mirror['on']['push']['paths'] == [
+        '.github/workflows/mirror-postgres.yml', '.github/workflows/tests.yml',
+    ]
+    assert mirror['env']['POSTGRES_DIGEST'] == workflow()['env']['POSTGRES_DIGEST']
+    assert re.fullmatch(r'sha256:[0-9a-f]{64}', mirror['env']['POSTGRES_DIGEST'])
+    job = mirror['jobs']['mirror']
+    assert job['timeout-minutes'] == '20'
+    step = job['steps'][-1]
+    assert step['env']['GHCR_TOKEN'] == '${{ github.token }}'
+    assert '--all --preserve-digests' in step['run']
+    assert '--password-stdin' in step['run']
+    assert '--authfile "$auth_file"' in step['run']
+    assert 'ghcr.io/${GHCR_OWNER,,}/agent-queue-postgres' in step['run']
+
+
+@pytest.mark.parametrize(('copy_failures', 'bad_digest', 'login_status', 'status'), [
+    (0, False, 0, 0),
+    (1, False, 0, 0),
+    (2, False, 0, 0),
+    (3, False, 0, 0),
+    (8, False, 0, 0),
+    (99, False, 0, 125),
+    (0, True, 0, 1),
+    (0, False, 125, 125),
+])
+def test_postgres_mirror_retries_sources_and_verifies_published_digest(
+    tmp_path, copy_failures, bad_digest, login_status, status
+):
+    step = workflow('mirror-postgres.yml')['jobs']['mirror']['steps'][-1]
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    skopeo = bin_dir / 'skopeo'
+    skopeo.write_text(f'#!{sys.executable}\n' + '''
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+trace = Path('skopeo-calls.json')
+calls = json.loads(trace.read_text()) if trace.exists() else []
+calls.append(args)
+trace.write_text(json.dumps(calls))
+operation = args[0]
+if operation == 'login':
+    assert sys.stdin.read() == 'test-token'
+    Path(args[args.index('--authfile') + 1]).write_text('{}')
+    sys.exit(int(os.environ['LOGIN_STATUS']))
+if operation == 'copy':
+    # The containers/image transport rejects references containing tag + digest.
+    assert ':18@' not in args[-2]
+    count = sum(call[0] == 'copy' for call in calls)
+    sys.exit(125 if count <= int(os.environ['COPY_FAILURES']) else 0)
+if operation == 'inspect':
+    assert ':18@' not in args[-1]
+    sys.stdout.write('wrong' if os.environ['BAD_DIGEST'] == '1' else '{}')
+    sys.exit(0)
+raise AssertionError(args)
+''')
+    skopeo.chmod(0o755)
+    sleep = bin_dir / 'sleep'
+    sleep.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> retry-delays\n')
+    sleep.chmod(0o755)
+    digest = 'sha256:' + hashlib.sha256(b'{}').hexdigest()
+    result = subprocess.run(
+        ['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', step['run']],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            'PATH': f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            'RUNNER_TEMP': str(tmp_path),
+            'GITHUB_STEP_SUMMARY': str(tmp_path / 'summary'),
+            'GHCR_OWNER': 'Acme', 'GHCR_ACTOR': 'ci', 'GHCR_TOKEN': 'test-token',
+            'POSTGRES_DIGEST': digest,
+            'COPY_FAILURES': str(copy_failures), 'BAD_DIGEST': str(int(bad_digest)),
+            'LOGIN_STATUS': str(login_status),
+        },
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == status, result.stdout + result.stderr
+    calls = json.loads((tmp_path / 'skopeo-calls.json').read_text())
+    copies = [call for call in calls if call[0] == 'copy']
+    sources = ['mirror.gcr.io/library/postgres', 'public.ecr.aws/docker/library/postgres',
+               'docker.io/library/postgres']
+    assert [call[-2:] for call in copies] == [
+        [f'docker://{sources[i % 3]}@{digest}', 'docker://ghcr.io/acme/agent-queue-postgres:18']
+        for i in range(0 if login_status else min(copy_failures + 1, 9))
+    ]
+    assert not (tmp_path / 'ghcr-auth.json').exists()
+    assert ('test-token' not in result.stdout + result.stderr)
+    inspections = [call for call in calls if call[0] == 'inspect']
+    assert len(inspections) == int(not login_status and copy_failures < 9)
+    if inspections:
+        assert inspections[0][-1] == f'docker://ghcr.io/acme/agent-queue-postgres@{digest}'
+    assert (tmp_path / 'summary').exists() is (status == 0)
+    delays = tmp_path / 'retry-delays'
+    assert (delays.read_text().splitlines() if delays.exists() else []) == (
+        [] if login_status else ['5'] * min(copy_failures // 3, 2)
+    )
 
 
 def test_dashboard_checks_the_candidate_with_locked_workspace_dependencies():
