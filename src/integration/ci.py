@@ -939,10 +939,14 @@ class AuthenticatedGitHubObserver:
     def __init__(
         self, client: Any, *, expected_event: str | None = None,
         ignore_cancelled_batches: bool = False,
+        allow_push_fallback: bool = False,
     ):
+        if allow_push_fallback and expected_event != "pull_request":
+            raise ValueError("push fallback requires pull_request observation")
         self.client = client
         self.expected_event = expected_event
         self.ignore_cancelled_batches = ignore_cancelled_batches
+        self.allow_push_fallback = allow_push_fallback
 
     async def observe(
         self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
@@ -986,6 +990,12 @@ class AuthenticatedGitHubObserver:
             if self.expected_event is not None
             else None
         )
+        fallback_suites = {
+            _strict_int(record.get("check_suite_id"))
+            for record in workflow_records
+            if self.allow_push_fallback and record.get("event") == "push"
+            and record.get("head_sha") == head_sha
+        }
         selected: list[dict[str, Any]] = []
         diagnostics: dict[int, dict[str, Any]] = {}
         missing: list[str] = []
@@ -1001,6 +1011,7 @@ class AuthenticatedGitHubObserver:
         for name in trust.required_checks.names:
             records = [record for record in all_records if record.get("name") == name]
             candidates: list[tuple[int, dict[str, Any]]] = []
+            fallback_candidates: list[tuple[int, dict[str, Any]]] = []
             for record in records:
                 app = record.get("app")
                 if record.get("name") != name:
@@ -1016,8 +1027,15 @@ class AuthenticatedGitHubObserver:
                 suite = record.get("check_suite")
                 suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
                 if allowed_suites is not None and suite_id not in allowed_suites:
+                    if suite_id in fallback_suites:
+                        fallback_candidates.append((record_id, record))
                     continue
                 candidates.append((record_id, record))
+            # Root PR admission can use a push job omitted by PR workflows.
+            # Never let a successful push conceal an existing red/pending PR job.
+            using_fallback = not candidates and bool(fallback_candidates)
+            if using_fallback:
+                candidates = fallback_candidates
             if not candidates:
                 missing.append(name)
                 continue
@@ -1057,7 +1075,7 @@ class AuthenticatedGitHubObserver:
 
                     pending_diagnostics = await stuck_check_diagnostics(
                         self.client, trust, head_sha, all_records, workflow_records,
-                        expected_event=self.expected_event,
+                        expected_event="push" if using_fallback else self.expected_event,
                     )
                     raise CIObservationDeferred(
                         f"required check is not conclusive: {name}", classification="pending",
@@ -1099,7 +1117,8 @@ class AuthenticatedGitHubObserver:
             # Only completed workflows of the expected event on this head establish
             # that the snapshot's required name was never produced.
             expected_runs = [record for record in workflow_records
-                         if record.get("event") == (self.expected_event or "push")
+                         if (record.get("event") == (self.expected_event or "push")
+                             or (self.allow_push_fallback and record.get("event") == "push"))
                          and record.get("head_sha") == head_sha]
             if not expected_runs or any(record.get("status") != "completed" for record in expected_runs):
                 missing_push = self.expected_event == "push" and not expected_runs
