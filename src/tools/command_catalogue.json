@@ -12807,6 +12807,38 @@
       }
     },
     {
+      "name": "wait_source_redispatch",
+      "description": "Reobserve one durable source event in a supervisor project.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_seq": {
+            "minimum": 1,
+            "title": "Source Seq",
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_seq",
+          "note"
+        ],
+        "title": "WaitSourceRedispatchArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "playbook_script_run",
       "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
       "input_schema": {
@@ -21424,6 +21456,7 @@
     "wait_ack": "wait",
     "wait_decide": "wait",
     "wait_lift": "wait",
+    "wait_source_redispatch": "wait",
     "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",

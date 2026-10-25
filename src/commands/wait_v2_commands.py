@@ -127,6 +127,11 @@ class WaitV2CommandsMixin:
         with principal_context(ExecutionPrincipal.service("waits-listener")):
             return await self.wait_listener_drain(listener, watermark)
 
+    async def wait_service_report_lag(self, listener):
+        with principal_context(ExecutionPrincipal.service("waits-listener")):
+            self._wait_listener_authorize(listener)
+            return await listener.report_lag()
+
     async def wait_service_quarantine_deadline(self, timers, deadline, refusal):
         """Internal service mutation; no public worker quarantine authority."""
         with principal_context(ExecutionPrincipal.service("waits-driver")):
@@ -477,10 +482,14 @@ class WaitV2CommandsMixin:
                         raise WaitError("wait.out_of_scope", "select a project or fleet")
                     scope = {"project_id": project}
                     params["project_id"] = project
+                elif name == "wait_source_redispatch":
+                    scope = {"project_id": params["project_id"]}
                 else:
                     scope = await self._wait_v2_authorize_target(params)
             elif name in SERVICE_WAIT_COMMANDS or name == "wait_legacy_bridge":
                 scope = None
+            elif name == "wait_source_redispatch":
+                scope = {"project_id": params["project_id"]}
             elif name == "wait_graph":
                 scope = {"project_id": values.project_id, "fleet": values.fleet}
             else:
@@ -513,6 +522,16 @@ class WaitV2CommandsMixin:
 
     async def _cmd_wait_lift(self, args):
         return await self._wait_v2_command("wait_lift", args)
+
+    async def _cmd_wait_source_redispatch(self, args):
+        from src.waits.listener import LeaseLost, ListenerUnavailable
+
+        try:
+            return await self._wait_v2_command("wait_source_redispatch", args)
+        except TimeoutError:
+            return refusal("wait.unavailable", "source re-dispatch exceeded its work budget")
+        except (LeaseLost, ListenerUnavailable) as exc:
+            return refusal("wait.unavailable", str(exc))
 
     async def _cmd_wait_source_commit(self, args):
         return await self._wait_v2_command("wait_source_commit", args)

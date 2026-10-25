@@ -464,7 +464,7 @@ class ResumeTransaction:
             await self.orch._release_workspace_and_cleanup(workspace)
         return result
 
-    async def recovery_event(self, conn, event):
+    async def recovery_event(self, conn, event, *, project_id=None):
         """Only a new durable provider transition can clear the two-attempt hold."""
         if not event['source_key'].startswith('resource_invalidation:provider:'):
             return
@@ -480,6 +480,8 @@ class ResumeTransaction:
         ids = list((await conn.execute(select(continuations.c.wait_id).where(
             continuations.c.resume_state == 'held',
             continuations.c.hold_reason == 'resume_launch_failed',
+            continuations.c.task_id.in_(select(tasks.c.id).where(
+                tasks.c.project_id == project_id)) if project_id is not None else True,
         ))).scalars())
         for wait_id in ids:
             task, wait, intent = await locked_suspension(conn, wait_id)
