@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2636,
+ 'authorized_owned_delta': 2702,
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 15,
  'authorized_shared_owned_delta': 15,
@@ -1109,8 +1109,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82813,
- 'measured_owned_total': 158135,
+ 'measured_engine_lines': 82854,
+ 'measured_owned_total': 158201,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1407,7 +1407,72 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
  'reason': 'Carry the unchanged approved retained-fixer authority delta onto current dev; the '
            'project supervisor pre-approved this exact merge measurement. Preserve every '
            'historical grant, original baseline and ownership classification, with zero '
-           'remaining headroom and no new storage category.'}}
+           'remaining headroom and no new storage category.'},
+ 'pr_retirement_snapshot_composition': {'authorized_engine_delta': 41,
+ 'authorized_owned_delta': 41,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/delivery_observer.py': 11,
+                   'src/integration/pr_delivery.py': 30},
+ 'decision_message_id': 'msg-16d85278911b46f391de921c562d1ea4',
+ 'dev_source_revision': '76e0ba209d55fd34161da53e07ae914c94da11e0',
+ 'measured_engine_lines': 82776,
+ 'measured_owned_total': 158052,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 82735,
+ 'previous_measured_owned_total': 158011,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved +41 owned/engine lines for shared delivery snapshots, '
+           'fresh remote PR/default OID validation and retention across cancelled readers. '
+           'Preserve the accepted implementation, original baselines, every historical grant and '
+           'ownership classification; zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': 'c2404a0320d8659ec5a950025a1f22f176fd1db1',
+ 'supervisor_decision_comment_id': 'comment-f1dfa485200d4cbd965cbdfd06b8075b',
+ 'task_id': 'nimble-willow-13'},
+ 'terminal_hibernation_holds_composition': {'authorized_engine_delta': 0,
+ 'authorized_owned_delta': 25,
+ 'authorized_shared_owned_delta': 25,
+ 'authorized_table_delta': 0,
+ 'dev_source_revision': '76e0ba209d55fd34161da53e07ae914c94da11e0',
+ 'measured_engine_lines': 82776,
+ 'measured_owned_total': 158077,
+ 'measured_table_count': 45,
+ 'previous_measured_engine_lines': 82776,
+ 'previous_measured_owned_total': 158052,
+ 'previous_measured_table_count': 45,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2037',
+ 'reason': 'Exact supervisor-approved ledger-only reconciliation for terminal hibernation hold '
+           'retirement and resolved orphan cancellation, authorized in noble-beacon-61 reopen '
+           'feedback at 2026-10-25 21:16Z. Measured against current dev after restoring the '
+           'accepted published head. Preserve all historical grants, original baselines and '
+           'ownership classifications, with zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': 'e6882fa3e35febcc85f51d38c6d336969244d126',
+ 'supervisor_grant_reference': 'noble-beacon-61 reopen feedback, 2026-10-25 21:16Z',
+ 'task_id': 'noble-beacon-61'},
+ 'retained_fixer_authority_dev_refresh_measurement': {'task_id': 'noble-harbor-10',
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2025',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'decision_message_id': 'msg-36443ca7b0ef465480834e27e53aa406',
+ 'original_decision_message_id': 'msg-3472013282e44ae0810b733694d356fe',
+ 'source_revision': 'fc96c5472f2caf1c768f8d4aa492f80602d91f74',
+ 'dev_source_revision': 'ddf8b118329f8cd301981c516bbb79e1e8cfa44f',
+ 'authorized_owned_delta': 124,
+ 'authorized_engine_delta': 78,
+ 'authorized_shared_owned_delta': 46,
+ 'authorized_table_delta': 0,
+ 'previous_measured_owned_total': 158077,
+ 'previous_measured_engine_lines': 82776,
+ 'previous_measured_table_count': 45,
+ 'measured_owned_total': 158201,
+ 'measured_engine_lines': 82854,
+ 'measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved composition of the unchanged retained-fixer authority '
+           'delta with current dev. Preserve every historical grant, prior merge measurement, '
+           'original baseline and ownership classification, with zero remaining headroom and no '
+           'new storage category.'}}
 
 
 def integration_table(name: str) -> bool:

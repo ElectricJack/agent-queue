@@ -1339,6 +1339,81 @@ async def test_held_stop_recovers_on_later_tick_and_withdraws_incident(
     case.provider.stop.assert_not_awaited()
 
 
+@pytest.mark.parametrize('status', ['COMPLETED', 'FAILED', 'BLOCKED'])
+@pytest.mark.parametrize('outcome', ['pending', 'satisfied', 'cancelled'])
+@pytest.mark.parametrize('cleared', [False, True])
+async def test_terminal_stop_hold_retires_on_one_lifecycle_dispatch(env, status, outcome, cleared):
+    from src.wait_runtime.lifecycle import WaitLifecycle
+    from tests.test_wait_dispatch import runtime
+
+    await capture(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(status=status))
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='stop_uncertain', saved_head='a' * 40,
+            facts={'hibernation': {'stop_proof_attempts': 1, 'stop_retry_at': NOW}},
+        ))
+        await conn.execute(update(wait_records).values(
+            outcome=outcome, resolved_at=NOW if outcome != 'pending' else None,
+            result_ref='original-result' if outcome != 'pending' else None,
+            cleared_at=NOW if cleared else None, blocking=not cleared,
+        ))
+    before = await env.db.get_task('owner')
+    service = runtime(env, clock=lambda: NOW + 100, registry=build_registry())
+    service.command = AsyncMock(wraps=service.command)
+    service.lifecycle.hibernate.advance = AsyncMock(side_effect=AssertionError('must not stop/save'))
+    try:
+        await service.lifecycle.tick()
+        await asyncio.gather(*service.lifecycle._hibernate_tasks.values())
+        service.lifecycle.hibernate.advance.assert_not_awaited()
+        # A fresh lifecycle also observes durable retirement, not an in-memory guard.
+        service.lifecycle = WaitLifecycle(service, clock=lambda: NOW + 200)
+        await service.lifecycle.tick()
+        await service.lifecycle.tick()
+        assert service.command.await_count == 1
+        assert not service.lifecycle._hibernate_tasks
+    finally:
+        await service.lifecycle.stop()
+    row = await intent(env)
+    assert row['resume_state'] == 'cancelled' and row['hold_reason'] == 'task_terminal'
+    assert row['stopped_at'] is None and 'workspace_released_at' not in row['facts']
+    assert row['summary'] == 'Goal: resume the exact checked tree.' and row['saved_head'] == 'a' * 40
+    assert await env.db.get_task('owner') == before
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait['cleared_at'] is not None and not wait['blocking']
+        if outcome != 'pending':
+            assert (wait['outcome'], wait['resolved_at'], wait['result_ref']) == (
+                outcome, NOW, 'original-result')
+        else:
+            assert wait['outcome'] == 'cancelled'
+
+
+@pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])
+async def test_cleared_wait_retires_lingering_stop_hold_without_changing_live_task(env, outcome):
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='stop_uncertain',
+        ))
+        await conn.execute(update(wait_records).values(
+            outcome=outcome, resolved_at=NOW, cleared_at=NOW, blocking=False,
+        ))
+    before = await env.db.get_task('owner')
+    service = runtime(env, clock=lambda: NOW + 10, registry=build_registry())
+    service.command = AsyncMock(wraps=service.command)
+    try:
+        await service.lifecycle.tick()
+        await asyncio.gather(*service.lifecycle._hibernate_tasks.values())
+        await service.lifecycle.tick()
+        assert service.command.await_count == 1
+    finally:
+        await service.lifecycle.stop()
+    assert (await intent(env))['resume_state'] == 'cancelled'
+    assert await env.db.get_task('owner') == before
+
+
 @pytest.mark.parametrize('proof', ['alive', 'unavailable'])
 async def test_stop_proof_retries_exhaust_without_releasing_checkout(env, monkeypatch, proof):
     from src.wait_runtime.hibernate import STOP_PROOF_MAX_ATTEMPTS
