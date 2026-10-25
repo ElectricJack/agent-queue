@@ -812,13 +812,17 @@ async def test_read_handlers_repeat_live_batch_boundary(handler, state):
         await conn.execute(update(ingest_batches).where(
             ingest_batches.c.batch_id == batch["batch_id"],
         ).values(state=state))
-    commands = [("list_tasks", {}), ("task_show", {"task_id": batch["task_ids"][1]}),
+    commands = [("list_tasks", {}), ("list_tasks", {"limit": 1}),
+        ("task_show", {"task_id": batch["task_ids"][1]}),
         ("get_downstream_tasks", {"task_id": batch["task_ids"][1]}),
         ("approved_spec_packet", {"decision_id": decision["decision_id"],
                                   "packet_sha256": decision["packet_sha256"]})]
     for command, args in commands:
         result = await handler.execute(command, {**args, "_scope": asdict(scope)})
         assert "error" not in result, result
+        if command == "list_tasks" and args.get("limit"):
+            assert len(result["tasks"]) == 1
+            assert result["total"] > 1
     # Do not trust a successful scope check saved before a reclaim.
     await handler.db.update_task(reviewer_id, claim_epoch=3)
     for command, args in commands:

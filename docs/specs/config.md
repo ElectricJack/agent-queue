@@ -170,16 +170,27 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 |---|---|---|---|
 | `bot_token` | `str` | `""` | Discord bot token. |
 | `guild_id` | `str` | `""` | Discord server ID. |
-| `channel_id` | `str` | `""` | Numeric shared channel ID for digests and escalation roots. |
+| `channel_id` | `str` | `""` | Numeric shared channel ID for global-supervisor conversations across all projects, digests and escalation roots. |
+| `project_id` | `str` | `""` | Shared ask intake/admission scope; does not select the chat supervisor. |
 | `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
 | `escalations` | object | `stateful: false` | The stateful-escalation phase: in-place post edits, collapsed forms and auto-resolution. |
-| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the addressed elevated supervisor. |
+| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the elevated global supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
+
+The single channel is the global supervisor's interface for all projects.
+Ordinary chat and reference notices always belong to global, even when
+`discord.project_id` names a project with a live supervisor. A missing global
+session leaves chat queued; project supervisors never take over that conversation.
+`project_id` remains part of shared ask-channel admission, ask intake scope and the
+configuration fingerprint. Those uses and project-scoped ask decisions/discussions
+are preserved; this routing change requires no configuration migration. Keep the
+installed value when adopting global chat ownership. Changing it still invokes the
+existing ask-channel configuration reconciliation and cutover rules.
 
 #### 4.2.1 Supervisor-authored digest (phase P3, gated)
 
