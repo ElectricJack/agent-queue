@@ -130,6 +130,7 @@ async def test_prime_previews_complete_newest_comments_from_one_page(bounded_wor
     assert f"Showing {shown} of 207 comments." in history
     assert f"{207 - shown} older comments omitted" in history
     assert "`aq task comments t-1`" in history
+    assert f"{207 - shown} older comments omitted; read full history: `aq task comments t-1`." in history
     positions = []
     for comment in comments[:shown]:
         quoted = "\n".join("> " + line for line in comment["body"].split("\n"))
@@ -185,6 +186,7 @@ async def test_prime_preview_and_full_comment_retrieval_after_database_reopen(tm
         assert f"Showing {shown} of 7 comments." in history
         assert f"{7 - shown} older comments omitted" in history
         assert "`aq task comments t`" in history
+        assert f"{7 - shown} older comments omitted; read full history: `aq task comments t`." in history
         positions = []
         for body in reversed(comments[-shown:]):
             quoted = "\n".join("> " + line for line in body.split("\n"))
