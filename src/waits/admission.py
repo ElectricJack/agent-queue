@@ -194,7 +194,6 @@ class AdmissionReader:
         ))).mappings().one()
         profile = await o.db.get_profile(task["profile_id"], conn=conn) if task["profile_id"] else None
         ready = task["project_id"] in ready_projects
-        # Prepared stack views check cache expiry without Git I/O under the lock.
         project_model = await o.db.get_project(task["project_id"], conn=conn)
         batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
                        "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
@@ -202,11 +201,8 @@ class AdmissionReader:
         if blocker is None or blocker in {"policy_hold", "batch_hold", "workspace", "backoff"}:
             mode = admission.hierarchy_modes.get(task["project_id"], ProjectIntegrationMode.of(project_model))
             _, stack = admission.hierarchy_evidence(task["project_id"])
-            # A fresh writer pass may supply a network-capable StackView.
-            # Under the graph fence, only its bounded ref cache may be read.
             if stack is not None and not await replace(
-                stack, cached_only=True, fresh_max_age=stack.fresh_max_age or 2,
-            ).fresh():
+                stack, cached_only=True, fresh_max_age=stack.fresh_max_age or 2).fresh():
                 mode = replace(mode, stackable_prerequisite_ids=frozenset())
             predicates = claim_frontier_predicates(hierarchy_mode=mode)
             predicates["route"] = route_claimable(ready)

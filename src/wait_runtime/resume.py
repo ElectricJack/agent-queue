@@ -4,6 +4,7 @@ import errno
 import json
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -89,19 +90,14 @@ class ResumeTransaction:
 
     @background_graph_work()
     async def reserve(self, continuation_id, generation):
-        """Capture this resume's fresh evidence independently of source draining."""
+        """Replace inherited admission with fresh evidence for this task alone."""
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(continuations.c.task_id).where(
-                continuations.c.id == continuation_id, continuations.c.resume_state == 'queued',
-            ))
+                continuations.c.id == continuation_id, continuations.c.resume_state == 'queued'))
         reader = getattr(getattr(self.service, 'scheduler', None), 'reader', None)
-        if task_id and isinstance(reader, AdmissionReader):
-            # Never inherit a fleet-wide/cached pass from a slow listener or
-            # scheduler. Observe every delivery mode before the graph fence,
-            # and fence only this candidate's inputs during reservation.
-            async with reader.prepared(task_ids=[task_id], cached_only=False):
-                return await self._reserve(continuation_id, generation)
-        return await self._reserve(continuation_id, generation)
+        async with (reader.prepared(task_ids=[task_id], cached_only=False)
+                    if task_id and isinstance(reader, AdmissionReader) else nullcontext()):
+            return await self._reserve(continuation_id, generation)
 
     async def _reserve(self, continuation_id, generation):
         async with self.db._engine.begin() as conn:
@@ -117,9 +113,8 @@ class ResumeTransaction:
             if intent['resume_state'] == 'reserved' and task['status'] == 'RESUME_PENDING':
                 return AssignAction(task['assigned_agent_id'], task['id'], task['project_id'],
                                     continuation_id=intent['id'], generation=generation)
-            if intent['resume_state'] != 'queued':
-                return None
-            if (task['status'] != 'RESUME_PENDING' or wait['outcome'] == 'pending'
+            if (intent['resume_state'] != 'queued' or task['status'] != 'RESUME_PENDING'
+                    or wait['outcome'] == 'pending'
                     or not await parked(conn, task, wait, intent)):
                 return None
             observed = await self.service.scheduler.reader.observe_task(
