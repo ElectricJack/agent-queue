@@ -390,6 +390,13 @@ the task's original age. The hot-file fix (Phase A5) must ship before or with
 this policy. Explicit `refresh-epic --apply` remains available. Push-event runs
 never count as PR checks.
 
+Status retires an old `pr_conflicting` diagnostic when a historical code receipt
+matches the completed task's current source and root target. This includes a
+cherry-picked delivery whose carrying commit differs from the PR head. Receipts
+for another repository, target, head or an older completion leave the diagnostic
+visible. This read-only reconciliation does not change train admission or Git
+delivery truth.
+
 Root admission first probes the fetched target and source with local `merge-tree`.
 A source conflict reports `pr_conflicting` without a GitHub read; conflicts confined
 to files marked `merge=aq-generated` follow the build's regeneration policy instead.
