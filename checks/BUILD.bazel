@@ -1,0 +1,11 @@
+test_suite(
+    name = "generated",
+    tests = ["//tools/bazel:generated_check"],
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "dashboard",
+    tests = ["//tools/bazel:dashboard_check"],
+    visibility = ["//visibility:public"],
+)

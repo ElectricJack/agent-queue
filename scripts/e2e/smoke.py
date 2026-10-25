@@ -580,7 +580,13 @@ class Worker:
         return aq(*args, token=self.token, session_id=self.session_id, check_ok=check_ok)
 
     def claim_next(self, *, check_ok: bool = True, wait: int = 0) -> dict:
-        out = self.aq("task", "claim", "--next", "--wait", str(wait), check_ok=check_ok)
+        return self.claim(check_ok=check_ok, wait=wait)
+
+    def claim(
+        self, task_id: str | None = None, *, check_ok: bool = True, wait: int = 0,
+    ) -> dict:
+        out = self.aq("task", "claim", task_id or "--next", "--wait", str(wait),
+                      check_ok=check_ok)
         if isinstance(out, dict) and out.get("result") == "claimed":
             self.task_id = out["task"]["id"]
             self.claim_epoch = out["claim_epoch"]
@@ -620,10 +626,13 @@ class Worker:
         )
 
 
-def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> dict:
+def claim_fixture(
+    worker: Worker, task_ids: str | list[str], *, what: str, targeted: bool = False,
+) -> dict:
     """Bound transient empty claims without hiding a wrong task or session failure."""
     fixtures = [task_ids] if isinstance(task_ids, str) else task_ids
     check(fixtures, f"{what}: no fixture tasks available")
+    check(not targeted or len(fixtures) == 1, f"{what}: targeted claim requires one fixture")
     last_claim = None
 
     def claim():
@@ -632,9 +641,18 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
         # no task.ready event to wake a long poll. Leave time for retries.
         # Preparation can outlive this short observation; the next call
         # resumes the session's existing attempt.
-        last_claim = worker.claim_next(wait=1)
+        last_claim = (worker.claim(fixtures[0], wait=1) if targeted
+                      else worker.claim_next(wait=1))
         if last_claim.get("result") == "no_ready_work":
             return None
+        if (targeted and last_claim.get("result") == "claim_conflict"
+                and not last_claim.get("reason")):
+            # A targeted SKIP LOCKED miss is a conflict, not an empty frontier.
+            # Retry only while the fixture still proves ready and unclaimed.
+            task = task_show(fixtures[0])
+            if (task["status"] == "READY" and not task.get("assigned_agent")
+                    and not task.get("claimed_by") and not task.get("is_blocked")):
+                return None
         if last_claim.get("result") == "claim_in_progress":
             check(last_claim.get("task_id") in fixtures,
                   f"{what}: expected fixture {task_ids}, preparing {last_claim.get('task_id')}")
@@ -2228,7 +2246,8 @@ def _s16_outage(state: dict) -> dict:
         _provb_session, what="a provb pool session for the moved task", profile_id=STD_B,
     )
     worker = Worker.adopt(sess["id"])
-    claim_fixture(worker, pref[0], what=f"S16 provb worker to claim moved task {pref[0]}")
+    claim_fixture(worker, pref[0], what=f"S16 provb worker to claim moved task {pref[0]}",
+                  targeted=True)
     worker.close(summary="S16 moved task done on provb")
     worker.drain_ack()
     note(f"provb session {sess['id']} claimed and closed {pref[0]}")
@@ -2298,7 +2317,10 @@ def _claim_probation_canary(pinned: str, solo: str) -> tuple[Worker, dict, str]:
     )
     expected = pinned if canary["profile_id"] == STD_A else solo
     worker = Worker.adopt(canary["id"])
-    claim_fixture(worker, expected, what=f"S16 prova canary {canary['id']} to claim held {expected}")
+    # Other prova work remains queued. SKIP LOCKED may bypass this fixture
+    # while a sweep holds its row, so request it by ID rather than by priority.
+    claim_fixture(worker, expected, what=f"S16 prova canary {canary['id']} to claim held {expected}",
+                  targeted=True)
     return worker, canary, expected
 
 
@@ -2332,7 +2354,8 @@ def _s16_recovery(outage: dict) -> str:
             profile_id=STD_A,
         )
         worker_p = Worker.adopt(sess_a["id"])
-        claim_fixture(worker_p, pinned, what=f"S16 prova worker to claim the pinned task {pinned}")
+        claim_fixture(worker_p, pinned, what=f"S16 prova worker to claim the pinned task {pinned}",
+                      targeted=True)
         worker_p.close(summary="S16 pinned task done on prova")
         worker_p.drain_ack()
         note(f"{sess_a['id']} claimed and closed the pinned task {pinned} on prova")
