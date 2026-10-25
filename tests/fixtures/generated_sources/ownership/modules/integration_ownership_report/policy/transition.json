@@ -14,7 +14,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 82649,
+    "engine_cap": 82727,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -42,7 +42,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2426,
+      "authorized_owned_delta": 2550,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -190,8 +190,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 82649,
-      "measured_owned_total": 157925,
+      "measured_engine_lines": 82727,
+      "measured_owned_total": 158049,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -234,6 +234,36 @@
         "task_id": "azure-zenith-14"
       },
       "remaining_headroom": 0,
+      "retained_fixer_authority_composition": {
+        "authorized_engine_delta": 78,
+        "authorized_owned_delta": 124,
+        "authorized_shared_owned_delta": 46,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/api/scope.py": 1,
+          "src/cli/integration.py": 15,
+          "src/commands/contracts/integration.py": 3,
+          "src/commands/integration_commands.py": 27,
+          "src/integration/batches.py": 8,
+          "src/integration/fixer_runtime.py": 54,
+          "src/integration/train_sources.py": 16
+        },
+        "decision_message_id": "msg-3472013282e44ae0810b733694d356fe",
+        "dev_source_revision": "aa92c4b8b2726f08f37af6fcec326e47301e7b34",
+        "measured_engine_lines": 82727,
+        "measured_owned_total": 158049,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82649,
+        "previous_measured_owned_total": 157925,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2025",
+        "reason": "Exact supervisor-approved footprint for retained-fixer publication recovery after daemon restart and the owning-supervisor authority control. Preserve all historical grants, original baselines and ownership classifications; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "02e73e0b72d1e281050abd77bd14becc950714c5",
+        "task_id": "noble-harbor-10",
+        "thread_id": "noble-harbor-10-ci-size"
+      },
       "review_followup_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 4,
@@ -414,7 +444,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157925,
+    "owned_total_cap": 158049,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

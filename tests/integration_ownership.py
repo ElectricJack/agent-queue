@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2426,
+ 'authorized_owned_delta': 2550,
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 15,
  'authorized_shared_owned_delta': 15,
@@ -1091,8 +1091,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82649,
- 'measured_owned_total': 157925,
+ 'measured_engine_lines': 82727,
+ 'measured_owned_total': 158049,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1338,7 +1338,36 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '6951e0fae10722f912b78c66664b2d700fbc36f5',
      'supervisor_grant_reference': 'msg-2d36d0eb',
      'task_id': 'eager-stone-76',
-     'thread_id': 'eager-stone-76-ci-size'}}
+     'thread_id': 'eager-stone-76-ci-size'},
+ 'retained_fixer_authority_composition': {'task_id': 'noble-harbor-10',
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2025',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'decision_message_id': 'msg-3472013282e44ae0810b733694d356fe',
+ 'thread_id': 'noble-harbor-10-ci-size',
+ 'source_revision': '02e73e0b72d1e281050abd77bd14becc950714c5',
+ 'dev_source_revision': 'aa92c4b8b2726f08f37af6fcec326e47301e7b34',
+ 'authorized_owned_delta': 124,
+ 'authorized_engine_delta': 78,
+ 'authorized_shared_owned_delta': 46,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/batches.py': 8,
+                   'src/integration/fixer_runtime.py': 54,
+                   'src/integration/train_sources.py': 16,
+                   'src/commands/integration_commands.py': 27,
+                   'src/cli/integration.py': 15,
+                   'src/commands/contracts/integration.py': 3,
+                   'src/api/scope.py': 1},
+ 'previous_measured_owned_total': 157925,
+ 'previous_measured_engine_lines': 82649,
+ 'previous_measured_table_count': 45,
+ 'measured_owned_total': 158049,
+ 'measured_engine_lines': 82727,
+ 'measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved footprint for retained-fixer publication recovery after '
+           'daemon restart and the owning-supervisor authority control. Preserve all '
+           'historical grants, original baselines and ownership classifications; zero '
+           'remaining headroom and no new storage category.'}}
 
 
 def integration_table(name: str) -> bool:
