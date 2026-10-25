@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2512,
+ 'authorized_owned_delta': 2537,
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 15,
  'authorized_shared_owned_delta': 15,
@@ -1110,7 +1110,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82735,
- 'measured_owned_total': 158011,
+ 'measured_owned_total': 158036,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1356,7 +1356,29 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '6951e0fae10722f912b78c66664b2d700fbc36f5',
      'supervisor_grant_reference': 'msg-2d36d0eb',
      'task_id': 'eager-stone-76',
-     'thread_id': 'eager-stone-76-ci-size'}}
+     'thread_id': 'eager-stone-76-ci-size'},
+ 'terminal_hibernation_holds_composition': {'authorized_engine_delta': 0,
+ 'authorized_owned_delta': 25,
+ 'authorized_shared_owned_delta': 25,
+ 'authorized_table_delta': 0,
+ 'dev_source_revision': '76e0ba209d55fd34161da53e07ae914c94da11e0',
+ 'measured_engine_lines': 82735,
+ 'measured_owned_total': 158036,
+ 'measured_table_count': 45,
+ 'previous_measured_engine_lines': 82735,
+ 'previous_measured_owned_total': 158011,
+ 'previous_measured_table_count': 45,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2037',
+ 'reason': 'Exact supervisor-approved ledger-only reconciliation for terminal hibernation hold '
+           'retirement and resolved orphan cancellation, authorized in noble-beacon-61 reopen '
+           'feedback at 2026-10-25 21:16Z. Measured against current dev after restoring the '
+           'accepted published head. Preserve all historical grants, original baselines and '
+           'ownership classifications, with zero remaining headroom and no new storage '
+           'category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': 'e6882fa3e35febcc85f51d38c6d336969244d126',
+ 'supervisor_grant_reference': 'noble-beacon-61 reopen feedback, 2026-10-25 21:16Z',
+ 'task_id': 'noble-beacon-61'}}
 
 
 def integration_table(name: str) -> bool:
