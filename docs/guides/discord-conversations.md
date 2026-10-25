@@ -174,6 +174,29 @@ a longer answer stays in conversation content with a dashboard pointer. Sends
 disable all mentions, remove control characters and mention tokens, and retain
 only links beginning with the configured dashboard base URL.
 
+To initiate the next interview question or follow-up after earlier inputs are
+answered, use the existing conversation id:
+
+```bash
+aq supervisor-inbox say --conversation-id <id> --file question.txt \
+  --idempotency-key interview-question-2
+```
+
+`--text` is also supported, exclusive with `--file`. The live addressed project
+supervisor, live global supervisor, or local operator can send; workers report
+their question to the supervisor. Reuse the key for retries: the first persisted
+body wins and exactly one delivery is reserved. The result includes `delivery_id`
+and `delivery_dedup_key`; acceptance means queued, with the shared outbox retaining
+the transport receipt or failure. Quotas are 10 initiated posts per supervisor
+and 60 per channel per 600 seconds, shared across launches and excluding retries.
+The configured destination, conversation audience and DM opt-in still apply.
+An ordinary new channel message or a Discord reply to the posted message becomes
+another input in that conversation. `say` does not answer or reopen an old input.
+
+`aq message send --to user:discord:<id>` returns
+`unsupported_user_destination`; use `supervisor-inbox say` for Discord and
+`user:dashboard` for the human inbox.
+
 If creating the thread of a thread-bound conversation fails, AQ queues one
 bounded failure reply in the channel
 and marks delivery blocked; the accepted input remains visible internally.
