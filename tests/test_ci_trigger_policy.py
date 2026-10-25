@@ -22,7 +22,12 @@ from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUP
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
 BATCH_REF = candidate_ref('batch-1').removeprefix('refs/heads/')
-POSTGRES_IMAGE = 'public.ecr.aws/docker/library/postgres:18'
+POSTGRES_IMAGES = [
+    'mirror.gcr.io/library/postgres:18-alpine',
+    'public.ecr.aws/docker/library/postgres:18-alpine',
+    'docker.io/library/postgres:18-alpine',
+]
+POSTGRES_START = Path('.github/scripts/start-postgres.sh')
 
 
 def workflow(name='tests.yml'):
@@ -340,15 +345,26 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert list(workflow()['jobs']) == ['test', 'e2e-cli', 'dashboard']
 
 
-def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit():
-    # Run 37990643989 (2026-10-09) failed all 15 Postgres jobs with Docker Hub's
-    # `toomanyrequests` before a test ran. Google's mirror later exhausted all
-    # retries with `unknown blob` (run 40164456524). Docker's ECR Public mirror
-    # serves the official image with no secret, including for fork pull requests.
+def test_postgres_jobs_share_registry_fallback_and_disposable_container_cleanup():
+    # GCR returned unknown blob (40164456524), ECR hit its anonymous data limit
+    # (40166218319), and Docker Hub has previously rate limited hosted runners.
+    # Both job families need fallback before starting tests, including forks.
     jobs = workflow()['jobs']
-    start = next(step for step in jobs['test']['steps'] if step['name'] == 'Start PostgreSQL')
-    assert POSTGRES_IMAGE in start['run'].split()
-    assert jobs['e2e-cli']['services']['postgres']['image'] == POSTGRES_IMAGE
+    for name in ('test', 'e2e-cli'):
+        job = jobs[name]
+        assert not job.get('services')
+        steps = job['steps']
+        start = next(step for step in steps if step['name'] == 'Start PostgreSQL')
+        assert start['run'] == f'bash {POSTGRES_START}'
+        assert steps.index(start) > next(
+            i for i, step in enumerate(steps) if step['name'] == 'Verify exact checkout'
+        )
+        logs = next(step for step in steps if step['name'] == 'PostgreSQL logs on failure')
+        assert logs['if'] == 'failure()' and logs['run'] == 'docker logs ci-postgres || true'
+        cleanup = next(step for step in steps if step['name'] == 'Remove PostgreSQL')
+        assert cleanup['if'] == 'always()'
+        assert cleanup['run'] == 'docker rm --force --volumes ci-postgres || true'
+        assert steps.index(cleanup) > steps.index(start)
     for path in WORKFLOWS.glob('*.yml'):
         text = path.read_text()
         assert not re.search(r'(?<![\w./-])postgres:\d', text), path
@@ -366,8 +382,13 @@ def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit()
         (0, 0, 0, 0),
         (1, 0, 0, 0),
         (2, 0, 0, 0),
+        (3, 0, 0, 0),
+        (4, 0, 0, 0),
+        (6, 0, 0, 0),
+        (8, 0, 0, 0),
         (99, 0, 0, 125),
         (0, 125, 0, 125),
+        (3, 125, 0, 125),
         (0, 0, 3, 0),
         (0, 0, 99, 1),
     ],
@@ -380,6 +401,9 @@ def test_postgres_start_recovers_pull_errors_and_preserves_startup_failures(
     start = next(
         step for step in workflow()["jobs"]["test"]["steps"] if step["name"] == "Start PostgreSQL"
     )
+    script = tmp_path / POSTGRES_START
+    script.parent.mkdir(parents=True)
+    script.write_text(POSTGRES_START.read_text())
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker_stub = bin_dir / "docker"
@@ -435,13 +459,18 @@ raise AssertionError(sys.argv)
     pulls = [call for call in calls if call[0] == "pull"]
     starts = [call for call in calls if call[0] == "run"]
     probes = [call for call in calls if call[0] == "exec"]
-    assert pulls == [["pull", POSTGRES_IMAGE]] * min(pull_failures + 1, 3)
-    if pull_failures >= 3:
+    sources = [image for image in POSTGRES_IMAGES for _ in range(3)]
+    assert pulls == [["pull", image] for image in sources[:min(pull_failures + 1, 9)]]
+    if pull_failures >= 9:
         assert not starts and not probes
         assert "::error::PostgreSQL image pull failed" in result.stdout
     else:
         assert len(starts) == 1
-        assert "--pull=never" in starts[0] and POSTGRES_IMAGE in starts[0]
+        assert "--pull=never" in starts[0] and sources[pull_failures] in starts[0]
+        assert starts[0][starts[0].index('--publish') + 1] == '127.0.0.1:5432:5432'
+        for setting in ('max_connections=300', 'fsync=off', 'synchronous_commit=off',
+                        'full_page_writes=off'):
+            assert setting in starts[0]
         assert calls[: len(pulls)] == pulls
         if run_status:
             assert not probes
@@ -462,8 +491,9 @@ raise AssertionError(sys.argv)
             if readiness_failures >= 60:
                 assert "::error::PostgreSQL did not become ready" in result.stdout
     delays = tmp_path / "retry-delays"
-    expected_delays = ["5"] * min(pull_failures, 2)
-    if pull_failures < 3 and not run_status:
+    expected_delays = ["5"] * sum(min(max(pull_failures - start, 0), 2)
+                                  for start in (0, 3, 6))
+    if pull_failures < 9 and not run_status:
         expected_delays += ["1"] * min(readiness_failures, 60)
     assert (delays.read_text().splitlines() if delays.exists() else []) == expected_delays
 

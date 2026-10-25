@@ -336,16 +336,17 @@ and covers the remaining integration tests.
 
 ### Environment
 
-* Each job starts a disposable `postgres:18` container with `docker run`, with
-  `POSTGRES_TEST_DSN` pointed at its localhost port. The image, like the
-  `E2E CLI` jobs' service image, is pulled from Google's Docker Hub mirror,
-  `mirror.gcr.io/library/postgres:18`: anonymous Docker Hub pulls are rate
-  limited per runner IP, and a login secret would not reach pull requests from
-  forks. The test matrix explicitly pulls the image before starting the
-  container, retrying up to three times with five seconds between attempts to
-  recover from transient mirror errors such as `unknown blob`. Exhausted pulls
-  fail the job; container-start errors are not retried. GitHub Actions service
-  containers do not accept PostgreSQL server arguments. The server runs with
+* Both the test matrix and `E2E CLI` jobs start a disposable official PostgreSQL
+  `18-alpine` container through [the shared startup script](../../.github/scripts/start-postgres.sh),
+  with `POSTGRES_TEST_DSN` pointed at its localhost port. The smaller Alpine
+  image matches the local test service. The script tries Google's Docker Hub
+  mirror, Docker's ECR Public mirror, then Docker Hub, with up to three attempts
+  per source and five seconds between retries. Google has returned `unknown blob`,
+  while both ECR Public and Docker Hub have denied anonymous hosted-runner pulls
+  with quota errors. Independent sources let fork pull requests recover without
+  a login secret. Exhausting all sources fails the job; container-start errors
+  are not retried. Both job families print logs on failure and remove the
+  container and its volumes in an always-run step. The server runs with
   `max_connections=300` so concurrent xdist workers can lease databases without
   exhausting the default 100 connections. It also uses `fsync=off`,
   `synchronous_commit=off`, and `full_page_writes=off` to reduce checkpoint and
