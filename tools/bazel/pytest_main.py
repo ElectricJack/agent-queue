@@ -74,6 +74,8 @@ def pytest_child(spec: dict, output: Path) -> int:
         spec["module"],
         "-o",
         "addopts=",
+        "-o",
+        "cache_dir=" + str(Path(os.environ["TMPDIR"]) / "pytest-cache"),
         "-m",
         spec["marker"],
         "-p",
