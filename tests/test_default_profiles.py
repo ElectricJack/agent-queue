@@ -168,6 +168,21 @@ def test_seeded_supervisor_profile_has_named_session_config(tmp_path):
     assert isinstance(parsed.config.get("idle_timeout"), int)
 
 
+def test_seeded_supervisor_writes_hourly_developer_narrative(tmp_path):
+    ensure_default_profiles(str(tmp_path))
+    profile = parse_profile(
+        _vault_profile_path(tmp_path, "supervisor").read_text(encoding="utf-8")
+    )
+    rules = " ".join(profile.rules.split())
+    for instruction in (
+        "INPUT ONLY", "first-person developer-style", "progress since the last update",
+        "highlights", "blocked/needs you", "next steps", "deduplicate noise",
+        "Never relay the brief or concatenate its facts", "600 characters",
+        "without internal IDs", "ask the exact question", "No new facts means silence",
+    ):
+        assert instruction in rules
+
+
 def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
     """A fresh install gets the supervisor's patrol and concrete stall repairs."""
     ensure_default_profiles(str(tmp_path))

@@ -67,6 +67,8 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: [".bazelversion", ".bazelrc", "MODULE.bazel", "MODULE.bazel.lock", "BUILD.bazel", "tools/bazel/**"], areas: ["bazel-toolchains", "bazel-environment"] }
+  - { paths: ["scripts/bazel/inventory.py", "scripts/bazel/report_metrics.py"], areas: ["bazel-metrics"] }
   - { paths: ["src/stall_watch.py", "src/database/queries/stall_watch_queries.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/policy_profiles/**", "src/commands/policy_commands.py", "src/api/models/policy.py", "src/cli/policy.py", "dashboard/src/pages/project/PolicyProfiles.tsx", "dashboard/src/api/policy.ts"], areas: ["policy-profiles"] }
   - { paths: ["tests/integration_ownership.py", "tests/integration_ownership.json", "tests/integration_ownership_report.json"], areas: ["integration-trains"] }
@@ -196,6 +198,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/dashboard_paths.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/remote_links.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
+  - { paths: ["src/project_schedules.py", "src/database/queries/project_schedule_queries.py", "src/commands/schedule_commands.py", "src/commands/contracts/schedule.py"], areas: ["scheduling"] }
   - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }
   - { paths: ["src/surface_schema.py"], areas: ["command-dispatch"] }
   - { paths: ["src/warm_workspaces.py", "src/build_cache.py"], areas: ["workspaces", "integration-trains", "managed-jobs"] }

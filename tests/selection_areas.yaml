@@ -11,6 +11,15 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: bazel-environment
+    description: "Credential-free child environments, namespace isolation and bounded process cleanup."
+    match: [tests/test_bazel_environment.py]
+  - id: bazel-toolchains
+    description: "Pinned toolchain, dependency lock and Linux ABI integrity boundaries."
+    match: [tests/test_bazel_manifest.py]
+  - id: bazel-metrics
+    description: "Verification obligation inventory and exact-identity delivery metric accounting."
+    match: [tests/test_bazel_metrics.py]
   - id: operator-workers
     description: "Scoped operator worker authority, human decisions, auditing and setup preflight."
     match: [tests/test_operator_workers.py]
@@ -797,6 +806,7 @@ areas:
       - tests/test_scheduler.py
       - tests/test_project_constraint*.py
       - tests/test_schedule.py
+      - tests/test_project_schedules.py
       - tests/test_timer_service*.py
   - id: metrics
     description: "Metrics: per-second sampling, roll-ups and retention, series API and WebSocket, chat-analyzer outcomes, fixed histograms, perf registry and loop lag, host attribution, PSI and test slots, relay deltas, route latency, pool waits, query timing and the dashboard-perf kit."
