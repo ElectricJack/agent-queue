@@ -336,23 +336,24 @@ and covers the remaining integration tests.
 
 ### Environment
 
-* Each job starts a disposable `postgres:18` container with `docker run`, with
-  `POSTGRES_TEST_DSN` pointed at its localhost port. The image, like the
-  `E2E CLI` jobs' service image, is pulled from Google's Docker Hub mirror,
-  `mirror.gcr.io/library/postgres:18`: anonymous Docker Hub pulls are rate
-  limited per runner IP, and a login secret would not reach pull requests from
-  forks. The test matrix explicitly pulls the image before starting the
-  container, retrying up to three times with five seconds between attempts to
-  recover from transient mirror errors such as `unknown blob`. Exhausted pulls
-  fail the job; container-start errors are not retried. GitHub Actions service
-  containers do not accept PostgreSQL server arguments. The server runs with
-  `max_connections=300` so concurrent xdist workers can lease databases without
-  exhausting the default 100 connections. It also uses `fsync=off`,
-  `synchronous_commit=off`, and `full_page_writes=off` to reduce checkpoint and
-  database-teardown costs for this disposable data. These settings are confined
-  to CI. A bounded TCP readiness check runs before migrations or tests; failed
-  jobs print the PostgreSQL logs, and an always-run step removes the container
-  and its volumes.
+* Both Python test and `E2E CLI` jobs explicitly start a disposable PostgreSQL
+  18 container with `docker run`, with `POSTGRES_TEST_DSN` pointed at its
+  localhost port. Each pull round tries Google's Docker Hub mirror,
+  `mirror.gcr.io/library/postgres:18`, then the independent Amazon ECR Public
+  mirror, `public.ecr.aws/docker/library/postgres:18`. Anonymous Docker Hub
+  pulls are rate limited per runner IP, and a login secret would not reach
+  pull requests from forks. Up to three rounds, with five seconds between
+  rounds, recover from transient mirror errors and persistent missing blobs
+  at one registry. Exhausted pulls fail the job; container-start errors are
+  not retried. E2E uses the same startup steps because implicit service pulls
+  cannot fall back to another registry.
+  The server runs with `max_connections=300` so concurrent xdist workers can
+  lease databases without exhausting the default 100 connections. It also uses
+  `fsync=off`, `synchronous_commit=off`, and `full_page_writes=off` to reduce
+  checkpoint and database-teardown costs for this disposable data. These
+  settings are confined to CI. A bounded TCP readiness check runs before
+  migrations or tests; failed jobs print the PostgreSQL logs, and an always-run
+  step removes the container and its volumes.
   [`tests/pg_dsn.py`](../../tests/pg_dsn.py) rewrites that DSN per xdist worker
   (`…_gw0`, `…_gw1`, …) and creates each worker's database on first use —
   sharing one database across concurrent workers would let one worker's reset
