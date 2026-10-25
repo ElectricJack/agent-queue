@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -11,11 +12,11 @@ from dataclasses import replace
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner
+from src.database.queries.wait_queries import verify_owner
 from src.database.tables import sessions, wait_listener_cursors, wait_records, wait_source_events
 from src.waits.conditions import Condition, Scope, WaitError
 from src.waits.admission import admission_pass
-from src.waits.graph import track_graph_lock
+from src.waits.graph import lock_graph
 from src.waits.resource_sources import (
     RESOURCE_INVALIDATIONS,
     _invalidation,
@@ -40,6 +41,10 @@ class WaitSourceListener:
     safety_seconds = 60
     batch_size = 200
     retry_batch_size = 20
+    event_budget_seconds = 5
+    drain_budget_seconds = 5
+    retry_seconds = 30
+    graph_wait_seconds = 0.25
 
     def __init__(self, service, *, clock=time.time, owner=None, connect=None):
         self.service = service
@@ -123,18 +128,24 @@ class WaitSourceListener:
         except WaitError:
             return None
 
-    async def _dispatch(self, conn, event):
+    async def _dispatch(self, conn, event, *, project_id=None):
         if event["source_key"].startswith("task:"):
             from src.waits.recovery import TERMINAL_TASK_STATUSES, retire_terminal_task_waits
 
             if event["payload"].get("status") in TERMINAL_TASK_STATUSES:
+                if project_id is not None:
+                    from src.database.tables import tasks
+                    owner_project = await conn.scalar(select(tasks.c.project_id).where(
+                        tasks.c.id == event["source_key"].removeprefix("task:")))
+                    if owner_project != project_id:
+                        raise WaitError("wait.out_of_scope", "source belongs to another project")
                 await retire_terminal_task_waits(
                     conn, event["source_key"].removeprefix("task:"), now=self.clock(),
                 )
         dispatcher = self.service.dispatcher
         lifecycle = getattr(self.service, "lifecycle", None)
         if lifecycle is not None:
-            await lifecycle.resume.recovery_event(conn, event)
+            await lifecycle.resume.recovery_event(conn, event, project_id=project_id)
         if event["source_key"].startswith("resource_invalidation:"):
             after = ""
             while candidates := await resource_invalidation_candidates(
@@ -142,17 +153,21 @@ class WaitSourceListener:
             ):
                 if dispatcher is None:
                     raise ListenerUnavailable("WakeDispatcher is required")
+                next_after = candidates[-1]["id"]
+                candidates = [row for row in candidates
+                              if project_id is None or row["project_id"] == project_id]
                 for row, evidence in await reobserve_resource_candidates(
                     conn, candidates, verify=self.verify_resource,
                 ):
                     # Dispatcher repeats owner/source locks and fresh observation;
                     # bridge evidence is a candidate, never a committed outcome.
                     await self._commit(dispatcher, conn, row, event, evidence=evidence)
-                after = candidates[-1]["id"]
+                after = next_after
             return 0
         rows = (await conn.execute(select(wait_records).where(
             wait_records.c.outcome == "pending",
             wait_records.c.verification_state == "verified",
+            or_(project_id is None, wait_records.c.project_id == project_id),
             wait_records.c.source_key == event["source_key"],
             wait_records.c.source_generation == event["source_generation"],
             wait_records.c.source_watermark_seq < event["seq"],
@@ -206,6 +221,34 @@ class WaitSourceListener:
             prefix.append(row["seq"])
         return prefix
 
+    @staticmethod
+    def _coalesce_key(event):
+        if event["source_key"].startswith("ci_check:"):
+            return (event["source_key"], event["source_generation"])
+        payload = _invalidation(event)
+        if payload and payload["producer"] in {"pool", "config", "workspace"}:
+            return (payload["producer"], payload.get("project_id"))
+        return None
+
+    async def _defer(self, attempt):
+        """After rollback, retain the source row and CAS only the forward cursor."""
+        if not attempt:
+            return False
+        async with self.db._engine.begin() as conn:
+            cursor = await self.locked_lease(conn)
+            if cursor["last_seq"] != attempt["position"]:
+                return False
+            await conn.execute(update(wait_listener_cursors).where(
+                wait_listener_cursors.c.listener_key == "source",
+                wait_listener_cursors.c.lease_owner == self.owner,
+            ).values(last_seq=max(cursor["last_seq"], attempt["event"]["seq"]),
+                     updated_at=self.clock()))
+        for seq in attempt["seqs"]:
+            self._retry_due[seq] = self.clock() + self.retry_seconds
+        logger.warning("wait.source_dispatch_deferred seq=%s source_key=%s",
+                       attempt["event"]["seq"], attempt["event"]["source_key"])
+        return True
+
     async def _dispatched_ci_retry(self, conn, watermark, attempted):
         # Older daemons stamped events dispatched even when fresh observation
         # failed. The stamp is not a per-wait receipt. Start from pending
@@ -230,129 +273,250 @@ class WaitSourceListener:
 
     @admission_pass("service.scheduler.reader")
     async def drain(self, watermark):
-        """Called only at the command boundary, with a prefetched fenced bound."""
+        """Bound each transaction; retain slow observations for a later retry pass."""
         count = retries = 0
         retry_pending = True
-        recovery_position = None
-        attempted = set()
+        recovery = {"position": None, "attempted": set()}
+        started = asyncio.get_running_loop().time()
         while True:
-            async with self.db._engine.begin() as conn:
-                from src.waits.loops import prepare_progress
-
-                position = await conn.scalar(select(wait_listener_cursors.c.last_seq).where(
-                    wait_listener_cursors.c.listener_key == "source",
-                ))
-                self._retry_due = {seq: due for seq, due in self._retry_due.items()
-                                   if due > self.clock()}
-                if recovery_position is None:
-                    recovery_position = position or 0
-                # Retry earlier skipped observations without holding later
-                # messages or task transitions behind a provider outage.
-                retry = None
-                if retry_pending and retries < self.retry_batch_size:
-                    retry = (await conn.execute(select(wait_source_events).where(
-                        wait_source_events.c.seq <= (position or 0),
-                        wait_source_events.c.seq <= watermark,
-                        wait_source_events.c.dispatched_at.is_(None),
-                        wait_source_events.c.seq.not_in(self._retry_due),
-                        wait_source_events.c.seq.not_in(attempted),
-                    ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
-                    if retry is None:
-                        # Keep the undispatched partial index usable; combining
-                        # these paths with OR scans the full outbox prefix.
-                        retry = await self._dispatched_ci_retry(
-                            conn, min(recovery_position, watermark), attempted,
-                        )
-                    # New failures in this pass already receive a backoff;
-                    # do not rescan the retry index for every forward event.
-                    retry_pending = retry is not None
-                candidate = retry
-                if candidate is None:
-                    candidate = (await conn.execute(select(wait_source_events).where(
-                        wait_source_events.c.seq > (position or 0),
-                        wait_source_events.c.seq <= watermark,
-                    ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
-                if candidate:
-                    if candidate["source_key"].startswith("resource_invalidation:"):
-                        payload = _invalidation(candidate) or {}
-                        matching = (wait_records.c.condition_kind == "resource") & (
-                            wait_records.c.condition["blocker"].astext.in_(
-                                RESOURCE_INVALIDATIONS.get(payload.get("producer"), ()),
-                            )
-                        )
-                        if payload.get("project_id") is not None:
-                            matching &= wait_records.c.project_id == payload["project_id"]
-                    else:
-                        matching = (wait_records.c.source_key == candidate["source_key"]) & (
-                            wait_records.c.source_generation == candidate["source_generation"]
-                        )
-                    owners = (await conn.execute(select(wait_records).where(
-                        wait_records.c.owner_kind == "task", wait_records.c.outcome == "pending",
-                        wait_records.c.verification_state == "verified", matching,
-                        wait_records.c.source_watermark_seq < candidate["seq"],
-                    ).order_by(wait_records.c.id))).mappings().all()
-                    await prepare_progress(conn, owners)
-                # Scheduler reconciliation can hold the graph fence longer than
-                # one renewal interval. Yield without locking the lease row so
-                # renewal stays live; the durable cursor remains replayable.
-                self._graph_busy = not await conn.scalar(select(
-                    func.pg_try_advisory_xact_lock(REGISTRATION_LOCK)))
-                if self._graph_busy:
+            if asyncio.get_running_loop().time() - started >= self.drain_budget_seconds:
+                # Refresh the watermark promptly even when many old sources
+                # each exhaust their attempt budget. Keep the live loop awake.
+                self.changed.set()
+                return count
+            attempt = {}
+            budget = asyncio.timeout(self.event_budget_seconds)
+            try:
+                async with budget:
+                    result = await self._drain_one(
+                        watermark, retry_pending and retries < self.retry_batch_size, attempt, recovery)
+            except TimeoutError:
+                if not budget.expired():
+                    raise
+                if not await self._defer(attempt):
                     return count
-                track_graph_lock(conn)
-                cursor = await self.locked_lease(conn)
-                # Another drain may have advanced while Git was observed. Do
-                # not dispatch a different event with the wrong progress heads.
-                if cursor["last_seq"] != position:
-                    continue
-                # Relevant events commit separately; irrelevant prefixes retire
-                # in bounded batches. Renewal cadence never defines lock scope.
-                async with asyncio.timeout(self.lease_seconds):
-                    retry_after = 0
-                    processed = [] if retry else await self._unobserved_prefix(
-                        conn, cursor["last_seq"], watermark)
-                    if not processed:
-                        rows = [retry] if retry else (await conn.execute(
-                            select(wait_source_events).where(
-                                wait_source_events.c.seq > cursor["last_seq"],
-                                wait_source_events.c.seq <= watermark,
-                            ).order_by(wait_source_events.c.seq).limit(1))).mappings().all()
-                        if not rows:
-                            return count
-                        event = rows[0]
-                        retry_after = await self._dispatch(conn, dict(event)) or 0
-                        processed = [event["seq"]]
-                    if cursor["lease_expires_at"] <= self.clock():
-                        raise LeaseLost("wait source lease expired during dispatch")
-                    if not retry_after:
-                        await conn.execute(update(wait_source_events).where(
-                            wait_source_events.c.seq.in_(processed),
-                        ).values(dispatched_at=self.clock()))
-                    await conn.execute(update(wait_listener_cursors).where(
-                        wait_listener_cursors.c.listener_key == "source",
-                        wait_listener_cursors.c.lease_owner == self.owner,
-                    ).values(last_seq=max(cursor["last_seq"], processed[-1]),
-                             updated_at=self.clock()))
+                retries += bool(attempt["retry"])
+                if not await self.service.lease():
+                    raise LeaseLost("wait source lease lost after deferred dispatch")
+                continue
+            if result is None:
+                return count
+            if result.get("raced"):
+                continue
+            retry_pending = result["retry_pending"]
+            processed, retry_after = result["processed"], result["retry_after"]
             if retry_after:
-                self._retry_due[processed[-1]] = self.clock() + retry_after
-                logger.warning(
-                    "wait.source_observation_deferred seq=%s source_key=%s "
-                    "retry_after=%s age_seconds=%.1f",
-                    event["seq"], event["source_key"], retry_after,
-                    max(0, self.clock() - event["occurred_at"]),
-                )
-            if retry:
+                for seq in processed:
+                    self._retry_due[seq] = self.clock() + retry_after
+                logger.warning("wait.source_observation_deferred seq=%s source_key=%s "
+                               "retry_after=%s age_seconds=%.1f",
+                               processed[-1], result["event"]["source_key"], retry_after,
+                               max(0, self.clock() - result["event"]["occurred_at"]))
+            if result["retry"]:
                 retries += 1
-                attempted.add(retry["seq"])
-                if retry["dispatched_at"] is not None and not retry_after:
+                recovery["attempted"].update(processed)
+                if result["event"]["dispatched_at"] is not None and not retry_after:
                     # An unsatisfied observation is legitimate. Bound repeated
                     # recovery visits without requiring a new source revision.
-                    self._retry_due[retry["seq"]] = self.clock() + self.safety_seconds
+                    self._retry_due[processed[-1]] = self.clock() + self.safety_seconds
                 if not retry_after:
-                    logger.info("wait.source_observation_retried seq=%s", retry["seq"])
+                    logger.info("wait.source_observation_retried seq=%s", processed[-1])
             count += len(processed)
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
+
+    async def _drain_one(self, watermark, retry_pending, attempt, recovery):
+        async with self.db._engine.begin() as conn:
+            from src.waits.loops import prepare_progress
+
+            position = await conn.scalar(select(wait_listener_cursors.c.last_seq).where(
+                wait_listener_cursors.c.listener_key == "source",
+            ))
+            self._retry_due = {seq: due for seq, due in self._retry_due.items()
+                               if due > self.clock()}
+            if recovery["position"] is None:
+                recovery["position"] = position or 0
+            # Forward events precede retries so a provider outage cannot
+            # hold later messages or task transitions behind its retry budget.
+            candidate = None
+            coalesced = []
+            rows = (await conn.execute(select(wait_source_events).where(
+                wait_source_events.c.seq > (position or 0),
+                wait_source_events.c.seq <= watermark,
+            ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings().all()
+            if rows:
+                candidate = rows[0]
+                key = self._coalesce_key(candidate)
+                if key is not None:
+                    for row in rows:
+                        if self._coalesce_key(row) != key:
+                            break
+                        coalesced.append(row["seq"])
+                        candidate = row
+            retry = None
+            if candidate is None and retry_pending:
+                retry = (await conn.execute(select(wait_source_events).where(
+                    wait_source_events.c.seq <= (position or 0),
+                    wait_source_events.c.seq <= watermark,
+                    wait_source_events.c.dispatched_at.is_(None),
+                    wait_source_events.c.seq.not_in(self._retry_due),
+                    wait_source_events.c.seq.not_in(recovery["attempted"]),
+                ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
+                if retry is None:
+                    # Keep the undispatched partial index usable; combining
+                    # these paths with OR scans the full outbox prefix.
+                    retry = await self._dispatched_ci_retry(
+                        conn, min(recovery["position"], watermark), recovery["attempted"],
+                    )
+                # New failures in this pass already receive a backoff;
+                # do not rescan the retry index for every forward event.
+                retry_pending = retry is not None
+            candidate = candidate or retry
+            if candidate:
+                attempt.update(position=position, event=dict(candidate), retry=bool(retry),
+                               seqs=coalesced or [candidate["seq"]])
+                if candidate["source_key"].startswith("resource_invalidation:"):
+                    payload = _invalidation(candidate) or {}
+                    matching = (wait_records.c.condition_kind == "resource") & (
+                        wait_records.c.condition["blocker"].astext.in_(
+                            RESOURCE_INVALIDATIONS.get(payload.get("producer"), ()),
+                        )
+                    )
+                    if payload.get("project_id") is not None:
+                        matching &= wait_records.c.project_id == payload["project_id"]
+                else:
+                    matching = (wait_records.c.source_key == candidate["source_key"]) & (
+                        wait_records.c.source_generation == candidate["source_generation"]
+                    )
+                owners = (await conn.execute(select(wait_records).where(
+                    wait_records.c.owner_kind == "task", wait_records.c.outcome == "pending",
+                    wait_records.c.verification_state == "verified", matching,
+                    wait_records.c.source_watermark_seq < candidate["seq"],
+                ).order_by(wait_records.c.id))).mappings().all()
+                await prepare_progress(conn, owners)
+            # Scheduler reconciliation can hold the graph fence longer than
+            # one renewal interval. Yield without locking the lease row so
+            # renewal stays live; the durable cursor remains replayable.
+            try:
+                await lock_graph(conn, queued=True, timeout=self.graph_wait_seconds)
+            except WaitError as exc:
+                if exc.code != "wait.graph_busy":
+                    raise
+                self._graph_busy = True
+                return None
+            self._graph_busy = False
+            cursor = await self.locked_lease(conn)
+            # Another drain may have advanced while Git was observed. Do
+            # not dispatch a different event with the wrong progress heads.
+            if cursor["last_seq"] != position:
+                return {"raced": True}
+            # Relevant events commit separately; irrelevant prefixes retire
+            # in bounded batches. Renewal cadence never defines lock scope.
+            async with asyncio.timeout(self.lease_seconds):
+                retry_after = 0
+                processed = [] if retry else await self._unobserved_prefix(
+                    conn, cursor["last_seq"], watermark)
+                if not processed:
+                    if candidate is None:
+                        return None
+                    event = candidate
+                    retry_after = await self._dispatch(conn, dict(event)) or 0
+                    processed = coalesced or [event["seq"]]
+                if cursor["lease_expires_at"] <= self.clock():
+                    raise LeaseLost("wait source lease expired during dispatch")
+                if not retry_after:
+                    await conn.execute(update(wait_source_events).where(
+                        wait_source_events.c.seq.in_(processed),
+                    ).values(dispatched_at=self.clock()))
+                await conn.execute(update(wait_listener_cursors).where(
+                    wait_listener_cursors.c.listener_key == "source",
+                    wait_listener_cursors.c.lease_owner == self.owner,
+                ).values(last_seq=max(cursor["last_seq"], processed[-1]),
+                         updated_at=self.clock()))
+        return {"processed": processed, "retry_after": retry_after,
+                "event": dict(candidate) if candidate else None, "retry": bool(retry),
+                "retry_pending": retry_pending}
+
+    async def redispatch(self, args, *, principal, scope, handler):
+        """Reobserve one durable source within an explicitly authorized project."""
+        from src.database.tables import events, projects
+        from src.waits.loops import prepare_progress
+
+        project_id = args["project_id"]
+        async with asyncio.timeout(self.event_budget_seconds), self._tick_lock:
+            if not await self.service.lease():
+                raise WaitError("wait.unavailable", "listener lease belongs to another instance")
+            async with self.db._engine.begin() as conn:
+                if not await conn.scalar(select(projects.c.id).where(projects.c.id == project_id)):
+                    raise WaitError("wait.out_of_scope", "project not found")
+                event = (await conn.execute(select(wait_source_events).where(
+                    wait_source_events.c.seq == args["source_seq"],
+                ))).mappings().first()
+                if event is None:
+                    raise WaitError("wait.source_unresolved", "source event not found")
+                payload_project = event["payload"].get("project_id")
+                if payload_project is not None and payload_project != project_id:
+                    raise WaitError("wait.out_of_scope", "source belongs to another project")
+                owners = (await conn.execute(select(wait_records).where(
+                    wait_records.c.project_id == project_id,
+                    wait_records.c.owner_kind == "task", wait_records.c.outcome == "pending",
+                    or_(wait_records.c.source_key == event["source_key"],
+                        wait_records.c.condition_kind == "resource"),
+                ))).mappings().all()
+                await prepare_progress(conn, owners)
+                await lock_graph(conn, queued=True, timeout=self.graph_wait_seconds)
+                await self.locked_lease(conn)
+                retry_after = await self._dispatch(conn, dict(event), project_id=project_id) or 0
+                # Do not retire a global source on behalf of only one project.
+                # Forward draining (or its retained retry) still owns that stamp.
+                await conn.execute(insert(events).values(
+                    event_type="wait.source_redispatched", project_id=project_id,
+                    timestamp=self.clock(), payload=json.dumps({
+                        "source_seq": event["seq"], "source_key": event["source_key"],
+                        "note": args["note"], "retry_after": retry_after,
+                        "supervisor_session_id": getattr(principal, "session_id", None),
+                    }),
+                ))
+                await self.locked_lease(conn)
+            self.changed.set()
+            return {"success": True, "result": {
+                "source_seq": event["seq"], "project_id": project_id,
+                "retry_after": retry_after, "redispatched": True,
+            }}
+
+    async def report_lag(self):
+        """Count retained retries as well as unread events, without taking graph locks."""
+        from src.database.tables import messages
+        from src.waits.sources import insert_message_with_source_event
+
+        now = self.clock()
+        threshold = self.service.orch.config.wait_policy.listener_lag_events
+        async with self.db._engine.begin() as conn:
+            pending, oldest, committed = (await conn.execute(select(
+                func.count(), func.min(wait_source_events.c.seq),
+                func.min(wait_source_events.c.committed_at),
+            ).where(wait_source_events.c.dispatched_at.is_(None)))).one()
+            age = max(0, now - committed) if committed is not None else 0
+            if pending <= threshold and age <= 120:
+                return
+            logger.warning("wait.listener_lag pending_events=%s oldest_seq=%s age_seconds=%.1f",
+                           pending, oldest, age)
+            projects = (await conn.execute(select(wait_records.c.project_id).where(
+                wait_records.c.outcome == "pending",
+                wait_records.c.verification_state == "verified",
+            ).distinct())).scalars().all()
+            for project_id in projects:
+                await insert_message_with_source_event(conn, insert(messages).values(
+                    id=f"wait-listener:lag:{oldest}:{project_id}", project_id=project_id,
+                    from_kind="system", from_id="waits-listener", to_kind="session",
+                    to_id=f"supervisor-{project_id}", body_kind="wait_listener_lag",
+                    subject="Wait source listener is falling behind", created_at=now,
+                    body=json.dumps({
+                        "pending_events": pending, "oldest_seq": oldest, "age_seconds": age,
+                        "next_step": "Inspect graph contention and source dispatch failures; "
+                                     "aq wait source-redispatch can reobserve one event.",
+                    }),
+                ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def tick(self):
         async with self._tick_lock:
@@ -387,7 +551,7 @@ class WaitSourceListener:
                 raise ConnectionError("wait listener disconnected")
             try:
                 await asyncio.wait_for(self.changed.wait(),
-                                       self.renewal_seconds if self._graph_busy
+                                       self.graph_wait_seconds if self._graph_busy
                                        else self.safety_seconds)
             except TimeoutError:
                 pass
@@ -402,12 +566,12 @@ class WaitSourceListener:
                 await connection.add_listener("aq_wait_source", self._notification)
                 await connection.add_listener("aq_wait_deadline", self._notification)
                 connection.add_termination_listener(lambda _: self.changed.set())
-                # Subscribe before watermark/drain, then handle live hints.
-                if not await self.tick():
+                if not await self.service.processing_enabled() or not await self.service.lease():
                     await connection.close()
                     connection = None
                     await asyncio.sleep(self.renewal_seconds)
                     continue
+                # Renewal starts before the first drain, including startup replay.
                 failed, backoff = False, 1
                 async with asyncio.TaskGroup() as group:
                     group.create_task(self._renew())

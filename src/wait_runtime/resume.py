@@ -464,7 +464,7 @@ class ResumeTransaction:
             await self.orch._release_workspace_and_cleanup(workspace)
         return result
 
-    async def recovery_event(self, conn, event):
+    async def recovery_event(self, conn, event, *, project_id=None):
         """Only a new durable provider transition can clear the two-attempt hold."""
         if not event['source_key'].startswith('resource_invalidation:provider:'):
             return
@@ -477,21 +477,20 @@ class ResumeTransaction:
                 or facts.get('generation') != current['generation']
                 or event['source_revision'] != str(current['generation'])):
             return
-        ids = list((await conn.execute(select(continuations.c.wait_id).where(
+        for wait_id in await conn.scalars(select(continuations.c.wait_id).where(
             continuations.c.resume_state == 'held',
             continuations.c.hold_reason == 'resume_launch_failed',
-        ))).scalars())
-        for wait_id in ids:
+            continuations.c.task_id.in_(select(tasks.c.id).where(
+                tasks.c.project_id == project_id)) if project_id is not None else True,
+        )):
             task, wait, intent = await locked_suspension(conn, wait_id)
             started = intent['facts'].get('resume_attempt_started_at', float('inf'))
-            if event['occurred_at'] <= started:
+            if event['occurred_at'] <= started or task['status'] != 'RESUME_PENDING':
                 continue
             profile = await self.db.get_profile(task['profile_id'], conn=conn)
             availability = self.orch.provider_availability
             if (not profile or availability.provider_for_profile(
                     profile, project_id=task['project_id']) != provider):
-                continue
-            if task['status'] != 'RESUME_PENDING':
                 continue
             incident_id = intent['facts'].get('hold_escalation_id')
             if incident_id:
