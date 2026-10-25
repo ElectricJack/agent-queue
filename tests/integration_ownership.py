@@ -933,7 +933,28 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2294,
+ 'authorized_owned_delta': 2372,
+ 'delivery_prerequisite_proof_composition': {
+     'authorized_engine_delta': 78,
+     'authorized_owned_delta': 78,
+     'authorized_table_delta': 0,
+     'charged_files': {'src/integration/admission.py': 17,
+                       'src/integration/delivery_observer.py': 61},
+     'decision_message_id': 'msg-353d53ff11c84267b72457c36f4c4a5d',
+     'dev_source_revision': '94f4c82ee1898298711498c93ca90cb459816db6',
+     'operator_decision': '6679052c',
+     'previous_measured_engine_lines': 82532,
+     'previous_measured_owned_total': 157793,
+     'previous_measured_table_count': 45,
+     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2010',
+     'reason': 'Exact supervisor-approved +78 engine/owned lines for current default-target '
+               'delivery-of proof and independent observation retries. Preserves original '
+               'baselines, historical grants and ownership classifications, with zero remaining '
+               'headroom and no new storage category.',
+     'referenced_decision': 'size-cap-delegation-2026-10-23',
+     'source_revision': 'a38eefc946579e9510195854e8b09fa3cff83e82',
+     'task_id': 'bold-lantern-39',
+     'thread_id': 'bold-lantern-39-ci-size'},
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1048,8 +1069,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82532,
- 'measured_owned_total': 157793,
+ 'measured_engine_lines': 82610,
+ 'measured_owned_total': 157871,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,

@@ -1,7 +1,7 @@
 {
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2294,
+    "authorized_owned_delta": 2372,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -20,6 +20,27 @@
       "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
       "task_id": "wise-crest-14",
       "thread_id": "wise-crest-14-ci-size"
+    },
+    "delivery_prerequisite_proof_composition": {
+      "authorized_engine_delta": 78,
+      "authorized_owned_delta": 78,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/admission.py": 17,
+        "src/integration/delivery_observer.py": 61
+      },
+      "decision_message_id": "msg-353d53ff11c84267b72457c36f4c4a5d",
+      "dev_source_revision": "94f4c82ee1898298711498c93ca90cb459816db6",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82532,
+      "previous_measured_owned_total": 157793,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2010",
+      "reason": "Exact supervisor-approved +78 engine/owned lines for current default-target delivery-of proof and independent observation retries. Preserves original baselines, historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "a38eefc946579e9510195854e8b09fa3cff83e82",
+      "task_id": "bold-lantern-39",
+      "thread_id": "bold-lantern-39-ci-size"
     },
     "expires_at": "s4_modules",
     "held_ingestion_composition": {
@@ -105,8 +126,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82532,
-    "measured_owned_total": 157793,
+    "measured_engine_lines": 82610,
+    "measured_owned_total": 157871,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -131,6 +152,23 @@
     },
     "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
     "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
+    "reconciler_resume_retain_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 8,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/sessions/reconciler.py": 8
+      },
+      "dev_source_revision": "4f713c63b9f6dce0e28df7a460814049b23e7b0f",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82532,
+      "previous_measured_owned_total": 157785,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +8 owned lines: azure-zenith-14 keeps the session reconciler from draining a RESUME_PENDING continuation session, hand-landed on dev by the global supervisor 2026-10-25 while the train was starved. Zero remaining headroom.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "f7dcc0f757c11bb4c14f66eadb32bb3cf5c5c315",
+      "task_id": "azure-zenith-14"
+    },
     "remaining_headroom": 0,
     "review_followup_composition": {
       "authorized_engine_delta": 0,
@@ -199,23 +237,6 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "source_revision": "1b65b85de2ca2a0b9f7ac13a8841e76c558ace56",
       "task_id": "fresh-glacier-53"
-    },
-    "reconciler_resume_retain_composition": {
-      "authorized_engine_delta": 0,
-      "authorized_owned_delta": 8,
-      "authorized_table_delta": 0,
-      "charged_files": {
-        "src/sessions/reconciler.py": 8
-      },
-      "dev_source_revision": "4f713c63b9f6dce0e28df7a460814049b23e7b0f",
-      "operator_decision": "6679052c",
-      "previous_measured_engine_lines": 82532,
-      "previous_measured_owned_total": 157785,
-      "previous_measured_table_count": 45,
-      "reason": "Exact supervisor-approved +8 owned lines: azure-zenith-14 keeps the session reconciler from draining a RESUME_PENDING continuation session, hand-landed on dev by the global supervisor 2026-10-25 while the train was starved. Zero remaining headroom.",
-      "referenced_decision": "size-cap-delegation-2026-10-23",
-      "source_revision": "f7dcc0f757c11bb4c14f66eadb32bb3cf5c5c315",
-      "task_id": "azure-zenith-14"
     },
     "wait_ci_timeout_backoff_composition": {
       "authorized_engine_delta": 0,
