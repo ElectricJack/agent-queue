@@ -933,7 +933,26 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2286,
+ 'authorized_owned_delta': 2350,
+ 'delivery_watchdog_ownership_composition': {'authorized_engine_delta': 63,
+  'authorized_owned_delta': 64,
+  'authorized_shared_owned_delta': 1,
+  'authorized_table_delta': 0,
+  'decision_message_id': 'msg-62f7eb106d9c4ca782a2c727a451a818',
+  'dev_source_revision': '4f713c63b',
+  'operator_decision': '6679052c',
+  'previous_measured_engine_lines': 82532,
+  'previous_measured_owned_total': 157785,
+  'previous_measured_table_count': 45,
+  'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1989',
+  'reason': 'Exact supervisor-approved +64 owned lines (+63 engine, +1 shared) for '
+            'delivery-watchdog train ownership. Preserve original baselines, every historical '
+            'grant and ownership classification, with zero remaining headroom and no new '
+            'storage category.',
+  'referenced_decision': 'size-cap-delegation-2026-10-23',
+  'source_revision': 'd10817c9dfa5663bbfcc6845ecb2ca66dfc21bd2',
+  'task_id': 'sharp-grove-84',
+  'thread_id': 'sharp-grove-84-epoch2-size'},
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1048,8 +1067,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82532,
- 'measured_owned_total': 157785,
+ 'measured_engine_lines': 82595,
+ 'measured_owned_total': 157849,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
