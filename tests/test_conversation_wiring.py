@@ -891,7 +891,7 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
     handler.orchestrator.bus = bus
     handler.config.messages.delivery_interval = 3600
     handler.config.messages.transcript_tail_fallback = False
-    idle_pass, nudged = asyncio.Event(), asyncio.Event()
+    requested_passes = asyncio.Queue()
     seen = []
 
     async def nudge(**target):
@@ -903,7 +903,6 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
         assert target["target_id"] == "supervisor-agent-queue"
         assert pending[0].id in target["text"]
         seen.append(pending[0].id)
-        nudged.set()
         return True
 
     lens = SimpleNamespace(
@@ -915,17 +914,22 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
     run_pass = engine.run_delivery_pass
 
     async def observed_pass():
-        result = await run_pass()
-        idle_pass.set()
-        return result
+        result = asyncio.get_running_loop().create_future()
+        requested_passes.put_nowait(result)
+        return await result
 
     engine.run_delivery_pass = observed_pass
     service = MessageDeliveryService(engine, lambda: handler.config.messages, bus)
     service.start()
     try:
-        await asyncio.wait_for(idle_pass.wait(), 2)
+        # Bound the service wake, not PostgreSQL latency on a shared CI host.
+        # Keep the real delivery pass and committed-row assertions in this task
+        # so database work is awaited directly and assertion failures propagate.
+        idle_pass = await asyncio.wait_for(requested_passes.get(), 2)
+        idle_pass.set_result(await run_pass())
         accepted = await post(handler)
-        await asyncio.wait_for(nudged.wait(), 2)
+        resumed_pass = await asyncio.wait_for(requested_passes.get(), 2)
+        resumed_pass.set_result(await run_pass())
         assert seen == [accepted["supervisor_message_id"]]
         if state != "running":
             lens.ensure_started.assert_awaited_once_with(
