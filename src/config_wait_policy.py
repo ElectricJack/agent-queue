@@ -127,6 +127,7 @@ class WaitPolicyConfig:
     resume_launch_attempts: int = 2
     resume_stall_seconds: int = 300
     listener_lag_events: int = 500
+    listener_lag_alert_minutes: int = 15
     kinds: dict[str, WaitKindPolicy] = field(default_factory=default_kinds)
     projects: dict[str, WaitProjectOverrides] = field(default_factory=dict)
     metrics: WaitMetricsConfig = field(default_factory=WaitMetricsConfig)

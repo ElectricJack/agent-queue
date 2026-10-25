@@ -10,7 +10,7 @@ Replaying `(source_key, source_generation, source_revision)` inserts nothing.
 | task | `task:<task>` | task claim epoch / status writers |
 | dependency | `dependency:<dependent>:<upstream>:<type>` | upstream claim epoch / edge and upstream status/delivery writers |
 | job | `job:<job>` | attempt 1; retry creates a new job / terminal result writer |
-| message | `message:<thread>` | 0 / all message insert paths |
+| message | `message:<thread>` | 0 / all message insert paths except listener lag diagnostics |
 | human task comment | `human:task_comment:<task>` | task claim epoch / `add_task_comment`, user author only |
 | review | `review:<review>` | document revision / guarded review transition |
 | batch | `batch:<batch>` | baseline generation / lifecycle writers and integration outbox |
@@ -22,6 +22,10 @@ Replaying `(source_key, source_generation, source_revision)` inserts nothing.
 `ci_run` and pull-request events belong to the watcher leaf. They are not covered by
 the existing exact-check writer. The listener/timer leaf owns non-due deadlines.
 These are consumer/producer seams, not claims that those runtimes are enabled.
+
+Listener lag diagnostics deliberately omit source events so reporting an outbox
+backlog cannot grow that backlog. Normal messages and collaboration replies
+continue to publish source events.
 
 ## Resource matching decision
 
