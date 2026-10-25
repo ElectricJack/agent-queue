@@ -2,6 +2,13 @@ load(":pytest.bzl", "aq_python_runtime")
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load("@rules_python//python:defs.bzl", "py_library")
 load(":prebuilt_cc.bzl", "prebuilt_cc_config")
+load("@rules_python//python:defs.bzl", "py_binary")
+load("@pypi//:requirements.bzl", "all_requirements")
+load(":generators.bzl", "aq_generate")
+load("//tools/bazel/smoke:defs.bzl", "py_smoke")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages(name = "node_modules")
 
 py_library(
     name = "test_environment",
@@ -12,6 +19,7 @@ py_library(
 exports_files(["requirements_linux_x86_64.txt"])
 
 exports_files(["toolchains.lock.json", "native_toolchain.bzl"])
+exports_files(["generator_npm.lock.json", "generator_inputs.bzl"])
 toolchain_type(name = "native_toolchain_type", visibility = ["//visibility:public"])
 
 filegroup(name = "no_compiler_files")
@@ -65,3 +73,81 @@ py_library(
     visibility = ["//visibility:public"],
 )
 # END B1 PYTHON TARGETS
+# The locked Python wheels include the generator, templates, Ruff and the
+# offline spec's application dependencies. Nothing is installed into a venv.
+py_binary(
+    name = "generate",
+    srcs = ["generate.py"],
+    deps = all_requirements,
+    legacy_create_init = False,
+)
+
+aq_generate(
+    name = "generated",
+    kind = "tracked",
+    srcs = ["//:generator_sources", "requirements_linux_x86_64.txt", "toolchains.lock.json"],
+)
+
+aq_generate(
+    name = "typescript",
+    kind = "typescript",
+    srcs = [
+        "//:scripts/regenerate-ts-client.sh", "//packages/aq-ts-client:package.json",
+        "//:package-lock.json", "generator_npm.lock.json",
+    ],
+    upstream = ":generated",
+    npm = "@aq_generator_npm//:node_modules",
+    npm_entry = "@aq_generator_npm//:node_modules/@hey-api/openapi-ts/bin/index.cjs",
+    visibility = ["//visibility:public"],
+)
+
+aq_generate(
+    name = "typescript_reference",
+    kind = "typescript_reference",
+    srcs = ["//:generator_sources", "generator_npm.lock.json"],
+    upstream = ":generated",
+    npm = "@aq_generator_npm//:node_modules",
+    npm_entry = "@aq_generator_npm//:node_modules/@hey-api/openapi-ts/bin/index.cjs",
+)
+
+py_smoke(
+    name = "generated_check",
+    srcs = ["generator_check.py", "generate.py", "generator_inputs.py"],
+    main = "generator_check.py",
+    legacy_create_init = False,
+    args = [
+        "--tracked", "$(rootpath :generated)",
+        "--typescript", "$(rootpath :typescript)",
+        "--reference", "$(rootpath :typescript_reference)",
+    ],
+    data = [
+        "//:generator_sources", ":generated", ":typescript", ":typescript_reference",
+        "generator_inputs.bzl", "generator_npm.lock.json",
+    ],
+    size = "small",
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["pnpm-lock.yaml", "pnpm-workspace.yaml"])
+
+py_binary(
+    name = "dashboard_runner",
+    srcs = ["dashboard.py", "generate.py", "import_npm.py"],
+    main = "dashboard.py",
+    legacy_create_init = False,
+)
+
+py_smoke(
+    name = "dashboard_check",
+    srcs = ["dashboard_check.py", "import_npm.py"],
+    main = "dashboard_check.py",
+    args = [
+        "--typecheck", "$(rootpath //dashboard:typecheck)",
+        "--build", "$(rootpath //dashboard:build)",
+    ],
+    data = ["//:dashboard_inputs", "//dashboard:typecheck", "//dashboard:build", "//dashboard:sources"],
+    legacy_create_init = False,
+    size = "medium",
+    timeout = "moderate",
+    visibility = ["//visibility:public"],
+)
