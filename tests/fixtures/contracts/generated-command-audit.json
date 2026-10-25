@@ -15487,9 +15487,9 @@
         "return": "result"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Fresh-continuation recovery: a bound RESUME_PENDING outcome is recorded as delivered before knowledge context preparation. The record.stale_claim refusal keeps success false and its code, adding only the exact fenced wait_ack command and a prime retry instruction. Genuine stale ownership and other context refusals retain their existing envelopes; no mutation or context grant is bypassed. ",
     "schema_quality": "declared",
-    "source_digest": "sha256:7f55f881df7d457c23be4348d72ed66e10569e924019174dc24fff0e2792250d",
+    "source_digest": "sha256:946a9c92bcd39ce2b10258ba6afcee4fd56f86259869a3211947958342f0ebf6",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -15498,7 +15498,8 @@
       "tests/test_claim_commands.py",
       "tests/test_delivery_integration.py",
       "tests/test_github_access_workflow.py",
-      "tests/test_jobs_waits.py"
+      "tests/test_jobs_waits.py",
+      "tests/test_wait_hibernation.py::test_resume_prime_stale_context_claim_guides_ack_then_prime"
     ]
   },
   "probe_mcp_server": {
@@ -25042,6 +25043,45 @@
     "tests": [
       "tests/test_wait_commands.py",
       "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "wait_source_redispatch": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_source_redispatch",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._wait_v2_command('wait_source_redispatch', args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('wait.unavailable', 'source re-dispatch exceeded its work budget')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('wait.unavailable', str(exc))"
+      }
+    ],
+    "review_notes": "Normal dispatch retains the typed command envelope. Timeout and listener lease/unavailability failures delegate to refusal(), which returns success false with wait.unavailable; recovery never fabricates a wake.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:083a3b2d906e990fcff9826fbb69b849f53ed719c84e203ec1b2d3726c24afb2",
+    "tests": [
+      "tests/test_wait_commands.py::test_source_redispatch_requires_live_scoped_supervisor",
+      "tests/test_wait_dispatch.py",
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },

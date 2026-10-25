@@ -1093,3 +1093,283 @@ async def test_listener_retries_preparation_if_cursor_advances_during_git(runtim
     assert await service.drain(await env.db.wait_source_watermark()) == 1
     assert calls == 2
     assert seen == [source[1]["seq"]]
+
+
+async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runtime_env):
+    """Cancellation inside a real query must release graph/cursor and retain the event."""
+    from sqlalchemy import func
+
+    env = runtime_env
+    receipt = await register(env)
+    slow_seq = await env.db.wait_source_commit(
+        source_key="test:slow-source", generation=0, revision="1", outcome_ref="slow", payload={})
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    now = [NOW]
+    dispatcher = ObservingDispatcher(env.registry)
+    service = runtime(env, clock=lambda: now[0], dispatcher=dispatcher)
+    service.listener.event_budget_seconds = 0.2
+    original = service.listener._dispatch
+
+    async def stall(conn, event):
+        if event["seq"] == slow_seq:
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+            await conn.execute(select(func.pg_sleep(60)))
+        return await original(conn, event)
+
+    service.listener._dispatch = stall
+    await service.listener.tick()
+    assert (await env.db.get_task("owner")).title != "abort"
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    source = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert source[slow_seq]["dispatched_at"] is None
+    cursor = (await records(env, wait_listener_cursors))[0]["last_seq"]
+    assert cursor > slow_seq
+    service.listener._dispatch = original
+    now[0] += service.listener.retry_seconds + 1
+    await service.listener.tick()
+    source = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert source[slow_seq]["dispatched_at"] is not None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
+
+
+@pytest.mark.parametrize("kind", ["ci_check", "pool", "workspace", "config"])
+async def test_contiguous_observations_coalesce_and_stop_before_lifecycle_event(runtime_env, kind):
+    env = runtime_env
+    receipt = await register(env)
+    key = "ci_check:repo:sha:unit"
+    async with env.db._engine.begin() as conn:
+        # Force the listener to reobserve subscribed CI hints rather than retire them unread.
+        await conn.execute(update(wait_records).where(wait_records.c.id == receipt["wait_id"])
+                           .values(source_key=key))
+    for n in range(12):
+        event = (dict(source_key=key, generation=0, revision=str(n),
+                      outcome_ref=key, payload={}) if kind == "ci_check" else
+                 resource_invalidation(producer=kind, identity=f"identity-{n}",
+                                       revision=str(n), outcome_ref=kind, payload={}))
+        await env.db.wait_source_commit(**event)
+    barrier = await env.db.wait_source_commit(
+        source_key="test:lifecycle", generation=0, revision="1", outcome_ref="barrier", payload={})
+    service = runtime(env)
+    seen = []
+
+    async def observe(conn, event):
+        seen.append(event["seq"])
+
+    service.listener._dispatch = observe
+    await service.listener.tick()
+    assert seen == ([barrier - 1, barrier] if kind != "pool" else [barrier])
+    # Pool hints without resource subscriptions are deliberately retired as irrelevant.
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == barrier
+
+
+async def test_resource_coalescing_preserves_project_and_provider_boundaries(runtime_env):
+    env = runtime_env
+    for producer, project in [("workspace", "p"), ("workspace", "q"),
+                              ("provider", None), ("provider", None)]:
+        await env.db.wait_source_commit(**resource_invalidation(
+            producer=producer, identity="same", project_id=project,
+            revision=str(len(await records(env, wait_source_events))),
+            outcome_ref="resource", payload={}))
+    service = runtime(env)
+    dispatch = service.listener._dispatch = AsyncMock(return_value=0)
+    await service.listener.tick()
+    assert dispatch.await_count == 4
+
+
+async def test_startup_renews_lease_while_first_drain_is_blocked(runtime_env):
+    service = runtime(runtime_env)
+    entered, renewed = asyncio.Event(), asyncio.Event()
+    service.listener.renewal_seconds = 0.01
+    original_lease = service.lease
+
+    async def lease(*, release=False):
+        if entered.is_set() and not release:
+            renewed.set()
+        return await original_lease(release=release)
+
+    async def drain(watermark):
+        entered.set()
+        await asyncio.Event().wait()
+
+    service.lease, service.drain = lease, drain
+    running = asyncio.create_task(service.listener.run())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await asyncio.wait_for(renewed.wait(), 5)
+        assert not running.done()
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_listener_is_live_while_maintenance_and_observation_are_blocked(runtime_env):
+    env = runtime_env
+    await register(env)
+    service = runtime(env, dispatcher=ObservingDispatcher(env.registry))
+    entered, drained = asyncio.Event(), asyncio.Event()
+
+    async def stall():
+        entered.set()
+        await asyncio.Event().wait()
+
+    original = service.drain
+
+    async def drain(watermark):
+        result = await original(watermark)
+        drained.set()
+        return result
+
+    service.lifecycle.tick, service.observe_sources_once = stall, stall
+    service.startup_bridge = stall
+    service.drain = drain
+    running = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await asyncio.wait_for(drained.wait(), 5)
+        drained.clear()
+        await env.db.transition_task("source", TaskStatus.COMPLETED)
+        await asyncio.wait_for(drained.wait(), 5)
+        assert (await records(env))[0]["outcome"] == "satisfied"
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+
+
+@pytest.mark.parametrize("reason", ["count", "age"])
+async def test_lag_alert_includes_deferred_rows_and_deduplicates_after_restart(runtime_env, reason):
+    from src.waits.graph import lock_graph
+
+    env = runtime_env
+    await register(env)
+    service = runtime(env)
+    service.orch.config.wait_policy.listener_lag_events = 1 if reason == "count" else 100
+    for n in range(2):
+        await env.db.wait_source_commit(source_key="test:lag", generation=0, revision=str(n),
+                                       outcome_ref="test", payload={})
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).values(committed_at=NOW - 121
+                                                            if reason == "age" else NOW))
+    assert await service.lease()
+    seq = max(r["seq"] for r in await records(env, wait_source_events))
+    async with env.db._engine.begin() as conn:
+        # A deferred event behind the cursor is still outstanding source work.
+        await conn.execute(update(wait_listener_cursors).values(last_seq=seq))
+    async with env.db._engine.begin() as blocker:
+        await lock_graph(blocker)
+        await service.orch._command_handler.wait_service_report_lag(service.listener)
+    restarted = runtime(env)
+    restarted.orch.config.wait_policy.listener_lag_events = service.orch.config.wait_policy.listener_lag_events
+    await restarted.orch._command_handler.wait_service_report_lag(restarted.listener)
+    notices = [r for r in await records(env, messages) if r["body_kind"] == "wait_listener_lag"]
+    assert len(notices) == 1
+    assert notices[0]["to_id"] == "supervisor-p"
+    assert '"pending_events": 2' in notices[0]["body"]
+
+
+async def test_manual_source_redispatch_reobserves_without_moving_cursor(runtime_env):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import events as audit_events
+
+    env = runtime_env
+    await register(env)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    seq = next(r["seq"] for r in await records(env, wait_source_events)
+               if r["source_key"] == "task:source")
+    dispatcher = ObservingDispatcher(env.registry)
+    service = runtime(env, dispatcher=dispatcher)
+    args = {"project_id": "p", "source_seq": seq, "note": "recover undispatched completion"}
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute("wait_source_redispatch", args)
+    assert result["success"], result
+    assert (await records(env))[0]["outcome"] == "satisfied"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+    assert len([r for r in await records(env, audit_events)
+                if r["event_type"] == "wait.source_redispatched"]) == 1
+    assert len(dispatcher.calls) == 1
+    await service.listener.tick()
+    assert len(dispatcher.calls) == 1
+
+
+async def test_manual_global_invalidation_filters_other_project_subscriptions(runtime_env):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    env = runtime_env
+    observation = {"state": "unsatisfied", "revision": "1"}
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(cond, **observation))
+    registry = build_registry(resource_reader=reader)
+    receipt = await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                                   "source_revision": "1"}, registry=registry,
+                             scope=Scope("p", "scheduler", "owner", principal="service"))
+    base = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_records).values(
+            **{**base, "id": "foreign-resource", "project_id": "q", "owner_id": "foreign",
+               "condition": {**base["condition"], "_verified": {
+                   **base["condition"]["_verified"], "project_id": "q", "owner_id": "foreign"}}}))
+    seq = await env.db.wait_source_commit(**resource_invalidation(
+        producer="pool", identity="profile", revision="cycle", outcome_ref="pool", payload={}))
+    observation.update(state="satisfied", revision="2")
+    dispatcher = ObservingDispatcher(registry)
+    service = runtime(env, registry=registry, dispatcher=dispatcher)
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute("wait_source_redispatch", {
+            "source_seq": seq, "project_id": "p", "note": "recover resource"})
+    assert result["success"], result
+    assert [call[0] for call in dispatcher.calls] == [receipt["wait_id"]]
+    rows = {r["id"]: r for r in await records(env)}
+    assert rows[receipt["wait_id"]]["outcome"] == "satisfied"
+    assert rows["foreign-resource"]["outcome"] == "pending"
+    assert next(r for r in await records(env, wait_source_events) if r["seq"] == seq)[
+        "dispatched_at"] is None
+
+
+async def test_drain_yields_between_attempts_and_requests_fresh_watermark(runtime_env, monkeypatch):
+    service = runtime(runtime_env)
+    listener = service.listener
+    listener.drain_budget_seconds = 0.01
+    assert await service.lease()
+    for n in range(3):
+        await runtime_env.db.wait_source_commit(source_key="test:bounded-drain", generation=0,
+            revision=str(n), outcome_ref=f"test:{n}", payload={})
+    calls = []
+
+    async def dispatch(conn, event):
+        calls.append(event["seq"])
+        await asyncio.sleep(0.02)
+        return 0
+
+    monkeypatch.setattr(listener, "_dispatch", dispatch)
+    watermark = await runtime_env.db.wait_source_watermark()
+    assert await service.drain(watermark) == 1
+    assert listener.changed.is_set()
+    assert len(calls) == 1
+    assert (await records(runtime_env, wait_listener_cursors))[0]["last_seq"] == calls[0]
+    assert sum(row["dispatched_at"] is None
+               for row in await records(runtime_env, wait_source_events)) == 2
+
+
+async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(runtime_env, monkeypatch):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import events as audit_events
+
+    env = runtime_env
+    service = runtime(env)
+    service.listener.event_budget_seconds = 0.2
+    seq = await env.db.wait_source_commit(source_key="test:manual-timeout", generation=0,
+        revision="1", outcome_ref="test", payload={})
+
+    async def stalled(conn, event, **kwargs):
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(service.listener, "_dispatch", stalled)
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute("wait_source_redispatch", {
+            "source_seq": seq, "project_id": "p", "note": "recover slow source"})
+    assert not result["success"] and result["error_code"] == "wait.unavailable"
+    assert (await env.db.get_task("owner")).title != "abort"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+    assert not [r for r in await records(env, audit_events)
+                if r["event_type"] == "wait.source_redispatched"]
