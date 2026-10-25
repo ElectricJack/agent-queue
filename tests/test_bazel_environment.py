@@ -357,7 +357,7 @@ async def test_real_pg_cluster_cancellation_kills_connected_backends(tmp_path, p
                 connection.terminate()
 
 
-async def _pytest_probe(tmp_path, source, *, mode="pure", collect=False):
+async def _pytest_probe(tmp_path, source, *, mode="pure", collect=False, package_roots=()):
     """Load real root fixtures in a child with explicit Python/config inputs."""
     repo = Path(__file__).resolve().parents[1]
     packages = Path(pytest.__file__).resolve().parents[1]
@@ -378,7 +378,10 @@ async def _pytest_probe(tmp_path, source, *, mode="pure", collect=False):
                 "-c", str(repo / "pyproject.toml"), "-o", "addopts=", "-q"]
         if collect:
             args.append("--collect-only")
-        script = (f"import sys; sys.path.insert(0, {str(packages)!r}); "
+        # Dependencies can ship a top-level tests package too. Resolve the
+        # checkout's fixtures before any installed conftest or admission hooks.
+        search_path = [str(path) for path in (repo, *package_roots, packages)]
+        script = (f"import sys; sys.path[:0] = {search_path!r}; "
                   f"import pytest; raise SystemExit(pytest.main({args!r}))")
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-c", script, cwd=repo, env=env,
@@ -391,6 +394,21 @@ async def _pytest_probe(tmp_path, source, *, mode="pure", collect=False):
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+
+
+async def test_pytest_probe_prefers_checkout_over_installed_tests_package(tmp_path):
+    packages = tmp_path / "site-packages"
+    foreign_tests = packages / "tests"
+    foreign_tests.mkdir(parents=True)
+    (foreign_tests / "__init__.py").touch()
+    (foreign_tests / "conftest.py").write_text("raise AssertionError('foreign conftest loaded')\n")
+    expected = str(Path(__file__).resolve().with_name("conftest.py"))
+    source = ("def test_fixture_source():\n"
+              "    from tests import conftest\n"
+              f"    assert conftest.__file__ == {expected!r}\n")
+    status, output = await _pytest_probe(tmp_path, source, package_roots=(packages,))
+    assert status == 0, output
+    assert "1 passed" in output
 
 
 @pytest.mark.parametrize("collect", [False, True])
