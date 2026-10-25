@@ -119,8 +119,9 @@ async def test_no_harness_directory_is_info_not_a_warning(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("optional_homes_present", [False, True])
-async def test_knowledge_skill_seeds_supported_harnesses_and_preserves_edits(
-    tmp_path, monkeypatch, optional_homes_present
+@pytest.mark.parametrize("skill_name", ["aq-knowledge", "aq-bazel-upgrade"])
+async def test_shipped_skill_seeds_supported_harnesses_and_preserves_edits(
+    tmp_path, monkeypatch, optional_homes_present, skill_name
 ):
     """Exercise real shipped discovery, seeding and drift repair in a fake home."""
     expanduser = os.path.expanduser
@@ -131,21 +132,21 @@ async def test_knowledge_skill_seeds_supported_harnesses_and_preserves_edits(
         for home in (".codex", ".gemini", "snap/gemini-cli/common/.gemini"):
             (tmp_path / home).mkdir(parents=True)
 
-    source = Path(skill_checks_module._shipped_skills()["aq-knowledge"])
+    source = Path(skill_checks_module._shipped_skills()[skill_name])
     result = ensure_default_aq_skills(str(tmp_path))
     for target, receipt in result.items():
-        installed = Path(receipt["root"]) / "aq-knowledge" / "SKILL.md"
+        installed = Path(receipt["root"]) / skill_name / "SKILL.md"
         if target == "claude" or optional_homes_present:
-            assert "aq-knowledge" in receipt["created"]
+            assert skill_name in receipt["created"]
             assert installed.read_bytes() == source.read_bytes()
         else:
             assert not installed.exists()
 
-    customized = Path(result["claude"]["root"]) / "aq-knowledge" / "SKILL.md"
+    customized = Path(result["claude"]["root"]) / skill_name / "SKILL.md"
     custom_text = source.read_text(encoding="utf-8") + "\nOperator customization.\n"
     customized.write_text(custom_text, encoding="utf-8")
     second = ensure_default_aq_skills(str(tmp_path))
-    assert "aq-knowledge" in second["claude"]["skipped"]
+    assert skill_name in second["claude"]["skipped"]
     assert customized.read_text(encoding="utf-8") == custom_text
     assert (await _check_installed_skill_drift(None)).data["drifted"] == [str(customized)]
 
