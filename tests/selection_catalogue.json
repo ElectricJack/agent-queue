@@ -9778,7 +9778,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:1cdb2d9a08ca1d8711d976a4aed6a60a2824cd58af525bce7e606dc37db6f587",
+      "digest": "sha256:b3fdd2dfc7e883b8ca879ce83e4cee2dd7de40044565f0a632a0b923248e6817",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9788,6 +9788,8 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
+        "src.integration.delivery_observer",
+        "src.integration.git_truth",
         "src.integration.pr_cleanup",
         "src.integration.pr_delivery",
         "src.integration.repository_git",
