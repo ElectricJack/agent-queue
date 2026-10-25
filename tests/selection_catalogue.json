@@ -2906,7 +2906,7 @@
         "api-scope"
       ],
       "default_arm": true,
-      "digest": "sha256:fb3575e4208e217fab43b07a93ec2128eed91f2443cee976637274b231a23d54",
+      "digest": "sha256:d02837f32a37b0bcd3abe5a96a7fcbf1a93037ac7c4386cc99cef0f768afea94",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -2914,7 +2914,9 @@
         "src.commands.principal",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Tests for aq-surface Phase S2 scope checker."
     },
     "tests/test_api_task_files.py": {
@@ -3091,7 +3093,7 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:a3bdbe8ed42ceb97577327282772031dcd74fd4da7ca3dca0742365ad32b5115",
+      "digest": "sha256:15489bac268a1d85c27bfc005e49fa08ba09e9c59d8ef07c9cbae08f42d9ad61",
       "imports": [
         "src.asks",
         "src.asks.delivery",
@@ -3099,7 +3101,8 @@
         "src.commands.principal",
         "src.conversations.delivery",
         "src.database.tables",
-        "src.escalations.transport"
+        "src.escalations.transport",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"
@@ -5191,7 +5194,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:0fff545125d8bdcb2c0d32eb99f002c0ea1b26687115ca50be050048242d1f57",
+      "digest": "sha256:ad1672642533392518d841e4f8834b0c6ede5c99212f989389a48cc5712e75fc",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -5215,7 +5218,7 @@
         "parametrize",
         "tmux"
       ],
-      "summary": "Production outbox binding and project-supervisor conversation round trips."
+      "summary": "Production outbox binding and global-supervisor conversation round trips."
     },
     "tests/test_costs.py": {
       "areas": [
