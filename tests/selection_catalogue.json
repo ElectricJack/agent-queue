@@ -20230,8 +20230,9 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:09865b26435dc2f731cedc81f092ea8dbf5b962784a4b750061e59adeed88d3c",
+      "digest": "sha256:48f4ecad44c456b7a0dce80ba57e8ac5f686f746a4bcdccca9e241202514d2c6",
       "imports": [
+        "src.claim_file",
         "src.cli.waits",
         "src.commands",
         "src.commands.principal",
@@ -20246,6 +20247,7 @@
         "src.integration.admission",
         "src.integration.delivery_observer",
         "src.models",
+        "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.worktree_manager",
         "src.prime",
         "src.prime.budgets",
