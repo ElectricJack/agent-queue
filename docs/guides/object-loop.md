@@ -16,6 +16,12 @@ The prior budget trace is retained separately as historical evidence in
 `tests/fixtures/object-loop-refactor/past-budget-trace.json`. Neither recording
 constitutes artifact approval or activation.
 
+The [simplified policy source](object-loop-policy/README.md), approved for
+wording in `rev-clear-apex` revision 2, is available separately for sharing and
+future compilation. It halves the source and removes personal names and
+field-by-field wiring. Its approval does not cover a compiled replacement;
+the bundle described here still uses its recorded source.
+
 Capture measurements are synthetic fixtures, not renderer or visual-quality
 evidence. The tests cover improvement, ties, invalid captures, scorer exhaustion,
 provider pause/deadline, review rejection/withdrawal/revision, budget/round/plateau
@@ -62,7 +68,7 @@ The other newer building blocks were considered deliberately:
   stuck-task watch stays a separate system policy; its observation producer is
   system-scoped and cannot be copied into this project sweep.
 * Human-wait routing does not replace supervisor critique/checkpoint reviews.
-  Internal reviews remain supervisor-only; Jack still receives one plain-English
+  Internal reviews remain supervisor-only; the user still receives one plain-English
   brief and one final result with paired Before/After images. Only a required
   human action is escalated.
 * `fast-smooth-train` demonstrates compact source-authored policy, but its
