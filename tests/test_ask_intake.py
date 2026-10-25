@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,11 +10,13 @@ from sqlalchemy import func, select, update
 
 from src.asks.intake import clear_intent
 from src.commands.principal import ExecutionPrincipal, principal_context
+from src.profiles.capabilities import CapabilityPolicy
 from src.database.tables import (
     ask_decisions, ask_reconciliation_cases, conversation_inputs, human_communication_modes,
     messages, outbound_deliveries, supervisor_conversations,
 )
 from tests.test_ask_discussion import ask_for
+from tests.test_conversation_wiring import supervisor
 from tests.test_ask_discussion import env as env  # noqa: F401
 from tests.test_discord_inbound_router import GUILD, MESSAGE, message, router
 from tests.test_escalation_intake import BOT_USER_ID, CHANNEL, HUMAN
@@ -22,6 +25,13 @@ from tests.test_review_commands import env as review_env  # noqa: F401
 
 
 async def enable(handler, monkeypatch, *, guild_id=GUILD, channel_id=CHANNEL, author_id=HUMAN):
+    _, handler._test_global_principal = await supervisor(handler.db)
+    handler._test_global_principal = replace(
+        handler._test_global_principal,
+        policy=CapabilityPolicy.from_namespaces(
+            aq_commands=["supervisor_inbox_reply", "supervisor_inbox_say"],
+        ),
+    )
     handler.config.discord.guild_id = guild_id
     handler.config.discord.channel_id = channel_id
     handler.config.discord.project_id = "p"
@@ -41,6 +51,11 @@ async def enable(handler, monkeypatch, *, guild_id=GUILD, channel_id=CHANNEL, au
             expected_generation=0,
             conn=conn,
         )
+
+
+async def global_command(handler, command, args):
+    with principal_context(handler._test_global_principal):
+        return await handler.execute(command, args)
 
 
 def envelope(text, ident=MESSAGE):
@@ -229,7 +244,7 @@ async def test_ordinary_shared_input_reuses_addressed_supervisor_reply(env, monk
     await enable(handler, monkeypatch)
     handler.orchestrator.conversation_outbox = SimpleNamespace(bound=True, enqueue=AsyncMock())
     admitted = await admit(handler, "Hello, can you explain the current work?")
-    reply = await _scoped(
+    reply = await global_command(
         handler,
         "supervisor_inbox_reply",
         {
@@ -238,7 +253,6 @@ async def test_ordinary_shared_input_reuses_addressed_supervisor_reply(env, monk
             "text": "Here is the current work.",
             "idempotency_key": "ordinary-answer",
         },
-        session_id="supervisor",
     )
     assert reply["success"], reply
     assert handler.orchestrator.conversation_outbox.enqueue.await_count == 1
@@ -250,10 +264,10 @@ async def conversation_reply_receipt(handler, db):
     handler.orchestrator.conversation_outbox = DurableConversationOutbox(db)
     admitted = await admit(handler, "Interview question, please")
     conversation_id = admitted["receipt"]["conversation_id"]
-    reply = await _scoped(handler, "supervisor_inbox_reply", {
+    reply = await global_command(handler, "supervisor_inbox_reply", {
         "conversation_id": conversation_id, "input_id": admitted["input_id"],
         "text": "Question one: shall we continue?", "idempotency_key": "interview-question",
-    }, session_id="supervisor")
+    })
     assert reply["success"], reply
     reference = str(int(MESSAGE) + 100)
     async with db.immediate() as conn:
@@ -287,7 +301,7 @@ async def test_reply_to_supervisor_receipt_continues_conversation(env, monkeypat
         notice = (await conn.execute(select(messages).where(
             messages.c.id == item["supervisor_message_id"]
         ))).mappings().one()
-        assert notice["to_id"] == "supervisor-p"
+        assert notice["to_id"] == "supervisor-global"
         assert notice["thread_id"] == f"conversation:{conversation_id}"
         assert reference in notice["body"] and text in notice["body"]
         assert await conn.scalar(select(func.count()).select_from(ask_decisions)) == 0
@@ -347,7 +361,7 @@ async def test_reply_to_live_supervisor_receipt_with_retained_thread(env, monkey
         notice = (await conn.execute(select(messages).where(
             messages.c.id == item["supervisor_message_id"]
         ))).mappings().one()
-        assert notice["to_id"] == "supervisor-p"
+        assert notice["to_id"] == "supervisor-global"
         assert notice["thread_id"] == f"conversation:{conversation_id}"
         assert reference in notice["body"]
         assert await conn.scalar(select(func.count()).select_from(ask_decisions)) == 0
@@ -400,7 +414,7 @@ async def test_unroutable_reference_has_public_and_supervisor_receipts(env, monk
         assert "resend" in rows[0]["payload"]["text"]
         assert rows[0]["payload"]["reference_message_id"] == str(incoming.id)
         assert await conn.scalar(select(func.count()).select_from(messages).where(
-            messages.c.id == f"msg-reference-{item['id']}", messages.c.to_id == "supervisor-p"
+            messages.c.id == f"msg-reference-{item['id']}", messages.c.to_id == "supervisor-global"
         )) == 1
     adapter = ConversationDeliveryAdapter(db, SimpleNamespace(), config=handler.config,
                                           lease_owner="test")
@@ -745,12 +759,12 @@ async def test_ordinary_gateway_input_wakes_addressed_stopped_supervisor_after_c
     handler, db = env
     await enable(handler, monkeypatch)
     await db.update_project("p", supervisor_enabled=True)
-    await db.update_session("supervisor", state="stopped", desired_state="stopped")
+    await db.update_session("launch-supervisor-global", state="stopped", desired_state="stopped")
     wakes = []
 
     async def committed_event(kind, payload):
         assert kind == "message.sent"
-        assert payload["to_id"] == "supervisor-p"
+        assert payload["to_id"] == "supervisor-global"
         assert payload["body_kind"] == "conversation_input"
         notice = await db.get_message(payload["message_id"])
         item = await db.find_conversation_input_by_supervisor_message(notice.id)
@@ -783,10 +797,10 @@ async def test_answer_to_initiated_supervisor_post_returns_to_conversation(
     conversation_id, _ = await conversation_reply_receipt(handler, db)
     first = await db.list_conversation_inputs(conversation_id)
     assert len(first) == 1 and first[0]["state"] == "answered"
-    sent = await _scoped(handler, "supervisor_inbox_say", {
+    sent = await global_command(handler, "supervisor_inbox_say", {
         "conversation_id": conversation_id, "text": "Question two: what comes next?",
         "idempotency_key": "interview-question-two",
-    }, session_id="supervisor")
+    })
     assert sent["success"], sent
     reference = str(int(MESSAGE) + 101)
     async with db.immediate() as conn:
@@ -807,4 +821,4 @@ async def test_answer_to_initiated_supervisor_post_returns_to_conversation(
         assert item["conversation_id"] == conversation_id
         assert item["reference_message_id"] == (reference if reply_reference else None)
         notice = await db.get_message(item["supervisor_message_id"])
-        assert notice.to_id == "supervisor-p" and notice.project_id == "p"
+        assert notice.to_id == "supervisor-global" and notice.project_id is None

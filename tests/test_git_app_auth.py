@@ -3569,6 +3569,214 @@ async def test_integrity_transient_failure_rechecks_full_store_with_same_deadlin
     assert runs.await_args.kwargs['verify_integrity'] is True
 
 
+async def test_integrity_retry_waits_for_independent_repack(tmp_path, monkeypatch):
+    """An independent repack can finish during backoff after two dirty observations."""
+    work, _source, _store = _exact_fetch_case(tmp_path)
+    gitdir = _git(['rev-parse', '--absolute-git-dir'], work)
+    manager = GitManager()
+    original = manager._run_isolated_import_git
+    delays = []
+    commands = []
+
+    async def check(args, **kwargs):
+        commands.append((args, kwargs))
+        if len(commands) <= 2:
+            raise GitError('retained Git object integrity is unavailable: missing ' + 'c' * 40)
+        return await original(args, **kwargs)
+
+    async def backoff(delay):
+        delays.append(delay)
+        if len(delays) == 2:
+            # This writer deliberately bypasses GitManager, as a worker shell does.
+            await asyncio.to_thread(_git, ['repack', '-ad'], work)
+            await asyncio.to_thread(_git, ['prune-packed'], work)
+
+    monkeypatch.setattr(manager, '_run_isolated_import_git', check)
+    monkeypatch.setattr(manager_module.asyncio, 'sleep', backoff)
+    deadline = asyncio.get_running_loop().time() + 30
+    await manager._averify_retained_objects(gitdir, home=tmp_path, deadline=deadline)
+    assert delays == [1.0, 2.0]
+    assert len(commands) == 3
+    assert all('fsck' in args and '--full' in args for args, _kwargs in commands)
+    assert all(kwargs['deadline'] == deadline for _args, kwargs in commands)
+    assert manager.retained_store_verified(gitdir)
+    assert list((Path(gitdir) / 'objects' / 'pack').glob('*.pack'))
+
+
+async def test_unreferenced_exact_shortcut_verifies_actual_lender(tmp_path, monkeypatch):
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(['rev-parse', 'HEAD'], work)
+    _git(['fetch', str(source), tip], store)
+    assert not _git(['for-each-ref', '--format=%(refname)'], store)
+    manager = GitManager()
+    checks = AsyncMock(wraps=manager._averify_retained_objects)
+    monkeypatch.setattr(manager, '_averify_retained_objects', checks)
+    no_network = AsyncMock(side_effect=AssertionError('complete local history is already held'))
+    monkeypatch.setattr(manager, '_arun_authenticated_git', no_network)
+    assert await _exact_fetch(manager, store, source, tip, 'refs/aq/exact/local') == tip
+    checks.assert_awaited_once()
+    assert checks.await_args.args == (str(store),)
+    assert manager.retained_store_verified(str(store))
+    no_network.assert_not_awaited()
+
+
+@pytest.mark.parametrize('result_runner', [False, True])
+@pytest.mark.parametrize('command', ['gc', 'repack', 'maintenance'])
+async def test_full_verification_excludes_linked_worktree_maintenance(
+    tmp_path, monkeypatch, result_runner, command,
+):
+    work, _source, _store = _exact_fetch_case(tmp_path)
+    linked = tmp_path / 'linked'
+    _git(['worktree', 'add', '--detach', str(linked), 'HEAD'], work)
+    gitdir = _git(['rev-parse', '--absolute-git-dir'], work)
+    manager = GitManager()
+    checking = asyncio.Event()
+    release = asyncio.Event()
+    waiting = asyncio.Event()
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                waiting.set()
+            return await super().acquire()
+
+    lock = ObservedLock()
+    manager._retained_verify_locks = {gitdir: lock}
+
+    async def check(*args, **kwargs):
+        checking.set()
+        await release.wait()
+        return b''
+
+    monkeypatch.setattr(manager, '_run_isolated_import_git', check)
+    verify = asyncio.create_task(manager._averify_retained_objects(
+        gitdir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+    ))
+    await checking.wait()
+    args = ['-c', 'gc.auto=0', command]
+    cwd = str(linked)
+    if command == 'maintenance':
+        args += ['run', '--task=loose-objects']
+    elif command == 'gc':
+        args[:0] = ['-C', str(linked)]
+        cwd = str(tmp_path)
+    else:
+        args[:0] = ['--git-dir=' + _git(['rev-parse', '--absolute-git-dir'], linked)]
+        cwd = str(tmp_path)
+
+    async def maintain():
+        # The exclusion must work even when callers already own a transaction.
+        async with manager.arepository_transaction(str(linked)):
+            if result_runner:
+                return await manager.arun_git_result(args, cwd=cwd, lock_held=True)
+            return await manager._arun_unlocked(args, cwd=cwd)
+
+    maintenance = asyncio.create_task(maintain())
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=10)
+        assert not maintenance.done()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(verify, maintenance), timeout=10)
+        assert not lock.locked()
+        # A repack changes the store and invalidates the previous clean baseline.
+        if command == 'repack':
+            assert not manager.retained_store_verified(gitdir)
+    finally:
+        release.set()
+        verify.cancel()
+        maintenance.cancel()
+        await asyncio.gather(verify, maintenance, return_exceptions=True)
+
+
+async def test_integrity_retry_cannot_renew_exhausted_deadline(tmp_path, monkeypatch):
+    manager = GitManager()
+    failure = GitError('retained Git object integrity is unavailable: missing ' + 'c' * 40)
+    runs = AsyncMock(side_effect=failure)
+    monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
+    with pytest.raises(GitError) as caught:
+        await manager._averify_retained_objects(
+            str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 0.5,
+        )
+    assert caught.value is failure
+    assert runs.await_count == 1
+    assert not manager._retained_verify_locks[str(tmp_path.resolve())].locked()
+    assert not manager.retained_store_verified(str(tmp_path))
+
+
+async def test_repack_blocks_verification_only_for_its_store(tmp_path, monkeypatch):
+    work, _source, other = _exact_fetch_case(tmp_path)
+    gitdir = _git(['rev-parse', '--absolute-git-dir'], work)
+    manager = GitManager()
+    repacking = asyncio.Event()
+    release = asyncio.Event()
+    waiting = asyncio.Event()
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                waiting.set()
+            return await super().acquire()
+
+    lock = ObservedLock()
+    manager._retained_verify_locks = {gitdir: lock}
+
+    async def repack(*args, **kwargs):
+        repacking.set()
+        await release.wait()
+        return SimpleNamespace(returncode=0), b'', b''
+
+    monkeypatch.setattr(manager_module, 'run_owned_process', repack)
+    checks = AsyncMock(return_value=b'')
+    monkeypatch.setattr(manager, '_run_isolated_import_git', checks)
+    deadline = asyncio.get_running_loop().time() + 30
+    maintenance = asyncio.create_task(manager._arun_unlocked(['repack', '-ad'], cwd=str(work)))
+    await asyncio.wait_for(repacking.wait(), timeout=10)
+    verify = asyncio.create_task(manager._averify_retained_objects(
+        gitdir, home=tmp_path, deadline=deadline,
+    ))
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=10)
+        await manager._averify_retained_objects(str(other), home=tmp_path, deadline=deadline)
+        assert checks.await_count == 1  # The unrelated store proceeds.
+        assert checks.await_args.args[0][0] == f'--git-dir={other}'
+        verify.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await verify
+        assert lock.locked()  # A cancelled waiter cannot release the repacker's lock.
+        release.set()
+        await asyncio.wait_for(maintenance, timeout=10)
+        await manager._averify_retained_objects(gitdir, home=tmp_path, deadline=deadline)
+        assert checks.await_count == 2
+        assert not lock.locked()
+    finally:
+        release.set()
+        maintenance.cancel()
+        verify.cancel()
+        await asyncio.gather(maintenance, verify, return_exceptions=True)
+
+
+async def test_integrity_cancellation_during_backoff_releases_exclusion(tmp_path, monkeypatch):
+    manager = GitManager()
+    runs = AsyncMock(side_effect=GitError('retained Git object integrity is unavailable'))
+    monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
+    sleeping = asyncio.Event()
+
+    async def backoff(delay):
+        sleeping.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager_module.asyncio, 'sleep', backoff)
+    verify = asyncio.create_task(manager._averify_retained_objects(
+        str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+    ))
+    await asyncio.wait_for(sleeping.wait(), timeout=10)
+    verify.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await verify
+    assert not manager._retained_verify_locks[str(tmp_path.resolve())].locked()
+    assert not manager.retained_store_verified(str(tmp_path))
+
+
 async def test_integrity_persistent_failure_keeps_safe_object_evidence(tmp_path, monkeypatch):
     oid = b'c' * 40
     process = SimpleNamespace(returncode=2, communicate=AsyncMock(return_value=(
@@ -3577,11 +3785,14 @@ async def test_integrity_persistent_failure_keeps_safe_object_evidence(tmp_path,
     manager = GitManager()
     spawn = AsyncMock(return_value=process)
     monkeypatch.setattr(manager, '_spawn_isolated_git', spawn)
+    backoff = AsyncMock()
+    monkeypatch.setattr(manager_module.asyncio, 'sleep', backoff)
     with pytest.raises(GitError, match='missing ' + oid.decode()) as caught:
         await manager._averify_retained_objects(
             str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
         )
-    assert spawn.await_count == 2
+    assert spawn.await_count == 4
+    assert [call.args[0] for call in backoff.await_args_list] == [1.0, 2.0, 4.0]
     assert 'private-path' not in str(caught.value)
 
 

@@ -5664,7 +5664,8 @@ async def test_root_pr_recovery_preserves_existing_bound_source_repair(world):
     assert (await world.db.get_task("repair")).status is TaskStatus.COMPLETED
 
 
-async def test_root_pr_recovery_fixed_head_requires_fresh_pr_and_candidate_checks(world):
+@pytest.mark.parametrize("event", ["push", "pull_request"])
+async def test_root_pr_recovery_fixed_head_requires_fresh_source_and_candidate_checks(world, event):
     from src.integration.root_pr_recovery import RECOVERY_KEY
 
     now = [time.time()]
@@ -5685,16 +5686,17 @@ async def test_root_pr_recovery_fixed_head_requires_fresh_pr_and_candidate_check
     fixed = world.origin.work("root", "fixed")
     await close(world.db, "root", [fixed], close_id="fixed-completion", origin=world.origin)
     await world.db.update_task("root", pr_url=original.pr_url)
-    # The failed old head and successful push run cannot authorize the new PR head.
-    github.runs[fixed] = "success"
+    # Neither the failed old PR head nor a green push on it authorizes the new SHA.
+    github.runs[source] = "success"
     pending = await train.visit(MAIN, seal_now=True)
     assert pending.batch_id is None
     assert pending.detail["blockers"][0]["code"] == "awaiting_pr_checks"
-    github.pr_runs[fixed] = "success"
     # A restart retains both the exact-check retry deadline and recovery accounting.
     now[0] += 601
     train, github, _ = await hosted_train(world, clock=clock,
                                         failure_handler=root_pr_recovery(world))
+    github.pr_runs.pop(fixed, None)
+    (github.runs if event == "push" else github.pr_runs)[fixed] = "success"
     testing = await train.visit(MAIN, seal_now=True)
     assert testing.state == "testing", testing
     assert testing.candidate_sha != fixed
@@ -7706,10 +7708,59 @@ async def test_train_status_still_publishes_the_configuration_generation(world):
     assert active["desired_mode"] == default["desired_mode"]
 
 
+@pytest.mark.parametrize("pr_check,code", [
+    ("absent", None), ("omitted", None), ("failure", "pr_checks_red"),
+    ("pending", "awaiting_pr_checks"), ("old_head", "awaiting_pr"),
+])
+async def test_root_pr_admission_accepts_only_missing_checks_from_exact_head_push(
+    world, pr_check, code,
+):
+    head = await completed(world, "leaf")
+    train, github, _ = await hosted_train(world)
+    github.runs[head] = "success"
+    if pr_check == "absent":
+        github.pr_runs.clear()
+    elif pr_check == "omitted":
+        # A same-repo PR workflow completed but omitted its required build job.
+        listing = github.paged_items
+        pr_suite = github._rows(head, "pull_request")[0]["check_suite"]["id"]
+
+        async def without_pr_job(path, *, key):
+            rows = await listing(path, key=key)
+            return [r for r in rows if key != "check_runs"
+                    or r.get("check_suite", {}).get("id") != pr_suite]
+
+        github.paged_items = without_pr_job
+    elif pr_check == "old_head":
+        pull_request = github.pull_request
+
+        async def different_pr_head(url):
+            pull = await pull_request(url)
+            pull["head"]["sha"] = "b" * 40
+            return pull
+
+        github.pull_request = different_pr_head
+    else:
+        github.pr_runs[head] = pr_check
+    visit = await train.visit(MAIN)
+    if code is not None:
+        assert visit.batch_id is None, visit
+        assert visit.detail["blockers"][0]["code"] == code
+        if pr_check == "old_head":
+            assert github.observed == []
+        return
+    assert visit.state == "testing", visit
+    assert [(m.task_id, m.source_sha) for m in await BatchStore(world.db).members(
+        visit.batch_id)] == [("leaf", head)]
+    # The admitted source does not replace the new candidate's own push CI.
+    assert git(world.origin.url, "rev-parse", "main") != visit.candidate_sha
+    github.runs[visit.candidate_sha] = "success"
+    assert (await train.visit(MAIN)).state == "delivered"
+
+
 @pytest.mark.parametrize("condition,code", [
     ("missing_pr", "awaiting_pr"),
     ("pending", "awaiting_pr_checks"),
-    ("push_green", "awaiting_pr_checks"),
     ("red", "pr_checks_red"),
     ("no_approval", "pr_review_missing"),
     ("old_approval", "pr_review_missing"),
@@ -7726,10 +7777,8 @@ async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(w
     url = (await world.db.get_task("leaf")).pr_url
     if condition == "missing_pr":
         await world.db.update_task("leaf", pr_url=None)
-    elif condition in {"pending", "push_green"}:
+    elif condition == "pending":
         github.pr_runs.clear()
-        if condition == "push_green":
-            github.runs[head] = "success"
     elif condition == "red":
         github.pr_runs[head] = "failure"
     elif condition in {"no_approval", "changes", "old_approval", "bot_approval", "dismissed",
@@ -8038,12 +8087,12 @@ async def test_root_pr_gate_refuses_suppressed_checks_without_changing_source(wo
     ("red", "pr_checks_red"),
     ("running", "awaiting_pr_checks"),
     ("cancelled", "unknown"),
-    ("push_red", "awaiting_pr_checks"),
+    ("push_red", "pr_checks_red"),
     ("push_running", "awaiting_pr_checks"),
-    ("push_cancelled", "awaiting_pr_checks"),
-    ("push_neutral", "awaiting_pr_checks"),
-    ("push_skipped", "awaiting_pr_checks"),
-    ("push_timeout", "awaiting_pr_checks"),
+    ("push_cancelled", "unknown"),
+    ("push_neutral", "unknown"),
+    ("push_skipped", "unknown"),
+    ("push_timeout", "unknown"),
     ("check_outage", "unknown"),
     ("review_missing", "pr_review_missing"),
     ("changes_requested", "pr_changes_requested"),
