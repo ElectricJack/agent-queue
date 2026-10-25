@@ -274,6 +274,7 @@ async def test_runtime_catalog_keeps_good_playbook_when_one_definition_is_invali
 
     artifact = _routing_artifact()
     runtime = object.__new__(V2PlaybookRuntime)
+    runtime._event_catalog_generation = 0
 
     class ActivationSource:
         async def list_playbook_activations(self, *, enabled_only=False):
