@@ -103,6 +103,11 @@ Every slot carries a sentinel at `<slot>/.aq-worktree.json`:
 
 Written at slot creation, updated at every assignment. It is the filesystem half of adoption and doctoring: a directory with a sentinel but no DB row is an orphan; a DB row with no sentinel needs its identity re-proved during preparation; a `setup_hash` mismatch means `worktree_setup` changed and the setup commands re-run at next reset. The sentinel is data for recovery — the DB row remains authoritative for locks.
 
+A fresh continuation reuses the workspace row at a newly provisioned path. After
+reprovisioning, both the initial launch and restart recovery stamp `task_id`,
+`branch` and `assigned_at` for the resumed assignment, preserving the provisioned
+workspace identity and setup hash before launching or retiring the old checkout.
+
 ---
 
 ## 3. Lifecycle

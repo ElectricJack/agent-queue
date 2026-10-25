@@ -195,8 +195,8 @@ class ResumeTransaction:
                 raise WaitError('wait.unavailable', 'worktree base disappeared')
             await self.db.update_workspace(workspace.id, workspace_path=target)
             self.orch._worktree_base_paths[target] = base.workspace_path
-            await self.orch._worktree_slots().reprovision_slot(
-                replace(workspace, workspace_path=target), kind, prune=False,
+            await self.reprovision_assigned_slot(
+                replace(workspace, workspace_path=target), kind, task, intent['branch'],
             )
             # A restart may have landed before the old folder was retired.
             await self.retire_checkout(stage['old_path'], target, base)
@@ -237,10 +237,21 @@ class ResumeTransaction:
         self.orch._worktree_base_paths[target] = base.workspace_path
         # reprovision reuses this *new* checkout and applies the configured
         # setup and ownership sentinel. It never copies an old agent folder.
-        await self.orch._worktree_slots().reprovision_slot(fresh, kind, prune=False)
+        await self.reprovision_assigned_slot(fresh, kind, task, intent['branch'])
         await git._arun(['merge-base', '--is-ancestor', intent['saved_head'], 'HEAD'], cwd=target)
         await self.retire_checkout(path, target, base)
         return target
+
+    async def reprovision_assigned_slot(self, workspace, kind, task, branch):
+        """Restore the active assignment after reprovision writes a free sentinel."""
+        slots = self.orch._worktree_slots()
+        await slots.reprovision_slot(workspace, kind, prune=False)
+        sentinel = slots.read_sentinel(workspace.workspace_path)
+        if sentinel is None:
+            raise WaitError('wait.unavailable', 'reprovisioned slot sentinel is missing')
+        slots.write_sentinel(workspace.workspace_path, replace(
+            sentinel, task_id=task.id, branch=branch, assigned_at=self.clock(),
+        ))
 
     async def retire_checkout(self, old_path, target, base):
         """Remove the superseded detached folder once no row names it.

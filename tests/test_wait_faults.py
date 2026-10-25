@@ -767,7 +767,7 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
 
     from src.database.tables import agents
     from src.git.manager import GitManager
-    from src.models import RepoSourceType, SessionRecord, Workspace
+    from src.models import RepoSourceType, SessionRecord, Workspace, WorktreeSentinel
     from src.prime import PrimeRenderer
     from src.scheduler import AssignAction
     from src.wait_runtime.resume import ResumeTransaction
@@ -818,7 +818,11 @@ async def test_matrix_hibernate_resume_fresh_folder_prime_ack_and_single_writer(
     monkeypatch.setattr(env.db, "get_workspace", AsyncMock(return_value=base))
     monkeypatch.setattr(env.db, "resolve_workspace_kind", AsyncMock(return_value=SimpleNamespace()))
     monkeypatch.setattr(env.db, "update_workspace", AsyncMock())
-    slots = SimpleNamespace(reprovision_slot=AsyncMock())
+    slots = SimpleNamespace(
+        reprovision_slot=AsyncMock(),
+        read_sentinel=lambda _: WorktreeSentinel('slot-0', 0, 'base', 'p'),
+        write_sentinel=lambda *_: None,
+    )
     orch = SimpleNamespace(db=env.db, git=git, _prepare_workspace_locked=AsyncMock(return_value=str(old)),
                            _git_mutex=lambda _: asyncio.Lock(), _worktree_slots=lambda: slots,
                            _worktree_base_paths={})

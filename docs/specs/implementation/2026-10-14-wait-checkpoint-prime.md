@@ -63,6 +63,12 @@ comments or the summary. Held mail is scoped by sequence cursor and recipient
 and excludes wake/control messages. Reading prime never stamps held mail
 delivered; `wait_ack` owns those stamps and cursor advancement.
 
+If knowledge context preparation refuses a fresh `RESUME_PENDING` holder with
+`record.stale_claim`, prime retains that error code and tells the worker to run
+`aq wait ack`, then retry `aq prime`. Prime records delivery of the bound outcome
+before preparing knowledge context, so acknowledgement is available after that
+refusal. Knowledge context retains its `IN_PROGRESS` claim requirement.
+
 No database DDL, claim/pool scheduling or public API model change is made here.
 The tests cover the SQL checkpoint/deadline race on disposable PostgreSQL,
 command activation and claim fences, exact byte/hash capture, comment budgets,
