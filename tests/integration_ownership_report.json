@@ -2780,7 +2780,7 @@
   },
   "hand_integration_reconciliation": {
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2294,
+    "authorized_owned_delta": 2300,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2885,7 +2885,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 82532,
-    "measured_owned_total": 157793,
+    "measured_owned_total": 157799,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -2907,6 +2907,29 @@
       "supersedes_decision_message_id": "msg-8a308cadb20142e38c2692c762734e85",
       "task_id": "swift-forge-67",
       "thread_id": "swift-forge-67-ci-size"
+    },
+    "queued_continuation_demand_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 6,
+      "authorized_shared_owned_delta": 6,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/orchestrator/pools.py": 6
+      },
+      "decision_message_id": "msg-927da743554448619862dd297dea6afe",
+      "dev_source_revision": "94f4c82ee1898298711498c93ca90cb459816db6",
+      "generic_capacity_classification": {
+        "src/waits/occupancy.py::continuation_capacity": "Same read-only wait/session capacity classification as continuation_occupancy; no integration ref policy, mutation authority or delivery storage."
+      },
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82532,
+      "previous_measured_owned_total": 157793,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2007",
+      "reason": "Exact supervisor-approved +6 shared owned lines for queued continuation pool demand after combining demand and occupancy into one statement. Preserve original baselines, all historical grants and classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "30d8c9fd755a90cc2580dd3af856a0a1fb25193e",
+      "task_id": "sharp-harbor-94"
     },
     "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
     "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
@@ -16372,7 +16395,7 @@
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2294,
+      "authorized_owned_delta": 2300,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16477,7 +16500,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 82532,
-      "measured_owned_total": 157793,
+      "measured_owned_total": 157799,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16499,6 +16522,29 @@
         "supersedes_decision_message_id": "msg-8a308cadb20142e38c2692c762734e85",
         "task_id": "swift-forge-67",
         "thread_id": "swift-forge-67-ci-size"
+      },
+      "queued_continuation_demand_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 6,
+        "authorized_shared_owned_delta": 6,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/orchestrator/pools.py": 6
+        },
+        "decision_message_id": "msg-927da743554448619862dd297dea6afe",
+        "dev_source_revision": "94f4c82ee1898298711498c93ca90cb459816db6",
+        "generic_capacity_classification": {
+          "src/waits/occupancy.py::continuation_capacity": "Same read-only wait/session capacity classification as continuation_occupancy; no integration ref policy, mutation authority or delivery storage."
+        },
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82532,
+        "previous_measured_owned_total": 157793,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2007",
+        "reason": "Exact supervisor-approved +6 shared owned lines for queued continuation pool demand after combining demand and occupancy into one statement. Preserve original baselines, all historical grants and classifications; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "30d8c9fd755a90cc2580dd3af856a0a1fb25193e",
+        "task_id": "sharp-harbor-94"
       },
       "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
       "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
@@ -16700,7 +16746,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157793,
+    "owned_total_cap": 157799,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
