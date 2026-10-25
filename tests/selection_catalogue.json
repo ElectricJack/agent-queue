@@ -9139,14 +9139,16 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:75dce18784ab37b8f466152b98f47751a83c31f684bc71ddbc82d6b75cc3c0ac",
+      "digest": "sha256:d4bc888d42de354726cd1a9e8d421a31eb4825337614873177269d46fde7bf32",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.doctor.stall_checks",
         "src.integration",
+        "src.integration.branch_materialization",
         "src.integration.delivery_truth",
         "src.integration.delivery_watchdog",
+        "src.integration.hierarchy",
         "src.integration.models",
         "src.models"
       ],
