@@ -19,7 +19,7 @@
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2286,
+      "authorized_owned_delta": 2322,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -124,10 +124,31 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 82532,
-      "measured_owned_total": 157785,
+      "measured_owned_total": 157821,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
+      "project_ready_observation_batching": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 36,
+        "authorized_shared_owned_delta": 36,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/commands/task_commands.py": 36
+        },
+        "decision_message_id": "msg-00c1d067780840ba9ae709b8e46df523",
+        "dev_source_revision": "4f713c63b9f6dce0e28df7a460814049b23e7b0f",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82532,
+        "previous_measured_owned_total": 157785,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/1987",
+        "reason": "Exact approved +36 shared owned lines for batched withheld admission and lazy pool demand once per project_ready request, with relocated _explain_task classified as shared. Preserve original baselines, all historical grants and ownership classifications, with zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "e93ba2b1b39f46c6ccc6e645a8860a95bcb8a726",
+        "task_id": "solid-dune-98",
+        "thread_id": "solid-dune-98-size-repair"
+      },
       "project_schedule_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 101,
@@ -330,7 +351,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157785,
+    "owned_total_cap": 157821,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
