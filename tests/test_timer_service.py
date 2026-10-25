@@ -347,22 +347,21 @@ class TestTimerServiceTick:
 
     @pytest.mark.asyncio
     async def test_tick_updates_last_fire_time(self):
-        """After emission, the last_fire time should be updated to now."""
+        """After emission, last_fire records the tick's monotonic timestamp."""
         bus = _make_event_bus()
         manager = _make_playbook_manager(["timer.1m"])
         service = TimerService(event_bus=bus, playbook_manager=manager)
-        service.start()
 
-        import time
+        # Replace the service's clock without changing asyncio's real clock.
+        with patch("src.timer_service.time", wraps=time) as clock:
+            clock.monotonic.return_value = 1000.0
+            service.start()
+            clock.monotonic.return_value = 1120.0
+            count = await service.tick()
 
-        old_fire = time.monotonic() - 120
-        service._last_fire["timer.1m"] = old_fire
-
-        await service.tick()
-
-        # last_fire should be updated to approximately now
-        assert service._last_fire["timer.1m"] > old_fire
-        assert service._last_fire["timer.1m"] >= time.monotonic() - 1
+        assert count == 1
+        bus.emit.assert_awaited_once()
+        assert service._last_fire["timer.1m"] == 1120.0
 
     @pytest.mark.asyncio
     async def test_tick_wont_double_fire(self):
