@@ -2017,6 +2017,9 @@ async def test_delivery_edge_uses_immutable_view_and_rechecks_rewind(world, tmp_
     base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
     git(origin.clone, "push", "--force", "origin", f"{base}:main")
     assert not await view.is_fresh("waiting")
+    changed = view._snapshot.reasons["waiting"][-1]
+    assert changed["code"] == "admission_delivery_changed"
+    assert "done" in changed["detail"]
     current = await observe_admission(db, ["waiting", "independent"], service)
     assert current.allowed == {"independent"}
     assert current.reasons["waiting"][0]["ref"] == "done"
@@ -2139,6 +2142,10 @@ async def test_unknown_delivery_observation_withholds_edge_consumers(
                 "fetch_error": "fetch failed"}[observation] in why["detail"]
         assert not await view.is_fresh("waiting")
         assert not await view.matches(task_id="waiting")
+        if observation != "absent":
+            changed = view._snapshot.reasons["waiting"][-1]
+            assert changed["code"] == "admission_delivery_changed"
+            assert "done" in changed["detail"]
         assert await view.matches(task_id="independent")
         assert await view.counts("p") == {"worker": 1}
         explained = await CommandHandler(orch, config)._cmd_explain_task({"task_id": "waiting"})

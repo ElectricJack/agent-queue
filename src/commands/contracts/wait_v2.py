@@ -60,7 +60,7 @@ SERVICE_WAIT_COMMANDS = frozenset(
         "scheduler_wait_sync",
     }
 )
-SUPERVISOR_WAIT_COMMANDS = frozenset({"wait_graph", "wait_decide", "wait_lift"})
+SUPERVISOR_WAIT_COMMANDS = frozenset({"wait_graph", "wait_decide", "wait_lift", "wait_source_redispatch"})
 PUBLIC_WAIT_V2_COMMANDS = frozenset(
     {
         "wait_explain",
@@ -69,6 +69,7 @@ PUBLIC_WAIT_V2_COMMANDS = frozenset(
         "wait_ack",
         "wait_decide",
         "wait_lift",
+        "wait_source_redispatch",
     }
 )
 
@@ -158,6 +159,18 @@ class WaitLiftArgs(CommandArgs):
     def response_nonblank(self):
         if not self.response.strip():
             raise ValueError("response must not be blank")
+        return self
+
+
+class WaitSourceRedispatchArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    source_seq: int = Field(ge=1, strict=True)
+    note: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def note_nonblank(self):
+        if not self.note.strip():
+            raise ValueError("note must not be blank")
         return self
 
 
@@ -255,6 +268,7 @@ WAIT_V2_DEFINITIONS = (
     ("wait_ack", WaitAckArgs, WaitAckValue, SideEffectClass.RESOLVE),
     ("wait_decide", WaitDecideArgs, WaitDecideValue, SideEffectClass.RESOLVE),
     ("wait_lift", WaitLiftArgs, WaitDecideValue, SideEffectClass.RESOLVE),
+    ("wait_source_redispatch", WaitSourceRedispatchArgs, WaitServiceValue, SideEffectClass.RESOLVE),
     ("wait_source_commit", WaitSourceCommitArgs, WaitServiceValue, SideEffectClass.CREATE),
     ("wait_deadline_fire", WaitDeadlineFireArgs, WaitServiceValue, SideEffectClass.RESOLVE),
     ("wait_resume_dispatch", WaitResumeDispatchArgs, WaitServiceValue, SideEffectClass.COMPOSITE),
