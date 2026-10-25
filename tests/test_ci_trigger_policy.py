@@ -115,12 +115,16 @@ def test_push_ci_only_covers_integration_boundaries(branch, expected):
     assert _pushed(workflow()['on'], branch) is expected
 
 
-@pytest.mark.parametrize('branch', ['dev', 'staging', 'main'])
-def test_only_the_attestation_audit_runs_on_a_push_to_delivery_branch(branch):
+@pytest.mark.parametrize(('branch', 'expected'), [
+    ('dev', {'main-attestation.yml', 'bazel-shadow.yml'}),
+    ('staging', {'main-attestation.yml'}),
+    ('main', {'main-attestation.yml'}),
+])
+def test_delivery_pushes_run_the_audit_and_only_dev_adds_nonrequired_shadow(branch, expected):
     files = sorted(WORKFLOWS.glob('*.yml')) + sorted(WORKFLOWS.glob('*.yaml'))
     assert files
     pushed = {path.name for path in files if _pushed(workflow(path.name)['on'], branch)}
-    assert pushed == {'main-attestation.yml'}
+    assert pushed == expected
 
 
 def _venv_steps(name, job):
@@ -213,7 +217,7 @@ def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
         'aq/parent/**', 'aq/integration/**', 'aq/batches/**', 'aq/promote/**', 'aq/backmerge/**',
     ]
     assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
-    assert list(tests['jobs']) == ['test', 'e2e-cli', 'dashboard']
+    assert list(tests['jobs']) == ['test', 'e2e-cli', 'dashboard', 'suite-policy', 'bazel-suite']
     assert tests['jobs']['test']['name'] == 'Tests (${{ matrix.suite.name }})'
     assert tests['jobs']['e2e-cli']['name'] == 'E2E CLI (${{ matrix.group }})'
     assert tests['jobs']['dashboard']['name'] == 'Dashboard (typecheck/build)'
@@ -250,11 +254,12 @@ def test_main_attestation_is_the_specified_audit_workflow():
         'uses': _checkout_action(),
         'with': {
             'ref': '${{ github.sha }}',
-            'sparse-checkout': 'src/integration/hosted_attestation.py',
+            'sparse-checkout': ('src/integration/hosted_attestation.py\n'
+                                '.github/agent-queue-integration.json\n'),
             'sparse-checkout-cone-mode': 'false',
         },
     }
-    assert Path(checkout['with']['sparse-checkout']).is_file()
+    assert all(Path(path).is_file() for path in checkout['with']['sparse-checkout'].splitlines())
     assert verify == {
         'id': 'verify',
         'env': {
@@ -264,6 +269,7 @@ def test_main_attestation_is_the_specified_audit_workflow():
             'SHA': '${{ github.sha }}',
             'APP_ID': '${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}',
             'CHECK_VERSION': '${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}',
+            'TRUST_MANIFEST_PATH': '.github/agent-queue-integration.json',
             'ATTESTATION_NAME': "${{ github.ref_name == 'staging' && 'Agent Queue Promotion Attestation (staging)' || github.ref_name == 'main' && 'Agent Queue Promotion Attestation (release)' || 'Agent Queue Integration Attestation' }}",
             'STEP': "${{ github.ref_name == 'staging' && 'staging' || github.ref_name == 'main' && 'release' || '' }}",
             'TARGET_REF': '${{ github.ref }}',
@@ -340,7 +346,9 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert 'ref: ${{ github.sha }}' in text
     assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in text
     assert workflow()['permissions'] == {'contents': 'read'}
-    assert list(workflow()['jobs']) == ['test', 'e2e-cli', 'dashboard']
+    assert list(workflow()['jobs']) == [
+        'test', 'e2e-cli', 'dashboard', 'suite-policy', 'bazel-suite',
+    ]
 
 
 def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit():

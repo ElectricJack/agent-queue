@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from src.integration import suite_cutover as cutover
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/bazel"))
 _spec = importlib.util.spec_from_file_location("bazel_ci_sample", ROOT / "scripts/bazel/ci_sample.py")
@@ -334,3 +336,37 @@ def test_artifact_redirect_does_not_forward_github_token():
     with pytest.raises(ValueError, match="HTTPS"):
         ci.TokenScopedRedirect().redirect_request(request, None, 302, "Found", {},
                                                  "http://artifacts.example.invalid/signed")
+
+
+def test_cutover_workflows_use_exact_head_and_catalog_while_legacy_fallback_stays():
+    tests, candidate, audit = (workflow(name) for name in
+                               ("tests.yml", "train-candidate.yml", "main-attestation.yml"))
+    jobs = tests["jobs"]
+    assert all(name in jobs for name in ("test", "e2e-cli", "dashboard"))
+    assert jobs["suite-policy"]["steps"][-1]["run"] == (
+        "python3 src/integration/suite_cutover.py workflow")
+    bazel = jobs["bazel-suite"]
+    assert bazel["name"] == "${{ matrix.suite.name }}"
+    assert bazel["if"] == "needs.suite-policy.outputs.enabled == 'true'"
+    assert bazel["steps"][0]["with"]["ref"] == "${{ github.sha }}"
+    command = next(step for step in bazel["steps"] if step.get("env", {}).get("BAZEL_TARGET"))
+    assert command["env"]["BAZEL_TARGET"] == "${{ matrix.suite.target }}"
+    assert '"$BAZEL_TARGET"' in command["run"] and "--config=ci" in command["run"]
+    mark = candidate["jobs"]["mark"]
+    triggers = candidate.get("on", candidate.get(True))
+    assert triggers["workflow_run"]["types"] == ["requested", "in_progress", "completed"]
+    invalidation = candidate["jobs"]["invalidate"]["steps"][0]
+    assert "'failure' || 'pending'" in invalidation["env"]["STATE"]
+    assert '-f state="$STATE"' in invalidation["run"]
+    assert mark["needs"] == "invalidate"
+    assert "workflow_run.conclusion == 'success'" in mark["if"]
+    assert "github.event.action == 'completed'" in mark["if"]
+    assert mark["steps"][0]["with"]["path"] == "trusted"
+    assert mark["steps"][0]["with"]["ref"] == "${{ github.sha }}"
+    assert mark["steps"][1]["with"]["ref"] == "${{ github.event.workflow_run.head_sha }}"
+    assert "trusted/src/integration/suite_cutover.py candidate" in mark["steps"][2]["run"]
+    assert mark["steps"][-1]["if"] == "failure()"
+    assert "-f state=failure" in mark["steps"][-1]["run"]
+    assert audit["jobs"]["unattested-ci"]["uses"] == "./.github/workflows/tests.yml"
+    assert audit["jobs"]["attestation"]["steps"][-1]["env"]["TRUST_MANIFEST_PATH"] == (
+        cutover.TRUST_PATH)

@@ -228,6 +228,10 @@ attestation policy change together only after exact-candidate evidence exists.
 Missing or untrusted attestations retain the full-test fallback. Installed
 policy/protection activation requires explicit operator receipts.
 
+The [prepared suite controls](bazel-suite-cutover.md) describe independent
+dispatch, coupled check/version drafts, exact-candidate verification and
+single-suite rollback. Their committed defaults keep every suite on legacy CI.
+
 Keep each legacy arm dispatchable for at least two weeks after its switch.
 Compare a week's measurements with the 14-day baseline, with at least 20
 comparable landings; insufficient samples extend the hold. Report p50/p90 and

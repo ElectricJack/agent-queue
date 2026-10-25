@@ -4129,6 +4129,7 @@ GENERATOR_INPUTS = [
     "src/integration/stale_owners.py",
     "src/integration/stall_alerts.py",
     "src/integration/status.py",
+    "src/integration/suite_cutover.py",
     "src/integration/superseded_completion.py",
     "src/integration/suspended_parent_recovery.py",
     "src/integration/task_deletion.py",

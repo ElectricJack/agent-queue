@@ -1,0 +1,123 @@
+{
+  "schema": "aq.suite-cutover.v1",
+  "active_suites": [],
+  "legacy": {
+    "names": [
+      "Tests (cli-conformance)",
+      "Tests (default-1/8)",
+      "Tests (default-2/8)",
+      "Tests (default-3/8)",
+      "Tests (default-4/8)",
+      "Tests (default-5/8)",
+      "Tests (default-6/8)",
+      "Tests (default-7/8)",
+      "Tests (default-8/8)",
+      "Tests (migration-and-slow)",
+      "Tests (postgres-integration)",
+      "E2E CLI (claims)",
+      "E2E CLI (cli)",
+      "E2E CLI (graphs)",
+      "E2E CLI (failover)",
+      "Dashboard (typecheck/build)"
+    ],
+    "version": "ci-4f7c710bba01"
+  },
+  "suites": {
+    "dashboard": {
+      "legacy_checks": [
+        "Dashboard (typecheck/build)"
+      ],
+      "bazel_checks": [
+        {
+          "name": "Bazel (dashboard)",
+          "target": "//checks:dashboard"
+        }
+      ]
+    },
+    "cli": {
+      "legacy_checks": [
+        "Tests (cli-conformance)"
+      ],
+      "bazel_checks": [
+        {
+          "name": "Bazel (cli)",
+          "target": "//checks:cli"
+        },
+        {
+          "name": "Bazel (cli_startup)",
+          "target": "//checks:cli_startup"
+        }
+      ]
+    },
+    "default": {
+      "legacy_checks": [
+        "Tests (default-1/8)",
+        "Tests (default-2/8)",
+        "Tests (default-3/8)",
+        "Tests (default-4/8)",
+        "Tests (default-5/8)",
+        "Tests (default-6/8)",
+        "Tests (default-7/8)",
+        "Tests (default-8/8)"
+      ],
+      "bazel_checks": [
+        {
+          "name": "Bazel (default)",
+          "target": "//checks:default"
+        }
+      ]
+    },
+    "postgres": {
+      "legacy_checks": [
+        "Tests (postgres-integration)"
+      ],
+      "bazel_checks": [
+        {
+          "name": "Bazel (postgres)",
+          "target": "//checks:postgres"
+        }
+      ]
+    },
+    "migration_slow": {
+      "legacy_checks": [
+        "Tests (migration-and-slow)"
+      ],
+      "bazel_checks": [
+        {
+          "name": "Bazel (migration_slow)",
+          "target": "//checks:migration_slow"
+        },
+        {
+          "name": "Bazel (generated)",
+          "target": "//checks:generated"
+        }
+      ]
+    },
+    "e2e": {
+      "legacy_checks": [
+        "E2E CLI (claims)",
+        "E2E CLI (cli)",
+        "E2E CLI (graphs)",
+        "E2E CLI (failover)"
+      ],
+      "bazel_checks": [
+        {
+          "name": "Bazel (e2e)",
+          "target": "//checks:e2e"
+        }
+      ]
+    }
+  },
+  "pinned_obligations": {
+    "cli_startup": {
+      "owner": "cli",
+      "legacy_check": "Tests (cli-conformance)",
+      "bazel_check": "Bazel (cli_startup)"
+    },
+    "generated": {
+      "owner": "migration_slow",
+      "legacy_check": "Tests (migration-and-slow)",
+      "bazel_check": "Bazel (generated)"
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import os
@@ -14,6 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from src.integration import suite_cutover as cutover
+from src.integration.checks import CommitCheck, RequiredChecks, evaluate
+from src.integration.ci import IntegrationTrustManifest
+from src.integration.runtime_contracts import HeadIdentity
 from src.test_selection.static_impact import FixedStaticImpact
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1149,3 +1154,196 @@ async def test_impact_real_query_mutation_matrix_on_pinned_heads(tmp_path, mutat
     assert report["identities"]["head"]["head"] == head
     if mutation == "rename":
         assert suite["per_path"]["src/pkg/renamed.py"]["old_path"] == path
+
+
+def cutover_inputs():
+    return cutover.read_catalog(ROOT / cutover.CATALOG_PATH), json.loads(
+        (ROOT / cutover.TRUST_PATH).read_text())
+
+
+def next_policy(catalog, trust, suite, *, rollback=False):
+    plan = cutover.transition_plan(catalog, trust, suite, "a" * 40, rollback=rollback)
+    assert plan["activated"] is False and plan["verified"] is False
+    assert plan["required_checks"]["names"] == plan["branch_protection_checks"]
+    assert plan["required_checks"]["version"] == plan["attestation_variable"][
+        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION"]
+    return plan["catalog"], plan["trust_manifest"]
+
+
+def test_cutover_defaults_preserve_every_legacy_obligation_and_shadow_is_not_required():
+    catalog, trust = cutover_inputs()
+    assert catalog["active_suites"] == []
+    assert cutover.required_checks(catalog) == trust["required_checks"]
+    assert cutover.workflow_matrix(catalog) == {"include": []}
+    required = RequiredChecks.from_suite_catalog(catalog, IntegrationTrustManifest(**trust))
+    assert required == RequiredChecks.from_trust(IntegrationTrustManifest(**trust))
+    assert "Shadow Bazel (all obligations)" not in required.names
+    assert "Tests (cli-conformance)" in required.names
+    assert "Tests (migration-and-slow)" in required.names
+
+
+def test_each_suite_has_an_independent_dispatch_without_any_trust_change():
+    catalog, trust = cutover_inputs()
+    before = copy.deepcopy((catalog, trust))
+    for suite, aliases in cutover.ALIASES.items():
+        matrix = cutover.workflow_matrix(catalog, suite)
+        assert [entry["target"] for entry in matrix["include"]] == [
+            f"//checks:{alias}" for alias in aliases]
+        assert all(entry["name"] == f"Bazel ({alias})"
+                   for entry, alias in zip(matrix["include"], aliases, strict=True))
+    assert (catalog, trust) == before
+    with pytest.raises(ValueError, match="preparation suite"):
+        cutover.workflow_matrix(catalog, "all")
+
+
+def test_ordered_switches_bind_unique_versions_and_retain_startup_and_generated():
+    catalog, trust = cutover_inputs()
+    versions = {trust["required_checks"]["version"]}
+    for suite in cutover.ORDER:
+        old = cutover.required_checks(catalog)
+        updated, new_trust = next_policy(catalog, trust, suite)
+        required = cutover.required_checks(updated)
+        assert required["version"] not in versions
+        versions.add(required["version"])
+        assert set(old["names"]) - set(required["names"]) == set(
+            catalog["suites"][suite]["legacy_checks"])
+        assert set(required["names"]) - set(old["names"]) == {
+            entry["name"] for entry in catalog["suites"][suite]["bazel_checks"]}
+        for obligation, pin in catalog["pinned_obligations"].items():
+            expected = pin["bazel_check"] if pin["owner"] in updated["active_suites"] else pin[
+                "legacy_check"]
+            assert expected in required["names"], obligation
+        with pytest.raises(ValueError, match="checks/version differ"):
+            cutover.policy_input(updated, trust)
+        with pytest.raises(ValueError, match="checks/version differ"):
+            cutover.policy_input(catalog, new_trust)
+        catalog, trust = updated, new_trust
+        assert cutover.policy_input(catalog, trust)["version"] == required["version"]
+
+
+def test_out_of_order_activation_is_refused_and_rollback_changes_only_its_suite():
+    catalog, trust = cutover_inputs()
+    with pytest.raises(ValueError, match="rollout order"):
+        cutover.transition_catalog(catalog, "cli")
+    original = copy.deepcopy((catalog, trust))
+    for suite in cutover.ORDER:
+        catalog, trust = next_policy(catalog, trust, suite)
+    for suite in reversed(cutover.ORDER):
+        before = set(catalog["active_suites"])
+        catalog, trust = next_policy(catalog, trust, suite, rollback=True)
+        assert set(catalog["active_suites"]) == before - {suite}
+    assert (catalog, trust) == original
+    for suite in cutover.ORDER[:3]:
+        catalog, trust = next_policy(catalog, trust, suite)
+    catalog, trust = next_policy(catalog, trust, "cli", rollback=True)
+    assert catalog["active_suites"] == ["dashboard", "default"]
+    assert "Tests (cli-conformance)" in trust["required_checks"]["names"]
+
+
+@pytest.mark.parametrize("fault", ["missing_suite", "extra_alias", "lost_startup",
+                                   "lost_generated", "lost_legacy", "duplicate", "version"])
+def test_partial_or_ambiguous_obligation_catalog_is_refused(fault):
+    catalog, _ = cutover_inputs()
+    if fault == "missing_suite":
+        del catalog["suites"]["e2e"]
+    elif fault == "extra_alias":
+        catalog["suites"]["dashboard"]["bazel_checks"][0]["target"] = "//checks:all"
+    elif fault == "lost_startup":
+        catalog["suites"]["cli"]["bazel_checks"].pop()
+    elif fault == "lost_generated":
+        catalog["suites"]["migration_slow"]["bazel_checks"].pop()
+    elif fault == "lost_legacy":
+        catalog["suites"]["default"]["legacy_checks"].pop()
+    elif fault == "duplicate":
+        catalog["active_suites"] = ["dashboard", "dashboard"]
+    else:
+        catalog["legacy"]["version"] = "v1\nforged=value"
+    with pytest.raises(ValueError):
+        cutover.required_checks(catalog)
+
+
+def candidate_rows(required, head):
+    return [CommitCheck(repository_id=head.repository_id, sha=head.sha, name=name,
+                        producer_id=required.producer_id, required_check_version=required.version,
+                        conclusion="success", classification="none", observed_at=1)
+            for name in required.names]
+
+
+@pytest.mark.parametrize("fault", [None, "old_version", "old_name", "other_sha", "other_repo",
+                                   "forged_app", "missing", "pending"])
+def test_transition_requires_proposed_complete_exact_candidate_evidence(fault):
+    catalog, trust = cutover_inputs()
+    catalog, trust = next_policy(catalog, trust, "dashboard")
+    required = RequiredChecks.from_suite_catalog(catalog, IntegrationTrustManifest(**trust))
+    head = HeadIdentity(repository_id="agent-queue2", ref="refs/heads/aq/batches/x", sha="a" * 40,
+                        generation=1)
+    rows = candidate_rows(required, head)
+    index = required.names.index("Bazel (dashboard)")
+    changes = {"old_version": {"required_check_version": "old"},
+               "old_name": {"name": "Dashboard (typecheck/build)"},
+               "other_sha": {"sha": "b" * 40}, "other_repo": {"repository_id": "other"},
+               "forged_app": {"producer_id": "999"}, "pending": {"conclusion": "pending"}}
+    if fault == "missing":
+        rows.pop(index)
+    elif fault is not None:
+        rows[index] = rows[index].model_copy(update=changes[fault])
+    result = evaluate(required, head, rows, now=1)
+    # Even a forged aggregate green flag cannot authorize incomplete rows.
+    if fault is not None:
+        result = result.model_copy(update={"state": "green"})
+        with pytest.raises(ValueError, match="exact-candidate"):
+            required.require_candidate(head, result)
+    else:
+        required.require_candidate(head, result)
+
+
+@pytest.mark.parametrize("fault", [None, "missing", "old_name", "other_sha", "forged_app",
+                                   "malformed_app", "rerun_pending", "newer_red"])
+def test_candidate_status_verifies_latest_trusted_exact_suite_checks(fault):
+    catalog, trust = cutover_inputs()
+    authority = {"trusted_catalog": copy.deepcopy(catalog), "trusted_trust": copy.deepcopy(trust)}
+    catalog, trust = next_policy(catalog, trust, "dashboard")
+    runs = [{"id": i + 1, "name": name, "app": {"id": trust["ci_producer_app_id"]},
+             "head_sha": "a" * 40, "status": "completed", "conclusion": "success"}
+            for i, name in enumerate(trust["required_checks"]["names"])]
+    run = next(row for row in runs if row["name"] == "Bazel (dashboard)")
+    if fault == "missing":
+        runs.remove(run)
+    elif fault == "old_name":
+        run["name"] = "Dashboard (typecheck/build)"
+    elif fault == "other_sha":
+        run["head_sha"] = "b" * 40
+    elif fault == "forged_app":
+        run["app"]["id"] = 999
+    elif fault == "malformed_app":
+        run["app"]["id"] = float(trust["ci_producer_app_id"])
+    elif fault in {"rerun_pending", "newer_red"}:
+        runs.append({**run, "id": 999, "status": "in_progress" if fault == "rerun_pending"
+                     else "completed", "conclusion": None if fault == "rerun_pending" else "failure"})
+    if fault is None:
+        assert cutover.verify_candidate(catalog, trust, "a" * 40, [{"check_runs": runs}],
+                                        **authority) == (
+            trust["required_checks"]["version"])
+    else:
+        with pytest.raises(ValueError, match="candidate check"):
+            cutover.verify_candidate(catalog, trust, "a" * 40, [{"check_runs": runs}], **authority)
+
+
+@pytest.mark.parametrize("fault", ["producer", "repository", "obligations", "all_suites",
+                                   "out_of_order"])
+def test_candidate_files_cannot_redefine_trust_or_batch_the_switch(fault):
+    catalog, trust = cutover_inputs()
+    authority = {"trusted_catalog": copy.deepcopy(catalog), "trusted_trust": copy.deepcopy(trust)}
+    if fault == "producer":
+        trust["ci_producer_app_id"] = 999
+    elif fault == "repository":
+        trust["repository_id"] += 1
+    elif fault == "obligations":
+        catalog["legacy"]["version"] = "forged"
+    elif fault == "all_suites":
+        catalog["active_suites"] = list(cutover.ORDER)
+    else:
+        catalog["active_suites"] = ["e2e"]
+    trust["required_checks"] = cutover.required_checks(catalog)
+    with pytest.raises(ValueError, match="trusted|one suite|rollout order"):
+        cutover.verify_candidate(catalog, trust, "a" * 40, [], **authority)

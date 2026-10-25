@@ -3373,8 +3373,13 @@
         "bazel-toolchains"
       ],
       "default_arm": true,
-      "digest": "sha256:f138d435ee05414c40fa0e8497e5bc7d99c1bc6208f69fdd2726344e60915fc7",
+      "digest": "sha256:9df5d5009db695fa0d52ae0a2d757245bdb1e6b736ab86e7d7983f4725e1873d",
       "imports": [
+        "src.integration",
+        "src.integration.checks",
+        "src.integration.ci",
+        "src.integration.runtime_contracts",
+        "src.integration.suite_cutover",
         "src.test_selection.static_impact"
       ],
       "markers": [
@@ -3423,8 +3428,11 @@
         "bazel-workflows"
       ],
       "default_arm": true,
-      "digest": "sha256:99444bb3db02688fcdb0c4a736dbbce381ae7f951ed37749fc054f26ce7bec60",
-      "imports": [],
+      "digest": "sha256:bc9873e14777c0dea9cb572a4875bc4a8c05817f0ef4add7084f96f8f1bbb830",
+      "imports": [
+        "src.integration",
+        "src.integration.suite_cutover"
+      ],
       "markers": [
         "parametrize"
       ],
@@ -8268,11 +8276,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:d99e7ef4f885d6037781a14fb96a4cde182dc8f020d7e3c1f3e84c075dc69fef",
+      "digest": "sha256:d1790e55b2cb4fe98607ba927f9cb107bac84a3ed135d9381d0c42e085d82721",
       "imports": [
         "src.integration",
         "src.integration.ci",
-        "src.integration.hosted_attestation"
+        "src.integration.hosted_attestation",
+        "src.integration.suite_cutover"
       ],
       "markers": [
         "parametrize"

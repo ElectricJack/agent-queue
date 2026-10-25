@@ -34,6 +34,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
@@ -147,12 +148,50 @@ def _verify_configured(environ: Mapping[str, str], http_get: HttpGet) -> str:
     _require_identity(
         payload, repository_id=repository_id, app_id=app_id, sha=sha, version=version
     )
+    _require_policy(payload, environ, repository, promotion=promotion)
     for check in payload["checks"]:
         _reverify(http_get, api, repository, sha, payload["ci_producer_app_id"], check)
     return (
         f"attested by check run {record_id} from App {app_id}; "
         f"{len(payload['checks'])} checks re-verified"
     )
+
+
+def _require_policy(
+    payload: dict[str, Any], environ: Mapping[str, str], repository: str, *, promotion: bool,
+) -> None:
+    """A suite switch binds names and version together, including promotion audits.
+
+    The optional path keeps standalone/older callers compatible. The hosted
+    workflow always supplies the trust manifest from the exact pushed tree.
+    Any malformed or partially activated policy falls back to full legacy CI.
+    """
+    path = environ.get("TRUST_MANIFEST_PATH")
+    if not path:
+        return
+    trust = json.loads(Path(path).read_text(encoding="utf-8"),
+                       object_pairs_hook=_reject_duplicate_keys)
+    required = trust["required_checks"]
+    names = required["names"]
+    allowed = [names]
+    if promotion:
+        if environ.get("ATTESTATION_NAME") not in trust.get("promotion_attestation_names", []):
+            raise VerificationError("promotion name does not match the committed policy")
+        audit = trust.get("check_sets", {}).get("promotion-source-audit")
+        if audit is not None:
+            allowed.append(audit)
+    if (trust["schema"] != "aq.integration-trust.v1"
+            or any(not isinstance(group, list) or not group
+                   or any(not isinstance(name, str) or not name.strip() for name in group)
+                   or len(set(group)) != len(group) for group in allowed)
+            or {check["name"] for check in payload["checks"]} not in [set(group) for group in allowed]
+            or required["version"] != payload["required_check_set_version"]
+            or trust["canonical_repository_id"] != payload["canonical_repository_id"]
+            or trust["repository_id"] != payload["repository_id"]
+            or trust["full_name"] != repository
+            or trust["ci_producer_app_id"] != payload["ci_producer_app_id"]
+            or trust["attestation_app_id"] != payload["attestation_app_id"]):
+        raise VerificationError("attestation does not match the committed check/version policy")
 
 
 def _paged_check_runs(http_get: HttpGet, api: str, url: str) -> list[dict[str, Any]]:

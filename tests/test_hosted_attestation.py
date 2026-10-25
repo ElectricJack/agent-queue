@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import pytest
 
 from src.integration import hosted_attestation as hosted
+from src.integration import suite_cutover as cutover
 from src.integration.ci import (
     ATTESTATION_CHECK_NAME,
     AttestationPayload,
@@ -813,3 +814,100 @@ def test_shared_constants_match_the_daemon() -> None:
         payload.canonical_bytes()
     ).hexdigest()
     assert json.loads(payload.canonical_bytes())["schema"] == hosted.ATTESTATION_SCHEMA
+
+
+def _cutover_payload(trust):
+    return _payload(
+        required_check_set_version=trust["required_checks"]["version"],
+        checks=tuple(AttestedCheck(name=name, check_run_id=100 + i, check_suite_id=900,
+                                  producer_app_id=CI_APP_ID, head_sha=SHA, conclusion="success")
+                     for i, name in enumerate(trust["required_checks"]["names"])),
+    )
+
+
+@pytest.mark.parametrize("suite", cutover.ORDER)
+def test_hosted_suite_transitions_reject_old_names_and_versions_and_reverify_new_checks(
+    tmp_path, suite
+):
+    catalog = cutover.read_catalog(ROOT / cutover.CATALOG_PATH)
+    trust = json.loads((ROOT / cutover.TRUST_PATH).read_text())
+    for selected in cutover.ORDER[:cutover.ORDER.index(suite)]:
+        catalog = cutover.transition_catalog(catalog, selected)
+    before = {**trust, "required_checks": cutover.required_checks(catalog)}
+    catalog = cutover.transition_catalog(catalog, suite)
+    trust["required_checks"] = cutover.required_checks(catalog)
+    path = tmp_path / "trust.json"
+    path.write_text(json.dumps(trust))
+    env = _env(CHECK_VERSION=trust["required_checks"]["version"], TRUST_MANIFEST_PATH=str(path))
+
+    github = FakeGitHub()
+    payload = _cutover_payload(trust)
+    _publish(github, payload)
+    assert hosted.verify(env, github).attested
+    old_github = FakeGitHub()
+    _publish(old_github, _cutover_payload(before))
+    assert not hosted.verify(env, old_github).attested
+    # Even an attestation signed by the right App under the new version cannot
+    # substitute the old check names for the replacement suite's obligations.
+    old_names = FakeGitHub()
+    _publish(old_names, _cutover_payload(before).model_copy(update={
+        "required_check_set_version": payload.required_check_set_version}))
+    assert "committed check/version policy" in _refused(old_names, env)
+    new_name = catalog["suites"][suite]["bazel_checks"][0]["name"]
+    check = next(check for check in payload.checks if check.name == new_name)
+    github.check_runs[check.check_run_id]["head_sha"] = OTHER_SHA
+    assert not hosted.verify(env, github).attested
+
+
+@pytest.mark.parametrize("fault", ["missing_file", "malformed", "old_version", "missing_check",
+                                   "wrong_producer", "wrong_repo", "duplicate_names"])
+def test_hosted_partial_or_missing_policy_runs_the_full_fallback(tmp_path, fault):
+    payload = _payload()
+    trust = json.loads((ROOT / cutover.TRUST_PATH).read_text())
+    trust["required_checks"] = {"version": VERSION, "names": [check.name for check in payload.checks]}
+    if fault == "old_version":
+        trust["required_checks"]["version"] = "old"
+    elif fault == "missing_check":
+        trust["required_checks"]["names"].append("Bazel (dashboard)")
+    elif fault == "wrong_producer":
+        trust["ci_producer_app_id"] = 999
+    elif fault == "wrong_repo":
+        trust["repository_id"] = 999
+    elif fault == "duplicate_names":
+        trust["required_checks"]["names"].append(trust["required_checks"]["names"][0])
+    path = tmp_path / "trust.json"
+    if fault != "missing_file":
+        path.write_text("{" if fault == "malformed" else json.dumps(trust))
+    verdict = hosted.verify(_env(TRUST_MANIFEST_PATH=str(path)), _valid())
+    assert verdict.configured and not verdict.attested
+
+
+@pytest.mark.parametrize("audit", [False, True])
+def test_committed_promotion_policy_preserves_explicit_full_legacy_source_audit(tmp_path, audit):
+    catalog = cutover.read_catalog(ROOT / cutover.CATALOG_PATH)
+    trust = json.loads((ROOT / cutover.TRUST_PATH).read_text())
+    catalog = cutover.transition_catalog(catalog, "dashboard")
+    trust["required_checks"] = cutover.required_checks(catalog)
+    lower = _cutover_payload(trust)
+    if audit:
+        lower = lower.model_copy(update={"checks": tuple(
+            AttestedCheck(name=name, check_run_id=100 + i, check_suite_id=900,
+                          producer_app_id=CI_APP_ID, head_sha=SHA, conclusion="success")
+            for i, name in enumerate(trust["check_sets"]["promotion-source-audit"]))})
+    payload = _promotion_payload(checks=lower.checks, workflow_runs=lower.workflow_runs,
+                                 checks_version=lower.required_check_set_version)
+    path = tmp_path / "trust.json"
+    path.write_text(json.dumps(trust))
+    github = FakeGitHub(name=payload.attestation_name)
+    _publish(github, payload, name=payload.attestation_name)
+    env = _env(ATTESTATION_NAME=payload.attestation_name, STEP="release",
+               TARGET_REF="refs/heads/main", CHECK_VERSION=lower.required_check_set_version,
+               TRUST_MANIFEST_PATH=str(path))
+    assert hosted.verify(env, github).attested
+    # Audit names are a distinct promotion-source obligation, not a substitute
+    # for the exact candidate's ordinary required checks.
+    if audit:
+        direct = FakeGitHub()
+        _publish(direct, lower)
+        assert not hosted.verify({**env, "ATTESTATION_NAME": hosted.ATTESTATION_CHECK_NAME},
+                                 direct).attested

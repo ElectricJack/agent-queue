@@ -22,7 +22,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.sha }}
-          sparse-checkout: src/integration/hosted_attestation.py
+          sparse-checkout: |
+            src/integration/hosted_attestation.py
+            .github/agent-queue-integration.json
           sparse-checkout-cone-mode: false
       - id: verify
         env:
@@ -32,6 +34,7 @@ jobs:
           SHA: ${{ github.sha }}
           APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
           CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+          TRUST_MANIFEST_PATH: .github/agent-queue-integration.json
           ATTESTATION_NAME: ${{ github.ref_name == 'staging' && 'Agent Queue Promotion Attestation (staging)' || github.ref_name == 'main' && 'Agent Queue Promotion Attestation (release)' || 'Agent Queue Integration Attestation' }}
           STEP: ${{ github.ref_name == 'staging' && 'staging' || github.ref_name == 'main' && 'release' || '' }}
           TARGET_REF: ${{ github.ref }}

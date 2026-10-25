@@ -89,6 +89,24 @@ class RequiredChecks(BaseModel):
             else trust.producer_id,
         )
 
+    @classmethod
+    def from_suite_catalog(cls, catalog: dict, trust: IntegrationTrustManifest) -> RequiredChecks:
+        """Operator policy inputs for one coupled suite/check-version configuration."""
+        from src.integration.suite_cutover import policy_input
+
+        return cls(**policy_input(catalog, trust.model_dump(mode="json", by_alias=True)))
+
+    def require_candidate(self, head: HeadIdentity, result: ChecksResult) -> None:
+        """Guard a prepared transition with the proposed complete exact-head check set.
+
+        The operator still owns parity, approval and activation. A caller's cached
+        green flag alone is insufficient; re-evaluate every row against this policy.
+        """
+        if (result.required != self or result.repository_id != head.repository_id
+                or result.sha != head.sha
+                or not evaluate(self, head, result.checks, now=time.time()).green):
+            raise ValueError("suite transition requires the complete proposed exact-candidate checks")
+
 
 class CommitCheck(BaseModel):
     """The latest attempt of one required check on one exact commit."""
