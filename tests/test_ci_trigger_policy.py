@@ -22,7 +22,7 @@ from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUP
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
 BATCH_REF = candidate_ref('batch-1').removeprefix('refs/heads/')
-POSTGRES_IMAGE = 'mirror.gcr.io/library/postgres:18'
+POSTGRES_IMAGE = 'public.ecr.aws/docker/library/postgres:18'
 
 
 def workflow(name='tests.yml'):
@@ -342,8 +342,9 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
 
 def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit():
     # Run 37990643989 (2026-10-09) failed all 15 Postgres jobs with Docker Hub's
-    # `toomanyrequests` before a test ran. Google's Docker Hub mirror serves the
-    # same official image with no secret, so fork pull requests can pull it too.
+    # `toomanyrequests` before a test ran. Google's mirror later exhausted all
+    # retries with `unknown blob` (run 40164456524). Docker's ECR Public mirror
+    # serves the official image with no secret, including for fork pull requests.
     jobs = workflow()['jobs']
     start = next(step for step in jobs['test']['steps'] if step['name'] == 'Start PostgreSQL')
     assert POSTGRES_IMAGE in start['run'].split()

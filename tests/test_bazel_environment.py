@@ -361,8 +361,13 @@ async def _pytest_probe(tmp_path, source, *, mode="pure", collect=False):
     """Load real root fixtures in a child with explicit Python/config inputs."""
     repo = Path(__file__).resolve().parents[1]
     packages = Path(pytest.__file__).resolve().parents[1]
+    # CI installs .venv inside the checkout. The checkout already declares
+    # that interpreter tree; a second nested input mount fails admission.
+    inputs = (repo, Path(sys.prefix))
+    inputs = tuple(path for path in inputs
+                   if not any(path != other and path.is_relative_to(other) for other in inputs))
     runtime = isolated.Runtime(
-        Path(sys.executable), (repo, Path(sys.prefix)), (Path(sys.executable).parent,),
+        Path(sys.executable), inputs, (Path(sys.executable).parent,),
     )
     sample = tmp_path / "test_sample.py"
     sample.write_text(source)
