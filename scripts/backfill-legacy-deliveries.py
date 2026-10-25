@@ -9,7 +9,8 @@ name) record an explicit, reasoned ``abandoned`` decision instead. Where the
 work landed under other commits (a salvage, repair or squash re-landing),
 ``--relanded TASK_ID=SHA`` records that landing commit once git shows it on the
 default branch. Abandoned and re-landed tasks' branches are queued for
-retirement (bundle, then delete). See :mod:`src.integration.legacy_backfill`
+retirement (bundle, then delete); ``--keep-branch`` preserves abandoned tasks'
+branches instead. See :mod:`src.integration.legacy_backfill`
 and docs/guides/git-first-cutover-runbook.md.
 
     .venv/bin/python scripts/backfill-legacy-deliveries.py agent-queue
@@ -55,7 +56,13 @@ async def main(argv=None) -> int:
                         help="record that this completed task's content landed on the "
                              "default branch as commit SHA (a salvage, repair or squash "
                              "re-landing) and retire its branches after a backup; repeatable")
+    parser.add_argument("--keep-branch", action="store_true",
+                        help="record abandonment without queuing branch retirement; requires "
+                             "--abandon-task or --abandon-epic, excludes --relanded")
     args = parser.parse_args(argv)
+    if args.keep_branch and (not (args.abandon_task or args.abandon_epic) or args.relanded):
+        parser.error("--keep-branch requires --abandon-task or --abandon-epic "
+                     "and cannot be combined with --relanded")
     if args.apply and not args.reason.strip():
         parser.error("--apply needs a nonblank --reason")
     relanded = []
@@ -91,11 +98,13 @@ async def main(argv=None) -> int:
             if args.abandon_epic:
                 report["epics"] = [await abandon_epic(
                     db, args.project_id, epic, dry_run=not args.apply,
-                    operator_id=args.operator, reason=args.reason) for epic in args.abandon_epic]
+                    operator_id=args.operator, reason=args.reason,
+                    keep_branch=args.keep_branch) for epic in args.abandon_epic]
             if args.abandon_task:
                 report["tasks"] = [await abandon_task(
                     db, args.project_id, task, dry_run=not args.apply,
-                    operator_id=args.operator, reason=args.reason) for task in args.abandon_task]
+                    operator_id=args.operator, reason=args.reason,
+                    keep_branch=args.keep_branch) for task in args.abandon_task]
             if relanded:
                 report["relanded"] = [await record_relanding(
                     db, args.project_id, task, landed_sha=sha, dry_run=not args.apply,
