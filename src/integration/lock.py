@@ -36,17 +36,11 @@ if TYPE_CHECKING:
 DEFAULT_TTL_SECONDS = 480.0
 RENEWAL_MARGIN_SECONDS = DEFAULT_TTL_SECONDS / 3
 CRITICAL_SECTION_SECONDS = 30.0
-# Repair startup includes an isolated Git object import before ref mutation.
-REPAIR_START_SECONDS = GitManager._GIT_TIMEOUT + CRITICAL_SECTION_SECONDS
+REPAIR_START_SECONDS = GitManager._GIT_TIMEOUT + CRITICAL_SECTION_SECONDS  # Isolated import.
 
 
 def slot_preparation_timeout_seconds(config: WorktreesConfig, project_id: str) -> float:
-    """Allow repository queueing without changing ref-before-repository lock order.
-
-    Slot preparation can wait behind a reset Git command with this configured
-    budget. Add the normal mutation allowance; exclusion still caps the whole
-    section at the current lease expiry and never renews that authority.
-    """
+    """Allow repository queueing in ref-before-repository order, capped at lease expiry."""
     return config.slot_reset_git_timeouts.get(
         project_id, config.slot_reset_git_timeout_seconds,
     ) + CRITICAL_SECTION_SECONDS
@@ -124,21 +118,11 @@ class BranchLock:
         identity = f"aq-ref-lease:{target.repository_id}:{target.branch}".encode()
         key = int.from_bytes(hashlib.sha256(identity).digest()[:8], "big", signed=True)
         await conn.execute(select(func.pg_advisory_xact_lock(key)))
-        rows = (
-            (
-                await conn.execute(
-                    select(owners)
-                    .where(
-                        owners.c.repository_id == target.repository_id,
-                        owners.c.ref.in_((target.branch, f"refs/heads/{target.branch}")),
-                    )
-                    .order_by(owners.c.ref)
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .all()
-        )
+        statement = select(owners).where(
+            owners.c.repository_id == target.repository_id,
+            owners.c.ref.in_((target.branch, f"refs/heads/{target.branch}")),
+        ).order_by(owners.c.ref).with_for_update()
+        rows = (await conn.execute(statement)).mappings().all()
         if len(rows) > 1:
             raise BranchBusy("multiple rows name the same ref")
         return dict(rows[0]) if rows else None

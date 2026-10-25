@@ -952,12 +952,7 @@ class WorkspaceMixin:
             raise
 
     async def _prepare_exact_origin_workspace_locked(
-        self,
-        task: Task,
-        project,
-        attachment,
-        origin: dict,
-        fence: Fence,
+        self, task: Task, project, attachment, origin: dict, fence: Fence,
     ) -> str:
         """Prepare any enabled checkout at its pinned origin under one owner fence."""
         ws = attachment.workspace
@@ -980,10 +975,7 @@ class WorkspaceMixin:
             current_head = (
                 await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             ).strip().lower()
-            if (
-                current_branch != branch
-                or current_head != provenance.get("head_sha")
-            ):
+            if current_branch != branch or current_head != provenance.get("head_sha"):
                 raise BranchBusy("retained repair workspace contents changed")
             return fence.target.branch
         owner = await BranchOwnership(self.db).get_owner(fence.target)
