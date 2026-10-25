@@ -19,6 +19,7 @@ from src.database.tables import (
     wait_records,
 )
 from src.waits.listener import LeaseLost, ListenerUnavailable
+from src.waits.conditions import WaitError
 from src.waits.graph import background_graph_work, lock_graph
 from src.waits.sources import insert_message_with_source_event
 from src.waits.admission import admission_pass
@@ -35,11 +36,17 @@ PERMANENT_REFUSALS = frozenset({
 
 
 class WaitTimerDriver:
+    retry_seconds = 1
+    max_retry_seconds = 30
+
     def __init__(self, service, *, clock=time.time):
         self.service = service
         self.clock = clock
         self.heap = []
         self._heap_lock = asyncio.Lock()
+        # Durable deadlines retain retry ownership; this local cadence only
+        # prevents contention from hammering the graph fence between rebuilds.
+        self._retry_deadlines = {}
 
     async def rearm(self):
         async with self._heap_lock:
@@ -50,7 +57,11 @@ class WaitTimerDriver:
             rows = (await conn.execute(select(wait_deadlines).where(
                 wait_deadlines.c.fired_at.is_(None), wait_deadlines.c.cancelled_at.is_(None),
             ))).mappings().all()
-        self.heap = [(row["due_at"], row["id"], dict(row)) for row in rows]
+        active = {row["id"] for row in rows}
+        self._retry_deadlines = {key: value for key, value in self._retry_deadlines.items()
+                                 if key in active}
+        self.heap = [(max(row["due_at"], self._retry_deadlines.get(row["id"], (0, 0))[0]),
+                      row["id"], dict(row)) for row in rows]
         heapq.heapify(self.heap)
 
     async def tick(self):
@@ -60,17 +71,31 @@ class WaitTimerDriver:
     async def _tick(self):
         fired = 0
         while self.heap and self.heap[0][0] <= self.clock():
-            _, _, row = self.heap[0]
-            async with asyncio.timeout(self.service.listener.lease_seconds):
-                result = await self.service.command("wait_deadline_fire", {
-                    "wait_id": row["wait_id"], "deadline_type": row["deadline_type"],
-                    "generation": row["generation"],
-                })
-            if not result.get("success") and result.get("error_code") != "wait.deadline_stale":
-                if result.get("error_code") not in PERMANENT_REFUSALS:
-                    raise ListenerUnavailable(f"wait deadline fire refused: {result}")
-                await self.service.quarantine_deadline(row, result)
+            _, deadline_id, row = self.heap[0]
+            try:
+                async with asyncio.timeout(self.service.listener.lease_seconds):
+                    result = await self.service.command("wait_deadline_fire", {
+                        "wait_id": row["wait_id"], "deadline_type": row["deadline_type"],
+                        "generation": row["generation"],
+                    })
+                if not result.get("success") and result.get("error_code") != "wait.deadline_stale":
+                    if result.get("error_code") == "wait.graph_busy":
+                        raise WaitError("wait.graph_busy", result.get("error", "graph busy"))
+                    if result.get("error_code") not in PERMANENT_REFUSALS:
+                        raise ListenerUnavailable(f"wait deadline fire refused: {result}")
+                    await self.service.quarantine_deadline(row, result)
+            except WaitError as exc:
+                if exc.code != "wait.graph_busy":
+                    raise
+                previous = self._retry_deadlines.get(deadline_id)
+                delay = min(previous[1] * 2, self.max_retry_seconds) if previous else self.retry_seconds
+                due = self.clock() + delay
+                self._retry_deadlines[deadline_id] = (due, delay)
+                heapq.heapreplace(self.heap, (due, deadline_id, row))
+                logger.debug("wait.deadline_graph_busy id=%s retry_after=%s", deadline_id, delay)
+                continue
             heapq.heappop(self.heap)
+            self._retry_deadlines.pop(deadline_id, None)
             fired += bool(result.get("success"))
         return fired
 
@@ -208,6 +233,8 @@ class WaitTimerDriver:
                             "error": f"{row['deadline_type']} deadline effect is unavailable"}
                 result = await callback(conn, dict(row), dict(wait), now=now, handler=handler)
                 if not isinstance(result, dict) or not result.get("success"):
+                    if isinstance(result, dict) and result.get("error_code") == "wait.graph_busy":
+                        raise WaitError("wait.graph_busy", result.get("error", "graph busy"))
                     raise ListenerUnavailable(f"deadline effect failed: {result}")
                 await conn.execute(update(wait_deadlines).where(
                     wait_deadlines.c.id == row["id"],
