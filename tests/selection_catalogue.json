@@ -92,6 +92,12 @@
         "tests/test_bazel_metrics.py"
       ]
     },
+    "bazel-toolchains": {
+      "description": "Pinned toolchain, dependency lock and Linux ABI integrity boundaries.",
+      "modules": [
+        "tests/test_bazel_manifest.py"
+      ]
+    },
     "capabilities": {
       "description": "Command capabilities: the capability policy, server-derived execution principals, authorization at the dispatch boundary, no widening through delegation or task inheritance, and operator migration surfaces.",
       "modules": [
@@ -3302,6 +3308,18 @@
         "parametrize"
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
+    "tests/test_bazel_manifest.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2669f7605d8f5cbe70f349cfb090cbef8746aa7950d5e34ab0a9ed298fdd9e47",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "H1 lock/ABI boundaries and opt-in, admitted clean-root toolchain verification."
     },
     "tests/test_bazel_metrics.py": {
       "areas": [

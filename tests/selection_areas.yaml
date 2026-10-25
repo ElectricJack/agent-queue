@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: bazel-toolchains
+    description: "Pinned toolchain, dependency lock and Linux ABI integrity boundaries."
+    match: [tests/test_bazel_manifest.py]
   - id: bazel-metrics
     description: "Verification obligation inventory and exact-identity delivery metric accounting."
     match: [tests/test_bazel_metrics.py]

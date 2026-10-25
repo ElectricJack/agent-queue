@@ -67,6 +67,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: [".bazelversion", ".bazelrc", "MODULE.bazel", "MODULE.bazel.lock", "BUILD.bazel", "tools/bazel/**"], areas: ["bazel-toolchains"] }
   - { paths: ["scripts/bazel/inventory.py", "scripts/bazel/report_metrics.py"], areas: ["bazel-metrics"] }
   - { paths: ["src/stall_watch.py", "src/database/queries/stall_watch_queries.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/policy_profiles/**", "src/commands/policy_commands.py", "src/api/models/policy.py", "src/cli/policy.py", "dashboard/src/pages/project/PolicyProfiles.tsx", "dashboard/src/api/policy.ts"], areas: ["policy-profiles"] }
