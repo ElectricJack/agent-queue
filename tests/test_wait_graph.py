@@ -481,9 +481,10 @@ async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(
         await graph.lock_graph(conn, queued=queued)
         await graph.lock_graph(conn)  # Nested helpers share one watchdog.
         await asyncio.sleep(0.03)
-        assert len(caplog.records) == 1
-        assert "wait.graph_lock_slow" in caplog.text
-        assert "test_graph_watchdog_names_idle_holder" in caplog.text
+        records = [record for record in caplog.records if record.name == graph.__name__]
+        assert len(records) == 1
+        assert "wait.graph_lock_slow" in records[0].getMessage()
+        assert "test_graph_watchdog_names_idle_holder" in records[0].getMessage()
         await getattr(transaction, end)()
         assert not graph.graph_locked(conn)
         assert conn.sync_connection not in graph._graph_holders
@@ -491,7 +492,7 @@ async def test_graph_watchdog_names_idle_holder_and_clears_on_transaction_end(
         async with conn.begin():
             await graph.lock_graph(conn)
         await asyncio.sleep(0.03)
-        assert len(caplog.records) == 1
+        assert [record for record in caplog.records if record.name == graph.__name__] == records
 
 
 async def test_cancelled_query_rolls_back_graph_watchdog_without_reconnecting(env):
