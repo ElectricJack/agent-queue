@@ -398,7 +398,7 @@ Only the global supervisor writes reports.
   ([src/commands/report_commands.py](../../../src/commands/report_commands.py))
   accept only the live `n-supervisor--global` with a matching token. A project
   supervisor is refused. Hourly `submit` rejects URLs, shipment claims without
-  a `delivery:` reference and rendered output over 1,200 characters (including
+  a `delivery:` reference and rendered output over 600 characters (including
   the daemon's footer and marker). Morning requests instead accept version 1
   JSON (`summary` and per-project evidence/manual checks), bounded at 32 KiB;
   the daemon owns coverage, provenance and delivery links. Both require the
@@ -406,8 +406,12 @@ Only the global supervisor writes reports.
 - A report request is message `msg-<request_id>` from `reports` to
   `supervisor-global`, priority 100 (`report_queries.py`). If the supervisor
   does not answer, the morning report posts a fallback
-  (`finalize_morning_fallback`), and the hourly report posts its fallback at
-  `due_at`.
+  (`finalize_morning_fallback`), and the hourly report posts only a one-line
+  no-report notice at `due_at`. The hourly brief is input only: the supervisor
+  writes a short first-person developer-style update for Jack covering progress,
+  highlights, blockers/needs and next steps. It combines related work and
+  deduplicates noise instead of concatenating facts. The durable author wake
+  carries this policy even for an existing operator-edited profile.
 - The `morning-report` playbook triggers on `report.morning_due`, which
   [src/reports/morning_due.py](../../../src/reports/morning_due.py) emits. It
   calls `morning_report_tick`, waits on durable 60-second timers while that day's
@@ -428,7 +432,10 @@ Discord is a chat extension of the supervisor
 - `supervisor_inbox_post` is accepted only from the discord-gateway service;
 - status and history are read-only;
 - `supervisor_inbox_reply` is accepted only from the exact live supervisor
-  launch.
+  launch. Project scope resolves both the input and its conversation through
+  the input's addressed supervisor notice, which carries the routing project
+  even when the input itself has no project. An input from another conversation
+  or a notice routed outside that project cannot authorize a reply.
 
 Conversations are opt-in (`discord.conversation.enabled`). See
 [discord-conversations.md](../../guides/discord-conversations.md).

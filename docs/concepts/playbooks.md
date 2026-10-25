@@ -231,6 +231,15 @@ The default pipeline uses a human gate for ordinary proposals: `proposal.ready` 
 
 **Explicit reviewed-bundle refresh.** `v2-import` accepts bundles inside the vault root. Ordinary restart never installs or refreshes them. `aq doctor --check playbooks.reviewed_bundles` reports drift among installed shipped bundles without writing. Its explicit `--fix` refreshes those installed copies, preserves superseded bytes in `<id>.bak-<epoch>`, carries operator notes into the replacement, and repairs required activations when a bundle was refreshed. It leaves uninstalled optional bundles absent and preserves optional activation choices. Use the required-policy fix above when required bundles themselves are missing. The [isolated acceptance kit](../guides/e2e-swarm.md#deliberate-policy-installation-and-project-setup) records these boundaries against real PostgreSQL and daemons.
 
+That check also reports enabled activations whose hashes differ from installed shipped
+bundles at the same scope, including a healthy older `default-pipeline`. It prints both
+hashes and an explicit command such as
+`aq playbook import --path reviewed-playbooks/default-pipeline --activate`.
+Refresh drifted bundle files first, then review the shipped policy and any local
+customizations before running that command. A file refresh alone leaves optional
+activation differences visible as warnings. Missing and disabled optional activations
+remain deliberate choices. Without a database connection, the check compares files only.
+
 **Configured local policy.** Activations are durable operator state. A project activation, enabled bit, profile availability, integration policy, and a vault copy can differ from repository sources. Ask `aq playbook activation-health`, `aq playbook list`, and `aq playbook artifacts` rather than inferring policy from a checked-out Markdown file.
 
 **Optional compatibility.** V1 is not an execution runtime: the V1 compiler/runner/manager/store were removed. The V2 lowering path can translate supported legacy pipeline-shaped source into a V2 semantic body, and workflow-stage/human-review resume handlers remain compatibility bridges for durable legacy workflow references. They should not be used to describe V1 as the default. [Pipeline lowering](../../src/playbooks/pipeline_lowering.py), [playbook resume handler](../../src/playbooks/resume_handler.py), and [workflow-stage handler](../../src/workflow_stage_resume_handler.py) show the boundary.

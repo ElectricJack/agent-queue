@@ -6,14 +6,16 @@ from sqlalchemy import func, select, update
 from src.api.auth import RequestScope
 from src.api.scope import check_command_scope
 from src.asks.delivery import destination
+from src.asks.ingestion import approved_packet
 from src.asks.intake import backfill_legacy
+from src.asks.operations import succeed
 from src.asks.reconcile import diagnostics, scan
 from src.asks.reset_policy import reset_state
 from src.database import tables as t
 from src.sessions.spec import named_session_name
 from tests.test_ask_discussion import env as env  # noqa: F401
 from tests.test_ask_migration import reconcile_review
-from tests.test_review_commands import _scoped
+from tests.test_review_commands import _scoped, decide
 from tests.test_review_commands import env as review_env  # noqa: F401
 
 
@@ -193,7 +195,7 @@ async def test_preview_apply_retry_fresh_requests_no_send_or_replay(command_hand
     assert dry["success"] and set(dry["result"]["inventory"]) == {"transfers"}, dry
 
 
-@pytest.mark.parametrize("changed", ["row", "mode", "config"])
+@pytest.mark.parametrize("changed", ["row", "ask", "receipt", "mode", "config"])
 async def test_stale_plan_atomic(command_handler_factory, changed):
     handler = await command_handler_factory()
     await seed(handler)
@@ -202,6 +204,12 @@ async def test_stale_plan_atomic(command_handler_factory, changed):
     if changed == "row":
         async with handler.db.immediate() as conn:
             await conn.execute(update(t.escalations).values(summary="Changed"))
+    elif changed == "ask":
+        async with handler.db.immediate() as conn:
+            await conn.execute(update(t.human_asks).values(decision_state="declined"))
+    elif changed == "receipt":
+        async with handler.db.immediate() as conn:
+            await conn.execute(update(t.escalation_actions).values(receipt={"changed": True}))
     elif changed == "mode":
         assert (
             await handler.execute(
@@ -226,6 +234,84 @@ async def test_stale_plan_atomic(command_handler_factory, changed):
     )
     assert result["error_code"] in {"ask.stale_evidence", "ask.reset_unfenced"}, result
     assert await counts(handler.db) == before
+
+
+@pytest.mark.parametrize("ingestion_status", ["pending", "succeeded"])
+async def test_approval_between_preview_and_apply_preserves_ingestion(
+    command_handler_factory, ingestion_status
+):
+    handler = await command_handler_factory()
+    review, old = await seed(handler)
+    args = {"project_id": "p-reconcile"}
+    preview = await handler.execute("ask_legacy_reset", args)
+    assert preview["success"], preview
+
+    accepted = await decide(
+        handler, {"review_id": review["id"], "revision": 1, "decision": "approve"}
+    )
+    assert accepted["success"], accepted
+    decision_id = accepted["decision_id"]
+    async with handler.db.immediate() as conn:
+        ingestion = (
+            await conn.execute(
+                select(t.escalation_actions).where(
+                    t.escalation_actions.c.decision_id == decision_id,
+                    t.escalation_actions.c.operation_kind == "ingestion",
+                )
+            )
+        ).mappings().one()
+        assert ingestion["status"] == "pending"
+        if ingestion_status == "succeeded":
+            # Dispatch has filed a task; the worker still needs its packet.
+            await succeed(conn, ingestion, {"task_id": "in-flight-ingestion"})
+            await handler.db.update_ask_projection(
+                old["id"], {"application_state": "applied", "next_actor": "none"}, conn=conn
+            )
+        ask = await handler.db.get_ask(old["id"], conn=conn)
+        decision = await handler.db.get_ask_decision(decision_id, conn=conn)
+        receipts = [dict(r) for r in (await conn.execute(select(t.escalation_actions))).mappings()]
+        packet = await approved_packet(
+            handler.db, decision_id, decision["packet_sha256"], "p-reconcile", conn=conn
+        )
+    saved = await counts(handler.db)
+    approved_review = await handler.db.get_review(review["id"])
+
+    result = await handler.execute(
+        "ask_legacy_reset",
+        {**args, "apply": True, "evidence_sha256": preview["result"]["evidence_sha256"]},
+    )
+    assert not result["success"] and result["error_code"] == "ask.stale_evidence", result
+    # Re-previewing cannot authorize destroying accepted work either.
+    fresh = await handler.execute("ask_legacy_reset", args)
+    assert not fresh["success"] and fresh["error_code"] == "ask.reset_active_decision", fresh
+    assert await counts(handler.db) == saved
+    assert await handler.db.get_review(review["id"]) == approved_review
+    async with handler.db.immediate() as conn:
+        assert await handler.db.get_ask(old["id"], conn=conn) == ask
+        assert await handler.db.get_ask_decision(decision_id, conn=conn) == decision
+        assert [
+            dict(r) for r in (await conn.execute(select(t.escalation_actions))).mappings()
+        ] == receipts
+        assert await reset_state(conn, "p-reconcile") is None
+        assert await approved_packet(
+            handler.db, decision_id, decision["packet_sha256"], "p-reconcile", conn=conn
+        ) == packet
+
+
+async def test_reset_preserves_succeeded_legacy_receipt(command_handler_factory):
+    handler = await command_handler_factory()
+    await seed(handler)
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            update(t.escalation_actions)
+            .where(t.escalation_actions.c.id == "old-action")
+            .values(status="succeeded", outcome="succeeded", receipt={"gate_id": "old-gate"})
+        )
+        before = dict((await conn.execute(select(t.escalation_actions))).mappings().one())
+    await apply_reset(handler)
+    async with handler.db.immediate() as conn:
+        after = dict((await conn.execute(select(t.escalation_actions))).mappings().one())
+    assert after == before
 
 
 async def test_bound_and_unfenced_apply_refuse(command_handler_factory):
@@ -432,9 +518,7 @@ async def test_full_legacy_inventory_keeps_six_live_reviews_and_other_project(
         assert not fresh["context"].get("legacy_discarded")
 
 
-async def test_accepted_decision_is_obsolete_and_cannot_be_replayed(command_handler_factory):
-    from tests.test_review_commands import decide
-
+async def test_accepted_decision_blocks_reset_without_losing_history(command_handler_factory):
     handler = await command_handler_factory()
     review, old = await seed(handler)
     accepted = await decide(
@@ -450,17 +534,17 @@ async def test_accepted_decision_is_obsolete_and_cannot_be_replayed(command_hand
         decisions = [dict(r) for r in (await conn.execute(select(t.ask_decisions))).mappings()]
         assert decisions
     source = await handler.db.get_review(review["id"])
-    result = await apply_reset(handler)
-    assert not result["result"]["kept_reviews"]
+    before = await counts(handler.db)
+    result = await handler.execute("ask_legacy_reset", {"project_id": "p-reconcile"})
+    assert not result["success"] and result["error_code"] == "ask.reset_active_decision", result
+    assert await counts(handler.db) == before
     assert await handler.db.get_review(review["id"]) == source
-    refused = await handler.execute("ask_retry_operation", {"decision_id": decisions[0]["id"]})
-    assert refused["error_code"] == "ask.discarded", refused
     async with handler.db._engine.connect() as conn:
         assert [
             dict(r) for r in (await conn.execute(select(t.ask_decisions))).mappings()
         ] == decisions
-    listed = await handler.execute("ask_list", {"project_id": "p-reconcile", "view": "history"})
-    assert listed["success"] and not listed["items"], listed
+    shown = await handler.execute("ask_show", {"ask_id": old["id"]})
+    assert shown["success"], shown
 
 
 async def test_old_unknown_shared_root_is_retired_without_repost(command_handler_factory):

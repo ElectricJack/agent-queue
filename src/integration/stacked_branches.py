@@ -1751,6 +1751,7 @@ class EpicRefresh:
     async def _delivered(self, queue, target, observed, result):
         """Only completed, fully delivered subtrees can forgo a stale-branch refresh."""
         from src.integration.delivery_truth import DeliveryState
+        from src.integration.git_truth import merge_noop
         graph = await queue.closed_epic_graph(target)
         if graph is None or graph.epic_id != result["task_id"]:
             return False
@@ -1766,7 +1767,14 @@ class EpicRefresh:
         diff = await observed.observation.git.arun_git_result(
             ["diff", "--quiet", "--no-ext-diff", "--no-textconv",
              f"{delivery.target_oid}...{result['target_sha']}"], cwd=observed.observation.store)
-        if (diff.returncode != 0 or not await observed.is_fresh()
+        if diff.returncode == 1:
+            # Squash/cherry-pick delivery can leave a nonempty three-dot diff
+            # while merging the live epic adds no changes to its target.
+            if not await merge_noop(delivery.observation, result["target_sha"], delivery.target_oid):
+                return False
+        elif diff.returncode != 0:
+            return False
+        if (not await observed.is_fresh()
                 or not await delivery.is_fresh() or await queue.closed_epic_graph(target) != graph):
             return False
         await self.db.log_event("integration.epic_refresh", project_id=target.project_id,

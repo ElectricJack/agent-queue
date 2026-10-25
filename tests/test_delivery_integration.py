@@ -506,7 +506,7 @@ class TestMixedRecipientPass:
             {
                 "project_id": PROJECT_ID,
                 "to_kind": "user",
-                "to_id": "discord:1",
+                "to_id": "dashboard",
                 "from_kind": "session",
                 "from_id": _supervisor_address(),
                 "body": "for the human",
@@ -543,6 +543,7 @@ class TestMixedRecipientPass:
         payloads = [p for p in sent_events if p.get("message_id") == to_user["message_id"]]
         assert len(payloads) == 1
         assert payloads[0]["to_kind"] == "user"
+        assert payloads[0]["to_id"] == "dashboard"
         assert (await orch.db.get_message(to_user["message_id"])).via == "platform"
         supervisor_msg = await orch.db.get_message(to_supervisor["message_id"])
         assert supervisor_msg.via == "nudge" and supervisor_msg.notification_attempts == 1
