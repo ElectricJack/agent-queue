@@ -1,10 +1,9 @@
 # Testing strategy
 
-Status: draft for the A2 interview and review (`bright-ridge-12.2`). Jack's
-Q1–Q3 answers are recorded; the remaining interview and strategy acceptance
-are pending. This draft records the existing approved obligations; it does not
-authorize a check removal or suite
-cutover. H1 BUILD authoring requires A2 acceptance.
+Status: ready for A2 strategy review (`bright-ridge-12.2`). Jack's four verified
+interview answers are recorded; strategy acceptance is pending. This proposal
+records the existing approved obligations and the interview decisions. H1 BUILD
+authoring requires recorded A2 acceptance.
 
 ## Authority and purpose
 
@@ -95,7 +94,7 @@ agent recommendation is not Jack's acceptance.
 | Q1 — confidence | When a change is green, what do you need that green result to tell you before it lands on the frequently automatically deployed dev branch? | Jack's verified answer on 2026-10-24: “If it’s green and it’s an epic (complete feature) I want it merged, and that should be all tasks at the root level”. Discord input `cinput-6970a5ab` at 19:54Z; supervisor relay `msg-80ee66dc374447e98cca5fea1c8073ab`. Identical confirmation `cinput-6d17114e` at 20:46Z, relayed in `msg-6a5de3917fd145eeb213e87a315edff2`. Treat these as one answer. |
 | Q2 — blocking failures | Which failures must block a root epic from merging to dev, even when its focused feature tests pass? | Jack's verified answer on 2026-10-24 at 22:19:25Z: “Only failures in areas the epic touches”. Discord input `cinput-c73d3c964604480fb20caaa550afda37`, conversation `conv-7b812291-a40d-465b-9a86-21da0d9c3a7e`; supervisor relay `msg-72a475a9aa044072b5f23e7ddd89ee10` (sequence 136547), backed by task comment `comment-6b37662673c54f67aa91a59b5f839b85`. |
 | Q3 — affected-area boundary | Should "areas the epic touches" include downstream behavior that depends on changed code, even when that area’s files are unchanged? | Jack's verified answer on 2026-10-24 at 22:57:33Z: “I think yes, downstream that depends on code the epic changed should be tested”. Discord input `cinput-fff40414137f47f0bbf065677974744b`, conversation `conv-7b812291-a40d-465b-9a86-21da0d9c3a7e`, actor `human:discord:395982012789293056`; supervisor relay `msg-8d6ea6b7bd6c45619b9d99fba16ceb81`. Duplicate relay `msg-d54da5f71f254256b2941a331d1971cf` is the same answer. |
-| Q4 — redundant coverage | What evidence would make you comfortable consolidating tests that appear to cover the same behavior? | Requested once through supervisor in `msg-e982a7a22cf54f809cf6bf7766d61ef1`, thread `bright-ridge-12.2-interview-q4`; verified answer pending. |
+| Q4 — redundant coverage | What evidence would make you comfortable consolidating tests that appear to cover the same behavior? | Jack's verified answer on 2026-10-25 at 03:13:51Z: “Yeah if test coverage overlaps significantly they should be combined”. Discord input `cinput-7a5cd89f49cb447eb3723fd6a1c5c741`, conversation `conv-7b812291-a40d-465b-9a86-21da0d9c3a7e`, actor `human:discord:395982012789293056`, replying to Q4 post `1563710600792645844` (`msg-conv-say-60ac0e39`); supervisor relay `msg-cdfa12f23ef84213a7bfa64831f7db25`. |
 
 Q1 establishes Jack's desired delivery outcome: merge a green, complete feature
 at the root level. It does not yet specify which failures must block that green
@@ -113,12 +112,24 @@ the reviewed implementation and its evidence. These answers alone do not
 establish which observed failures are unrelated or supply replacement coverage
 evidence.
 
-Continue with redundant assertions and the risk of frequent automatic
-deployment, adapting each next question to Jack's
-answer. Record the accepted strategy review's ID, revision, content hash and
-decision receipt here before claiming A2 acceptance. Moving protection past
-deployment needs a separate approved policy amendment even if an interview
-answer recommends it.
+Q4 establishes a preference to combine tests with significantly overlapping
+coverage. Apply that preference through the replacement ledger below: compare
+assertions, dependencies and failure conditions, then preserve unique behavior
+and prove that the combined test catches each former failing condition. The
+answer supplies no numeric overlap threshold or permission to discard unique
+coverage. A2 proposes no removals.
+
+The interview is complete after these four exchanges. Q1 explicitly framed
+confidence around frequent automatic deployment to dev; Q2–Q3 defined the
+affected behavior and Q4 addressed redundancy. No answer selected a post-merge
+tier or approved moving protection past deployment. Keep the current pre-merge
+protections and exact-candidate verification while implementing the reviewed
+replacement process. No further risk-policy change is proposed here.
+
+Strategy acceptance remains pending. Record the accepted review's ID, revision,
+content hash and decision receipt here before claiming A2 acceptance or starting
+H1 BUILD authoring. Moving protection past deployment needs a separate approved
+policy amendment even if an interview answer recommends it.
 
 ## Required protection and execution
 

@@ -100,7 +100,7 @@ The suite is ~14k tests; a full run is a whole-box, many-minute affair that stal
 agent on the machine. Rationale and the baseline workflow:
 [docs/guides/resource-gating.md](docs/guides/resource-gating.md).
 Testing confidence, retained obligations and replacement-coverage evidence are
-documented in [the testing strategy](docs/guides/testing-strategy.md) (A2 draft;
+documented in [the testing strategy](docs/guides/testing-strategy.md) (A2 review pending;
 acceptance is required before Bazel BUILD authoring).
 
 - **`aq test`, not bare `pytest`, for anything past one file.** It takes a box-wide test
