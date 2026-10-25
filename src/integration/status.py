@@ -20,6 +20,9 @@ from src.database.tables import (
     projects,
     repos,
     task_branch_origins,
+    task_delivery_receipts,
+    task_integration_checkpoints,
+    task_metadata,
     tasks,
 )
 from src.git.manager import GitError
@@ -80,8 +83,9 @@ class IntegrationStatusService:
         # a stored promotion flow at start (R17); status re-runs layers 1-2.
         self.flow_problems = flow_problems or {}
         # ``git_first: active`` projects the train's Git, check, review and
-        # intent facts; it never reads subjects, journals, generations or
-        # receipts. ``train`` is the daemon's IntegrationTrain, for its last
+        # intent facts. Historical code receipts only retire obsolete PR
+        # conflict diagnostics; they never supply Git delivery evidence.
+        # ``train`` is the daemon's IntegrationTrain, for its last
         # visit per target; without it only durable facts are reported.
         if git_first != "active":
             raise ValueError("trial mode has been removed; use git_first=active or omit it")
@@ -171,9 +175,9 @@ class IntegrationStatusService:
             project = await self._one(conn, select(projects).where(projects.c.id == project_id))
             if project is None:
                 return None
+            visits = await self._current_train_visits_on(conn, project_id)
             batches = await self._train_batches_on(
-                conn, integration_batches.c.project_id == project_id)
-            visits = self._train_visits(project_id)
+                conn, integration_batches.c.project_id == project_id, visits=visits)
             evidence = await self._train_evidence_on(conn, visits)
             from src.operator_decisions import history_on
 
@@ -273,14 +277,16 @@ class IntegrationStatusService:
             )
             if row is None:
                 return None
+            visits = await self._current_train_visits_on(conn, row["project_id"])
             carrying = select(integration_batch_members.c.batch_id).where(
                 integration_batch_members.c.task_id == task_id
             )
-            batches = await self._train_batches_on(conn, integration_batches.c.id.in_(carrying))
+            batches = await self._train_batches_on(
+                conn, integration_batches.c.id.in_(carrying), visits=visits)
             ahead = []
             if not batches and row["status"] == "COMPLETED":
-                ahead = await self._open_batches_ahead_on(conn, row["project_id"], task_id)
-        visits = self._train_visits(row["project_id"])
+                ahead = await self._open_batches_ahead_on(
+                    conn, row["project_id"], task_id, visits=visits)
         own = self._train_source_blockers(visits, task_id=task_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
@@ -345,7 +351,7 @@ class IntegrationStatusService:
         ]
 
     async def _open_batches_ahead_on(
-        self, conn: AsyncConnection, project_id: str, task_id: str
+        self, conn: AsyncConnection, project_id: str, task_id: str, *, visits=None,
     ) -> list[dict[str, Any]]:
         """Live batches on *task*'s routed target, when the task's branch is live."""
         from src.integration.delivery_observer import delivery_targets
@@ -363,9 +369,11 @@ class IntegrationStatusService:
             integration_batches.c.repository_id == routed.repository_id,
             integration_batches.c.target_ref == routed.target_ref,
             integration_batches.c.lifecycle.in_(LIVE_LIFECYCLES),
-        ))
+        ), visits=visits)
 
-    async def _train_batches_on(self, conn: AsyncConnection, where) -> list[dict[str, Any]]:
+    async def _train_batches_on(
+        self, conn: AsyncConnection, where, *, visits=None,
+    ) -> list[dict[str, Any]]:
         """Open git batches with their members, intent and open repair tasks."""
         from src.integration.batches import (
             candidate_ref,
@@ -455,7 +463,7 @@ class IntegrationStatusService:
                 and row["repair_attempt_count"] > 0
                 and r["id"] == ordinary_repair_id(row["id"], row["repair_attempt_count"])
             ]
-            visit = self._train_visits(row["project_id"]).get(
+            visit = (visits if visits is not None else self._train_visits(row["project_id"])).get(
                 (row["repository_id"], row["target_ref"])
             )
             if visit and visit.get("batch_id") == row["id"]:
@@ -469,6 +477,75 @@ class IntegrationStatusService:
             (row["repository_id"], row["target_ref"]): row
             for row in rows if row.get("project_id") == project_id
         }
+
+    async def _current_train_visits_on(
+        self, conn: AsyncConnection, project_id: str,
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """Retire PR-conflict diagnostics superseded by an exact code receipt.
+
+        A historical cherry-pick receipt can settle the old PR even though its
+        source is not an ancestor of the target. This projection does not change
+        the train's last visit or authorize delivery, admission or publication.
+        Reopened generations and receipts for other targets keep their blockers.
+        """
+        from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
+        from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
+        from src.integration.delivery_truth import completion_after_rework, load_delivery_requests
+
+        visits = self._train_visits(project_id)
+        for key, visit in visits.items():
+            blockers = (visit.get("detail") or {}).get("blockers", [])
+            ids = {b["task_id"] for b in blockers
+                   if b.get("code") == "pr_conflicting" and b.get("task_id")}
+            if not ids:
+                continue
+            repository_id, target_ref = key
+            receipts = (await conn.execute(select(task_delivery_receipts).join(
+                repos, repos.c.id == task_delivery_receipts.c.repository_id,
+            ).where(
+                task_delivery_receipts.c.source_task_id.in_(ids),
+                repos.c.project_id == project_id,
+                *_root_delivery_receipt_conditions(repository_id, target_ref),
+                *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
+            ))).mappings().all()
+            if not receipts:
+                continue
+            requests = await load_delivery_requests(
+                self.db, ids, repository_id=repository_id, target_ref=target_ref,
+                conn=conn, reduced=True,
+            )
+            checkpoints = {row["task_id"]: row for row in (await conn.execute(
+                select(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id.in_(ids),
+                    task_integration_checkpoints.c.repository_id == repository_id,
+                ),
+            )).mappings()}
+            rework = dict((await conn.execute(select(
+                task_metadata.c.task_id, task_metadata.c.value,
+            ).where(task_metadata.c.task_id.in_(ids),
+                    task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all())
+            settled = set()
+            for receipt in receipts:
+                request = requests.get(receipt["source_task_id"])
+                if (request is None or request.task_status != "COMPLETED"
+                        or (request.project_id, request.repository_id) != (project_id, repository_id)):
+                    continue
+                source, completed_at = request.reported_source, request.completed_at
+                if source is None and request.completion_id == request.legacy_generation:
+                    checkpoint = checkpoints.get(request.task_id)
+                    if checkpoint is not None:
+                        source, completed_at = checkpoint["checkpoint_sha"], checkpoint["updated_at"]
+                if (source and source == receipt["reviewed_head_sha"]
+                        and completed_at is not None and completed_at <= receipt["created_at"]
+                        and completion_after_rework(receipt["created_at"], rework.get(request.task_id))):
+                    settled.add((request.task_id, source))
+            current = [b for b in blockers if not (
+                b.get("code") == "pr_conflicting"
+                and (b.get("task_id"), b.get("source_sha")) in settled
+            )]
+            if len(current) != len(blockers):
+                visits[key] = {**visit, "detail": {**visit["detail"], "blockers": current}}
+        return visits
 
     async def _train_evidence_on(
         self, conn: AsyncConnection, visits: dict[tuple[str, str], dict[str, Any]]
