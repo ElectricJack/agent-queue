@@ -686,14 +686,15 @@ class DeliveryObserver:
     publisher's retained checkout. The reduced observer fetches once per
     repository and shares its refs across targets. A read-only surface may reuse
     a snapshot within :data:`READ_MAX_AGE`. Reduced diagnostics consume only
-    existing OID-bound proofs; guarded writers still fetch and recheck inputs.
+    existing OID-bound proofs; guarded task writers still fetch and recheck inputs.
     """
 
     #: Attempts to take a view whose targets did not move while it was evaluated.
     FRESH_ATTEMPTS = 2
     #: How old a fetched snapshot a read-only surface (status, explain, doctor)
     #: may reuse.  The dashboard polls explain every 20s; this keeps that from
-    #: becoming a fetch per poll.  Guarded writers never reuse one.
+    #: becoming a fetch per poll. Task writers never reuse one; PR retirement
+    #: additionally validates its exact remote heads before proving delivery.
     READ_MAX_AGE = 30.0
 
     def __init__(self, db, *, git, data_dir, truth=None) -> None:
@@ -742,8 +743,10 @@ class DeliveryObserver:
             and (recent[1].error is None or cached_only)
             and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
+        observe = (partial(self._shared_observation, max_age=max_age)
+                   if max_age > 0 else self._shared_observation)
         if cached_only or (shared := await within_git_read_budget(
-                self._shared_observation, target, path)) is None:
+                observe, target, path)) is None:
             # Interactive or over-budget reads never wait on a fetch: unknown, not undelivered.
             return self._unavailable(target, path, "snapshot_unavailable")
         snapshot, stamp, flight = shared
@@ -762,7 +765,7 @@ class DeliveryObserver:
         return own
 
     async def _shared_observation(
-        self, target: DeliveryTarget, path: Path,
+        self, target: DeliveryTarget, path: Path, *, max_age: float = 0.0,
     ) -> tuple[DeliverySnapshot, float, _Flight]:
         """Join the store observation that begins after this caller arrived.
 
@@ -772,6 +775,8 @@ class DeliveryObserver:
         successor, so a burst costs at most two fetches. Each flight is its own
         task awaited without cancellation: a cancelled caller leaves its peers
         and the flight running, and an abandoned flight ends with no backlog.
+        A caller accepting bounded-age evidence may join an already begun
+        flight, including a retry while an abandoned producer is still fetching.
         """
         loop = asyncio.get_running_loop()
         flights = _FLIGHTS.setdefault(loop, {})
@@ -782,7 +787,8 @@ class DeliveryObserver:
         try:
             while True:
                 flight = state.flight
-                if flight is not None and flight.seq is not None and flight.seq <= arrival:
+                if (max_age <= 0 and flight is not None and flight.seq is not None
+                        and flight.seq <= arrival):
                     # Its fetch began before this caller asked: no proof for it.
                     await asyncio.wait((flight.task,))
                     continue
@@ -827,6 +833,11 @@ class DeliveryObserver:
                         repository_url=target.repository_url, target_ref=target.target_ref,
                     )
             flight.stamp = time.monotonic()
+            # The producer outlives cancelled readers. Retain its completed
+            # observation even if none survived to run _snapshot's bookkeeping,
+            # so a bounded-age retry can reuse the objects and captured refs.
+            if snapshot.error in {None, "target_ref_missing"} and not snapshot.acquisition_error:
+                self._remember(target, snapshot, flight.stamp)
             return snapshot
         except Exception as exc:  # noqa: BLE001 - any failure is an unknown observation
             logger.warning(
