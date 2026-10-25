@@ -14,6 +14,14 @@ PAUSED or ARCHIVED projects. Existing pending projections become unknown with a
 project lifecycle reason and their consecutive stuck count resets. Resuming a
 project allows fresh observations without discarding completion age or history.
 
+In `train` and `hierarchy` projects, a landing task reserves its own root branch
+origin in the designated repository, based on the default target. Normal branch
+materialization must complete before the task enters the claim frontier. The
+root-origin reconciler also recovers READY watchdog tasks filed without origins
+by an older daemon. The takeover retains its own branch and ownership fence;
+it merges the stuck source branch during execution. Repeated scans preserve
+the existing takeover and origin identities.
+
 The owning project supervisor or global supervisor can withdraw a false delivery
 incident through the existing revision-guarded control:
 

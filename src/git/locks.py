@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import stat
+from collections.abc import Sequence
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,34 @@ def common_git_dir(git_dir: Path) -> Path:
     return (target if target.is_absolute() else git_dir / target).resolve()
 
 
-def _common_from_cwd(cwd: Path) -> Path | None:
+def common_git_dir_from_cwd(cwd: Path, args: Sequence[str] = ()) -> Path | None:
+    """Find the shared object-store owner of a checkout, subdirectory or bare store."""
+    cwd = cwd.resolve()
+    git_dir = None
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        arg = args[index]
+        if arg in ("-C", "--git-dir", "--work-tree", "-c", "--config-env", "--namespace"):
+            index += 1
+            if index >= len(args):
+                return None
+            value = args[index]
+        elif arg.startswith("-C"):
+            arg, value = "-C", arg[2:]
+        elif arg.startswith("--git-dir="):
+            arg, value = "--git-dir", arg.split("=", 1)[1]
+        else:
+            if arg == "--bare":
+                git_dir = str(cwd)
+            index += 1
+            continue
+        if arg == "-C" and value:
+            cwd = (cwd / value).resolve()
+        elif arg == "--git-dir":
+            git_dir = value
+        index += 1
+    if git_dir is not None:
+        return common_git_dir(cwd / git_dir)
     for directory in (cwd, *cwd.parents):
         dot_git = directory / ".git"
         if dot_git.is_dir():
@@ -77,7 +105,7 @@ def _process_repository(process: Path) -> Path | None:
         return common_git_dir(directory) if directory.is_dir() else None
     # --work-tree/GIT_WORK_TREE change the files Git writes, not the object
     # store discovered from cwd. They must not hide a live owner in that store.
-    return _common_from_cwd(cwd)
+    return common_git_dir_from_cwd(cwd)
 
 
 def _live_lock_owner(
