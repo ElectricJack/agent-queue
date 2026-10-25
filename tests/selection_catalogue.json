@@ -50,6 +50,7 @@
         "tests/test_wait_hibernation.py",
         "tests/test_wait_holding.py",
         "tests/test_wait_legacy_bridge.py",
+        "tests/test_wait_listener.py",
         "tests/test_wait_metrics.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_outcomes.py",
@@ -84,6 +85,12 @@
         "tests/test_target_scope.py",
         "tests/test_triage_api_scope.py",
         "tests/test_worker_git_scope.py"
+      ]
+    },
+    "bazel-metrics": {
+      "description": "Verification obligation inventory and exact-identity delivery metric accounting.",
+      "modules": [
+        "tests/test_bazel_metrics.py"
       ]
     },
     "capabilities": {
@@ -3300,6 +3307,18 @@
         "parametrize"
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
+    "tests/test_bazel_metrics.py": {
+      "areas": [
+        "bazel-metrics"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c267969578d4ccb9e7fd080acc1b37aecf24beff7a4b83b021b48589b7c411f4",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Inventory boundary and delivery-accounting regressions on synthetic evidence."
     },
     "tests/test_blocked_state.py": {
       "areas": [
@@ -20300,6 +20319,20 @@
         "parametrize"
       ],
       "summary": "Legacy adoption preserves age, ownership and exactly one outcome path."
+    },
+    "tests/test_wait_listener.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:ace1960f57f6b36f4349132aa8dfd50991a7d7b5844acefc26a7c927c64ca4e9",
+      "imports": [
+        "src.waits.listener"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."
     },
     "tests/test_wait_metrics.py": {
       "areas": [
