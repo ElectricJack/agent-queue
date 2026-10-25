@@ -3382,7 +3382,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:441a756dce8eef3ec79bed85bd3026b1fc89a21b469ec839282b7271bad7ca04",
+      "digest": "sha256:ee994f9e990dc5155d7d61fe6ccb94019c94c5152b60bdea61a9722a342ee1de",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
@@ -3390,6 +3390,7 @@
         "src.integration.batches",
         "src.integration.branch_retirement",
         "src.integration.cleanup",
+        "src.integration.delivery_branches",
         "src.integration.train_sources",
         "src.models",
         "src.sessions.obsolete"
