@@ -1547,6 +1547,57 @@ class TestIndependentDelivery:
             await service.stop()
         assert bus._handlers["message.sent"] == []
 
+    @pytest.mark.parametrize("phase", ["delivery", "reply_sweep", "waiting"])
+    async def test_conversation_wake_bypasses_interval_during_each_phase(self, monkeypatch, phase):
+        bus = EventBus(validate_events=False)
+        reached, release, delivered = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def delivery_pass():
+            if engine.run_delivery_pass.await_count == 1:
+                if phase == "delivery":
+                    reached.set()
+                    await release.wait()
+            else:
+                delivered.set()
+
+        async def reply_sweep():
+            if phase == "reply_sweep" and engine.check_reply_timeouts.await_count == 1:
+                reached.set()
+                await release.wait()
+
+        class EventOnlyWait:
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            async def wait_for(self, awaitable, timeout):
+                # Never expire the routine timer. Only the intake event can
+                # start another pass, regardless of the test machine's speed.
+                if phase == "waiting":
+                    reached.set()
+                return await awaitable
+
+        monkeypatch.setattr("src.messages.service.asyncio", EventOnlyWait())
+        engine = SimpleNamespace(
+            run_delivery_pass=AsyncMock(side_effect=delivery_pass),
+            check_reply_timeouts=AsyncMock(side_effect=reply_sweep),
+        )
+        cfg = MessagesConfig(delivery_interval=3600)
+        service = MessageDeliveryService(engine, lambda: cfg, bus)
+        service.start()
+        try:
+            async with asyncio.timeout(5):
+                await reached.wait()
+                for _ in range(50):
+                    await bus.emit("message.sent", {
+                        "to_kind": "session", "body_kind": "conversation_input",
+                    })
+                assert engine.run_delivery_pass.await_count == 1
+                release.set()
+                await delivered.wait()
+                assert engine.run_delivery_pass.await_count == 2
+        finally:
+            await service.stop()
+
     async def test_disabled_service_resumes_backlog_after_live_enable(self):
         bus = EventBus(validate_events=False)
         resumed = asyncio.Event()

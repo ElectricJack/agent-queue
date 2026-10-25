@@ -923,20 +923,24 @@ async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state)
     service = MessageDeliveryService(engine, lambda: handler.config.messages, bus)
     service.start()
     try:
-        await asyncio.wait_for(idle_pass.wait(), 2)
-        accepted = await post(handler)
-        await asyncio.wait_for(nudged.wait(), 2)
-        assert seen == [accepted["supervisor_message_id"]]
-        if state != "running":
-            lens.ensure_started.assert_awaited_once_with(
-                kind="session", target_id="supervisor-agent-queue", project_id="agent-queue"
-            )
-        else:
-            lens.ensure_started.assert_not_awaited()
-        # A gateway replay repairs the event without duplicating the notice/nudge.
-        assert not (await post(handler))["created"]
-        await run_pass()
-        assert len(seen) == 1
+        # This checks event-driven delivery, not PostgreSQL latency on a busy
+        # runner. A whole-scenario watchdog still fails a lost urgent wake:
+        # the routine delivery timer cannot expire for another 3600 seconds.
+        async with asyncio.timeout(30):
+            await idle_pass.wait()
+            accepted = await post(handler)
+            await nudged.wait()
+            assert seen == [accepted["supervisor_message_id"]]
+            if state != "running":
+                lens.ensure_started.assert_awaited_once_with(
+                    kind="session", target_id="supervisor-agent-queue", project_id="agent-queue"
+                )
+            else:
+                lens.ensure_started.assert_not_awaited()
+            # A gateway replay repairs the event without duplicating the notice/nudge.
+            assert not (await post(handler))["created"]
+            await run_pass()
+            assert len(seen) == 1
     finally:
         await service.stop()
 
