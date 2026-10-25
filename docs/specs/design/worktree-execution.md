@@ -307,6 +307,24 @@ the claim and record the preparation failure for supervisor recovery.
 Origin refresh for fenced pool preparation happens before branch mutation exclusion;
 the reset inside exclusion resolves only local refs. Mutable child refs are refreshed
 once before checkpoint planning, while available immutable origins need no fetch.
+Slot preparation's branch exclusion allows the project's configured
+`slot_reset_git_timeouts` override (or `slot_reset_git_timeout_seconds`) plus
+the normal 30-second critical-section budget. This covers repository-mutex
+queueing and reset work; publication retains its ordinary 30-second bound.
+The allowance never renews authority: exclusion revalidates the current holder
+and fence and caps its deadline at the lease's existing `expires_at`.
+An expired or superseded fence cannot enter reset, and expiry while queued
+cancels preparation before the mutex permits further mutation.
+
+Keep lock ordering unchanged: managed pool activation locks its session/task
+before the ref exclusion, proves its workspace before reset, then reset/salvage
+takes the repository mutex.
+Other fenced preparation and integration paths likewise take ref exclusion before
+the repository mutex. Never acquire a ref exclusion while holding that mutex;
+unfenced prefetch releases it before entering exclusion. Increasing the bounded
+preparation allowance avoids reversing this order or making nested Git locks
+reentrant. A contained slot-reset fence timeout continues through the bounded
+transient preparation ladder above, rather than silently retaining it forever.
 Ownership and cleanup refusals retain their existing fences and are never treated
 as transient reset errors.
 After a pool process has stopped and released its ownership, teardown detaches

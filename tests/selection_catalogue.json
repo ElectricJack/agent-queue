@@ -9458,8 +9458,9 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:de72fddfdd8a6396cf9bec8a23613f9b3786e5d874a2f1c813abbdff1c667a48",
+      "digest": "sha256:dc89c23a21f3c778410e0e67b9626d9cad974fa25db76d51b38f3d18330d389e",
       "imports": [
+        "src.config",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",

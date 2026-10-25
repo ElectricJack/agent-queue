@@ -2099,6 +2099,11 @@ class ClaimCommandsMixin:
                     )
                 hierarchy_attached = True
                 stage = "activation_lock"
+                from src.integration.lock import slot_preparation_timeout_seconds
+
+                preparation_timeout = slot_preparation_timeout_seconds(
+                    self.config.worktrees, task.project_id,
+                )
                 if previous_owner and previous_owner.get("fence") is not None:
                     # Managed recovery/filing takes task before ref. Holding
                     # ref while activate_claim locks session/task reverses
@@ -2109,14 +2114,16 @@ class ClaimCommandsMixin:
                         )
                         if claim is not None:
                             async with ownership.mutation_exclusion_on(
-                                conn, fence, state="attached", expected_role=owner_role
+                                conn, fence, state="attached", expected_role=owner_role,
+                                timeout_seconds=preparation_timeout,
                             ):
                                 fresh = await prepare_and_activate(
                                     conn=conn, **preparation_args,
                                 )
                 else:
                     async with ownership.mutation_exclusion(
-                        fence, state="attached", expected_role=owner_role
+                        fence, state="attached", expected_role=owner_role,
+                        timeout_seconds=preparation_timeout,
                     ) as conn:
                         fresh = await prepare_and_activate(
                             conn=conn, **preparation_args,

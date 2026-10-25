@@ -18,6 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, insert, select, update
 
@@ -29,11 +30,26 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnershipError, StaleFence
 from src.integration.row_query import select_row
 
+if TYPE_CHECKING:
+    from src.config import WorktreesConfig
+
 DEFAULT_TTL_SECONDS = 480.0
 RENEWAL_MARGIN_SECONDS = DEFAULT_TTL_SECONDS / 3
 CRITICAL_SECTION_SECONDS = 30.0
 # Repair startup includes an isolated Git object import before ref mutation.
 REPAIR_START_SECONDS = GitManager._GIT_TIMEOUT + CRITICAL_SECTION_SECONDS
+
+
+def slot_preparation_timeout_seconds(config: WorktreesConfig, project_id: str) -> float:
+    """Allow repository queueing without changing ref-before-repository lock order.
+
+    Slot preparation can wait behind a reset Git command with this configured
+    budget. Add the normal mutation allowance; exclusion still caps the whole
+    section at the current lease expiry and never renews that authority.
+    """
+    return config.slot_reset_git_timeouts.get(
+        project_id, config.slot_reset_git_timeout_seconds,
+    ) + CRITICAL_SECTION_SECONDS
 
 
 class RemoteMoved(GitError):
