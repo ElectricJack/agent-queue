@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2257,
+ 'authorized_owned_delta': 2277,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1075,8 +1075,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82504,
- 'measured_owned_total': 157756,
+ 'measured_engine_lines': 82524,
+ 'measured_owned_total': 157776,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1186,6 +1186,23 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'supervisor_decision_comment_id': 'comment-26bf155ce932484188a12ac8776616fd',
      'task_id': 'sharp-delta-65'},
+ 'wait_source_listener_backlog_composition': {'authorized_engine_delta': 20,
+      'authorized_owned_delta': 20,
+      'authorized_table_delta': 0,
+      'charged_files': {'src/integration/checks.py': 20},
+      'dev_source_revision': '42e216ff1d6dd192459ab3eb46dfb837c912568c',
+      'operator_decision': '6679052c',
+      'previous_measured_engine_lines': 82504,
+      'previous_measured_owned_total': 157756,
+      'previous_measured_table_count': 45,
+      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1974',
+      'reason': 'Exact supervisor-approved +20 owned/engine lines from stark-horizon-78 / PR 1974 '
+                '(wait source listener backlog fix), hand-landed on dev by the supervisor. Preserve '
+                'every separately approved composition, original baselines, historical grants and '
+                'ownership classifications, with zero remaining headroom and no new storage category.',
+      'referenced_decision': 'size-cap-delegation-2026-10-23',
+      'source_revision': '93c9d12a6f87dbd119b9736279023b73500f68c1',
+      'task_id': 'stark-horizon-78'},
  'wait_scheduler_sync_rollback_composition': {'authorized_engine_delta': 0,
       'authorized_owned_delta': 6,
       'authorized_shared_owned_delta': 6,
