@@ -149,6 +149,16 @@ in the cache temporarily.
 
 ## Completed but undelivered
 
+The delivery watchdog may file a default-branch landing takeover only for an
+orphaned root. It must use the same train ownership facts as the redrive
+diagnostics: carrying batches, queued batches and source admission blockers
+(including `prerequisite_pending`) retain ownership. A managed epic remains
+owned while awaiting aggregate verification, including before a batch exists.
+Children remain owned by their parent's delivery path and must never receive a
+default-branch takeover. Their blocking prerequisites may be reported to the
+supervisor, but a missing batch or missing ancestor containment is not permission
+to bypass collection. Unavailable ownership evidence cannot authorize a takeover.
+
 COMPLETED means the worker finished, not that the code reached the default branch.
 `aq doctor --check integration.completed_undelivered` reconciles the two for every
 project in a delivering mode (`hierarchy`, `train`, `development`) with a

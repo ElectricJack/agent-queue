@@ -9120,7 +9120,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:75dce18784ab37b8f466152b98f47751a83c31f684bc71ddbc82d6b75cc3c0ac",
+      "digest": "sha256:08676584238498a568855d4403c197319e70cb3b2c1e020f1b38a30477bbc9ed",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -9129,6 +9129,8 @@
         "src.integration.delivery_truth",
         "src.integration.delivery_watchdog",
         "src.integration.models",
+        "src.integration.root_pull_requests",
+        "src.integration.status",
         "src.models"
       ],
       "markers": [

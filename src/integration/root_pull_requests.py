@@ -326,6 +326,12 @@ class RootDeliveryRedrive:
                 return {**base, "outcome": "not_eligible",
                         "reason": f"the root is {task['status']}, not COMPLETED"}
             base["branch"] = task["branch_name"]
+            from src.integration.status import IntegrationStatusService
+
+            ownership = await IntegrationStatusService(self.db).delivery_ownership_on(conn, task_id)
+            if ownership and ownership["batch_ids"]:
+                return {**base, "outcome": "nothing_to_redrive",
+                        "reason": "the integration train owns delivery through an open batch"}
             if task["pr_url"] and task["pr_url"].strip():
                 return {**base, "outcome": "nothing_to_redrive", "pr_url": task["pr_url"],
                         "reason": "the root already has its pull request"}

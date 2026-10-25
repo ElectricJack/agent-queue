@@ -685,6 +685,7 @@ class IntegrationCommandsMixin:
 
                 try:
                     await scan_stuck_deliveries(self.db, observer=observer, now=now,
+                                              train=train,
                                               hierarchy=self._hierarchy_integration_service())
                 except Exception:
                     logging.getLogger(__name__).exception("delivery watchdog scan failed")

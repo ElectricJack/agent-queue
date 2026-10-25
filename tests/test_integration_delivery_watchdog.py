@@ -8,12 +8,16 @@ from sqlalchemy import insert, select, update
 
 from src.database import Database
 from src.database.tables import (
+    archived_tasks,
     escalations,
     events,
+    integration_batch_members,
+    integration_batches,
     messages,
     projects,
     system_config,
     task_labels,
+    task_metadata,
     tasks,
     wait_measurements,
     wait_records,
@@ -27,6 +31,8 @@ from src.integration.delivery_watchdog import (
     scan_stuck_deliveries,
 )
 from src.integration.models import DeliveryWatchdogPolicy
+from src.integration.root_pull_requests import RootDeliveryRedrive
+from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
@@ -222,6 +228,129 @@ async def _ci_samples(db, project_id, durations, now):
 
 def _takeovers(found):
     return [row for row in found if row["created_by_id"] == "delivery-watchdog"]
+
+
+async def _carrying_batch(watch, task_id):
+    async with watch.state.db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="batch", project_id="p", repository_id="repo-p", target_ref="refs/heads/main",
+            request_id="request", source_manifest_digest="digest", base_sha="b" * 40,
+            integration_branch="aq/batch", lifecycle="sealing", policy_snapshot={},
+            artifact_snapshot={}, cleanup_state="pending", created_at=1, updated_at=1,
+        ))
+        await conn.execute(insert(integration_batch_members).values(
+            batch_id="batch", ordinal=0, task_id=task_id, repository_id="repo-p",
+            source_sha="a" * 40, source_base_sha="b" * 40, reviewed_head_sha="a" * 40,
+            reviewed_tree_sha="c" * 40, review_evidence={},
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch",
+        ).values(lifecycle="testing"))
+
+
+@pytest.mark.parametrize("epic", [False, True])
+async def test_open_batch_owns_delivery_despite_unreconciled_inventory(watch, epic):
+    await watch.complete("p", "t1", age=7200, rule="unreconciled")
+    if epic:
+        await watch.state.db.create_task(Task(
+            id="t1.1", project_id="p", title="child", description="", parent_task_id="t1",
+        ))
+    await _carrying_batch(watch, "t1")
+    diagnosis = await RootDeliveryRedrive(watch.state.db, object()).diagnose("t1")
+    assert diagnosis["outcome"] == "nothing_to_redrive"
+    assert "open batch" in diagnosis["reason"]
+    for _ in range(3):
+        report = await watch.scan()
+        assert report["errors"] == []
+        assert report["deliveries"][0]["reason"] == "train_owned"
+    owner = (await watch.blocker("t1"))["decision_inputs"]["delivery_owner"]
+    assert owner["batch_ids"] == ["batch"]
+    assert _takeovers(await watch.rows(tasks)) == []
+    assert await watch.rows(escalations) == []
+
+
+@pytest.mark.parametrize("identity", ["child", "archived_child", "container_flag"])
+@pytest.mark.parametrize("mode", ["development", "hierarchy", "train"])
+async def test_epic_awaiting_aggregate_verification_stays_owned_without_batch(watch, identity, mode):
+    await watch.state.db.update_project("p", hierarchical_integration_mode=mode)
+    await watch.complete("p", "epic", age=7200, rule="unreconciled")
+    async with watch.state.db.immediate() as conn:
+        if identity == "container_flag":
+            await conn.execute(insert(task_metadata).values(
+                task_id="epic", key="container", value="true",
+            ))
+        else:
+            table = archived_tasks if identity == "archived_child" else tasks
+            await conn.execute(insert(table).values(
+                id="epic.1", project_id="p", title="child", description="",
+                status="COMPLETED", parent_task_id="epic", created_at=1, updated_at=1,
+                **({"archived_at": 1} if identity == "archived_child" else {}),
+            ))
+    for _ in range(3):
+        assert (await watch.scan())["errors"] == []
+    inputs = (await watch.blocker("epic"))["decision_inputs"]
+    assert inputs["delivery_owner"]["kind"] == "aggregate"
+    assert inputs["stuck_scans"] == 0
+    assert _takeovers(await watch.rows(tasks)) == []
+
+
+@pytest.mark.parametrize("code", [None, "prerequisite_pending", "source_withheld",
+                                 "queued_behind_open_batch"])
+async def test_child_never_gets_default_branch_takeover(watch, code):
+    await watch.state.db.create_task(Task(id="epic", project_id="p", title="parent", description=""))
+    await watch.complete("p", "epic.1", age=7200, rule="unreconciled")
+    async with watch.state.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.1").values(
+            parent_task_id="epic",
+        ))
+    # Even a stale inventory calling the child a root cannot authorize a takeover.
+    blocker = {"code": code, "detail": "Source waits for undelivered prerequisite repair",
+               "task_id": "epic.1", "prerequisite_task_ids": ["repair"]}
+    train = SimpleNamespace(status=lambda: [{
+        "project_id": "p", "repository_id": "repo-p", "target_ref": "refs/heads/aq/epic",
+        "detail": {"blockers": [blocker] if code else []},
+    }])
+    diagnostic = await IntegrationStatusService(
+        watch.state.db, train=train,
+    ).train_task_blockers("epic.1")
+    assert diagnostic["blockers"] == ([blocker] if code else [])
+    for _ in range(3):
+        assert (await watch.scan(train=train))["errors"] == []
+    owner = (await watch.blocker("epic.1"))["decision_inputs"]["delivery_owner"]
+    assert owner["kind"] == "parent" and owner["parent_task_id"] == "epic"
+    assert owner["blockers"] == ([blocker] if code else [])
+    assert _takeovers(await watch.rows(tasks)) == []
+    assert await watch.rows(escalations) == []
+
+
+async def test_source_admission_owner_must_clear_before_orphan_root_takeover(watch):
+    await watch.complete("p", "t1", age=7200, rule="unreconciled")
+    visits = [{"project_id": "p", "repository_id": "repo-p", "target_ref": "refs/heads/main",
+               "detail": {"blockers": [{"code": "prerequisite_pending", "task_id": "t1",
+                                         "detail": "waiting for repair"}]}}]
+    train = SimpleNamespace(status=lambda: visits)
+    for _ in range(3):
+        assert (await watch.scan(train=train))["deliveries"][0]["reason"] == "train_owned"
+    assert _takeovers(await watch.rows(tasks)) == []
+    visits.clear()
+    await watch.scan(train=train)
+    await watch.scan(train=train)
+    (takeover,) = _takeovers(await watch.rows(tasks))
+    assert takeover["title"] == "Land stuck delivery of t1"
+
+
+async def test_unavailable_ownership_cannot_authorize_takeover(watch, monkeypatch):
+    await watch.complete("p", "t1", age=7200, rule="unreconciled")
+    await watch.scan()
+
+    async def unavailable(*args):
+        raise RuntimeError("ownership read failed")
+
+    monkeypatch.setattr(IntegrationStatusService, "delivery_ownership_on", unavailable)
+    report = await watch.scan()
+    assert report["errors"] == [{"project_id": "p", "task_id": "t1", "error": "RuntimeError"}]
+    assert _takeovers(await watch.rows(tasks)) == []
+    assert (await watch.blocker("t1"))["decision_inputs"]["stuck_scans"] == 1
 
 
 @pytest.mark.parametrize("age, state", [(60, "progressing"), (3600, "slow")])
