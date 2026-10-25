@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2286,
+ 'authorized_owned_delta': 2294,
  'claim_marker_recovery_composition': {
      'authorized_engine_delta': 0,
      'authorized_owned_delta': 5,
@@ -1049,7 +1049,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 82532,
- 'measured_owned_total': 157785,
+ 'measured_owned_total': 157793,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1207,6 +1207,22 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
       'referenced_decision': 'size-cap-delegation-2026-10-23',
       'source_revision': '1b65b85de2ca2a0b9f7ac13a8841e76c558ace56',
       'task_id': 'fresh-glacier-53'},
+ 'reconciler_resume_retain_composition': {     'authorized_engine_delta': 0,
+      'authorized_owned_delta': 8,
+      'authorized_table_delta': 0,
+      'charged_files': {'src/sessions/reconciler.py': 8},
+      'dev_source_revision': '4f713c63b9f6dce0e28df7a460814049b23e7b0f',
+      'operator_decision': '6679052c',
+      'previous_measured_engine_lines': 82532,
+      'previous_measured_owned_total': 157785,
+      'previous_measured_table_count': 45,
+      'reason': 'Exact supervisor-approved +8 owned lines: azure-zenith-14 keeps the session '
+                'reconciler from draining a RESUME_PENDING continuation session, hand-landed on '
+                'dev by the global supervisor 2026-10-25 while the train was starved. Zero '
+                'remaining headroom.',
+      'referenced_decision': 'size-cap-delegation-2026-10-23',
+      'source_revision': 'f7dcc0f757c11bb4c14f66eadb32bb3cf5c5c315',
+      'task_id': 'azure-zenith-14'},
  'wait_ci_timeout_backoff_composition': {'authorized_engine_delta': 0,
       'authorized_owned_delta': 1,
       'authorized_table_delta': 0,
