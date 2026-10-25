@@ -24,7 +24,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2869,
+    "authorized_owned_delta": 2859,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -190,7 +190,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 82855,
-    "measured_owned_total": 158368,
+    "measured_owned_total": 158358,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,

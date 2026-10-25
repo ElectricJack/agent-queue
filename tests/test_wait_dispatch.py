@@ -1787,19 +1787,34 @@ async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(runti
 
 
 @pytest.mark.parametrize("failure", ["cancel", "lease_loss"])
-async def test_quarantine_never_advances_after_cancellation_or_lease_loss(runtime_env, failure):
+async def test_quarantine_never_advances_after_cancellation_or_lease_loss(
+    runtime_env, failure, monkeypatch,
+):
     env = runtime_env
     seq = await env.db.wait_source_commit(source_key="test:fenced", generation=0,
         revision="1", outcome_ref="fenced", payload={})
     now = [NOW]
     service = runtime(env, clock=lambda: now[0])
     service.listener.event_budget_seconds = 0.1
+    timeout = asyncio.timeout
+    budgets = []
+
+    def controlled_timeout(delay):
+        # Expire the real attempt budget only after dispatch mutates the row
+        # and expires the lease. Database latency must not select another path.
+        context = timeout(None if delay == 0.1 else delay)
+        if delay == 0.1:
+            budgets.append(context)
+        return context
+
+    monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
 
     async def stop(conn, event):
         await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
         if failure == "cancel":
             raise asyncio.CancelledError()
         now[0] += service.listener.lease_seconds + 1
+        budgets[-1].reschedule(asyncio.get_running_loop().time())
         await asyncio.Event().wait()
 
     service.listener._dispatch = stop
