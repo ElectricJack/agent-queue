@@ -926,7 +926,6 @@ async def test_authenticated_push_reason_reaches_command_blocker_and_notice(
         f"exit {7 if failure == 'git_exit' else 0}\n"
     )
     fake_git.chmod(0o700)
-    runtime.git._APP_GIT_EXECUTABLE = str(fake_git)
     spawn = runtime.git._spawn_isolated_git
 
     async def start(*args, **kwargs):
@@ -935,6 +934,9 @@ async def test_authenticated_push_reason_reaches_command_blocker_and_notice(
                 raise FileNotFoundError(token)
             if failure == "timeout":
                 raise TimeoutError(token)
+            # Substitute only the push; preparation and credential topology
+            # validation must still run with the real Git executable.
+            return await spawn(str(fake_git), *args[1:], **kwargs)
         return await spawn(*args, **kwargs)
 
     async def push(path, *, tip_oid, branch, expected_old_oid, **kwargs):
