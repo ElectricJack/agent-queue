@@ -188,8 +188,6 @@ class WakeDispatcher:
 
         # Visibility-only migration projections never held a worker seat.
         if row["sleep_decision"] is not None:
-            # Reobservations must preserve an existing sample, including costs
-            # filled in later by continuation acknowledgement.
             await conn.execute(pg_insert(wait_measurements).values(
                 id=f"outcome:{row['id']}", project_id=row["project_id"], wait_id=row["id"],
                 condition_kind=cond.kind, source_class=adapter.source_class(cond),
