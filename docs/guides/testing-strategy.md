@@ -1,9 +1,9 @@
 # Testing strategy
 
-Status: ready for A2 strategy review (`bright-ridge-12.2`). Jack's four verified
-interview answers are recorded; strategy acceptance is pending. This proposal
-records the existing approved obligations and the interview decisions. H1 BUILD
-authoring requires recorded A2 acceptance.
+Status: accepted for A2 (`bright-ridge-12.2`). Jack approved strategy review
+`rev-agile-ember` r1 on 2026-10-25 at 03:33:45Z. The acceptance receipt below
+satisfies the A2 strategy prerequisite for H1 BUILD authoring. Suite cutover and
+coverage changes retain their separate evidence and approval requirements.
 
 ## Authority and purpose
 
@@ -126,10 +126,24 @@ tier or approved moving protection past deployment. Keep the current pre-merge
 protections and exact-candidate verification while implementing the reviewed
 replacement process. No further risk-policy change is proposed here.
 
-Strategy acceptance remains pending. Record the accepted review's ID, revision,
-content hash and decision receipt here before claiming A2 acceptance or starting
-H1 BUILD authoring. Moving protection past deployment needs a separate approved
-policy amendment even if an interview answer recommends it.
+### Strategy acceptance receipt
+
+Jack (`human:local-operator`) approved `rev-agile-ember` revision 1 on
+2026-10-25 at 03:33:45Z, decision
+`ask-decision-3cfc9bb48d0b4164a0d14a65ae53072d`. The approved body SHA-256 is
+`058adc8afc442292476a414d7c0df9e8c2a45b296ddbc4f841e2ea4c9abfd92b`,
+matching the submitted strategy. Review gate `gate-017246c2785f` is resolved as
+approved, with no decision note or feedback changes. The canonical review is
+mirrored at
+`projects/agent-queue/specs/2026-10-24-aq-testing-strategy-affected-behavior-coverage-consolidation.md`.
+Supervisor receipt `msg-110ff80a` on `bright-ridge-12.2-interview-q5` and backup
+task comment `comment-0a4a1fd699af4d3999a085b49620c9e7` record the decision;
+the worker independently verified the review state, revision hash and gate.
+
+This receipt and the status line are administrative additions to the repository
+copy; the immutable reviewed body remains in revision 1. A2 strategy acceptance
+is recorded before H1 BUILD authoring. Moving protection past deployment still
+needs a separate approved policy amendment.
 
 ## Required protection and execution
 
