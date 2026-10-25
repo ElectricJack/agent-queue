@@ -4097,22 +4097,45 @@ class Orchestrator(
     async def _subscribe_event_gates(self) -> None:
         """Register the EventBus handler that resolves open ``event`` gates.
 
-        Called once from :meth:`initialize`.  Live path: an event arrives,
-        we scan open ``event`` gates whose ``await_id`` matches and resolve
-        them.  The sweep remains the backstop.
+        Cache event-type interest for at most five seconds. Gate changes
+        invalidate it immediately; matching events always reread open gates.
+        The sweep remains the restart-safe backstop.
         """
         if self._gate_event_unsub is not None:
             return
 
+        interested: frozenset[str] | None = None
+        refreshed_at = 0.0
+        generation = 0
+
         async def _on_event(data: dict) -> None:
+            nonlocal interested, refreshed_at, generation
             event_type = data.get("_event_type")
-            if not event_type or event_type.startswith("gate."):
+            if not event_type:
+                return
+            if event_type.startswith("gate."):
+                if data.get("gate_type") == "event":
+                    interested = None
+                    generation += 1
                 return  # avoid a resolve → gate.resolved → resolve loop
+            now = time.monotonic()
+            if (
+                interested is not None
+                and now - refreshed_at < 5.0
+                and event_type not in interested
+            ):
+                return
+            observed_generation = generation
             try:
                 gates = await self.db.list_open_gates_by_type("event")
             except Exception:
                 logger.debug("event-gate handler: list failed", exc_info=True)
                 return
+            if observed_generation == generation:
+                # A concurrent gate.created must not be hidden by an older
+                # query finishing after its invalidation.
+                interested = frozenset(g["await_id"] for g in gates if g.get("await_id"))
+                refreshed_at = now
             for gate in gates:
                 if gate.get("await_id") == event_type:
                     await self._resolve_gate_and_emit(
