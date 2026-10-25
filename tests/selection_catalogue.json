@@ -18204,10 +18204,11 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:1b9d94d2e5975f98e1fa1dcab0eec7548c5d759419a85f242b8abc8775b67ee1",
+      "digest": "sha256:459891e682ad91d67b8a34fd16881302b9f605a5a799addd581912bb38efadbf",
       "imports": [],
       "markers": [
         "parametrize",
+        "perf",
         "skipif"
       ],
       "summary": "Project isolation of the supervisor stall sweep (scripts/operator-checks/stall-sweep.py)."
