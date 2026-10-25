@@ -2411,3 +2411,324 @@ async def test_attributed_ejection_preserves_members_and_rechecks_survivor(world
     settled = await restarted.visit(MAIN)
     assert settled.detail["settled_batch_id"] == replacement_id
     assert git(world.origin.url, "rev-parse", MAIN.target_ref) == survivor.candidate_sha
+
+
+def test_failure_probe_risk_order_and_dependency_units():
+    from src.integration.failure_probes import plan
+
+    risks = {"a": [2, 0, 0], "b": [3, 0, 0], "c": [3, 1, 0],
+             "d": [3, 1, 2], "e": [3, 1, 2]}
+    state = plan({"candidate": CANDIDATE}, [["a", "b"], ["c"], ["e"], ["d"]], risks, 3)
+    assert state["units"] == [["d"], ["e"], ["c"], ["a", "b"]]
+    assert state["queue"] == [["d", "e"], ["c", "a", "b"]]
+    assert state["limit"] == 3
+    assert plan({}, [["a", "b"]], risks, 3)["decisions"] == [{"reason": "empty_survivors"}]
+
+
+@pytest.mark.parametrize("outcomes,limit,reason,suspects", [
+    (["pass", "pass"], 3, "interaction", []),
+    (["fail", "fail"], 3, "both_halves_fail", [["a", "b"], ["c", "d"]]),
+    (["pass"], 1, "budget_exhausted", []),
+    (["fail", "pass"], 2, "budget_exhausted", [["a", "b"]]),
+    (["fail", "pass", "pass"], 3, "budget_exhausted", [["a", "b"]]),
+    (["unavailable"], 3, "probe_unavailable", []),
+])
+def test_failure_probe_safe_decisions(outcomes, limit, reason, suspects):
+    from src.integration.failure_probes import advance, plan
+
+    state = plan({}, [[tid] for tid in "abcd"], {tid: [1, 0, 0] for tid in "abcd"}, limit)
+    for index, outcome in enumerate(outcomes):
+        group = state["queue"].pop(0)
+        state["probes"].append({"id": str(index), "members": group, "status": outcome})
+        advance(state)
+    assert state["status"] == "repair"
+    assert state["decisions"][-1]["reason"] == reason
+    assert state["suspects"] == suspects
+    assert not state["queue"]
+
+
+@pytest.mark.parametrize("change", ["sha", "producer", "missing", "infra", "flaky", "duplicate",
+                                   "forged", "pending"])
+def test_failure_probe_requires_complete_exact_product_verdict(change):
+    from src.integration.failure_probes import verdict
+
+    red = result(ChecksState.RED)
+    updates = {"sha": {"sha": "f" * 40}, "producer": {"producer_id": "wrong"},
+               "missing": {"conclusion": Conclusion.MISSING},
+               "infra": {"classification": "infrastructure"},
+               "flaky": {"classification": "flaky"},
+               "pending": {"conclusion": Conclusion.PENDING}}
+    if change == "duplicate":
+        red = red.model_copy(update={"checks": red.checks * 2})
+    elif change == "forged":
+        red = red.model_copy(update={"state": ChecksState.GREEN})
+    else:
+        red = red.model_copy(update={"checks": (red.checks[0].model_copy(update=updates[change]),)})
+        if change == "pending":
+            red = red.model_copy(update={"state": ChecksState.PENDING})
+    assert verdict(red, candidate_head(batch(), CANDIDATE), red.required) == (
+        "pending" if change == "pending" else "unavailable")
+
+
+@pytest.fixture
+async def failure_probe_env(world, monkeypatch):
+    from pathlib import Path
+
+    from src.integration.candidate_baseline import Baseline
+    from src.integration.failure_probes import KEY
+    from src.integration.train_policy import TrainPolicyView
+    from src.playbooks.train_policy import TrainPolicy
+    from tests.test_integration_train_sources import MAIN, LocalGit, completed, lane as real_lane
+
+    for tid in "abcd":
+        await completed(world, tid)
+    t, _, _ = real_lane(world, LocalGit(Path(world.origin.url)))
+    initial_lane = await t.lane_for(MAIN)
+    store = initial_lane.service.store
+    freeze = store.freeze
+
+    async def freeze_with_signatures(batch, members, **kwargs):
+        _, _, document, _, _ = failure_evidence(
+            batch, tuple(members), base=git(world.origin.url, "rev-parse", MAIN.target_ref), shared=True,
+        )
+        kwargs["selection_snapshot"] = document
+        return await freeze(batch, members, **kwargs)
+
+    monkeypatch.setattr(store, "freeze", freeze_with_signatures)
+    first = await t.visit(MAIN)
+    frozen = await store.get(first.batch_id)
+    members = await store.members(frozen.id)
+    _, _, document, red, green = failure_evidence(
+        frozen, members, base=first.target_sha, candidate_sha=first.candidate_sha, shared=True,
+    )
+    view = TrainPolicyView(policy=TrainPolicy(bisection={"enabled": True}), policy_revision="policy-v1")
+    monkeypatch.setattr("src.integration.train_policy.load_train_policy", AsyncMock(return_value=view))
+    env = SimpleNamespace(world=world, train=t, first=first, batch=frozen, members=members,
+                          document=document, outcomes=["pass", "pass"], cache={}, requests=set(),
+                          baseline=green, view=view, lane=initial_lane)
+
+    async def state():
+        return (await world.db.get_integration_batch(frozen.id))["fixer_queue"][KEY]
+
+    async def read(head):
+        if head.sha == red.sha:
+            return red
+        if head.sha == green.sha:
+            return env.baseline
+        return env.cache.get(head.sha, result(ChecksState.PENDING).model_copy(update={
+            "sha": head.sha, "checks": (red.checks[0].model_copy(update={
+                "sha": head.sha, "conclusion": Conclusion.PENDING}),)}))
+
+    async def refresh(head):
+        if head.sha in {red.sha, green.sha}:
+            return await read(head)
+        saved = await state()
+        index = next((i for i, p in enumerate(saved["probes"]) if p.get("sha") == head.sha), None)
+        if index is None:  # A survivor never inherits a probe's verdict.
+            return await read(head)
+        outcome = env.outcomes[index]
+        if outcome == "exception":
+            raise OSError("CI transport unavailable")
+        status, conclusion = {
+            "pass": (ChecksState.GREEN, Conclusion.SUCCESS),
+            "fail": (ChecksState.RED, Conclusion.FAILURE),
+            "missing": (ChecksState.RED, Conclusion.MISSING),
+            "infra": (ChecksState.RED, Conclusion.FAILURE),
+            "pending": (ChecksState.PENDING, Conclusion.PENDING),
+        }[outcome]
+        checked = red.model_copy(update={"sha": head.sha, "state": status, "checks": (
+            red.checks[0].model_copy(update={"sha": head.sha, "conclusion": conclusion,
+                "classification": "infrastructure" if outcome == "infra" else "conclusive",
+                "detail": {}}),)})
+        env.cache[head.sha] = checked
+        return checked
+
+    async def request(head):
+        env.requests.add((head.ref, head.sha, head.generation))
+
+    exact = SimpleNamespace(read=read, refresh=refresh, request=request,
+                            provider=SimpleNamespace(authoritative_target_suites=("default",)))
+
+    async def attach(train):
+        current = await train.lane_for(MAIN)
+        candidates = CandidateChecks.fixed(exact)
+        current.service.gate = candidates.gate
+        current = replace(current, checks=candidates, train_policy=view.policy)
+        train.lane_for = AsyncMock(return_value=current)
+        train.baseline = SimpleNamespace(verdict=AsyncMock(return_value=Baseline(
+            first.target_sha, "green", ("unit",), (), ())), re_request=AsyncMock(return_value={}))
+        train.repair = Repair()
+        env.lane = current
+        env.train = train
+
+    async def restart():
+        restarted, _, _ = real_lane(world, LocalGit(Path(world.origin.url)))
+        await attach(restarted)
+
+    await attach(t)
+    env.state, env.restart, env.target, env.exact = state, restart, MAIN, exact
+    return env
+
+
+@pytest.mark.parametrize("outcomes,reason", [
+    (["pass", "pass"], "interaction"), (["fail", "fail"], "both_halves_fail"),
+    (["fail", "pass", "pass"], "budget_exhausted"),
+    (["missing"], "probe_unavailable"), (["infra"], "probe_unavailable"),
+    (["exception"], "probe_infrastructure"),
+])
+async def test_failure_probes_restart_and_safe_fallback(failure_probe_env, outcomes, reason):
+    env = failure_probe_env
+    env.outcomes = outcomes
+    for index in range(len(outcomes)):
+        visit = await env.train.visit(env.target)
+        if index == 0 and len(outcomes) > 1:
+            await env.restart()
+    saved = await env.state()
+    assert saved["status"] == "repair" and saved["decisions"][-1]["reason"] == reason
+    assert len(saved["probes"]) == len(outcomes)
+    assert visit.repair and len(env.train.repair.calls) == 1
+    if reason == "both_halves_fail":
+        assert saved["suspects"] == [["a", "b"], ["c", "d"]]
+    # A completed decision is durable: repeated visits cannot issue another probe.
+    requests = set(env.requests)
+    await env.train.visit(env.target)
+    assert await env.state() == saved and env.requests == requests
+    row = await env.world.db.get_integration_batch(env.batch.id)
+    assert row["artifact_snapshot"] == env.document
+    assert await env.lane.service.store.members(env.batch.id) == env.members
+    assert git(env.world.origin.url, "rev-parse", env.target.target_ref) == env.first.target_sha
+    async with env.world.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(integration_batches)) == 1
+
+
+async def test_failure_probes_pending_restart_reuses_persisted_candidate(failure_probe_env):
+    env = failure_probe_env
+    env.outcomes = ["pending", "pass"]
+    first = await env.train.visit(env.target)
+    assert first.state == "probing"
+    saved = await env.state()
+    await env.restart()
+    env.lane.service.gitops.merge_sources = AsyncMock(side_effect=AssertionError("duplicate build"))
+    publish = env.lane.service.publish
+    env.lane.service.publish = AsyncMock(side_effect=publish)
+    again = await env.train.visit(env.target)
+    assert again.state == "probing" and await env.state() == saved
+    assert not env.lane.service.publish.called
+    env.outcomes[0] = "pass"
+    await env.train.visit(env.target)
+    assert (await env.state())["probes"][0]["status"] == "pass"
+    assert len((await env.state())["probes"]) == 1
+
+
+async def test_failure_probes_isolated_member_requires_fresh_full_survivor(failure_probe_env):
+    env = failure_probe_env
+    env.outcomes = ["fail", "pass", "fail"]
+    await env.train.visit(env.target)
+    await env.restart()
+    await env.train.visit(env.target)
+    ejected = await env.train.visit(env.target)
+    assert ejected.state == "ejected", ejected
+    replacement_id = ejected.detail["ejection"]["replacement_batch_id"]
+    assert ejected.detail["ejection"]["ejected_members"] == ["a"]
+    assert ejected.candidate_sha is None and ejected.checks is None
+    assert await env.lane.service.store.members(env.batch.id) == env.members
+    assert [m.task_id for m in await env.lane.service.store.members(replacement_id)] == list("bcd")
+    await env.restart()
+    survivor = await env.train.visit(env.target)
+    assert survivor.state == "testing" and survivor.batch_id == replacement_id
+    assert survivor.candidate_sha not in {p["sha"] for p in (await env.state())["probes"]}
+    assert git(env.world.origin.url, "rev-parse", env.target.target_ref) == env.first.target_sha
+    env.cache[survivor.candidate_sha] = env.baseline.model_copy(update={
+        "sha": survivor.candidate_sha, "checks": (
+            env.baseline.checks[0].model_copy(update={"sha": survivor.candidate_sha}),)})
+    delivered = await env.train.visit(env.target)
+    assert delivered.detail["settled_batch_id"] == replacement_id
+    assert git(env.world.origin.url, "rev-parse", env.target.target_ref) == survivor.candidate_sha
+
+
+@pytest.mark.parametrize("change", ["base", "candidate", "sources", "policy", "version"])
+async def test_failure_probes_stale_incident_cannot_repeat_side_effects(failure_probe_env, change):
+    from sqlalchemy import update
+    from src.integration.failure_probes import KEY
+
+    env = failure_probe_env
+    env.outcomes = ["pending"]
+    await env.train.visit(env.target)
+    state = await env.state()
+    if change == "version":
+        state["version"] = 99
+    else:
+        key = {"base": "target_sha", "candidate": "candidate_sha", "sources": "sources",
+               "policy": "policy_revision"}[change]
+        state["identity"][key] = "changed"
+    async with env.world.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == env.batch.id)
+                           .values(fixer_queue={KEY: state}))
+    requests = set(env.requests)
+    visit = await env.train.visit(env.target)
+    assert visit.repair and env.requests == requests
+    assert await env.state() == state
+
+
+@pytest.mark.parametrize("change", ["red", "missing", "infra", "wrong_base"])
+async def test_failure_probes_recheck_same_base_before_spending_budget(failure_probe_env, change):
+    env = failure_probe_env
+    updates = {"red": {"conclusion": Conclusion.FAILURE},
+               "missing": {"conclusion": Conclusion.MISSING},
+               "infra": {"conclusion": Conclusion.UNAVAILABLE},
+               "wrong_base": {"sha": "f" * 40}}
+    env.baseline = env.baseline.model_copy(update={"checks": (
+        env.baseline.checks[0].model_copy(update=updates[change]),)})
+    visit = await env.train.visit(env.target)
+    assert visit.repair
+    row = await env.world.db.get_integration_batch(env.batch.id)
+    assert not row["fixer_queue"]
+    assert len(env.requests) == 1  # Only the original full candidate.
+
+
+async def test_failure_probe_dependency_components_include_external_paths_and_git_stacks():
+    from src.integration.failure_probes import dependency_units
+
+    ops = SimpleNamespace(is_ancestor=AsyncMock(side_effect=lambda repo, a, b:
+                          (a, b) == (CONFLICTING_MEMBERS[1].source_sha,
+                                     CONFLICTING_MEMBERS[2].source_sha)))
+    edges = [("t-1", "external"), ("external", "t-2")]
+    assert await dependency_units(CONFLICTING_MEMBERS, edges, ops, None) == [["t-1", "t-2", "t-3"]]
+
+
+async def test_failure_probes_dependency_change_invalidates_pending_plan(failure_probe_env):
+    from sqlalchemy import insert
+    from src.database.tables import task_dependencies
+
+    env = failure_probe_env
+    env.outcomes = ["pending"]
+    await env.train.visit(env.target)
+    saved = await env.state()
+    async with env.world.db.immediate() as conn:
+        await conn.execute(insert(task_dependencies).values(
+            task_id="c", depends_on_task_id="a", dep_type="blocks"))
+    visit = await env.train.visit(env.target)
+    assert visit.repair and await env.state() == saved
+
+
+async def test_failure_probes_crash_after_push_resumes_without_republication(failure_probe_env):
+    env = failure_probe_env
+    request = env.exact.request
+
+    async def crash(head):
+        if head.sha != env.first.candidate_sha:
+            raise asyncio.CancelledError
+        await request(head)
+
+    env.exact.request = crash
+    with pytest.raises(asyncio.CancelledError):
+        await env.train.visit(env.target)
+    saved = await env.state()
+    assert len(saved["probes"]) == 1 and saved["probes"][0]["status"] == "testing"
+    await env.restart()
+    env.exact.request = request
+    env.lane.service.publish = AsyncMock(side_effect=AssertionError("duplicate push"))
+    env.lane.service.gitops.merge_sources = AsyncMock(side_effect=AssertionError("duplicate build"))
+    visit = await env.train.visit(env.target)
+    assert visit.state == "probing"
+    assert (await env.state())["probes"][0]["status"] == "pass"

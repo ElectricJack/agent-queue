@@ -8755,7 +8755,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:09a42b7ab6dafcfdb5d415063c914e614bc3aa15ae9a7e1f26cffc5d2a3d5b28",
+      "digest": "sha256:7b0362b8a5daf96e8784714650cb23509f09384cfa7d4bd61552a06284576de7",
       "imports": [
         "src.commands",
         "src.config",
@@ -8769,6 +8769,7 @@
         "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.delivery_truth",
+        "src.integration.failure_probes",
         "src.integration.git_truth",
         "src.integration.gitops",
         "src.integration.promotion_contracts",
@@ -10418,7 +10419,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:eeb712b9072b115e4211573136c9fe4cb0d89211c6f1a426747e4504b46f9e2a",
+      "digest": "sha256:19aae9279b3ffe7b4cdc365bd259446d5c5cde667da290aed181ef8d274d6732",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -10433,6 +10434,7 @@
         "src.integration.batches",
         "src.integration.candidate_baseline",
         "src.integration.checks",
+        "src.integration.failure_probes",
         "src.integration.git_truth",
         "src.integration.lock",
         "src.integration.models",

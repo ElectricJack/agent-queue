@@ -2779,8 +2779,48 @@
     "unknown_sinks": []
   },
   "hand_integration_reconciliation": {
+    "ambiguous_failure_probe_composition": {
+      "authorized_engine_delta": 1629,
+      "authorized_owned_delta": 1629,
+      "authorized_table_delta": 0,
+      "components": {
+        "baseline_and_ejection": {
+          "engine": 217,
+          "owned": 217,
+          "task": "bright-bridge-75.4"
+        },
+        "failure_probes": {
+          "charged_files": {
+            "src/integration/failure_probes.py": 365,
+            "src/integration/train.py": 13,
+            "src/integration/train_sources.py": 8
+          },
+          "engine": 386,
+          "owned": 386,
+          "task": "bright-bridge-75.5"
+        },
+        "signatures_and_packing": {
+          "engine": 1026,
+          "owned": 1026,
+          "prior_batch_id": "train-61c9e919",
+          "tasks": [
+            "bright-bridge-75.1",
+            "bright-bridge-75.3"
+          ]
+        }
+      },
+      "decision_message_id": "msg-b8dc18e5b8574bafbac513fb0e13e7c3",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82530,
+      "previous_measured_owned_total": 157854,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved composition of inherited signatures, packing and ejection with bounded failure probes. Preserve T3 and timeout grants, fixed baselines and classifications; zero remaining headroom and no new storage category. These component grants are counted once when sibling branches compose.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "bright-bridge-75.5",
+      "thread_id": "t5-bright-bridge-75.5-size"
+    },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2355,
+    "authorized_owned_delta": 3984,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2884,8 +2924,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82530,
-    "measured_owned_total": 157854,
+    "measured_engine_lines": 84159,
+    "measured_owned_total": 159483,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -16340,12 +16380,52 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 82530,
+    "engine_cap": 84159,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
+      "ambiguous_failure_probe_composition": {
+        "authorized_engine_delta": 1629,
+        "authorized_owned_delta": 1629,
+        "authorized_table_delta": 0,
+        "components": {
+          "baseline_and_ejection": {
+            "engine": 217,
+            "owned": 217,
+            "task": "bright-bridge-75.4"
+          },
+          "failure_probes": {
+            "charged_files": {
+              "src/integration/failure_probes.py": 365,
+              "src/integration/train.py": 13,
+              "src/integration/train_sources.py": 8
+            },
+            "engine": 386,
+            "owned": 386,
+            "task": "bright-bridge-75.5"
+          },
+          "signatures_and_packing": {
+            "engine": 1026,
+            "owned": 1026,
+            "prior_batch_id": "train-61c9e919",
+            "tasks": [
+              "bright-bridge-75.1",
+              "bright-bridge-75.3"
+            ]
+          }
+        },
+        "decision_message_id": "msg-b8dc18e5b8574bafbac513fb0e13e7c3",
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82530,
+        "previous_measured_owned_total": 157854,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved composition of inherited signatures, packing and ejection with bounded failure probes. Preserve T3 and timeout grants, fixed baselines and classifications; zero remaining headroom and no new storage category. These component grants are counted once when sibling branches compose.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "bright-bridge-75.5",
+        "thread_id": "t5-bright-bridge-75.5-size"
+      },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2355,
+      "authorized_owned_delta": 3984,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16449,8 +16529,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 82530,
-      "measured_owned_total": 157854,
+      "measured_engine_lines": 84159,
+      "measured_owned_total": 159483,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16646,7 +16726,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 157854,
+    "owned_total_cap": 159483,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

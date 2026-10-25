@@ -1184,12 +1184,25 @@ class IntegrationTrain:
                 # A normal visit assembles it and runs the complete exact gate.
                 return replace(self._visit(target, "ejected", batch, observation, result),
                                detail={**baseline.detail(), "ejection": ejected})
+        probe_detail = {}
+        probe_red = getattr(self.batches, "probe_red", None)
+        if (probe_red is not None and not baseline.unavailable
+                and baseline.target_state == "green" and baseline.target_sha == observation.target_sha
+                and not baseline.pre_existing and not baseline.unproven):
+            probed = await probe_red(target, batch, members, observation, result, checks, lane)
+            if probed:
+                probe_detail = {"failure_probes": probed}
+                if probed["status"] != "repair":
+                    return replace(self._visit(target, probed["status"], batch, observation, result),
+                        detail={**baseline.detail(), **probe_detail,
+                                **({"ejection": probed["ejection"]}
+                                   if probed.get("ejection") else {})})
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
                 brief=red_brief(baseline, head.sha, candidate=result, sealed_target=sealed_target),
             )
-            detail = {**(visit.detail or {}), **baseline.detail()}
+            detail = {**(visit.detail or {}), **baseline.detail(), **probe_detail}
             if batch.epic_refresh and baseline.repairable:
                 detail.update(
                     blocker="epic_refresh_checks_failed",

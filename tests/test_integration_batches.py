@@ -595,3 +595,34 @@ async def test_frozen_batch_retries_recovered_cache_through_exact_candidate_gate
     assert git(ops.git.remote_path, 'rev-parse', batch.target_ref) == base
     green.add(retry.candidate_sha)
     assert (await service.visit(batch, members, await snapshot())).state == 'delivered'
+
+
+async def test_failure_probe_state_cas_preserves_queue_and_refuses_repair_owner(batch_env):
+    from copy import deepcopy
+
+    from src.integration.failure_probes import FailureProbes, KEY, plan
+
+    db, _, _, _, _, store, batch, _, _, _, _, _ = batch_env
+    queue = {"family_id": "existing-family", "unrelated_envelope": {"version": 2}}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == batch.id)
+                           .values(fixer_queue=queue))
+    probes = FailureProbes(db, clock=lambda: 10)
+    state = plan({"candidate": "exact"}, [["a"], ["b"]],
+                 {"a": [1, 0, 0], "b": [1, 0, 0]}, 3)
+    assert await probes.save(batch, None, state)
+    assert state["generation"] == 1
+    changed = deepcopy(state)
+    changed["queue"].pop()
+    assert not await probes.save(batch, None, changed)
+    assert await probes.save(batch, state, changed)
+    assert changed["generation"] == 2
+    row = await db.get_integration_batch(batch.id)
+    assert row["fixer_queue"] == {**queue, KEY: changed}
+    assert row["fixer_state"] is None
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == batch.id)
+                           .values(fixer_state={"session_id": "repair-owner"}))
+    assert not await probes.save(batch, changed, deepcopy(changed))
+    await store.set_intent(batch.id, "paused")
+    assert not await probes.save(batch, changed, deepcopy(changed))

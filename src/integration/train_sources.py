@@ -869,6 +869,14 @@ class DatabaseBatches:
             batch, members, observation, result, checks, service=service,
         )
 
+    async def probe_red(self, target, batch, members, observation, result, checks, lane):
+        """Resume bounded diagnostics under the train-tick CommandHandler."""
+        from src.integration.failure_probes import FailureProbes
+
+        return await FailureProbes(self.db, clock=self.clock).run(
+            target, batch, members, observation, result, checks, lane,
+        )
+
     async def drop_conflict(self, target, batch, members, observation, snapshot, service):
         """Replace a root batch with its dependency-closed healthy remainder.
 
