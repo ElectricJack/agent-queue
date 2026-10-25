@@ -1,7 +1,7 @@
 ---
 playbook_id: fast-smooth-train
-artifact_sha256: sha256:208bf1c33575b484032228249d90f1ca1995e5a93d68f75810bc58fc1c7ce9be
-source_sha256: sha256:850a53de226ec1e9343e833c5054eab726cf86cedfbd978d65af724509208088
+artifact_sha256: sha256:eb863333c01fb45cae3a349eef0f88f9db59cb7e42f81096be00b7bc4e5b4559
+source_sha256: sha256:6be5c462268830e2a2dfb38dbc423150a4b2bdaabd43ac562f56bc469eb0f559
 contract_fingerprint: sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
 questions_resolved: 0
 capabilities_granted:
@@ -18,3 +18,10 @@ revision 4 repair decision. The deterministic graph only acknowledges a readines
 hint; the existing Git train reads the literal policy. No commands or new grants
 are introduced. This installable template is inactive until a project copies and
 activates it. The train retains exact green, human intent and live writer fences.
+
+The bounded compatibility-off policy contract implements rev-bold-summit r1,
+T3 (bright-bridge-75.2), approved decision
+ask-decision-e8b74e1ba69547db8d5a748d8b0b33e1. Packing and bisection remain
+disabled; disjoint parallelism remains off. No installed project activation is
+changed. Historical fresh-horizon-48 preservation evidence remains under
+`tests/fixtures/playbooks/scenarios/fast-smooth-train/legacy-shipped.*`.

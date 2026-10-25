@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select, update
 
 from src.database.tables import (
@@ -24,7 +25,7 @@ from src.integration.manual_control import enabled_train_write
 from src.integration.train_policy import current_checks, load_train_policy
 from src.integration.train_sources import DaemonLanes, DatabaseTargets
 from src.models import Task, TaskStatus
-from src.playbooks.train_policy import TrainPolicy
+from src.playbooks.train_policy import TrainBisectionPolicy, TrainPackingPolicy, TrainPolicy
 from tests.test_delivery_consumers import git
 from tests.test_integration_train import (
     MEMBERS,
@@ -276,6 +277,95 @@ def test_unknown_policy_fact_has_finite_safe_default():
     policy = TrainPolicy()
     assert policy.action("unavailable") == "wait"
     assert 0 < policy.wait_seconds <= 3600
+
+
+def test_packing_contract_defaults():
+    assert TrainPackingPolicy().model_dump() == {
+        "signature_version": 1, "policy_version": 1, "enabled": False,
+        "max_members": 4, "green_weight": 100, "merge_clean_weight": 40,
+        "signature_size_weight": 10, "nonhot_weight": 10, "age_per_hour": 1.0,
+        "max_age_score": 80, "pass_rate_weight": 10, "pass_rate_neutral": 5,
+        "pass_rate_min_checks": 20, "hotness_window_batches": 50,
+        "oldest_slot_after_seconds": 7200,
+    }
+    assert TrainBisectionPolicy().model_dump() == {"enabled": False, "max_probes": 3}
+
+
+@pytest.mark.parametrize("field,low,high", [
+    ("max_members", 1, 8), ("green_weight", 0, 1000), ("merge_clean_weight", 0, 1000),
+    ("signature_size_weight", 0, 100), ("nonhot_weight", 0, 100),
+    ("age_per_hour", 0, 100), ("max_age_score", 0, 1000),
+    ("pass_rate_weight", 0, 100), ("pass_rate_neutral", 0, 100),
+    ("pass_rate_min_checks", 20, 10000), ("hotness_window_batches", 1, 1000),
+    ("oldest_slot_after_seconds", 1, 7200),
+])
+def test_packing_numeric_bounds_are_strict(field, low, high):
+    # Keep the cross-field neutral bound valid while testing individual ranges.
+    settings = {"pass_rate_neutral": 0, "pass_rate_weight": 100}
+    for value in (low, high):
+        assert getattr(TrainPackingPolicy(**(settings | {field: value})), field) == value
+    for value in (low - 1, high + 1, True, str(low), float("inf"), float("nan")):
+        with pytest.raises(ValidationError):
+            TrainPackingPolicy(**(settings | {field: value}))
+
+
+@pytest.mark.parametrize("field", ["signature_version", "policy_version"])
+@pytest.mark.parametrize("value", [0, 2, True, "1", 1.0])
+def test_packing_rejects_unsupported_or_coerced_versions(field, value):
+    with pytest.raises(ValidationError):
+        TrainPackingPolicy(**{field: value})
+
+
+@pytest.mark.parametrize("settings", [
+    {"enabled": "false"}, {"enabled": 1}, {"online_learning": True},
+    {"pass_rate_neutral": 11}, {"max_members": 4.0},
+])
+def test_packing_rejects_ambiguous_or_unknown_policy(settings):
+    with pytest.raises(ValidationError):
+        TrainPackingPolicy(**settings)
+
+
+@pytest.mark.parametrize("settings", [
+    {"max_probes": 0}, {"max_probes": 4}, {"max_probes": True},
+    {"max_probes": "3"}, {"enabled": "false"}, {"adaptive_budget": True},
+])
+def test_bisection_cannot_exceed_three_probes_or_coerce_policy(settings):
+    with pytest.raises(ValidationError):
+        TrainBisectionPolicy(**settings)
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", "true"])
+def test_parallel_mode_requires_explicit_boolean(value):
+    with pytest.raises(ValidationError):
+        TrainPolicy(parallel_disjoint=value)
+
+
+@pytest.mark.parametrize("parallel,legacy,valid", [
+    (False, False, True), (True, False, True), (False, True, True), (True, True, False),
+])
+async def test_activated_policy_rejects_conflicting_lane_modes(
+    world, tmp_path, parallel, legacy, valid,
+):
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "train": {"speculative_ci": legacy},
+    })
+    digest = await activate(world, tmp_path, parallel_disjoint=parallel)
+    view = await load_train_policy(world.db, "p")
+    assert view.enabled is valid
+    assert view.reason == (None if valid else "train_policy_modes_conflict")
+    assert view.policy_revision == (digest if valid else None)
+
+
+async def test_policy_revision_changes_with_tuning_without_enabling_packing(world, tmp_path):
+    first = await activate(world, tmp_path, packing={})
+    before = await load_train_policy(world.db, "p")
+    second = await activate(world, tmp_path, packing={"max_members": 8})
+    after = await load_train_policy(world.db, "p")
+    assert first != second
+    assert before.policy_revision == first and after.policy_revision == second
+    assert before.policy.packing.signature_version == after.policy.packing.signature_version == 1
+    assert before.policy.packing.policy_version == after.policy.packing.policy_version == 1
+    assert not before.policy.packing.enabled and not after.policy.packing.enabled
 
 
 async def test_pending_candidate_uses_edited_checks_and_lands_same_sha(world, tmp_path):
