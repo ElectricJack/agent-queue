@@ -551,6 +551,12 @@ claim, including projects outside the train modes.
 
 `aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label ∧ held_batch_id IS NULL`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
 
+A project-ready request's withheld explanations share one cached, batched
+admission read and at most one fleet-wide pool
+measurement, including capacity-spill diagnostics. These observations last only
+for that request; another request reads current inputs. The number of withheld
+tasks must not multiply fleet demand scans or remote Git reads.
+
 ## 10. Events: replay and payload registry
 
 ### 10.1 `after_seq` replay

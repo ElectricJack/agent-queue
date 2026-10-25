@@ -5814,11 +5814,15 @@ class TaskCommandsMixin:
         Cross-project blocking deps name the other project in ``detail``.
         See docs/specs/design/work-graph.md §9.
         """
-        from src.explain import Reason, build_capacity_reasons
-
         task_id = args.get("task_id")
         if not task_id:
             return {"success": False, "error": "task_id is required"}
+        return await self._explain_task(str(task_id))
+
+    async def _explain_task(self, task_id: str, *, admission=None, pool_measure=None) -> dict:
+        """Explain one task, optionally using a project read's shared observations."""
+        from src.explain import Reason, build_capacity_reasons
+
         task = await self.db.get_task(str(task_id))
         if task is None:
             return {"success": False, "error": f"task '{task_id}' not found"}
@@ -5968,15 +5972,16 @@ class TaskCommandsMixin:
 
         from src.integration.admission import observe_admission
 
-        admission = await observe_admission(
-            self.db,
-            [str(task_id)],
-            self._development_integration(),
-            cached_only=True,
-            default_mode=self.config.integration.default_mode,
-            router_ready_projects=({task.project_id} if await orchestrator_router_ready(
-                self.orchestrator, task.project_id) else set()),
-        )
+        if admission is None:
+            admission = await observe_admission(
+                self.db,
+                [str(task_id)],
+                self._development_integration(),
+                cached_only=True,
+                default_mode=self.config.integration.default_mode,
+                router_ready_projects=({task.project_id} if await orchestrator_router_ready(
+                    self.orchestrator, task.project_id) else set()),
+            )
         from src.integration.delivery_engine import project_delivery_issue
 
         delivery_issues = {}
@@ -6173,7 +6178,8 @@ class TaskCommandsMixin:
         async def measure_pools():
             nonlocal measurement
             if measurement is None:
-                measurement = await self.orchestrator._measure_pools(for_display=True)
+                measurement = await (pool_measure() if pool_measure is not None else
+                                     self.orchestrator._measure_pools(for_display=True))
             return measurement
 
         pool_reason = await self._pool_wait_reason(task, measure_pools=measure_pools)
@@ -6609,7 +6615,7 @@ class TaskCommandsMixin:
         # Withheld: everything not READY-and-unblocked in DEFINED/BLOCKED.
         from src.models import TaskStatus
 
-        withheld: list[dict] = []
+        withheld_tasks = []
         for status in (TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.READY):
             for task in await self.db.list_tasks(project_id=str(project_id), status=status):
                 if (
@@ -6620,7 +6626,37 @@ class TaskCommandsMixin:
                     lbls = await self.db.get_task_labels(task.id)
                     if not any(x.startswith("hold:") for x in lbls):
                         continue
-                res = await self._cmd_explain_task({"task_id": task.id})
+                withheld_tasks.append(task)
+
+        # Admission evaluates the shared frontier SQL; pool measurement scans
+        # demand across every active project. Pay for each once per request,
+        # rather than once per withheld task, without retaining stale results
+        # on the handler between requests.
+        withheld: list[dict] = []
+        if withheld_tasks:
+            from src.routing.readiness import orchestrator_router_ready
+
+            withheld_admission = await observe_admission(
+                self.db,
+                [task.id for task in withheld_tasks],
+                self._development_integration(),
+                cached_only=True,
+                default_mode=self.config.integration.default_mode,
+                router_ready_projects=({str(project_id)} if await orchestrator_router_ready(
+                    self.orchestrator, str(project_id)) else set()),
+            )
+            measurement = None
+
+            async def measure_pools():
+                nonlocal measurement
+                if measurement is None:
+                    measurement = await self.orchestrator._measure_pools(for_display=True)
+                return measurement
+
+            for task in withheld_tasks:
+                res = await self._explain_task(
+                    task.id, admission=withheld_admission, pool_measure=measure_pools,
+                )
                 if res.get("success") and res.get("reasons"):
                     withheld.append({"task_id": task.id, "reasons": res["reasons"]})
 
