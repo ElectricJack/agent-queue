@@ -20106,7 +20106,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3d57522102b36c18ac459a32a1fbef31f38cace26de6e1174c2de701e07f198a",
+      "digest": "sha256:95458a619edbeb0a294fc0606ce3b05611b9243ef2b00f52b63233a4ce142105",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20120,9 +20120,11 @@
         "src.playbooks.waits",
         "src.scheduler",
         "src.wait_runtime.service",
+        "src.waits",
         "src.waits.conditions",
         "src.waits.graph",
         "src.waits.listener",
+        "src.waits.loops",
         "src.waits.registry",
         "src.waits.resource_sources",
         "src.waits.sources"
