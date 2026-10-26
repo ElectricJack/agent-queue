@@ -932,7 +932,28 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'pool_claim_recheck_diagnostics_composition': {'task_id': 'agile-stone-92',
+HAND_INTEGRATION_RECONCILIATION = {
+ 'continuation_workspace_capacity_recovery_composition': {'task_id': 'swift-rapids-67',
+ 'supervisor_decision_message_id': 'msg-4b0cd2987b2149d4992bb8fa135e8daf',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'source_revision': 'c5f13b21d27f9efff2efa67ac6f56da3bed33a85',
+ 'dev_source_revision': '4d797edba',
+ 'previous_measured_owned_total': 159053,
+ 'previous_measured_engine_lines': 83613,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 67,
+ 'authorized_shared_owned_delta': 67,
+ 'authorized_engine_delta': 0,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 159120,
+ 'measured_engine_lines': 83613,
+ 'measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved +67 shared owned lines for continuation workspace '
+           'capacity backpressure and fenced escalation-ID recovery. Preserve every '
+           'historical grant, baseline, ownership classification and storage rule; zero '
+           'remaining headroom and no new storage category.'},
+ 'pool_claim_recheck_diagnostics_composition': {'task_id': 'agile-stone-92',
  'supervisor_decision_message_id': 'msg-f472c23dbfc24109a7f3f0b0ff2ae00f',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'operator_decision': '6679052c',
@@ -1136,7 +1157,7 @@ HAND_INTEGRATION_RECONCILIATION = {'pool_claim_recheck_diagnostics_composition':
            'zero remaining headroom and no new storage category.',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
- 'authorized_owned_delta': 3554,
+ 'authorized_owned_delta': 3621,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1341,7 +1362,7 @@ HAND_INTEGRATION_RECONCILIATION = {'pool_claim_recheck_diagnostics_composition':
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83613,
- 'measured_owned_total': 159053,
+ 'measured_owned_total': 159120,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,

@@ -59,7 +59,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3554,
+      "authorized_owned_delta": 3621,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -78,6 +78,25 @@
         "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
         "task_id": "wise-crest-14",
         "thread_id": "wise-crest-14-ci-size"
+      },
+      "continuation_workspace_capacity_recovery_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 67,
+        "authorized_shared_owned_delta": 67,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "4d797edba",
+        "measured_engine_lines": 83613,
+        "measured_owned_total": 159120,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83613,
+        "previous_measured_owned_total": 159053,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +67 shared owned lines for continuation workspace capacity backpressure and fenced escalation-ID recovery. Preserve every historical grant, baseline, ownership classification and storage rule; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "c5f13b21d27f9efff2efa67ac6f56da3bed33a85",
+        "supervisor_decision_message_id": "msg-4b0cd2987b2149d4992bb8fa135e8daf",
+        "task_id": "swift-rapids-67"
       },
       "dashboard_retirement_overlap": {
         "applied_owned_reduction": 26,
@@ -387,7 +406,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 83613,
-      "measured_owned_total": 159053,
+      "measured_owned_total": 159120,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -969,7 +988,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159053,
+    "owned_total_cap": 159120,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
