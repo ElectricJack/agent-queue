@@ -51,21 +51,28 @@ from `python_repository_data`. Readers retain documentation inputs; unresolved
 dynamic consumers may conservatively retain them. Selection proofs should inspect
 both the selected modules and their recorded conservative reasons.
 
-The initial knowledge slice does **not** narrow source selection yet. Its root
-conftest imports `src.database`; the PostgreSQL adapter reaches `job_queries`,
-playbook authority, command inventory, and the plugin registry/loader. Unresolved
-plugin discovery therefore retains all Python inputs and documentation. The
-supervisor explicitly deferred that bootstrap decoupling to `fair-glacier-79`;
-this foundation must not be reported as a measured selection or speed improvement.
-The analyzer's synthetic regressions demonstrate narrower declarations when a
-module has a resolvable closure, and record why real modules still widen.
+The database bootstrap refactor (`fair-glacier-79`) makes the package and query
+exports lazy and separates reusable database adapters from lease bookkeeping.
+DSN diagnostics import a small helper directly, without requesting a lazy adapter
+export. Root conftest imports database configuration and adapter helpers inside
+the fixtures that use them. Production package exports retain their identities.
 
-Initial validation of `rdeps(//tests:all, //src/knowledge:budget.py)` selected all
-8,509 generated test rules, including all 26 opted-in focused knowledge targets.
-Each of those modules retained 1,218 application source files. Their recorded
-reasons were unresolved dynamic discovery in `src/plugins/internal/__init__.py`
-and unresolved file imports in `src/plugins/loader.py`. This is retained evidence
-of the bootstrap gap, not a successful narrowing proof.
+The real analyzer from `stark-orbit-64`, merged from dev `0d13d9185`, resolves
+`tests/test_knowledge_inventory.py` to 92 application files, five test/support
+files and four other Python files, with no conservative fallback. The original
+foundation retained 1,218 application files for every knowledge module. The
+repository regression in `tests/test_bazel_test_dependencies.py` verifies that the
+leaf keeps its actual inventory source and root conftest while excluding the
+PostgreSQL adapter, job queries and plugins.
+
+This removes shared bootstrap fan-out, not genuine application dependencies.
+For example, `tests/test_knowledge_budget.py` imports configuration; its closure
+still reaches playbooks, integration and plugins and conservatively retains all
+1,221 current application files. Unmigrated legacy areas also retain broad
+package declarations. Query evidence must distinguish resolved leaf targets,
+conservative targets and legacy targets; this does not make global selection precise
+or establish an execution-time improvement. See the measured queries and validation
+in [the bootstrap assessment](../../docs/reports/2026-10-26-bazel-database-bootstrap.md).
 
 On the shared host, run execution through `aq test --aq-backend bazel`. It clamps
 execution and loading/analysis concurrency to at most two, respecting a lower
