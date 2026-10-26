@@ -3134,7 +3134,9 @@ async def test_setup_cancellation_settles_children_before_return(tmp_path, inter
         "import os,pathlib,subprocess,sys,time\n"
         "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
         "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
-        "pathlib.Path('ready').write_text(str(os.getpgrp()))\n"
+        # Existence must signal a complete PGID, not an opened but unwritten file.
+        "pathlib.Path('ready.tmp').write_text(str(os.getpgrp()))\n"
+        "pathlib.Path('ready.tmp').replace('ready')\n"
         "p.wait()\n"
     )
     mgr = WorktreeSlotManager(

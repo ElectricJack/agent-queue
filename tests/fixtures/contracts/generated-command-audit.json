@@ -20258,6 +20258,7 @@
   "session_nudge": {
     "argument_reads_diagnostic_only": [
       "message",
+      "submit_pending",
       "text"
     ],
     "denial_reason": null,
@@ -20278,6 +20279,10 @@
     "return_branches": [
       {
         "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'submit_pending cannot be combined with text'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
         "return": "{'success': False, 'error': 'text is required'}"
       },
       {
@@ -20290,7 +20295,31 @@
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'not_submitted', 'session_id': session.id}"
+        "return": "{'success': False, 'error': 'pending recovery unsupported'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'state': 'no_pending', 'delivered': False, 'composer_dirty': False}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'state': 'submitted', 'delivered': True, 'composer_dirty': False}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'session_id': session.id, 'state': 'cleared', 'delivered': False, 'composer_dirty': False}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'not_submitted', 'session_id': session.id, 'state': 'pasted_pending', 'delivered': False, 'composer_dirty': True}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'not_submitted', 'session_id': session.id, 'state': 'deferred', 'delivered': False, 'reason': str(exc.reason), 'composer_dirty': exc.composer_dirty}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'not_submitted', 'session_id': session.id, 'state': 'pasted_pending' if exc.composer_dirty else 'not_submitted', 'delivered': False, 'composer_dirty': exc.composer_dirty}"
       },
       {
         "protocol": "explicit_boolean: False",
@@ -20302,17 +20331,19 @@
       },
       {
         "protocol": "explicit_boolean: True",
-        "return": "{'success': True, 'session_id': session.id, 'delivered': True}"
+        "return": "{'success': True, 'session_id': session.id, 'delivered': True, 'state': 'submitted', 'composer_dirty': False, **(result or {})}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Pending recovery keeps explicit boolean outcomes: no_pending, submitted and cleared are successful actions; only submitted reports delivered=True. Unsupported recovery, conflicting text, deferred busy input and unsubmitted dirty input report false. Recovery shares resolved-session project/handler gates and the provider instance and composer ownership guards; no raw terminal input is exposed.",
     "schema_quality": "declared",
-    "source_digest": "sha256:4ed7963609d079a992d461796a385fa2bb3de557f4b18cddae3d7d5f99b44644",
+    "source_digest": "sha256:4cae19660a4b72f30d04ec2b7e85f8ea1f82775ed9b3c979540a0366475c2d54",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_session_commands.py"
+      "tests/test_session_commands.py",
+      "tests/test_session_commands.py::TestPeekNudgeAttachKill",
+      "tests/test_tmux_nudge_recovery.py"
     ]
   },
   "session_peek": {

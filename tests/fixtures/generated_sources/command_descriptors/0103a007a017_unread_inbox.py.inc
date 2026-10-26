@@ -24,7 +24,7 @@ def test_unread_inbox_only_changes_transport_description():
     )
     assert _digest(approved["previous"]) == approved["previous_sha256"]
     assert _digest(approved["current"]) == approved["sha256"]
-    catalogue = _before_task_list_limit_catalogue()
+    catalogue = _before_session_nudge_recovery_catalogue(_before_task_list_limit_catalogue())
     rendered = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]

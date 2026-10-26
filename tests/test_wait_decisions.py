@@ -227,17 +227,47 @@ async def test_extend_preserves_age_receipt_ceiling_and_allows_next_incident(env
     assert all(row["state"] == "cancelled" for row in resolved.values())
 
 
-async def test_same_deadline_generation_concurrently_creates_one_incident(env):
+@pytest.mark.parametrize("hold_winner", [False, True], ids=["race", "graph-busy"])
+async def test_same_deadline_generation_concurrently_creates_one_incident(
+    env, monkeypatch, hold_winner,
+):
     now = [NOW + 60]
     service = service_for(env, now)
     receipt = await waiting(env, escalate_after_seconds=60)
     assert await service.lease()
     args = {"wait_id": receipt["wait_id"], "deadline_type": "escalation", "generation": 1}
-    results = await asyncio.gather(*(service.command("wait_deadline_fire", args) for _ in range(2)))
+    if hold_winner:
+        entered, release = asyncio.Event(), asyncio.Event()
+        callback = service.orch.wait_deadline_handlers["escalation"]
+
+        async def hold_effect(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await callback(*args, **kwargs)
+
+        monkeypatch.setitem(service.orch.wait_deadline_handlers, "escalation", hold_effect)
+        # Force a real fence refusal without a wall-clock race or a slow sleep.
+        monkeypatch.setattr("src.waits.graph.BACKGROUND_GRAPH_LOCK_TIMEOUT", 0)
+        winner = asyncio.create_task(service.command("wait_deadline_fire", args))
+        try:
+            await asyncio.wait_for(entered.wait(), 20)
+            contender = await service.command("wait_deadline_fire", args)
+        finally:
+            release.set()
+            committed = await winner
+        assert contender["error_code"] == "wait.graph_busy", contender
+        results = [committed, contender]
+    else:
+        results = await asyncio.gather(
+            *(service.command("wait_deadline_fire", args) for _ in range(2))
+        )
     assert sum(result["success"] for result in results) == 1, results
-    assert next(result for result in results if not result["success"])["error_code"] == (
-        "wait.deadline_stale"
-    )
+    refusal = next(result for result in results if not result["success"])
+    # Background contenders release the connection after their short fence
+    # budget. Once the winner commits, retry must observe its stale generation.
+    assert refusal["error_code"] in {"wait.deadline_stale", "wait.graph_busy"}, results
+    retry = await service.command("wait_deadline_fire", args)
+    assert retry["error_code"] == "wait.deadline_stale", retry
     assert len(await records(env, escalations)) == len(await records(env, wait_escalations)) == 1
     notices = await records(env, messages)
     assert len(notices) == 1 and notices[0]["body_kind"] == "wait_escalation"

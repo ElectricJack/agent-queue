@@ -532,6 +532,7 @@ class TestPeekNudgeAttachKill:
             "session_nudge", {"session_id": "sess-1", "text": "status?"}
         )
         assert r["success"] is True and r["delivered"] is True
+        assert r["state"] == "submitted" and r["composer_dirty"] is False
         assert provider.sent_nudges == [("s-t1", "status?")]
 
     async def test_nudge_surfaces_not_submitted_as_a_typed_failure(
@@ -542,6 +543,61 @@ class TestPeekNudgeAttachKill:
         provider.swallow_next_nudge(row.name)
         r = await handler.execute("session_nudge", {"session_id": "sess-1", "text": "hi"})
         assert r["success"] is False and r["error"] == "not_submitted"
+        assert r["state"] == "pasted_pending" and r["composer_dirty"] is True
+
+    async def test_submit_pending_recovers_only_existing_aq_input(self, handler, db, provider):
+        await _make_task(db)
+        row = await _make_session(db, provider)
+        provider.swallow_next_nudge(row.name)
+        await handler.execute("session_nudge", {"session_id": row.id, "text": "status?"})
+        r = await handler.execute("session_nudge", {"session_id": row.id, "submit_pending": True})
+        assert r["success"] and r["state"] == "submitted" and r["delivered"]
+        assert provider.sent_nudges == [(row.name, "status?")]
+        r = await handler.execute("session_nudge", {"session_id": row.id, "submit_pending": True})
+        assert r["success"] and r["state"] == "no_pending" and not r["delivered"]
+        assert provider.sent_nudges == [(row.name, "status?")]
+
+    async def test_nudge_reports_deferral_before_pasting(self, handler, db, provider):
+        await _make_task(db)
+        row = await _make_session(db, provider)
+        provider.script_composer_refusal(row.name, "turn busy", "")
+        r = await handler.execute("session_nudge", {"session_id": row.id, "text": "status?"})
+        assert not r["success"] and r["state"] == "deferred" and not r["delivered"]
+        assert provider.sent_nudges == []
+
+    async def test_submit_pending_rejects_new_text(self, handler, db, provider):
+        await _make_task(db)
+        row = await _make_session(db, provider)
+        r = await handler.execute("session_nudge", {
+            "session_id": row.id, "submit_pending": True, "text": "new input",
+        })
+        assert not r["success"] and provider.sent_nudges == []
+
+    async def test_submit_pending_clears_collapsed_codex_input(
+        self, handler, db, provider, monkeypatch
+    ):
+        from tests.test_tmux_nudge_recovery import CodexPasteComposer
+        from tests.test_tmux_nudge_drafts import provider_for
+
+        await _make_task(db)
+        row = await _make_session(db, provider)
+        composer = CodexPasteComposer()
+        tmux = provider_for(composer)
+        handle = handler._session_handle(row)
+        composer.draft = "x" * 1022
+        composer.typed = True
+        # Persist through the same provider operation a refused injection uses.
+        from src.sessions.tmux import _PendingSubmit, _marker_for
+
+        await tmux._remember_pending(handle, _PendingSubmit(
+            instance_token=handle.instance_token, marker=_marker_for(composer.draft),
+            text=composer.draft,
+        ))
+        monkeypatch.setattr(handler, "_provider_for_session", lambda _: tmux)
+        r = await handler.execute("session_nudge", {"session_id": row.id, "submit_pending": True})
+        assert r["success"] and r["state"] == "cleared" and not r["delivered"]
+        assert not r["composer_dirty"] and composer.draft == ""
+        assert composer.enters == 0 and "AQ_PENDING_SUBMIT" not in composer.environment
 
     async def test_nudge_requires_text(self, handler, db, provider):
         await _make_task(db)

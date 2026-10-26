@@ -127,6 +127,7 @@ _CLEAR_MAX_PRESSES = 200
 #: collapsed when it is longer than :data:`_PASTE_COLLAPSE_CHARS`.
 _PASTE_PLACEHOLDER = re.compile(r"\[Pasted text #\d+(?: \+(\d+) lines?)?\]")
 _PASTE_COLLAPSE_CHARS = 800
+_CODEX_PASTE_PLACEHOLDER = re.compile(r"\[Pasted Content (\d+) chars\]", re.IGNORECASE)
 
 #: Landed check (``TmuxProvider._await_landed``): typed text must render on
 #: the input line before Enter.  OpenCode renders keystroke by keystroke,
@@ -793,7 +794,7 @@ class TmuxProvider(SessionProvider):
             self._last_input_at[h.name] = time.monotonic()
 
     @timed_operation("provider.tmux.nudge")
-    async def nudge(self, h: SessionHandle, text: str) -> None:
+    async def nudge(self, h: SessionHandle, text: str) -> dict:
         lock = self._nudge_locks[h.name]
         async with lock:
             last_input = self._last_input_at.get(h.name)
@@ -823,6 +824,7 @@ class TmuxProvider(SessionProvider):
                 raise NotSubmitted(f"no live pane found for {h.name!r}", session_name=h.name)
 
             prefix = await self._ready_prefix_hint(h.name)
+            pending_action = None
             # Record pre-send activity for poke discounting.
             before = await self._raw_activity(h.name)
 
@@ -831,13 +833,15 @@ class TmuxProvider(SessionProvider):
             # while preserving the last line that supplied the marker.
             pending = await self._pending_record(h)
             if pending is not None:
+                await self._require_idle_input(h, pane, prefix, composer_dirty=True)
                 view = await self._pending_view(pane, prefix, pending)
                 if view == "exact":
                     self._last_nudge_at[h.name] = time.monotonic()
                     self._poke[h.name] = (time.time(), before)
                     await self._submit(h, pane, prefix, pending, before)
+                    pending_action = "submitted"
                     if pending.text == text:
-                        return
+                        return {"pending_action": pending_action}
                     # A different AQ injection is still AQ's own text: submit
                     # it rather than defer on it.  Deferring deadlocked every
                     # later wake — the stall reminder names its idle minutes,
@@ -858,8 +862,10 @@ class TmuxProvider(SessionProvider):
                             "that could not be cleared",
                             session_name=h.name,
                             reason=NudgeReason.UNREADABLE,
+                            composer_dirty=True,
                         )
                     await self._forget_pending(h)
+                    pending_action = "cleared"
                     logger.warning(
                         "Cleared unsubmitted AQ input from %s: the composer showed it %s, "
                         "so it was never delivered and its sender will retry",
@@ -875,6 +881,7 @@ class TmuxProvider(SessionProvider):
                         f"terminal {h.name!r} input is unknown",
                         session_name=h.name,
                         reason=NudgeReason.UNREADABLE,
+                        composer_dirty=True,
                     )
 
             # Never append a reminder to a user's draft or compete with an
@@ -929,6 +936,7 @@ class TmuxProvider(SessionProvider):
                 await asyncio.sleep(0.05)
 
             await self._submit(h, pane, prefix, pending, before, fresh=True)
+            return {"pending_action": pending_action}
 
     async def _await_landed(self, pane: str, prefix: str, marker: str) -> bool:
         """Whether typed text rendered on the input line (the landed check).
@@ -967,7 +975,7 @@ class TmuxProvider(SessionProvider):
         return True if view == "exact" else False if view == "absent" else None
 
     async def _pending_view(
-        self, pane: str, prefix: str, pending: _PendingSubmit
+        self, pane: str, prefix: str, pending: _PendingSubmit, *, allow_busy: bool = False
     ) -> str | None:
         """How the composer shows *pending*: :func:`_injection_view`, or ``"absent"``.
 
@@ -1005,6 +1013,8 @@ class TmuxProvider(SessionProvider):
             pane, lines=40, join_wrapped=not _is_opencode_prefix(prefix)
         )
         if not tail:
+            return None
+        if not allow_busy and _turn_busy(tail, prefix):
             return None
         prefix_text = _normalize(prefix).strip()
         lines = _normalize(tail).splitlines()
@@ -1078,6 +1088,15 @@ class TmuxProvider(SessionProvider):
         declares a clear sequence, the composer is emptied.
         """
         for attempt, polls in enumerate(_SUBMIT_POLLS):
+            if _turn_busy(await self._capture_tail(pane, lines=40), prefix):
+                cleared = await self._clear_composer(h, pane, prefix, pending)
+                if cleared:
+                    await self._forget_pending(h)
+                raise NotSubmitted(
+                    f"turn became busy in {h.name!r}",
+                    session_name=h.name,
+                    composer_dirty=not cleared,
+                )
             if await self._pending_composer_state(pane, prefix, pending) is not True:
                 reason = f"AQ injection changed or became unobservable in {h.name!r}"
                 if attempt == 0:
@@ -1130,11 +1149,11 @@ class TmuxProvider(SessionProvider):
             token = _paste_placeholder(
                 _composer_input(await self._capture_tail(pane, lines=40), prefix) or ""
             )
-            if token is not None and _placeholder_newlines(token) == pending.text.count("\n"):
+            if token is not None and _placeholder_matches(token, pending.text):
                 pending = replace(pending, placeholder=token)
                 with contextlib.suppress(NotSubmitted):
                     await self._remember_pending(h, pending)
-        view = await self._pending_view(pane, prefix, pending)
+        view = await self._pending_view(pane, prefix, pending, allow_busy=True)
         if view not in ("collapsed", "windowed"):
             return
         if await self._clear_composer(h, pane, prefix, pending):
@@ -1332,6 +1351,9 @@ class TmuxProvider(SessionProvider):
         composer still holding the marker this provider typed.
         """
         async with self._nudge_locks[h.name]:
+            last_input = self._last_input_at.get(h.name)
+            if last_input is not None and time.monotonic() - last_input < _MANUAL_INPUT_QUIET_SECONDS:
+                return False
             if not await self._fenced(h):
                 return False
             record = await self._pending_record(h)
@@ -1341,6 +1363,10 @@ class TmuxProvider(SessionProvider):
             if pane is None:
                 return False
             prefix = await self._ready_prefix_hint(h.name)
+            try:
+                await self._require_idle_input(h, pane, prefix)
+            except NudgeDeferred:
+                return False
             state = await self._pending_composer_state(pane, prefix, record)
             if state is not True:
                 if state is False:
@@ -1377,6 +1403,10 @@ class TmuxProvider(SessionProvider):
             if pane is None:
                 return False
             prefix = await self._ready_prefix_hint(h.name)
+            try:
+                await self._require_idle_input(h, pane, prefix)
+            except NudgeDeferred:
+                return False
             view = await self._pending_view(pane, prefix, record)
             if view == "absent":
                 await self._forget_pending(h)
@@ -1516,6 +1546,20 @@ class TmuxProvider(SessionProvider):
                 refusal.message, session_name=name, reason=refusal.reason
             )
 
+    async def _require_idle_input(
+        self, h: SessionHandle, pane: str, prefix: str, *, composer_dirty: bool = False
+    ) -> None:
+        """Pending AQ input is recoverable only in an unwatched, idle pane."""
+        if not await self._input_unwatched(pane) or _turn_busy(
+            await self._capture_tail(pane, lines=40), prefix
+        ):
+            raise NudgeDeferred(
+                f"terminal {h.name!r} is busy",
+                session_name=h.name,
+                reason=NudgeReason.TERMINAL_BUSY,
+                composer_dirty=composer_dirty,
+            )
+
     async def _composer_refusal(
         self, name: str, pane: str, prefix: str
     ) -> tuple[_ComposerRefusal | None, bool]:
@@ -1574,6 +1618,11 @@ class TmuxProvider(SessionProvider):
                     f"terminal {name!r} has a draft or its input is unknown",
                     NudgeReason.UNREADABLE,
                 ),
+                False,
+            )
+        if _turn_busy(screen, prefix):
+            return (
+                _ComposerRefusal(f"terminal {name!r} turn is busy", NudgeReason.TERMINAL_BUSY),
                 False,
             )
         if _composer_is_empty(screen, prefix, x, y, height, cursor_visible=visible == 1):
@@ -1737,18 +1786,47 @@ def _strip_codex_footer(rows: list[str]) -> list[str] | None:
     shape rather than enumerated.  The search runs from the bottom: Codex
     paints its composer above the footer, so no input sits below the model
     row, while a draft line that merely looks like one sits above the real
-    footer.  A busy footer (``tab to queue message    91% context left``)
-    is not a model row and is not recognised.
+    footer. Busy footer text is also stripped to attribute AQ input for cleanup;
+    the separate turn guard prevents pasting or submitting while busy.
     """
     for index in range(len(rows) - 1, 0, -1):
         status = rows[index].strip()
-        if not (_CODEX_MODEL_ROW.fullmatch(status) or _CODEX_CONTEXT_ROW.fullmatch(status)):
+        if not (
+            _CODEX_MODEL_ROW.fullmatch(status)
+            or _CODEX_CONTEXT_ROW.fullmatch(status)
+            or re.fullmatch(r"tab to queue message\s+\d+% context left", status)
+        ):
             continue
         notices = [row for row in rows[index + 1 :] if row.strip()]
         if rows[index - 1].strip() or len(notices) > 1:
             return None
         return rows[: index - 1]
     return None
+
+
+def _turn_busy(screen: str, prefix: str) -> bool:
+    """Recognize turn controls outside the input, never words in a draft."""
+    if _normalize(prefix).strip() not in ("›", "❯"):
+        return False
+    lines = [_SGR.sub("", row) for row in _normalize(screen).splitlines()]
+    prompt = next(
+        (i for i in range(len(lines) - 1, -1, -1)
+         if lines[i].lstrip().startswith(prefix.strip())), None
+    )
+    if prompt is None:
+        return True
+    # The footer follows a blank separator (Codex) or border (Claude).
+    end = next(
+        (i for i in range(prompt + 1, len(lines))
+         if not lines[i].strip() or re.fullmatch(r"[─━]{8,}", lines[i].strip())),
+        len(lines),
+    )
+    chrome = lines[max(0, prompt - 5):prompt] + lines[end:]
+    return any(
+        re.search(r"\besc to (?:interrupt|stop)\b|\btab to queue message\b", row, re.IGNORECASE)
+        or (_CODEX_MODEL_ROW.fullmatch(row.strip()) and re.search(r" · [\u2800-\u28ff]$", row.strip()))
+        for row in chrome
+    )
 
 
 #: OpenCode's composer is a box, not a prompt line.  Its left edge is this
@@ -2034,9 +2112,18 @@ def _marker_for(text: str) -> str:
 
 
 def _paste_placeholder(content: str) -> str | None:
-    """*content* when it is exactly one Claude paste stand-in, else ``None``."""
+    """*content* when it is exactly one known paste stand-in, else ``None``."""
     token = content.strip()
-    return token if _PASTE_PLACEHOLDER.fullmatch(token) else None
+    return token if (
+        _PASTE_PLACEHOLDER.fullmatch(token) or _CODEX_PASTE_PLACEHOLDER.fullmatch(token)
+    ) else None
+
+
+def _placeholder_matches(token: str, text: str) -> bool:
+    codex = _CODEX_PASTE_PLACEHOLDER.fullmatch(token)
+    return int(codex.group(1)) == len(text) if codex else (
+        _collapses(text) and _placeholder_newlines(token) == text.count("\n")
+    )
 
 
 def _placeholder_newlines(token: str) -> int:
@@ -2110,7 +2197,7 @@ def _injection_view(content: str, pending: _PendingSubmit) -> str | None:
     if token is not None:
         if pending.placeholder:
             return "collapsed" if token == pending.placeholder else None
-        if _collapses(pending.text) and _placeholder_newlines(token) == pending.text.count("\n"):
+        if _placeholder_matches(token, pending.text):
             return "collapsed"
         return None
     shown, typed = _squash(content), _squash(pending.text)

@@ -21,3 +21,16 @@ def test_logs_displays_missing_recording_explanation(monkeypatch):
     result = CliRunner().invoke(session, ["logs", "worker"])
     assert result.exit_code == 0
     assert "No reliable end boundary." in result.output
+
+
+def test_nudge_submit_pending_uses_guarded_command(monkeypatch):
+    call = Mock(return_value={"success": True, "state": "submitted"})
+    monkeypatch.setattr("src.cli.sessions._call", call)
+    result = CliRunner().invoke(session, ["nudge", "worker", "--submit-pending"])
+    assert result.exit_code == 0, result.output
+    assert call.call_args.args[1:] == (
+        "session_nudge", {"session_id": "worker", "submit_pending": True},
+    )
+    result = CliRunner().invoke(session, ["nudge", "worker", "draft", "--submit-pending"])
+    assert result.exit_code == 2
+    assert call.call_count == 1
