@@ -1,6 +1,7 @@
 """Git witnesses survive squashes/GC; projection repair is bounded and fenced."""
 
 from dataclasses import replace
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -12,7 +13,10 @@ from src.database import tables as t
 from src.git.manager import RemoteRefState
 from src.integration.delivery_observer import DeliveryTarget, source_bases_on
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState
+from src.integration.development import DevelopmentPrimitives
 from src.integration.git_truth import GitDeliveryEvidence
+from src.integration.service import IntegrationService
+from src.integration.train import IntegrationTrain, TrainTarget
 from src.integration.truth_reconciler import GitTruthReconciler
 from src.integration.truth_retention import retain_delivery
 from src.models import Project, RepoConfig, RepoSourceType
@@ -137,6 +141,88 @@ async def test_reconciliation_stages_reuse_one_repository_snapshot(db, repositor
     await service.tick(200.0)
     assert repo.git.afetch_origin.await_count == 2
     assert observations[-6:] == [head] * 6
+
+
+@pytest.mark.parametrize("background", [False, True])
+async def test_service_dispatch_shares_train_snapshot_with_git_truth_reconciliation(
+    db, repository, tmp_path, background,
+):
+    repo = repository
+    configured = RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(repo.remote), default_branch="main",
+    )
+    await db.create_repo(configured)
+    primitives = DevelopmentPrimitives(db, git=repo.git, data_dir=tmp_path)
+    reconciler = GitTruthReconciler(db, repo.git, data_dir=tmp_path)
+    delivery_target = DeliveryTarget("p", "r", str(repo.remote), "refs/heads/main")
+    repo.git.acreate_checkout = AsyncMock(wraps=repo.git.acreate_checkout)
+    store, observed_store = await asyncio.gather(
+        primitives.store(configured, fetch=False), reconciler.observer._store(delivery_target),
+    )
+    repo.git.acreate_checkout.assert_awaited_once()
+    assert observed_store == store
+    assert reconciler.observer.store_path("r") == store
+    target = TrainTarget("p", "r", "refs/heads/main", "root")
+    train = IntegrationTrain(
+        targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
+        batches=None, lane_for=AsyncMock(), repair=None,
+    )
+    observations = []
+
+    async def visit(*_args):
+        observations.append(await reconciler.observer.truth.snapshot(
+            str(store), project_id="p", repository_id="r", repository_url=str(repo.remote),
+            target_ref=target.target_ref,
+        ))
+
+    train._bounded = visit
+
+    async def reconcile(now):
+        # Make the train acquisition complete first, testing sequential reuse.
+        await train._lanes[target.key].task
+        return await reconciler.tick(now)
+
+    async def inspect(*_args):
+        observations.append(await reconciler.observer.snapshot(DeliveryTarget(
+            "p", "r", str(repo.remote), target.target_ref)))
+        return 0
+
+    for name in ("_completed", "_owners", "_sentinels", "_orphans", "_origins", "_repairs"):
+        setattr(reconciler, name, inspect)
+    service = IntegrationService(
+        db, SimpleNamespace(dispatch_due=AsyncMock()), train=train,
+        maintenance={"git truth": reconcile},
+    )
+    repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
+    repo.git.arun_git_result = AsyncMock(wraps=repo.git.arun_git_result)
+
+    def fsck_count():
+        return sum("fsck" in call.args[0] for call in repo.git.arun_git_result.await_args_list)
+
+    try:
+        await service.tick(100, background=background)
+        await service._reconciliation_task
+        assert len(observations) == 7
+        assert {snapshot.target_oid for snapshot in observations} == {repo.base}
+        repo.git.afetch_origin.assert_awaited_once()
+        assert fsck_count() == 1
+        # A new service dispatch must not reuse the earlier tick's acquisition.
+        head = await repo.commit("later-tick")
+        await repo.publish()
+        await service.tick(200, background=background)
+        await service._reconciliation_task
+        assert repo.git.afetch_origin.await_count == 2
+        assert {snapshot.target_oid for snapshot in observations[-7:]} == {head}
+        assert fsck_count() == 1
+        # Reconciliation outside a train dispatch also retains the verified baseline.
+        await reconciler.tick(300)
+        assert len(observations) == 20
+        assert {snapshot.target_oid for snapshot in observations[-6:]} == {head}
+        assert repo.git.afetch_origin.await_count == 2
+        assert fsck_count() == 1
+    finally:
+        await service.stop()
 
 
 @pytest.mark.parametrize("state", [DeliveryState.UNKNOWN, DeliveryState.PENDING])
