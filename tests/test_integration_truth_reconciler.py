@@ -245,6 +245,140 @@ async def test_reconciliation_stages_reuse_one_repository_snapshot(db, repositor
     assert observations[-6:] == [head] * 6
 
 
+async def test_tick_read_deadline_defers_shared_train_wait_without_cancelling_fetch(
+    db, repository, tmp_path, monkeypatch,
+):
+    from src.git.manager import _REQUEST_GIT_READ_DEADLINE
+    from src.logging_config import get_correlation_context
+
+    repo = repository
+    await seed(db, count=2)
+    service = GitTruthReconciler(db, repo.git, data_dir=tmp_path, page_size=1)
+    service.observer.truth = repo.truth
+    service.observer.store_path = lambda _repository: repo.path
+    service.observer._store = AsyncMock(side_effect=AssertionError("redundant store open"))
+    service._repair = AsyncMock(return_value=True)
+    monkeypatch.setattr("src.projects.storage_binding.repository_path",
+                        AsyncMock(return_value=repo.path))
+    target = DeliveryTarget("p", "r", str(repo.remote), "refs/heads/main")
+    entered, release, joined, expire = (asyncio.Event() for _ in range(4))
+    fetch, join = repo.git.afetch_origin, repo.truth.tick_snapshot
+    timers, logs, origin_errors = [], [], []
+    timeout_at = asyncio.timeout_at
+
+    def capture(deadline):
+        timer = timeout_at(deadline)
+        if deadline < asyncio.get_running_loop().time() + 10:
+            timers.append(timer)
+        return timer
+
+    async def blocked(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    async def joining(*args, **kwargs):
+        joined.set()
+        await expire.wait()
+        deadline = asyncio.get_running_loop().time()
+        _REQUEST_GIT_READ_DEADLINE.set(deadline)
+        assert timers  # The real tick must install a deadline, not just the 60s guard.
+        for timer in timers:
+            timer.reschedule(deadline)
+        return await join(*args, **kwargs)
+
+    async def observe(ids, **kwargs):
+        snapshot = await service.observer.snapshot(target)
+        assert snapshot.error is None
+        return view_for(ids)
+
+    async def origins(now):
+        origin_errors.append((await service.observer.snapshot(target)).error)
+        return 0
+
+    repo.git.afetch_origin = AsyncMock(side_effect=blocked)
+    service.observer.observe = observe
+    service._origins = origins
+    for name in ("_owners", "_sentinels", "_orphans", "_repairs"):
+        setattr(service, name, AsyncMock(return_value=0))
+    monkeypatch.setattr(truth_module.logger, "info", lambda message: logs.append(
+        get_correlation_context()["git_truth_timing"],
+    ))
+    with snapshot_scope():
+        train = asyncio.create_task(repo.snapshot())
+        await entered.wait()
+        monkeypatch.setattr(asyncio, "timeout_at", capture)
+        repo.truth.tick_snapshot = joining
+        tick = asyncio.create_task(service.tick(100))
+        try:
+            await asyncio.wait_for(joined.wait(), 2)
+            assert not tick.done()
+            expire.set()
+            result = await asyncio.wait_for(tick, 2)
+            assert result["examined"] == 1 and result["repaired"] == 0
+            assert service._cursor == "task-0000"
+            assert origin_errors == ["snapshot_unavailable"]
+            assert not train.done()
+            service._repair.assert_not_awaited()
+            service.observer._store.assert_not_awaited()
+            phase = logs[0]["phases"]["delivery"]
+            assert phase["outcome"] == "completed"
+            assert phase["selection"]["counts"]["observation_budget_exhausted"] == 1
+            async with db._engine.connect() as conn:
+                assert await conn.scalar(select(func.count()).select_from(
+                    t.task_integration_checkpoints)) == 2
+        finally:
+            release.set()
+            await asyncio.gather(train, tick)
+            repo.truth.tick_snapshot = join
+            monkeypatch.setattr(asyncio, "timeout_at", timeout_at)
+        # A later visit gets its own budget, reuses the completed producer and
+        # advances the page; budget expiry did not poison the shared snapshot.
+        assert (await service.tick(101))["repaired"] == 1
+        assert service._cursor == "task-0001"
+        assert service._repair.await_args.args[1] == "task-0001"
+    repo.git.afetch_origin.assert_awaited_once()
+
+
+async def test_tick_read_deadline_bounds_proof_fanout_before_repairs(db, tmp_path, monkeypatch):
+    from src.git.manager import _REQUEST_GIT_READ_DEADLINE
+
+    await seed(db, count=2)
+    service = GitTruthReconciler(db, SimpleNamespace(), data_dir=tmp_path, page_size=1)
+    service._repair = AsyncMock(return_value=True)
+    for name in ("_owners", "_sentinels", "_orphans", "_origins", "_repairs"):
+        setattr(service, name, AsyncMock(return_value=0))
+    timers = []
+    timeout_at = asyncio.timeout_at
+
+    def capture(deadline):
+        timer = timeout_at(deadline)
+        if deadline < asyncio.get_running_loop().time() + 10:
+            timers.append(timer)
+        return timer
+
+    async def slow_proofs(ids, **kwargs):
+        # Acquisition already completed; expensive immutable proof fan-out is
+        # inside the same deadline, rather than another unbounded read.
+        assert ids == ["task-0000"]
+        deadline = asyncio.get_running_loop().time()
+        _REQUEST_GIT_READ_DEADLINE.set(deadline)
+        assert timers
+        timers[0].reschedule(deadline)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(asyncio, "timeout_at", capture)
+    service.observer.observe = slow_proofs
+    result = await asyncio.wait_for(service.tick(100), 2)
+    assert result["examined"] == 1 and result["repaired"] == 0
+    service._repair.assert_not_awaited()
+    service._sentinels.assert_awaited_once()
+    monkeypatch.setattr(asyncio, "timeout_at", timeout_at)
+    service.observer.observe = AsyncMock(side_effect=lambda ids, **kw: view_for(ids))
+    assert (await service.tick(101))["repaired"] == 1
+    assert service._repair.await_args.args[1] == "task-0001"
+
+
 @pytest.mark.parametrize("budgeted", [False, True])
 async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
     db, repository, tmp_path, monkeypatch, budgeted,
