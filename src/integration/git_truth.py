@@ -36,6 +36,7 @@ from src.integration.delivery_truth import (
 )
 from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.selection_metrics import selection_count, selection_stage
+from src.metrics.operation_profile import profiled_lock
 
 logger = logging.getLogger(__name__)
 LEGACY_CONTRACT_VERSION = "legacy-equivalence-v1"
@@ -190,7 +191,7 @@ class GitTruth:
         key = self._scope_key(store, project_id, repository_id, repository_url)
         shared = scope.setdefault(key, _SharedFetch())
         with selection_stage("snapshot_scope_wait"):
-            async with shared.lock:
+            async with profiled_lock(shared.lock, "wait.snapshot_scope_lock"):
                 if shared.error is not None:
                     raise shared.error
                 if shared.snapshot is None:
@@ -231,7 +232,7 @@ class GitTruth:
         arrival = shared.fetch_starts
         shared.readers += 1
         try:
-            async with shared.lock:
+            async with profiled_lock(shared.lock, "wait.shared_fetch_lock"):
                 if shared.error is not None:
                     raise shared.error
                 if shared.fetch_starts <= arrival:
