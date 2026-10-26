@@ -76,6 +76,17 @@ async def repository(tmp_path):
     return repo
 
 
+@pytest.fixture
+async def remote_writer(repository, tmp_path):
+    repo = repository
+    path = tmp_path / "writer"
+    await repo.git._arun(["clone", "-b", "main", str(repo.remote), str(path)], cwd=str(tmp_path))
+    for key, value in (("user.name", "Writer"), ("user.email", "writer@example.com"),
+                       ("commit.gpgsign", "false")):
+        await repo.git._arun(["config", key, value], cwd=str(path))
+    return Repository(repo.git, path, repo.remote, repo.base, repo.truth)
+
+
 async def source_work(repo):
     first = await repo.commit("one")
     final = await repo.commit("two")
@@ -1161,18 +1172,19 @@ async def test_unchanged_snapshot_skips_transfer_fsck_and_maintenance(repository
 
 
 @pytest.mark.parametrize("change", ["branch", "tag", "provenance", "delete", "force"])
-async def test_snapshot_probe_detects_every_imported_ref_namespace(repository, change):
+async def test_snapshot_probe_detects_every_imported_ref_namespace(repository, remote_writer, change):
     repo = repository
+    writer = remote_writer
     truth = GitTruth(repo.git, skip_unchanged=True)
     if change == "delete":
-        await repo.run("push", "origin", "HEAD:refs/heads/disappearing")
+        await writer.run("push", "origin", "HEAD:refs/heads/disappearing")
     if change == "force":
-        await repo.commit("before-rewind")
-        await repo.publish()
+        await writer.commit("before-rewind")
+        await writer.publish()
     await repo.snapshot(truth=truth)
-    head = repo.base if change == "force" else await repo.commit("next-tip")
+    head = repo.base if change in {"force", "delete"} else await writer.commit("next-tip")
     if change == "delete":
-        await repo.run("push", "origin", ":refs/heads/disappearing")
+        await writer.run("push", "origin", ":refs/heads/disappearing")
     elif change == "force":
         # A push from this retained checkout also updates its tracking ref;
         # emulate a separate writer so only the remote moves backwards.
@@ -1181,25 +1193,48 @@ async def test_snapshot_probe_detects_every_imported_ref_namespace(repository, c
     else:
         ref = {"branch": "refs/heads/new", "tag": "refs/tags/new",
                "provenance": "refs/aq/provenance/new", "force": "refs/heads/main"}[change]
-        await repo.run("push", "--force", "origin", f"{head}:{ref}")
+        await writer.run("push", "--force", "origin", f"{head}:{ref}")
     repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
     metrics = SelectionMetrics()
     with selection_metrics_scope(metrics):
         snapshot = await repo.snapshot(truth=truth)
-    repo.git.afetch_origin.assert_awaited_once()
-    assert not metrics.counts["snapshot_unchanged"]
+    if change == "delete":
+        repo.git.afetch_origin.assert_not_awaited()
+        assert metrics.counts["snapshot_removed_refs"] == 1
+    else:
+        repo.git.afetch_origin.assert_awaited_once()
+        assert repo.git.afetch_origin.call_args.kwargs["refs"] == [ref]
+        assert metrics.counts["snapshot_changed_refs"] == 1
     assert snapshot.error is None
     if change == "delete":
         assert "refs/remotes/origin/disappearing" not in snapshot.observation.source_heads
     elif change == "tag":
-        # Ordinary all-heads fetches deliberately do not import tags. A new
-        # tag still rules out the shortcut; isolated authenticated fetches
-        # import it through their existing tag acquisition path.
-        assert (await repo.git.als_remote_snapshot_refs(
-            str(repo.path), repository_url=str(repo.remote)))[ref] == head
+        assert await repo.run("rev-parse", ref) == head
     else:
         local = ref.replace("refs/heads/", "refs/remotes/origin/")
         assert snapshot.observation.source_heads[local] == head
+
+
+async def test_unrelated_push_fetches_only_its_ref_once_for_all_tick_lanes(repository, remote_writer):
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True, skip_unchanged=True)
+    await repo.run("push", "origin", "HEAD:refs/heads/epic")
+    await repo.snapshot(truth=truth)
+    head = await remote_writer.commit("unrelated-work")
+    await remote_writer.run("push", "origin", f"{head}:refs/heads/aq/unrelated")
+    repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
+    with snapshot_scope():
+        main = await repo.snapshot(truth=truth)
+        epic = await repo.snapshot(truth=truth, target="refs/heads/epic")
+        assert main.target_oid == epic.target_oid == repo.base
+    repo.git.afetch_origin.assert_awaited_once_with(
+        str(repo.path), repository_url=str(repo.remote), all_heads=True,
+        lock_held=True, refs=["refs/heads/aq/unrelated"],
+    )
+    # Subsequent ticks see the imported tip and perform no transport at all.
+    with snapshot_scope():
+        assert (await repo.snapshot(truth=truth)).target_oid == repo.base
+    assert repo.git.afetch_origin.await_count == 1
 
 
 async def test_snapshot_probe_failure_cannot_reuse_old_tracking_refs(repository):
