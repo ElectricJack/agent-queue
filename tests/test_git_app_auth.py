@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import gc
 import logging
 import os
@@ -9,6 +10,7 @@ import signal
 import shutil
 import ssl
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -693,6 +695,152 @@ async def test_isolated_git_cleanup_runs_off_loop_and_retains_ownership(
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOTEMPTY, errno.EBUSY])
+async def test_isolated_directory_retries_transient_removal_errors(
+    tmp_path, monkeypatch, caplog, error_number,
+):
+    original_rmtree = manager_module.tempfile.TemporaryDirectory._rmtree
+    attempts = []
+
+    def flaky_rmtree(cls, name, **kwargs):
+        attempts.append(name)
+        if len(attempts) < 3:
+            raise OSError(error_number, "injected removal race")
+        original_rmtree(name, **kwargs)
+
+    monkeypatch.setattr(
+        manager_module.tempfile.TemporaryDirectory, "_rmtree", classmethod(flaky_rmtree),
+    )
+    async with manager_module._isolated_git_directory(dir=tmp_path) as name:
+        (Path(name) / "refs").mkdir()
+    assert attempts == [name] * 3
+    assert not Path(name).exists()
+    assert "temporary directory leaked" not in caplog.text
+
+
+@pytest.mark.parametrize("exit_kind", ["success", "failure", "cancellation"])
+@pytest.mark.parametrize("error_number", [errno.ENOTEMPTY, errno.EBUSY, errno.EACCES, None])
+async def test_isolated_directory_removal_failure_warns_without_replacing_outcome(
+    tmp_path, monkeypatch, caplog, exit_kind, error_number,
+):
+    original_rmtree = manager_module.tempfile.TemporaryDirectory._rmtree
+    attempts = []
+
+    def failed_rmtree(cls, name, **kwargs):
+        attempts.append(name)
+        if error_number is None:
+            raise RuntimeError("injected removal failure")
+        raise OSError(error_number, "injected removal failure")
+
+    monkeypatch.setattr(
+        manager_module.tempfile.TemporaryDirectory, "_rmtree", classmethod(failed_rmtree),
+    )
+
+    async def operation():
+        async with manager_module._isolated_git_directory(dir=tmp_path) as name:
+            if exit_kind == "failure":
+                raise GitError("original Git failure")
+            if exit_kind == "cancellation":
+                raise asyncio.CancelledError("original cancellation")
+            return name
+
+    if exit_kind == "success":
+        await operation()
+    else:
+        error = GitError if exit_kind == "failure" else asyncio.CancelledError
+        with pytest.raises(error, match="original"):
+            await operation()
+    name = attempts[0]
+    try:
+        assert len(attempts) == (3 if error_number in {errno.ENOTEMPTY, errno.EBUSY} else 1)
+        assert Path(name).exists()
+        warnings = [r for r in caplog.records if "temporary directory leaked" in r.message]
+        assert len(warnings) == 1
+        assert name in warnings[0].message
+    finally:
+        original_rmtree(name)
+
+
+async def test_repeated_spawn_cancellation_reaps_writer_before_directory_cleanup(
+    tmp_path, monkeypatch,
+):
+    manager = GitManager()
+    spawned, release_spawn = asyncio.Event(), asyncio.Event()
+    killing, release_kill = asyncio.Event(), asyncio.Event()
+    processes, directories, returncodes_at_cleanup = [], [], []
+    ready = tmp_path / "writer-ready"
+    real_spawn = asyncio.create_subprocess_exec
+    real_kill = manager._kill_app_git_group
+    real_cleanup = manager_module._cleanup_isolated_git_directory
+
+    async def delayed_spawn(*args, **kwargs):
+        process = await real_spawn(*args, **kwargs)
+        processes.append(process)
+        await _wait_for_file(ready)
+        spawned.set()
+        await release_spawn.wait()
+        return process
+
+    async def delayed_kill(process):
+        killing.set()
+        await release_kill.wait()
+        await real_kill(process)
+
+    def record_cleanup(directory):
+        returncodes_at_cleanup.extend(p.returncode for p in processes)
+        real_cleanup(directory)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(manager, "_kill_app_git_group", delayed_kill)
+    monkeypatch.setattr(manager_module, "_cleanup_isolated_git_directory", record_cleanup)
+
+    async def operation():
+        async with manager_module._isolated_git_directory(dir=tmp_path) as name:
+            directories.append(Path(name))
+            await manager._spawn_isolated_git(
+                sys.executable, "-c",
+                "import pathlib, sys, time\n"
+                "refs = pathlib.Path(sys.argv[1]) / 'refs'\n"
+                "refs.mkdir()\n"
+                "pathlib.Path(sys.argv[2]).write_text('ready')\n"
+                "while True:\n"
+                "    (refs / 'head').write_text('writing')\n"
+                "    time.sleep(0.001)\n",
+                name, str(ready), start_new_session=True,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+
+    request = asyncio.create_task(operation())
+    try:
+        await asyncio.wait_for(spawned.wait(), 10)
+        request.cancel("original cancellation")
+        await asyncio.sleep(0)
+        request.cancel("second cancellation")
+        await asyncio.sleep(0)
+        assert not request.done()
+        assert directories[0].exists()
+        release_spawn.set()
+        await asyncio.wait_for(killing.wait(), 10)
+        request.cancel("cancellation during reaping")
+        await asyncio.sleep(0)
+        assert not request.done()
+        assert directories[0].exists()
+        release_kill.set()
+        with pytest.raises(asyncio.CancelledError, match="original cancellation"):
+            await request
+        assert returncodes_at_cleanup and all(code is not None for code in returncodes_at_cleanup)
+        assert not _process_group_exists(processes[0].pid)
+        assert not directories[0].exists()
+    finally:
+        release_spawn.set()
+        release_kill.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        for process in processes:
+            await real_kill(process)
 
 
 def _origin_fetch_case(tmp_path: Path) -> tuple[Path, Path, Path]:

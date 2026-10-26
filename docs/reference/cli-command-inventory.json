@@ -22681,6 +22681,7 @@
         "required": [],
         "optional": [
           "--aq-detach",
+          "--aq-backend",
           "--aq-wait",
           "--aq-idempotency-key",
           "--aq-status",
