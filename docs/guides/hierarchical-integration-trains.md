@@ -125,6 +125,12 @@ reuses the same fixer. The fixer saves and publishes its current work, then runs
 branch fences. Publication derives the current binding from the session and
 rechecks it under lock. Companion writes and delivery are serialized so an older
 green result cannot lose a later fix. Full family delivery stops the session.
+A terminal abort also withdraws the exact bound fixer's session intent; session
+reconciliation stops its process. Once exit is confirmed, its clean checkout can
+be reused if its head is preserved and no other session or job pins it. Dirty or
+unpublished work remains retained. Deferred and companion batches keep their
+writer until family delivery or an explicit operator abort. Maintenance repairs
+missing stop intent on historical aborts, including completed cleanup records.
 The project boundary's repair policy also supplies `primary_seconds`,
 `primary_attempts` (capped at three), and `deferred_revisit_seconds`; legacy
 `on_exhausted: human` does not create an automatic hold for task-free fixers.
