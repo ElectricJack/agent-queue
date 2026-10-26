@@ -932,8 +932,53 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3041,
+HAND_INTEGRATION_RECONCILIATION = {'queued_continuation_demand_composition': {'authorized_engine_delta': 0,
+ 'authorized_owned_delta': 6,
+ 'authorized_shared_owned_delta': 6,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/orchestrator/pools.py': 6},
+ 'decision_message_id': 'msg-927da743554448619862dd297dea6afe',
+ 'dev_source_revision': '94f4c82ee1898298711498c93ca90cb459816db6',
+ 'generic_capacity_classification': {
+     'src/waits/occupancy.py::continuation_capacity':
+         'Same read-only wait/session capacity classification as continuation_occupancy; '
+         'no integration ref policy, mutation authority or delivery storage.',
+ },
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 82532,
+ 'previous_measured_owned_total': 157793,
+ 'previous_measured_table_count': 45,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2007',
+ 'reason': 'Exact supervisor-approved +6 shared owned lines for queued continuation pool '
+           'demand after combining demand and occupancy into one statement. Preserve original '
+           'baselines, all historical grants and classifications; zero remaining headroom and '
+           'no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '30d8c9fd755a90cc2580dd3af856a0a1fb25193e',
+ 'task_id': 'sharp-harbor-94'},
+ 'reconciliation_noop_composition': {'authorized_engine_delta': 20,
+ 'authorized_owned_delta': 20,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/repository_recovery.py': 0,
+                   'src/integration/truth_reconciler.py': 20},
+ 'decision_message_id': 'msg-8aa9311e7afa474193d720e4a9cab95b',
+ 'dev_source_revision': 'ea0cb2e29710cd1b243a19e4f1292e22a3d5f980',
+ 'measured_engine_lines': 83183,
+ 'measured_owned_total': 158571,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83163,
+ 'previous_measured_owned_total': 158551,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved receipt/projection no-op probe and restored incremental '
+           'acquisition after a recovered incident journal. Remeasured on merged dev under the '
+           'same decision. Preserve all mutation freshness, identity, writer and '
+           'retained-integrity gates, every historical grant and ownership classification; '
+           'zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'task_id': 'bright-torrent-86'},
+ 'authority': 'size-cap-delegation-2026-10-23',
+ 'authorized_owned_delta': 3116,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -956,9 +1001,9 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
  'previous_measured_owned_total': 158077,
  'previous_measured_table_count': 45,
  'reason': 'Exact supervisor-approved tick-scoped repository snapshot sharing, integrity-gated '
-           'no-change remote-ref probe and per-visit diagnostics, including the fresh-journey-57 '
-           'prerequisite merge. Preserve historical baselines, grants and ownership '
-           'classifications; zero remaining headroom and no new storage category.',
+           'no-change remote-ref probe and per-visit diagnostics, including the '
+           'fresh-journey-57 prerequisite merge. Preserve historical baselines, grants and '
+           'ownership classifications; zero remaining headroom and no new storage category.',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'request_message_id': 'msg-d838754c89fc435b99e77211e8914a9d',
  'task_id': 'sound-impact-32'},
@@ -1137,35 +1182,11 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83163,
- 'measured_owned_total': 158540,
+ 'measured_engine_lines': 83221,
+ 'measured_owned_total': 158615,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
- 'queued_continuation_demand_composition': {'authorized_engine_delta': 0,
- 'authorized_owned_delta': 6,
- 'authorized_shared_owned_delta': 6,
- 'authorized_table_delta': 0,
- 'charged_files': {'src/orchestrator/pools.py': 6},
- 'decision_message_id': 'msg-927da743554448619862dd297dea6afe',
- 'dev_source_revision': '94f4c82ee1898298711498c93ca90cb459816db6',
- 'generic_capacity_classification': {
-     'src/waits/occupancy.py::continuation_capacity':
-         'Same read-only wait/session capacity classification as continuation_occupancy; '
-         'no integration ref policy, mutation authority or delivery storage.',
- },
- 'operator_decision': '6679052c',
- 'previous_measured_engine_lines': 82532,
- 'previous_measured_owned_total': 157793,
- 'previous_measured_table_count': 45,
- 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2007',
- 'reason': 'Exact supervisor-approved +6 shared owned lines for queued continuation pool '
-           'demand after combining demand and occupancy into one statement. Preserve original '
-           'baselines, all historical grants and classifications; zero remaining headroom and '
-           'no new storage category.',
- 'referenced_decision': 'size-cap-delegation-2026-10-23',
- 'source_revision': '30d8c9fd755a90cc2580dd3af856a0a1fb25193e',
- 'task_id': 'sharp-harbor-94'},
  'reason': "Separate exact reconciliation of the operator's 2026-10-23 hand integration of "
            'approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 '
            'retirement. Preserves the original baseline, every historical grant and retired '
@@ -1620,7 +1641,41 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
  'reason': 'Exact supervisor-approved composition of the unchanged retained-fixer authority '
            'delta with current dev. Preserve every historical grant, prior merge measurement, '
            'original baseline and ownership classification, with zero remaining headroom and no '
-           'new storage category.'}}
+           'new storage category.'},
+ 'wait_listener_ci_check_coalesce_composition': {'authorized_engine_delta': 0,
+   'authorized_owned_delta': 17,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '4e1ce7c75',
+   'measured_engine_lines': 83163,
+   'measured_owned_total': 158551,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 83163,
+   'previous_measured_owned_total': 158534,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +17 owned lines for coalescing in-progress ci_check '
+             're-observation and a short graph-lock hold in the wait listener. Preserve every '
+             'historical grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'wait-listener-coalesce epic',
+   'task_id': 'fresh-ridge-78'},
+ 'originless_backfill_provenance_composition': {'authorized_engine_delta': 38,
+   'authorized_owned_delta': 38,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '638bbd2f0',
+   'measured_engine_lines': 83221,
+   'measured_owned_total': 158609,
+   'measured_table_count': 45,
+   'operator_decision': 'global-supervisor-2026-10-25',
+   'previous_measured_engine_lines': 83183,
+   'previous_measured_owned_total': 158571,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +38 owned/+38 engine lines for retaining git-proven '
+             'provenance on originless legacy completions in the backfill. Preserve every historical '
+             'grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'legacy-backfill epic',
+   'task_id': 'fair-quest-48'}}
 
 
 def integration_table(name: str) -> bool:
