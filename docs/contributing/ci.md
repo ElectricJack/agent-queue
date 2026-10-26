@@ -42,6 +42,7 @@ build](#there-is-no-documentation-build).
 | [`train-candidate.yml`](../../.github/workflows/train-candidate.yml) | Successful push-triggered `Tests` completion on `aq/integration/**` or `aq/batches/**` | Posts `aq-train/candidate` on the exact tested head SHA; runs no tests. |
 | [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `dev`, `staging` or `main` | Verifies the pushed SHA's branch attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
 | [`venv-cache.yml`](../../.github/workflows/venv-cache.yml) | After each `Main attestation` run (`workflow_run`); hourly `schedule`; `workflow_dispatch` | Saves `tests.yml`'s `.venv` cache entry on `main`. Installs dependencies and runs no tests. See [dependency cache](#dependency-cache). |
+| [`mirror-postgres.yml`](../../.github/workflows/mirror-postgres.yml) | Changes to the mirror or tests workflow on `dev`/`main`; weekly schedule; `workflow_dispatch` | Copies the pinned official PostgreSQL index to GHCR without running tests. |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
 > **Note.** Pushes to `dev`, `staging` and `main` run the attestation
@@ -337,8 +338,8 @@ and covers the remaining integration tests.
 ### Environment
 
 * Both Python test and `E2E CLI` jobs explicitly start a disposable PostgreSQL
-  18 container with `docker run`, with `POSTGRES_TEST_DSN` pointed at its
-  localhost port. Each pull round tries
+  18 container through [the shared startup script](../../.github/scripts/start-postgres.sh),
+  with `POSTGRES_TEST_DSN` pointed at its localhost port. Each pull round tries
   `ghcr.io/<lowercase-repository-owner>/agent-queue-postgres:18` first, then
   `mirror.gcr.io/library/postgres:18` and
   `public.ecr.aws/docker/library/postgres:18`. Every reference includes the same
@@ -348,7 +349,7 @@ and covers the remaining integration tests.
   login still permits public-mirror fallback, including for fork PRs without
   package access. Up to three rounds, with five seconds between rounds,
   recover from registry errors. Exhausted pulls fail the job; container-start
-  errors are not retried. E2E uses the same startup steps because implicit
+  errors are not retried. E2E uses the same startup script because implicit
   service pulls cannot fall back to another registry.
 
   [`mirror-postgres.yml`](../../.github/workflows/mirror-postgres.yml) seeds the
@@ -515,8 +516,10 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 CI owns nothing durable. Every database it creates lives in a disposable
 PostgreSQL container, and no job writes back to the repository. Between runs it
 keeps only Actions cache entries, chiefly the `.venv` entry `venv-cache.yml`
-keeps on `main`. `tests.yml` and `venv-cache.yml` hold only `contents: read`;
-their checkouts use the default token and push nothing.
+keeps on `main`. `tests.yml` holds `contents: read` and `packages: read`;
+`venv-cache.yml` holds only `contents: read`. Their checkouts use the default
+token and push nothing. `mirror-postgres.yml` additionally holds `packages: write`
+to publish the pinned database image to GHCR.
 
 ## Common failures and recovery
 
