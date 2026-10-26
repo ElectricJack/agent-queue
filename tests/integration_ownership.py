@@ -996,7 +996,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
            'zero remaining headroom and no new storage category.',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
- 'authorized_owned_delta': 3288,
+ 'authorized_owned_delta': 3347,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1200,8 +1200,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83399,
- 'measured_owned_total': 158787,
+ 'measured_engine_lines': 83458,
+ 'measured_owned_total': 158846,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1693,7 +1693,28 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
              'grant; zero remaining headroom and no new storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': 'legacy-backfill epic',
-   'task_id': 'fair-quest-48'}}
+   'task_id': 'fair-quest-48'},
+ 'missing_target_abort_composition': {'authorized_engine_delta': 59,
+   'authorized_owned_delta': 59,
+   'authorized_table_delta': 0,
+   'charged_files': {'src/integration/batches.py': 4,
+                     'src/integration/fixers.py': 26,
+                     'src/integration/train_controls.py': 15,
+                     'src/integration/train_sources.py': 14},
+   'dev_source_revision': '21109c4eb',
+   'measured_engine_lines': 83383,
+   'measured_owned_total': 158771,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 83324,
+   'previous_measured_owned_total': 158712,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact task-preapproved missing-target abort and epic-refresh retirement delta on '
+             'merged dev. Preserve historical baselines, grants and ownership classifications; zero '
+             'remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': '39242c4c5',
+   'task_id': 'grand-falcon-16'}}
 
 
 def integration_table(name: str) -> bool:
