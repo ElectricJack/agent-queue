@@ -56,6 +56,28 @@ def _walk(node: ast.AST):
         yield from _walk(child)
 
 
+def _data_literals(nodes: list[ast.AST]) -> set[str]:
+    """Find literals below resource expressions without rewalking every ancestor.
+
+    Once an expression owns a subtree, retain all its literals, matching ast.walk.
+    Outside those expressions, TYPE_CHECKING branches follow _walk's exclusions.
+    """
+    values = set()
+    pending = [(node, False) for node in nodes]
+    while pending:
+        node, covered = pending.pop()
+        covered |= isinstance(node, (ast.BinOp, ast.Call, ast.Assign, ast.AnnAssign))
+        if covered and isinstance(node, ast.Constant) and isinstance(node.value, str):
+            values.add(node.value)
+        if (not covered and isinstance(node, ast.If)
+                and _name(node.test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}):
+            children = node.orelse
+        else:
+            children = ast.iter_child_nodes(node)
+        pending.extend((child, covered) for child in children)
+    return values
+
+
 class DependencyAnalyzer:
     """Reusable index; create a fresh instance after changing repository inputs."""
 
@@ -209,23 +231,6 @@ class DependencyAnalyzer:
                                 fixture_names.add(literal)
                             else:
                                 reasons.add(f"{path}: unresolved fixture request")
-                # Literal repository paths are data, even when they are subsequently
-                # read by a helper. Docstrings and bare messages do not count.
-                if isinstance(node, (ast.BinOp, ast.Call, ast.Assign, ast.AnnAssign)):
-                    values = [child.value for child in ast.walk(node)
-                              if isinstance(child, ast.Constant) and isinstance(child.value, str)]
-                    for value in values:
-                        if value == "docs" or value.startswith("docs/"):
-                            docs = True
-                        if value.startswith(("src/", "tests/", "docs/", "scripts/", "tools/")):
-                            candidate = self.root / value
-                            if candidate.is_file():
-                                data.add(value)
-                            elif candidate.is_dir():
-                                data.update(p.relative_to(self.root).as_posix()
-                                            for p in candidate.rglob("*") if p.is_file()
-                                            and p.name not in {"BUILD", "BUILD.bazel"}
-                                            and not any(part in _SKIP for part in p.parts))
                 for target in targets:
                     imports.update(self._resolve(target))
                     parent = self.known.get(target.rpartition(".")[0])
@@ -242,6 +247,24 @@ class DependencyAnalyzer:
                             reasons.update(extra[3])
                             data.update(extra[4])
                             docs |= extra[5]
+        # Literal repository paths are data even when a helper reads them later.
+        # Inspect each expression subtree once; docstrings and bare messages stay out.
+        for value in _data_literals([
+            node for node in nodes
+            if not (isinstance(node, _FUNCTIONS) and node.name == "__getattr__"
+                    and path.endswith("/__init__.py"))
+        ]):
+            if value == "docs" or value.startswith("docs/"):
+                docs = True
+            if value.startswith(("src/", "tests/", "docs/", "scripts/", "tools/")):
+                candidate = self.root / value
+                if candidate.is_file():
+                    data.add(value)
+                elif candidate.is_dir():
+                    data.update(p.relative_to(self.root).as_posix()
+                                for p in candidate.rglob("*") if p.is_file()
+                                and p.name not in {"BUILD", "BUILD.bazel"}
+                                and not any(part in _SKIP for part in p.parts))
         self.scans[key] = imports, names, fixture_names, reasons, data, docs
         return self.scans[key]
 
