@@ -10,8 +10,9 @@ The train already honours one database answer for such work, an
 ``integration_legacy_deliveries`` row (:func:`src.integration.train_sources.project_delivered`).
 This backfill writes that row only after git proves the work is on the root
 target tip. It never writes provenance, never moves a ref and never edits a
-task. Each completed task with a live origin, no legacy row and no retained
-completion record goes through four steps:
+task. Each completed task in the root inventory (including legacy tasks without
+any recorded branch origin), with no legacy row and no retained completion
+record, goes through four steps:
 
 1. **Locate** exact candidate sources, newest evidence first: the completion's
    reported commits, the origin branch tip, the old engine's batch member
@@ -47,7 +48,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -199,6 +200,17 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
         raise ValueError("root target tree cannot be read")
     async with db._engine.connect() as conn:
         ids = await _pending_tasks(conn, project_id, target.repository_id, limit=None)
+        # Train admission needs a known filing base; historical proof recovery
+        # does not. Add tasks that never recorded an origin without overriding
+        # the train query's routing exclusions for tasks with retained origins.
+        originless = (await conn.execute(select(tasks.c.id).where(
+            tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
+            or_(tasks.c.repo_id.is_(None), tasks.c.repo_id == target.repository_id),
+            or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+            ~select(task_branch_origins.c.id).where(
+                task_branch_origins.c.task_id == tasks.c.id).exists(),
+        ))).scalars().all()
+        ids = sorted(set(ids) | set(originless))
     delivered = await project_delivered(
         db, ids, project_id=project_id, repository_id=target.repository_id,
         target_ref=target.target_ref, snapshot=snap,

@@ -119,6 +119,16 @@ containment or patch-equivalence proof; unique unmerged refs remain intact.
 
 ## Re-landed content
 
+The ordinary legacy-delivery backfill also inventories completed tasks without
+any recorded branch origin, in the integration repository (or with no explicit
+repository). It excludes promotion tasks and tasks belonging to another project
+or repository. A missing origin or deleted task branch does not prevent proof
+from the completion's reported commits or other retained source locators. Git
+must still prove delivery on the default target, and apply rechecks the same
+completion generation before recording the audited row. Missing source evidence
+stays unproven; a dry run writes no rows and a repeated apply is idempotent.
+This recovery inventory does not relax the train's filing-origin requirements.
+
 Salvage, repair and squash re-landings put a task's content on the default
 branch under different SHAs, so neither ancestry nor patch-id proves the source
 branch merged. `scripts/backfill-legacy-deliveries.py PROJECT --relanded
