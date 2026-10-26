@@ -7347,13 +7347,15 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:607511aae8482a348b027c23ff7b5f321b5c56bdfdd3f1a298e8eab7f0304037",
+      "digest": "sha256:2c02ea5ff9c7faed25017b279f93e263681921b221192c8912b351cd9dd96e1a",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.asks.operations",
+        "src.commands",
         "src.commands.fidelity_review_commands",
         "src.commands.principal",
+        "src.commands.task_changes",
         "src.database.queries",
         "src.database.queries.claim_queries",
         "src.database.queries.ingest_batch_queries",
@@ -11527,15 +11529,13 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:11b331aca559fe2dbdd52b865ff87fdcab96f5db2899ad4b874462e5430c5dd1",
+      "digest": "sha256:3002e89c352367f91e14cc8c0d97aaa6f5a0a170d6d5aec964a7cf5d510ffe5c",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
         "src.records.models"
       ],
-      "markers": [
-        "usefixtures"
-      ],
+      "markers": [],
       "summary": "Task filing and Save finding stay atomic, guarded and replayable."
     },
     "tests/test_known_tools.py": {
