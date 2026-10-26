@@ -63,7 +63,9 @@ done
 
 # The same interpreter choice as regenerate-api-client.sh: the checkout's own
 # venv when it has one, python3 otherwise (some images have no `python`).
-if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+if [[ -n "${AQ_GENERATOR_PYTHON:-}" ]]; then
+    PYTHON="$AQ_GENERATOR_PYTHON"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
     PYTHON="$ROOT_DIR/.venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
     PYTHON="$(command -v python3)"
