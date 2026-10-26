@@ -2201,35 +2201,6 @@ async def test_manual_global_invalidation_filters_other_project_subscriptions(ru
         "dispatched_at"] is None
 
 
-async def test_resource_invalidation_retains_deferred_dispatch_receipt(runtime_env):
-    env = runtime_env
-    observation = {'state': 'unsatisfied', 'revision': '1'}
-    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(cond, **observation))
-    registry = build_registry(resource_reader=reader)
-    receipt = await register(env, {'kind': 'resource', 'blocker': 'slot', 'identity': 'opaque',
-                                  'source_revision': '1'}, registry=registry,
-                            scope=Scope('p', 'scheduler', 'owner', principal='service'))
-    seq = await env.db.wait_source_commit(**resource_invalidation(
-        producer='pool', identity='profile', revision='cycle', outcome_ref='pool', payload={}))
-    observation.update(state='satisfied', revision='2')
-    dispatcher = ObservingDispatcher(registry)
-    original = dispatcher.commit
-    dispatcher.commit = AsyncMock(return_value={
-        'success': True, 'committed': False, 'retry_after': 30})
-    service = runtime(env, registry=registry, dispatcher=dispatcher)
-    assert await service.listener.tick()
-    dispatcher.commit.assert_awaited()
-    assert (await records(env))[0]['outcome'] == 'pending'
-    assert next(row for row in await records(env, wait_source_events) if row['seq'] == seq)[
-        'dispatched_at'] is None
-    assert (await records(env, wait_listener_cursors))[0]['last_seq'] >= seq
-    dispatcher.commit = original
-    service.listener._retry_due.clear()
-    assert await service.listener.tick()
-    assert next(row for row in await records(env) if row['id'] == receipt['wait_id'])[
-        'outcome'] == 'satisfied'
-
-
 async def test_drain_yields_between_attempts_and_requests_fresh_watermark(runtime_env, monkeypatch):
     service = runtime(runtime_env)
     listener = service.listener

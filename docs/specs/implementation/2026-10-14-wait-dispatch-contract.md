@@ -514,9 +514,3 @@ proof is cleared so a repaired checkout must pass publication and detach again.
 The existing requeue audit records the actor and repair note. The push incident
 is withdrawn only when successful publication and parking commit together.
 
-A source event matching a held hibernating continuation remains undispatched
-in the durable retry lane, without mutating the wait outcome. The forward
-listener cursor can pass it and dispatch unrelated sources, including other
-waiters on the same source. Retries repeat source and owner fences after repair
-and survive listener restarts. Resource invalidations propagate the same retry
-receipt instead of stamping a held subscriber's event as dispatched.

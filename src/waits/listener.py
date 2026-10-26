@@ -202,7 +202,6 @@ class WaitSourceListener:
             await lifecycle.resume.recovery_event(conn, event, project_id=project_id)
         if event["source_key"].startswith("resource_invalidation:"):
             after = ""
-            retry_after = 0
             while candidates := await resource_invalidation_candidates(
                 conn, event, after_id=after, limit=self.batch_size,
             ):
@@ -216,10 +215,9 @@ class WaitSourceListener:
                 ):
                     # Dispatcher repeats owner/source locks and fresh observation;
                     # bridge evidence is a candidate, never a committed outcome.
-                    result = await self._commit(dispatcher, conn, row, event, evidence=evidence)
-                    retry_after = max(retry_after, result.get('retry_after', 0))
+                    await self._commit(dispatcher, conn, row, event, evidence=evidence)
                 after = next_after
-            return retry_after
+            return 0
         rows = (await conn.execute(select(wait_records).where(
             wait_records.c.outcome == "pending",
             wait_records.c.verification_state == "verified",

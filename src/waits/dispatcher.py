@@ -136,15 +136,6 @@ class WakeDispatcher:
         source = adapter.source_key(cond)
         if (source.identity, source.generation) != (row["source_key"], row["source_generation"]):
             return {"success": True, "committed": False}
-        if task and row['sleep_decision'] == 'hibernate' and await conn.scalar(
-            select(continuations.c.id).where(
-                continuations.c.wait_id == row['id'], continuations.c.task_id == task['id'],
-                continuations.c.resume_state == 'held',
-            ).with_for_update()
-        ):
-            # A held checkout cannot receive an outcome yet. Retain this event
-            # in the durable retry lane while unrelated sources drain normally.
-            return {'success': True, 'committed': False, 'retry_after': 30}
         try:
             scope, continuation = await fence_owner(conn, row, task, parked_required=True)
         except WaitError as exc:

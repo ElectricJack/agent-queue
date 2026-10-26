@@ -3033,67 +3033,6 @@ async def test_cancelled_push_requeue_rolls_back_hold_and_audit(env, monkeypatch
         assert (await handler.execute('wait_decide', args))['success']
 
 
-@pytest.mark.parametrize('env', [None, 'message'], indirect=True)
-@pytest.mark.parametrize('parked', [False, True])
-async def test_held_continuation_retains_source_without_blocking_other_waits(
-    env, monkeypatch, parked,
-):
-    from src.models import TaskStatus
-    from tests.test_wait_dispatch import runtime
-
-    _, service, _, _ = await push_hold(env, monkeypatch)
-    service.orch.wait_dispatcher = service._dispatcher
-    if parked:
-        # A hold can also happen after successful parking; it must retain events.
-        await park(env)
-        async with env.db._engine.begin() as conn:
-            await conn.execute(update(continuations).values(
-                resume_state='held', hold_reason='resume_workspace_failed'))
-    other = await owner(env.db, task_id='other', session_id='other-session', agent_id='other-agent')
-    await env.db.create_task(Task(id='other-source', project_id='p', title='Other', description=''))
-    async with env.db._engine.begin() as conn:
-        unrelated = await register_wait(conn, scope=other,
-            condition={'kind': 'task', 'task_id': 'other-source'}, idempotency_key='other-wait',
-            registry=service.registry, policy=Policy(), now=NOW + 1,
-            source_watermark=await env.db.wait_source_watermark(),
-            decide_sleep=lambda *_: SleepDecision('in_place', 'test', {}))
-        original = (await conn.execute(select(wait_records).where(
-            wait_records.c.id == env.wait_id))).mappings().one()
-    if original['condition_kind'] == 'message':
-        await env.db.create_message(project_id='p', from_kind='session', from_id='supervisor-p',
-            to_kind='session', to_id='s', thread_id='interview-q4', body='Reply')
-    else:
-        await env.db.transition_task('source', TaskStatus.COMPLETED)
-    await env.db.transition_task('other-source', TaskStatus.COMPLETED)
-    assert await service.listener.tick()
-    async with env.db._engine.connect() as conn:
-        waits = {row['id']: row for row in (await conn.execute(select(wait_records))).mappings()}
-        assert waits[env.wait_id]['outcome'] == 'pending'
-        assert waits[unrelated['wait_id']]['outcome'] == 'satisfied'
-        retained = (await conn.execute(select(wait_source_events).where(
-            wait_source_events.c.source_key == original['source_key'],
-            wait_source_events.c.seq > original['source_watermark_seq'],
-        ))).mappings().one()
-        assert retained['dispatched_at'] is None
-        assert await conn.scalar(select(wait_listener_cursors.c.last_seq)) > retained['seq']
-    assert (await intent(env))['resume_state'] == 'held'
-    # Retry ownership survives a listener restart, and dispatch repeats fresh
-    # source/owner proof after repair rather than losing the retained event.
-    await service.lease(release=True)
-    async with env.db._engine.begin() as conn:
-        await conn.execute(update(continuations).values(resume_state='sleeping', hold_reason=None))
-    if not parked:
-        await park(env)
-    restarted = runtime(env, clock=lambda: NOW + 40, registry=build_registry())
-    restarted.orch.wait_dispatcher = restarted._dispatcher
-    assert await restarted.listener.tick()
-    async with env.db._engine.connect() as conn:
-        assert await conn.scalar(select(wait_records.c.outcome).where(
-            wait_records.c.id == env.wait_id)) == 'satisfied'
-        assert await conn.scalar(select(wait_source_events.c.dispatched_at).where(
-            wait_source_events.c.seq == retained['seq'])) is not None
-
-
 async def test_requeue_of_a_launch_hold_returns_to_the_capacity_queue(env):
     from src.commands.principal import TRUSTED_LOCAL
 

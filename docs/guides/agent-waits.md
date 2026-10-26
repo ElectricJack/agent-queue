@@ -119,10 +119,6 @@ Keep `.aq/` ignored by Git. A matching dirty path holds the save with a diagnost
 preserve that work outside the checkout and repair the dirty state before a
 supervisor requeues it. AQ retains the entire checkout until the save succeeds.
 
-Held hibernating owners retain their source events for retry while the listener
-continues dispatching unrelated waits. Repair does not require a cursor jump or
-source-event deletion.
-
 ## Deadlines and human input
 
 Operational deadlines escalate to the supervisor without waking the worker or
