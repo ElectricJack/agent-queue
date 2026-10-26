@@ -250,6 +250,139 @@ async def test_originless_backfill_retains_provenance_for_dependency_admission(w
     assert (await admission()).allowed == set()
 
 
+@pytest.mark.parametrize("retained", [False, True])
+async def test_hand_landed_epics_with_retired_origins_and_mixed_child_refs(
+    world, retained,
+):
+    from dataclasses import replace
+
+    from src.integration import legacy_backfill
+    from src.integration.admission import observe_admission
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    db, origin = world.db, world.origin
+    base = git(origin.clone, "rev-parse", "origin/main")
+    children = {}
+    for parent in ("h", "a"):
+        kept, gone = parent + "-kept", parent + "-gone"
+        children[kept] = await epic_with_child(
+            world, parent, kept, epic_status=TaskStatus.IN_PROGRESS,
+        )
+        children[gone] = await legacy(world, gone, parent=parent, land=True, delete_branch=True)
+        if retained:
+            provenance = GitProvenance(world.truth.git, origin.clone, repository_url=origin.url)
+            for child in (kept, gone):
+                await provenance.write_completion(CompletedSource(
+                    CompletionIdentity("p", "r", child, "close-" + child), children[child],
+                ), claim_epoch=7)
+        origin.land(parent)
+        await db.transition_task(parent, TaskStatus.COMPLETED)
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=parent + "-origin", task_id=parent, repository_id="r",
+                branch_name="aq/" + parent, base_sha=base, creation_generation=0,
+                reserved=True, materialized=True, created_at=time.time(), retired_at=time.time(),
+            ))
+        if parent == "a":
+            async with db.immediate() as conn:
+                await conn.execute(update(task_branch_origins).where(
+                    task_branch_origins.c.task_id.in_((kept, gone)),
+                ).values(retired_at=time.time()))
+        git(origin.clone, "push", "-q", "origin", "--delete", "aq/" + parent)
+    # Model a retained observer with an obsolete parent tracking ref. The remote
+    # advertisement is authoritative even when the local inventory still has it.
+    async def stale_snapshot(*args, **kwargs):
+        observed = await legacy_backfill.project_snapshot(*args, **kwargs)
+        return replace(observed, observation=replace(observed.observation, source_heads={
+            **observed.observation.source_heads, "refs/remotes/origin/aq/h": base,
+        }))
+
+    target = git(origin.clone, "ls-remote", "origin", "refs/heads/main").split()[0]
+    await db.create_task(Task(id="b", project_id="p", repo_id="r", title="b", description="",
+                              branch_name="aq/b", status=TaskStatus.IN_PROGRESS))
+    git(origin.clone, "push", "-q", "origin", target + ":refs/heads/aq/b")
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", parent_task_id="b", status=TaskStatus.READY))
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="b", parent_repository_id="r",
+            parent_ref="aq/b", base_sha=target, creation_generation=0,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    for child in children:
+        await db.add_dependency("dependent", child)
+    service = SimpleNamespace(delivery_observer=db._delivery_observer)
+    assert (await observe_admission(db, ["dependent"], service)).allowed == (
+        {"dependent"} if retained else set())
+    preview = await backfill_legacy_deliveries(db, "p", snapshot=stale_snapshot)
+    assert {r["task_id"]: r["delivered_sha"] for r in preview["results"]} == children
+    assert preview["proven"] == 4 and preview["recorded"] == 0
+    assert {r["proof"] for r in preview["results"]} == {CONTAINED_PROOF}
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="hand landed epics",
+        snapshot=stale_snapshot)
+    assert applied["recorded"] == 4
+    after = await observe_admission(db, ["dependent"], service)
+    assert after.allowed == {"dependent"}, after.reasons
+    assert (await backfill_legacy_deliveries(db, "p", snapshot=stale_snapshot))["results"] == []
+    if retained:
+        observed = await snapshot(world)
+        for child in children:
+            record = await observed.read_completion(
+                CompletionIdentity("p", "r", child, "close-" + child))
+            assert record["claim_epoch"] == 7  # preserve existing immutable markers
+
+
+@pytest.mark.parametrize("artifact", [False, True])
+async def test_deleted_epic_preserves_conflicting_retained_binding(world, artifact):
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    db, origin = world.db, world.origin
+    head = await epic_with_child(world, "epic", "child", epic_status=TaskStatus.COMPLETED)
+    origin.land("epic")
+    git(origin.clone, "push", "-q", "origin", "--delete", "aq/epic")
+    identity = CompletionIdentity("p", "r", "child", "close-child")
+    # Either the source differs from the current final report, or this marker
+    # explicitly declares no artifact. Recovery cannot rewrite either binding.
+    bound = git(origin.clone, "rev-parse", head + "^") if artifact else head
+    provenance = GitProvenance(world.truth.git, origin.clone, repository_url=origin.url)
+    marker = await provenance.write_completion(CompletedSource(identity, bound), artifact=artifact)
+    report = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="strict recovery")
+    assert report["recorded"] == report["proven"] == 0
+    assert {item["task_id"] for item in report["unproven"]} == {"child"}
+    assert git(origin.clone, "ls-remote", "origin", identity.ref).split()[0] == marker
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+
+
+@pytest.mark.parametrize("parent_state", ["present", "error"])
+async def test_parent_remote_uncertainty_never_enables_deleted_epic_recovery(
+    world, monkeypatch, parent_state,
+):
+    from src.git.manager import RemoteRefResult, RemoteRefState
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    head = await epic_with_child(world, "epic", "child", epic_status=TaskStatus.COMPLETED)
+    world.origin.land("epic")
+    provenance = GitProvenance(world.truth.git, world.origin.clone,
+                               repository_url=world.origin.url)
+    await provenance.write_completion(CompletedSource(
+        CompletionIdentity("p", "r", "child", "close-child"), head))
+    observe = world.truth.git.als_remote_qualified_refs
+
+    async def parent_read(checkout, refs, **kwargs):
+        if refs == ["refs/heads/aq/epic"]:
+            return {refs[0]: RemoteRefResult(RemoteRefState(parent_state), oid=head,
+                                            error="unavailable" if parent_state == "error" else None)}
+        return await observe(checkout, refs, **kwargs)
+
+    monkeypatch.setattr(world.truth.git, "als_remote_qualified_refs", parent_read)
+    report = await backfill_legacy_deliveries(world.db, "p")
+    assert report["results"] == []  # only confirmed absence enables root recovery
+
+
 @pytest.mark.parametrize("case", ["earlier_commit", "equivalent", "failed", "changed"])
 async def test_originless_backfill_retains_only_current_exact_passing_source(
     world, monkeypatch, case,
