@@ -9480,13 +9480,15 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:5b7d90fd06efcaa6d66e11db54802d0277c6b4081fc8867341f0f6dea4ead678",
+      "digest": "sha256:612ad0df026e3c3f926bf473e54f05cc707109e02a6d4daacd17a15391975c9a",
       "imports": [
         "src.config",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
         "src.git.manager",
+        "src.integration",
+        "src.integration.admission",
         "src.integration.branch_retirement",
         "src.integration.delivery_branches",
         "src.integration.legacy_backfill",
