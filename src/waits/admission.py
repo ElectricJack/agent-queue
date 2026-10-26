@@ -111,7 +111,8 @@ class AdmissionReader:
         self.clock = clock
 
     @asynccontextmanager
-    async def prepared(self, *, project_id=None):
+    async def prepared(self, *, project_id=None, task_ids=None, cached_only=True):
+        """Capture external evidence before locks; resumes request one fresh task view."""
         from src.integration.admission import observe_admission
         from src.integration.development import DevelopmentPrimitives
         from src.routing.readiness import orchestrator_ready_projects
@@ -124,12 +125,14 @@ class AdmissionReader:
             )
             if project_id is not None:
                 query = query.where(tasks.c.project_id == project_id)
+            if task_ids is not None:
+                query = query.where(tasks.c.id.in_(task_ids))
             candidates = (await conn.execute(query)).all()
         service = getattr(o, "development_integration", None) or DevelopmentPrimitives(
             o.db, data_dir=o.config.data_dir, git=getattr(o, "git", None),
         )
         admission = await observe_admission(
-            o.db, [r.id for r in candidates], service, cached_only=True,
+            o.db, [r.id for r in candidates], service, cached_only=cached_only,
             default_mode=o.config.integration.default_mode, router_ready_projects=ready,
         )
         token = _prepared.set((self, admission, ready))
@@ -191,7 +194,6 @@ class AdmissionReader:
         ))).mappings().one()
         profile = await o.db.get_profile(task["profile_id"], conn=conn) if task["profile_id"] else None
         ready = task["project_id"] in ready_projects
-        # Prepared stack views check cache expiry without Git I/O under the lock.
         project_model = await o.db.get_project(task["project_id"], conn=conn)
         batch_names = {"sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
                        "epic_refresh_pending", "origin_not_materialized", "retired_repair_delegate"}
@@ -199,7 +201,8 @@ class AdmissionReader:
         if blocker is None or blocker in {"policy_hold", "batch_hold", "workspace", "backoff"}:
             mode = admission.hierarchy_modes.get(task["project_id"], ProjectIntegrationMode.of(project_model))
             _, stack = admission.hierarchy_evidence(task["project_id"])
-            if stack is not None and not await stack.fresh():
+            if stack is not None and not await replace(
+                stack, cached_only=True, fresh_max_age=stack.fresh_max_age or 2).fresh():
                 mode = replace(mode, stackable_prerequisite_ids=frozenset())
             predicates = claim_frontier_predicates(hierarchy_mode=mode)
             predicates["route"] = route_claimable(ready)

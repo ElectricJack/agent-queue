@@ -351,6 +351,18 @@ identity comparison, `same_session_launch`. It compares eleven identity fields,
 so a relaunched session with the same id but a new instance cannot inherit a
 preparation that belonged to its predecessor.
 
+Only a starting or running, unended pool session may take a new claim. A draining or
+stopped session is refused inside the claim transaction even if its requested
+state still says running; it must never advance a task's epoch.
+
+Admission movement before selection may refresh its observation up to three
+times. Once a task has been reset, failed activation admission ends preparation
+with `prepare_failed`, the observed admission reason and preparation backoff.
+The long poll must not repeatedly reset and reclaim that task. Exhausted
+transaction/fence contention also returns `prepare_failed`, with its concrete
+failure and cooldown, while retaining the same preparation and epoch for a safe
+retry. Neither case is an empty frontier or unfinished background preparation.
+
 **When preparation fails**, two counters on the session decide what happens.
 They answer different questions, and older docs conflate them.
 

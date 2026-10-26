@@ -1,9 +1,9 @@
 """Retirement ratchet: delivery receipts are historical audit, never authority.
 
 Spec 2026-10-12 fast-smooth-integration §3.3 and the receipt consumer inventory
-in ``docs/specs/design/strict-git-containment.md``. The pinned sets below only
-shrink: a new reader or writer of ``task_delivery_receipts`` fails here until
-the inventory names it and its owner.
+in ``docs/specs/design/strict-git-containment.md``. A new reader or writer of
+``task_delivery_receipts`` fails here until the inventory names it and its
+owner. Retained witnesses may fence deletion, never grant delivery authority.
 """
 
 from __future__ import annotations
