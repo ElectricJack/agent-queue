@@ -541,8 +541,8 @@ async def test_every_sender_renders_the_configured_public_origin():
 
     origin = "https://queue.tail1234.ts.net"
     # §6.1: an escalation links its own focus page, never a settings anchor.
-    assert all(f"<{origin}/focus/escalations/esc-1>" in t for t in texts[:3])
-    assert texts[3].endswith(f"<{origin}/focus/inbox>")
+    assert all(f"<{origin}/escalations/esc-1>" in t for t in texts[:3])
+    assert texts[3].endswith(f"<{origin}/inbox>")
     assert texts[4].endswith(f"{origin}/reviews/rev-1")
     for text in texts:
         assert "8081" not in text and "localhost" not in text and "127.0.0.1" not in text
@@ -669,16 +669,16 @@ def test_aq_dashboard_link_refuses_unreadable_yaml(cli_config):
 def test_posted_task_and_report_links_name_the_focus_routes():
     from src.dashboard_paths import report_path, task_path
 
-    assert task_path("stark-impact-60.1") == "/focus/tasks/stark-impact-60.1"
-    assert task_path("a/b c") == "/focus/tasks/a%2Fb%20c"
-    assert report_path("morning-2026-09-25") == "/focus/reports/morning-2026-09-25"
+    assert task_path("stark-impact-60.1") == "/tasks/stark-impact-60.1"
+    assert task_path("a/b c") == "/tasks/a%2Fb%20c"
+    assert report_path("morning-2026-09-25") == "/reports/morning-2026-09-25"
 
 
 def test_dashboard_href_joins_an_origin_and_a_path():
     from src.dashboard_paths import dashboard_href
 
-    assert dashboard_href("https://q.example", "/focus/tasks/t") == "https://q.example/focus/tasks/t"
-    assert dashboard_href("https://q.example/", "/focus/tasks/t") == "https://q.example/focus/tasks/t"
+    assert dashboard_href("https://q.example", "/tasks/t") == "https://q.example/tasks/t"
+    assert dashboard_href("https://q.example/", "/tasks/t") == "https://q.example/tasks/t"
 
 
 def test_the_module_needs_nothing_beyond_the_standard_library_at_import():

@@ -7,6 +7,6 @@ it("keeps paused requests visible with their version and canonical link", () => 
   const ask = { ...askData().ask, held_while_paused: true };
   render(<MemoryRouter><AskCard ask={ask} /></MemoryRouter>);
   expect(screen.getByText(/Held while paused/i)).toBeInTheDocument();
-  expect(screen.getByRole("link")).toHaveAttribute("href", "/focus/asks/ask-one");
+  expect(screen.getByRole("link")).toHaveAttribute("href", "/asks/ask-one");
   expect(screen.getByText(/generation 2/)).toBeInTheDocument();
 });
