@@ -932,7 +932,30 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition': {'authorized_engine_delta': 55,
+HAND_INTEGRATION_RECONCILIATION = {'wait_listener_deadlock_restart_composition': {'task_id': 'keen-stone-97',
+ 'pull_request': 2091,
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'dev_source_revision': '5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b',
+ 'source_revision': '8ebd8b2174552fe250dcfa40170e1b8faf356b1b',
+ 'previous_measured_owned_total': 159104,
+ 'previous_measured_engine_lines': 83613,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 13,
+ 'authorized_engine_delta': 20,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 159117,
+ 'measured_engine_lines': 83633,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/integration/check_reconciliation.py': 2,
+                   'src/integration/checks.py': 18,
+                   'src/waits/watchers/ci.py': -7},
+ 'reason': 'Exact supervisor-approved +13 owned/+20 engine lines for '
+           'hand-landing PR 2091 (wait listener restart on PostgreSQL deadlock '
+           'in CIWatcher.lock_source). Preserve every historical grant, '
+           'original baseline and ownership classification, zero remaining '
+           'headroom and no new storage category.'},
+ 'aborted_batch_branch_retirement_composition': {'authorized_engine_delta': 55,
                                                  'authorized_owned_delta': 63,
                                                  'authorized_table_delta': 0,
                                                  'dev_source_revision': '0f0a16299',
@@ -979,7 +1002,7 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3667,
+ 'authorized_owned_delta': 3680,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1466,6 +1489,29 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                                  'source_revision': '92b56b120a20e48bf0b9d4cdc06e6624d9a2e788',
                                                  'supervisor_grant_reference': 'comment-1b7fad96f62c49979956ff5fb09df8e3',
                                                  'task_id': 'sharp-grove-84'},
+ 'delivery_watchdog_epoch24_merge_composition': {'authorized_engine_delta': 61,
+                                                 'authorized_owned_delta': 62,
+                                                 'authorized_shared_owned_delta': 1,
+                                                 'authorized_table_delta': 0,
+                                                 'dev_source_revision': '4cb68c0ed8f744d5bbce144ab1f5e51e19ad6a41',
+                                                 'measured_engine_lines': 83694,
+                                                 'measured_owned_total': 159179,
+                                                 'measured_table_count': 45,
+                                                 'operator_decision': '6679052c',
+                                                 'previous_measured_engine_lines': 83633,
+                                                 'previous_measured_owned_total': 159117,
+                                                 'previous_measured_table_count': 45,
+                                                 'reason': 'Carry the unchanged approved watchdog '
+                                                           'ownership delta onto current dev. '
+                                                           'Preserve both implementations, every '
+                                                           'historical grant, baseline and '
+                                                           'ownership classification; zero '
+                                                           'remaining headroom and no new storage '
+                                                           'category.',
+                                                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                 'source_revision': '195ba6f8f89d8673d6b096af2b21d12740dc6ff8',
+                                                 'supervisor_grant_reference': 'comment-1b7fad96f62c49979956ff5fb09df8e3',
+                                                 'task_id': 'sharp-grove-84'},
  'delivery_watchdog_ownership_composition': {'authorized_engine_delta': 63,
                                              'authorized_owned_delta': 64,
                                              'authorized_shared_owned_delta': 1,
@@ -1772,8 +1818,8 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83674,
- 'measured_owned_total': 159166,
+ 'measured_engine_lines': 83694,
+ 'measured_owned_total': 159179,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
