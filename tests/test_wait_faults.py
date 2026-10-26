@@ -1199,12 +1199,8 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
     def controlled_timeout(seconds):
         nonlocal fault_budget
         budget = asyncio.timeout(None)
-        # Keep the budget that encloses the SQL stall. Earlier projects can
-        # finish normally, and later listener work can reuse the same duration.
-        if not entered.is_set() and seconds == (
-            service.listener.lease_seconds if driver == "listener"
-            else scheduler.SCHEDULER_SYNC_TIMEOUT
-        ):
+        if seconds == (service.listener.lease_seconds if driver == "listener"
+                       else scheduler.SCHEDULER_SYNC_TIMEOUT):
             fault_budget = budget
         return budget
 

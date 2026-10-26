@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "573c1e1360e4ccd82aedcfb3904a15b238eaf7d4",
+      "source_head": "a0f9c10ad286c4cd1cf4b98ec86c76425d729fb7",
       "tool_sha256": "50719aace6bcb916a8c81be1958fdba6fd79957d75e5392095f8c076135c1199"
     },
     "nodes": [
@@ -40139,7 +40139,7 @@
       "tests/test_wait_cutover.py": "260b8ac74f8b48a6a4e8d430b7db6edf54db8d8e56864f47aec9c65e9d42ab27",
       "tests/test_wait_decisions.py": "3c531fb102c186059d122dcdf61655caf848c051f7e5c60cf1721e54e32b8b41",
       "tests/test_wait_dispatch.py": "5677ed15fa10b5686854abc783ceaae46ddc2d56970c18f98c0da21adfa74e81",
-      "tests/test_wait_faults.py": "32a3cc0f85a2e31e2f58b1df37b1dd9de13d9f42b6205cbf0143d4b3a6c7d96b",
+      "tests/test_wait_faults.py": "67dd5a63be9c399fdfd8b497c37feda1b095bc2d2fd8ed48f3cfe02aaf14e56f",
       "tests/test_wait_graph.py": "fb7c3c8ab18b1fd1849965b818384f8315ff9063181a3d7344322572b2db87f4",
       "tests/test_wait_hibernation.py": "f9372f27c0c3477c209a81b9e3f37fc61e65f331a4abf0e9ab7ce33037e8ca24",
       "tests/test_wait_holding.py": "1b6693f745ac67bcbb572d6d7155dd03f237933785a8d76027559d356943b7be",
