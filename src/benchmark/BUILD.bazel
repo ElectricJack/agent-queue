@@ -8,6 +8,13 @@ filegroup(name = "sources", srcs = [
         "opencode.py",
         "report.py",
     ])
+exports_files([
+        "__init__.py",
+        "opencode.py",
+        "report.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

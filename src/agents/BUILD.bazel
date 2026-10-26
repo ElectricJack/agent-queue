@@ -13,6 +13,18 @@ filegroup(name = "sources", srcs = [
         "subagents.py",
         "terminals.py",
     ])
+exports_files([
+        "__init__.py",
+        "configuration.py",
+        "liveness.py",
+        "routing.py",
+        "service.py",
+        "sessions.py",
+        "subagents.py",
+        "terminals.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

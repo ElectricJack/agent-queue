@@ -28,6 +28,33 @@ filegroup(name = "sources", srcs = [
         "standalone.py",
         "transport_controls.py",
     ])
+exports_files([
+        "__init__.py",
+        "adapters.py",
+        "authority.py",
+        "batch_scope.py",
+        "buttons.py",
+        "coverage.py",
+        "delivery.py",
+        "discussion.py",
+        "ingestion.py",
+        "intake.py",
+        "legacy_reset.py",
+        "models.py",
+        "operations.py",
+        "reconcile.py",
+        "render.py",
+        "reset_policy.py",
+        "review.py",
+        "schema.py",
+        "service.py",
+        "source_operations.py",
+        "sources.py",
+        "standalone.py",
+        "transport_controls.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

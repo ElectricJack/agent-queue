@@ -932,7 +932,28 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
+HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'task_id': 'stark-orbit-64',
+ 'supervisor_decision_message_id': 'msg-216d06694f694f32a600007228ac11cc',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'dev_source_revision': 'cb53d0615ab2635f13e30ca0c5812efb41c9a3b0',
+ 'previous_measured_owned_total': 159029,
+ 'previous_measured_engine_lines': 83538,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 6,
+ 'authorized_shared_owned_delta': 6,
+ 'authorized_engine_delta': 0,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 159035,
+ 'measured_engine_lines': 83538,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/test_dsn.py::postgres_test_dsn_error': 6},
+ 'reason': 'Exact supervisor-approved +6 owned/+0 engine/+0 tables for the PostgreSQL test '
+           'admission helper reached from the integration-owned aq test command. Existing '
+           'inventory rules charge these six lines to shared ownership; no ownership rule or '
+           'classification changes. Preserve all historical grants and measurements, the original '
+           'baseline, zero remaining headroom, the s4_modules expiry and no new storage category.'},
+ 'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
  'authorized_engine_delta': 0,
  'authorized_owned_delta': 51,
  'authorized_shared_owned_delta': 51,
@@ -1135,7 +1156,7 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'appr
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3530,
+ 'authorized_owned_delta': 3536,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1340,7 +1361,7 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'appr
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83538,
- 'measured_owned_total': 159029,
+ 'measured_owned_total': 159035,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,

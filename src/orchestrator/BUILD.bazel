@@ -32,6 +32,37 @@ filegroup(name = "sources", srcs = [
         "workspace_claim_recovery.py",
         "worktree_manager.py",
     ])
+exports_files([
+        "__init__.py",
+        "agent_reconciler.py",
+        "base_workspace.py",
+        "context.py",
+        "core.py",
+        "events.py",
+        "execution.py",
+        "git_ops.py",
+        "layout_step.py",
+        "lifecycle.py",
+        "merge_slot.py",
+        "monitoring.py",
+        "pools.py",
+        "pr_polling.py",
+        "provider_failover.py",
+        "retained_workspace.py",
+        "route_needed.py",
+        "slot_restore.py",
+        "stranded_work.py",
+        "sync_workflow.py",
+        "task_checkpoint.py",
+        "triage.py",
+        "workspace.py",
+        "workspace_attachments.py",
+        "workspace_binding_audit.py",
+        "workspace_claim_recovery.py",
+        "worktree_manager.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
