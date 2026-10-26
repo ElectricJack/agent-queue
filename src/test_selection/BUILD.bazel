@@ -19,6 +19,24 @@ filegroup(name = "sources", srcs = [
         "static_impact.py",
         "typesafe.py",
     ])
+exports_files([
+        "__init__.py",
+        "catalogue.py",
+        "discovery.py",
+        "load_closure.py",
+        "mandatory.py",
+        "policy.py",
+        "questions.py",
+        "reasons.py",
+        "replay.py",
+        "report.py",
+        "service.py",
+        "snapshot.py",
+        "static_impact.py",
+        "typesafe.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

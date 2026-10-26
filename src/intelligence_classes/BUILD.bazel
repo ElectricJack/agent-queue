@@ -8,6 +8,13 @@ filegroup(name = "sources", srcs = [
         "editing.py",
         "registry.py",
     ])
+exports_files([
+        "__init__.py",
+        "editing.py",
+        "registry.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
