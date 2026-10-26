@@ -10,6 +10,15 @@ filegroup(name = "sources", srcs = [
         "session_lens.py",
         "submission.py",
     ])
+exports_files([
+        "__init__.py",
+        "delivery.py",
+        "service.py",
+        "session_lens.py",
+        "submission.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

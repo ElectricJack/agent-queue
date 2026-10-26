@@ -325,6 +325,9 @@ class Launch:
         env = self.environment.child_env()
         env.update(
             {
+                # The native runtime declares this data and verifies its entire
+                # read-only subtree; never search the host's zoneinfo directory.
+                "PYTHONTZPATH": str(native / "share/zoneinfo"),
                 "GIT_AUTHOR_NAME": "AQ disposable test",
                 "GIT_AUTHOR_EMAIL": "test@example.invalid",
                 "GIT_COMMITTER_NAME": "AQ disposable test",
