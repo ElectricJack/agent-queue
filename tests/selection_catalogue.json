@@ -3767,7 +3767,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:559c750b90172ed33154567ec0b3f032058c5ccc99844687d52f403b17270eed",
+      "digest": "sha256:9ace42c8f337bef0c865d2c66f7a22fa464fe446212c79c3c522e4bdf5bc07f6",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3810,6 +3810,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.workspace_claim_recovery",
         "src.orchestrator.worktree_manager",
         "src.preparation_failure",
@@ -18069,7 +18070,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:1d64b19548230311ee4c38cea2940ecd774bd9f842e1db6d7da3855c9de4645b",
+      "digest": "sha256:2dc0b363ca991ea9330c466604a9d228375592db52523498be4dbd970c76e5d3",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -18077,6 +18078,7 @@
       ],
       "markers": [
         "integration",
+        "parametrize",
         "timeout"
       ],
       "summary": "Reviewed stuck-task watch acceptance over an isolated daemon and PostgreSQL, no LLM."
