@@ -116,7 +116,7 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/integration/drain_owners.py` | Receipt-backed owner release | admission; policy_docs |
 | `src/integration/removal_guard.py` | Receipt fallback for hierarchical archive/delete | admission |
 | `src/integration/cleanup.py` | Batch receipt cleanup gate and descendant receipt projection | admission; dispatch; policy_docs |
-| `src/integration/delivery_branches.py` | Holds epic branch deletion until each current child has a retained Git completion witness; receipt presence never proves delivery | watchdog; cleanup; retained evidence deletion fence |
+| `src/integration/delivery_branches.py` | Current-generation retained child witness deletion fence; permits cleanup only, never containment or admission | dispatch; policy_docs |
 | `src/integration/release.py` | Terminal batch release proof from receipt ordinals/reservations | dispatch; policy_docs |
 | `src/integration/cutover.py` | Receipt inventory, target retagging writer and trigger controls | cutover |
 | `src/integration/task_deletion.py` | Receipt snapshot for historical deletion audit | policy_docs; retain audit without delivery authority |
@@ -192,12 +192,12 @@ both sets only shrink, and admission consumers read none. Historical
 tables/foreign keys remain until rollback retention and a separately approved
 destructive migration permit deletion.
 
-The retained-child deletion fence in `delivery_branches.unrecorded_epic_children`
-reads the reconciler's historical witness to keep an epic branch until each child's
-current completion identity has independently retained Git evidence. This cleanup
-consumer may withhold deletion; it never supplies positive delivery or admission
-proof. Cleanup still requires fresh Git containment and an exact ref lease. Its
-owner is branch retirement, and the reader inventory includes this safeguard.
+The branch-retirement safety fence adds the explicitly inventoried
+`delivery_branches` reader: it matches the reconciler's retained Git witness to
+the child's current completion before allowing epic-ref deletion. This is the
+cleanup-only role specified in `branch-retirement.md`; it grants no delivery or
+admission authority and introduces no receipt writer. The ratchet pins this
+reader alongside the remaining historical consumers.
 
 The later `azure-ridge-72` adapter retirement removed the unused
 `parent_subjects` receipt query with its parent observer. Its baseline inventory

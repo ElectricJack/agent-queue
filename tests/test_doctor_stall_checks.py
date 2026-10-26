@@ -130,7 +130,7 @@ async def test_undelivered_human_escalations_reach_stall_sweep(context, monkeypa
     checks = import_module("src.doctor.escalation_checks")
     read = AsyncMock(return_value=[{
         "project_id": "one", "escalation_id": "esc-gate", "detail": "Root is missing",
-        "deep_link": "/focus/escalations/esc-gate", "age_seconds": 301,
+        "deep_link": "/escalations/esc-gate", "age_seconds": 301,
         "delivery_status": "missing",
     }])
     monkeypatch.setattr(checks, "undelivered_escalations", read)
