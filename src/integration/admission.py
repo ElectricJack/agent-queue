@@ -459,7 +459,7 @@ class AdmissionSnapshot:
             if snapshot.error is None and not await snapshot.is_fresh():
                 return self.record_change(
                     "development_snapshot_changed",
-                    f"Development target freshness failed: {snapshot.target_ref}; retry", task_id,
+                    f"Development target freshness failed: {snapshot.observation.target_ref}; retry", task_id,
                 )
         return True
 
