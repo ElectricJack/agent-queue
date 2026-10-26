@@ -27,6 +27,7 @@ from typing import Any
 
 from src.metrics.histogram import new_hist, new_sum, observe
 from src.metrics.loop_watchdog import LoopWatchdog
+from src.metrics.operation_profile import current_profile
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,7 @@ def operation_timing(label: str):
     """
     registry = perf_registry()
     key = registry.operation_started(label)
+    profile = current_profile()
     started = time.perf_counter()
     outcome = "completed"
     try:
@@ -296,8 +298,10 @@ def operation_timing(label: str):
         outcome = "error"
         raise
     finally:
+        elapsed = (time.perf_counter() - started) * 1000
+        if profile is not None:
+            profile.record(label, elapsed / 1000)
         if key is not None:
-            elapsed = (time.perf_counter() - started) * 1000
             registry.operation_finished(key, elapsed, outcome)
             if registry.enabled and elapsed >= 1000:
                 try:

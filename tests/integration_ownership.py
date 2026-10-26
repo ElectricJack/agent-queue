@@ -975,7 +975,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_child_recovery_composition': {'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3308,
+ 'authorized_owned_delta': 3385,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1179,8 +1179,8 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_child_recovery_composition': {'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83383,
- 'measured_owned_total': 158807,
+ 'measured_engine_lines': 83418,
+ 'measured_owned_total': 158884,
  'measured_table_count': 45,
  'project_ready_observation_batching': {
      'authorized_engine_delta': 0,
@@ -1715,7 +1715,24 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_child_recovery_composition': {'
              'remaining headroom and no new storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': '39242c4c5',
-   'task_id': 'grand-falcon-16'}}
+   'task_id': 'grand-falcon-16'},
+ 'git_truth_phase_profile_composition': {'authorized_engine_delta': 35,
+   'authorized_owned_delta': 77,
+   'authorized_table_delta': 0,
+   'dev_source_revision': 'c51bb0ea8',
+   'measured_engine_lines': 83418,
+   'measured_owned_total': 158848,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 83383,
+   'previous_measured_owned_total': 158771,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact task-preapproved reconcile_git_truth per-phase timing instrumentation '
+             '(sound-meadow-89) plus sibling-slot branch release (bright-beacon-87, no size change). '
+             'Preserve every historical grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'ebb6a75bb',
+   'task_id': 'sound-meadow-89'}}
 
 
 def integration_table(name: str) -> bool:
