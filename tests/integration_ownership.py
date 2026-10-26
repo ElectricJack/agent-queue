@@ -932,7 +932,27 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
+HAND_INTEGRATION_RECONCILIATION = {'idle_epic_prerequisite_refresh_composition': {'task_id': 'bright-glacier-60',
+ 'decision_message_id': 'msg-2f4fefae40dd4c2ba66ab1d9f102ad2d',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'dev_source_revision': '2373e54bf',
+ 'source_revision': '3882a0911',
+ 'previous_measured_owned_total': 158864,
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 84,
+ 'authorized_engine_delta': 84,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 158948,
+ 'measured_engine_lines': 83518,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/integration/train_sources.py': 84},
+ 'reason': 'Exact supervisor-approved idle epic prerequisite refresh trigger using the pinned '
+           'snapshot and existing attested EpicRefresh.start path. Preserve target-relative '
+           'admission, batch ownership, every historical grant and ownership classification; zero '
+           'remaining headroom and no new storage category.'},
+ 'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
  'authorized_owned_delta': 16,
  'authorized_table_delta': 0,
  'charged_files': {'src/integration/legacy_backfill.py': 16},
@@ -994,7 +1014,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3365,
+ 'authorized_owned_delta': 3449,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1198,8 +1218,8 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83434,
- 'measured_owned_total': 158864,
+ 'measured_engine_lines': 83518,
+ 'measured_owned_total': 158948,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
