@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3035,
+ 'authorized_owned_delta': 3052,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1138,7 +1138,7 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83163,
- 'measured_owned_total': 158534,
+ 'measured_owned_total': 158551,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1596,7 +1596,24 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
  'reason': 'Exact supervisor-approved composition of the unchanged retained-fixer authority '
            'delta with current dev. Preserve every historical grant, prior merge measurement, '
            'original baseline and ownership classification, with zero remaining headroom and no '
-           'new storage category.'}}
+           'new storage category.'},
+ 'wait_listener_ci_check_coalesce_composition': {'authorized_engine_delta': 0,
+   'authorized_owned_delta': 17,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '4e1ce7c75',
+   'measured_engine_lines': 83163,
+   'measured_owned_total': 158551,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 83163,
+   'previous_measured_owned_total': 158534,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +17 owned lines for coalescing in-progress ci_check '
+             're-observation and a short graph-lock hold in the wait listener. Preserve every '
+             'historical grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'wait-listener-coalesce epic',
+   'task_id': 'fresh-ridge-78'}}
 
 
 def integration_table(name: str) -> bool:

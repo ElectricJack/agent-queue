@@ -2820,7 +2820,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3035,
+    "authorized_owned_delta": 3052,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2986,7 +2986,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 83163,
-    "measured_owned_total": 158534,
+    "measured_owned_total": 158551,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -3348,6 +3348,23 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "source_revision": "677da30953d618601b049f4b4eb78c48d8269098",
       "task_id": "supervisor-global"
+    },
+    "wait_listener_ci_check_coalesce_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 17,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "4e1ce7c75",
+      "measured_engine_lines": 83163,
+      "measured_owned_total": 158551,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83163,
+      "previous_measured_owned_total": 158534,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +17 owned lines for coalescing in-progress ci_check re-observation and a short graph-lock hold in the wait listener. Preserve every historical grant; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "wait-listener-coalesce epic",
+      "task_id": "fresh-ridge-78"
     },
     "wait_listener_fence_inherited_composition": {
       "authorized_engine_delta": 0,
@@ -16734,7 +16751,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3035,
+      "authorized_owned_delta": 3052,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16900,7 +16917,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 83163,
-      "measured_owned_total": 158534,
+      "measured_owned_total": 158551,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -17263,6 +17280,23 @@
         "source_revision": "677da30953d618601b049f4b4eb78c48d8269098",
         "task_id": "supervisor-global"
       },
+      "wait_listener_ci_check_coalesce_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 17,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "4e1ce7c75",
+        "measured_engine_lines": 83163,
+        "measured_owned_total": 158551,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83163,
+        "previous_measured_owned_total": 158534,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +17 owned lines for coalescing in-progress ci_check re-observation and a short graph-lock hold in the wait listener. Preserve every historical grant; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "wait-listener-coalesce epic",
+        "task_id": "fresh-ridge-78"
+      },
       "wait_listener_fence_inherited_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 3,
@@ -17341,7 +17375,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 158534,
+    "owned_total_cap": 158551,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
