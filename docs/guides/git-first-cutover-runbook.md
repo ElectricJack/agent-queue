@@ -111,9 +111,15 @@ an ancestor of the tip (`development_delivery`) or merging it changes only
 generated artifacts (`content_equivalent`). The latter ignores differences and
 conflicts only in paths marked `merge=aq-generated` by the pinned target's Git
 attributes; other differences or conflicts remain unproven.
-It never writes provenance, moves a ref or edits a task;
-anything unproven is listed and left alone for an explicit decision. A reopened
-task's new completion is not covered by the old row.
+It also inventories completed tasks that never recorded an origin, including
+tasks whose branches are gone. For these tasks, a passing completion's exact
+final reported source is retained as Git provenance only when ancestry proves
+that source on the default target. Dependency admission can then recheck that
+source normally. Re-running repairs previously backfilled rows that lack this
+provenance, using fresh Git proof. Earlier commits and content equivalence do
+not authorize this source binding. Preview writes nothing; apply does not move
+task branches or edit tasks. Anything unproven is listed and left alone for an
+explicit decision. A reopened task's new completion is not covered by the old row.
 
 A child of a still-open epic whose exact source is already on the epic branch
 gets retained provenance instead (`epic_branch_provenance`), because the epic's

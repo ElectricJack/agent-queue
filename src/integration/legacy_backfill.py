@@ -9,9 +9,12 @@ dependent that needs it is held out of a batch, and each visit re-evaluates it.
 The train already honours one database answer for such work, an
 ``integration_legacy_deliveries`` row (:func:`src.integration.train_sources.project_delivered`).
 This backfill writes that row only after git proves the work is on the root
-target tip. It never writes provenance, never moves a ref and never edits a
-task. Each completed task with a live origin, no legacy row and no retained
-completion record goes through four steps:
+target tip. It never moves a task branch or edits a task. For originless passing
+completions, it also retains the exact final reported source when ancestry proves
+that source on the target, so ordinary dependency admission can read it. Each
+completed task in the root inventory (including legacy tasks without
+any recorded branch origin), with no legacy row and no retained completion
+record, goes through four steps:
 
 1. **Locate** exact candidate sources, newest evidence first: the completion's
    reported commits, the origin branch tip, the old engine's batch member
@@ -47,7 +50,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -199,6 +202,18 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
         raise ValueError("root target tree cannot be read")
     async with db._engine.connect() as conn:
         ids = await _pending_tasks(conn, project_id, target.repository_id, limit=None)
+        # Train admission needs a known filing base; historical proof recovery
+        # does not. Add tasks that never recorded an origin without overriding
+        # the train query's routing exclusions for tasks with retained origins.
+        originless = (await conn.execute(select(tasks.c.id).where(
+            tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
+            or_(tasks.c.repo_id.is_(None), tasks.c.repo_id == target.repository_id),
+            or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+            ~select(task_branch_origins.c.id).where(
+                task_branch_origins.c.task_id == tasks.c.id).exists(),
+        ))).scalars().all()
+        originless = set(originless)
+        ids = sorted(set(ids) | originless)
     delivered = await project_delivered(
         db, ids, project_id=project_id, repository_id=target.repository_id,
         target_ref=target.target_ref, snapshot=snap,
@@ -222,7 +237,8 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
             if tip and base and tip != base:
                 parents.discard(parent_id)
     requests = await load_delivery_requests(
-        db, [task_id for task_id in ids if task_id not in delivered and task_id not in parents],
+        db, [task_id for task_id in ids if task_id not in parents
+             and (task_id not in delivered or task_id in originless)],
         repository_id=target.repository_id, target_ref=target.target_ref, reduced=True,
     )
     provenance = GitProvenance(observation.git, observation.store,
@@ -239,6 +255,11 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
                     continue  # retained provenance: the train already answers it
             except (GitError, ValueError):
                 pass
+            if task_id in delivered and (
+                request.completion_outcome != "pass"
+                or not is_valid_git_oid(request.reported_source or "")
+            ):
+                continue  # only an exact passing source can repair a row-only backfill
             verdict = Verdict(task_id, "unproven")
             if not _answered_by_row(request):
                 # A committed transition without its completion row: no
@@ -249,17 +270,32 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
             async with db._engine.connect() as conn:
                 candidates = await _candidates(conn, task_id, request.branch_name,
                                                observation.source_heads)
+            if task_id in delivered:
+                candidates = [("completion_commit", request.reported_source)]
             await _prove(observation, snap.target_oid, target_tree, verdict, candidates)
-            if verdict.outcome != "proven":
+            if task_id in delivered and verdict.proof != CONTAINED_PROOF:
+                continue  # the old row cannot prove the final source or authorize retention
+            if verdict.outcome != "proven" and task_id not in delivered:
                 await _prove_on_open_epic(db, observation, task_id, verdict, candidates)
-            if verdict.proof == EPIC_PROOF and not dry_run:
-                verdict.outcome = await _attest(db, provenance, request, target, identity,
-                                                verdict)
-            elif verdict.outcome == "proven" and not dry_run:
-                verdict.outcome = await _record(
-                    db, request, target, snap.target_oid, verdict,
-                    operator_id=operator_id, reason=reason, now=clock(),
-                )
+            retain_root = (
+                task_id in originless and verdict.proof == CONTAINED_PROOF
+                and request.completion_outcome == "pass"
+                and verdict.delivered_sha == request.reported_source
+                and await snap.strictly_contains_source(request.reported_source) is True
+            )
+            if task_id in delivered and not retain_root:
+                continue
+            if verdict.outcome == "proven" and not dry_run:
+                if verdict.proof == EPIC_PROOF or retain_root:
+                    verdict.outcome = await _attest(
+                        db, provenance, request, target, identity, verdict,
+                    )
+                if (verdict.proof != EPIC_PROOF and verdict.outcome != "changed"
+                        and task_id not in delivered):
+                    verdict.outcome = await _record(
+                        db, request, target, snap.target_oid, verdict,
+                        operator_id=operator_id, reason=reason, now=clock(),
+                    )
             verdicts.append(verdict)
     finally:
         await _drop_pull_refs(observation)
@@ -300,7 +336,7 @@ async def _prove_on_open_epic(db, observation, task_id, verdict, candidates) -> 
 
 
 async def _attest(db, provenance, request, target, identity, verdict) -> str:
-    """Retain the exact epic-branch source as the generation's provenance."""
+    """Retain the exact proven source as the generation's provenance."""
     current = (await load_delivery_requests(
         db, [request.task_id], repository_id=target.repository_id,
         target_ref=target.target_ref, reduced=True,
