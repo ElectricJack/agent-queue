@@ -36,7 +36,6 @@ is read.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from typing import Any
 
@@ -57,10 +56,6 @@ _PENDING_DELIVERY_STATUSES = frozenset({"pending", "sending", "retry", "unknown"
 #: How many recent windows ``digest_status`` reports, and how far back a
 #: preview looks for wording it has already said.
 _RECENT_WINDOWS = 20
-
-#: A body that carries its own link is refused: §3.1 gives every post exactly
-#: one link, and the daemon appends the needs-you page itself.
-_BODY_URL = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
@@ -409,8 +404,6 @@ class DigestCommandsMixin:
         body = str(args.get("body") or "")
         if not body.strip():
             return _error("digest.invalid", "digest body is empty")
-        if _BODY_URL.search(body):
-            return _error("digest.invalid", "digest links are inserted by the daemon")
         dashboard_url, dashboard_notice = "", ""
         resolver = getattr(self.orchestrator, "dashboard_links", None)
         if resolver is not None:

@@ -62,10 +62,12 @@ def _copy_inputs(destination):
     ):
         shutil.copy2(ROOT / path, destination / path)
     shutil.copytree(ROOT / "tools/bazel", destination / "tools/bazel")
-    shutil.copytree(
-        ROOT / "migrations", destination / "migrations",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    # Root BUILD evaluates these globs even for the isolated H1 smoke targets.
+    for directory in ("migrations", "scripts", "docs/reference/playbook-commands"):
+        shutil.copytree(
+            ROOT / directory, destination / directory,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
     shutil.copytree(
         ROOT / "packages/aq-client",
         destination / "packages/aq-client",
