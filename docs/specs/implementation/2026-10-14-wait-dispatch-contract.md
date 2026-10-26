@@ -20,6 +20,16 @@ batching never skips a relevant event or changes retry ownership.
 
 ## Recoverable listener failures — 2026-10-25
 
+Deadline effect refusals preserve their structured error code across transaction
+rollback. The timer also recognizes the legacy `command_runtime_error` wrapper
+whose error contains `deadline effect failed: <refusal dict>`. A reservation
+deadline refused with `wait.source_unresolved` retries on the same one-to-thirty
+second exponential cadence as graph contention; other permanent refusals still
+quarantine immediately. Other structured effect refusals retry locally. Each
+refusal is logged with its wait id, deadline type and generation, and later due
+deadlines continue in the same tick. Unavailable infrastructure, transport errors
+and unclassified runtime failures retain listener recovery behavior.
+
 Outcome measurements are idempotent by measurement id. A duplicate preserves
 the existing sample, including any later resume-cost updates, and does not
 roll back outcome delivery or source-cursor progress.
