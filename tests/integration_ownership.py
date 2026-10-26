@@ -932,7 +932,28 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
+HAND_INTEGRATION_RECONCILIATION = {'pool_claim_epoch_churn_composition': {'task_id': 'brisk-zenith-96',
+ 'supervisor_decision_comment_id': 'comment-57436ba4352943b8a1762cfc431eda05',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'dev_source_revision': '2229600c889b1b28cbeee2b26016dcc618f8bde1',
+ 'source_revision': 'aa33d430b7168464dc3a763a33b05ed3448a1059',
+ 'previous_measured_owned_total': 158838,
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 25,
+ 'authorized_shared_owned_delta': 25,
+ 'authorized_engine_delta': 0,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 158863,
+ 'measured_engine_lines': 83434,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked': 25},
+ 'reason': 'Exact supervisor-preapproved +25 shared owned lines for fenced post-reset admission '
+           'failure recording, backoff and claim release. Compose on current dev after its '
+           'dashboard retirement; preserve every historical grant, original baseline and ownership '
+           'classification, with zero remaining headroom and no new storage category.'},
+ 'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
  'authorized_owned_delta': 16,
  'authorized_table_delta': 0,
  'charged_files': {'src/integration/legacy_backfill.py': 16},
@@ -994,7 +1015,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3339,
+ 'authorized_owned_delta': 3364,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1226,7 +1247,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83434,
- 'measured_owned_total': 158838,
+ 'measured_owned_total': 158863,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
