@@ -100,9 +100,13 @@ async def test_runnable_candidate_reads_use_one_array_bind(db, lookup):
     statements = []
     with_observer = lookup.endswith("_with_observer")
     if with_observer:
-        observer = MagicMock(truth=object(), prerequisite_view=AsyncMock(
-            side_effect=AssertionError("independent candidates require no Git view"),
-        ))
+        observer = MagicMock(
+            truth=object(),
+            prerequisite_view=AsyncMock(
+                side_effect=AssertionError("independent candidates require no Git view"),
+            ),
+            stop_delivery_refresh=AsyncMock(),
+        )
         db.set_prerequisite_observer(observer)
 
     def capture(conn, cursor, statement, parameters, context, executemany):
