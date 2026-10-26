@@ -280,6 +280,9 @@ async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_stat
     observe = AsyncMock(wraps=case.service.registry.observe)
     case.service.registry.observe = observe
     case.service.listener.retry_batch_size = 1
+    # Normal dispatch has just observed these pending sources. Let its safety
+    # cadence expire before testing bounded recovery of dispatched hints.
+    case.now[0] += case.service.listener.safety_seconds + 1
     await case.service.listener.tick()
     assert observe.await_count == 1
     assert all(row["outcome"] == "pending" for row in await rows(world))
