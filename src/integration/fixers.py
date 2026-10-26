@@ -481,6 +481,32 @@ class BatchFixerService:
                     sessions.c.task_id.is_(None),
                 ).values(desired_state="stopped"))
 
+    @staticmethod
+    async def abort_on(conn, batch, *, reason, now):
+        """Withdraw a terminal batch's fixer without releasing its retained checkout."""
+        state = dict(batch["fixer_state"] or {})
+        if not state or state.get("status") == "aborted":
+            return
+        state.update(status="aborted", abort_reason=reason)
+        await execute_batch_mutation(conn, update(integration_batches).where(
+            integration_batches.c.id == batch["id"],
+        ).values(fixer_state=state, updated_at=now))
+        identity = hashlib.sha256(f"{batch['id']}:aborted".encode()).hexdigest()
+        await insert_message_with_source_event(conn, insert(messages).values(
+            id="msg-fixer-" + identity, project_id=batch["project_id"],
+            from_kind="system", from_id="integration-train", to_kind="session",
+            to_id=state["session_id"], subject=f"Batch fixer: {batch['id']}",
+            body=f"Batch {batch['id']} was aborted: {reason}. "
+                 "Stop editing and pushing this branch. Your checkout is retained.",
+            thread_id="batch-fixer-" + batch["id"], priority=100,
+            created_at=now, archive_after_inject=1, body_kind="integration_fixer",
+        ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        await conn.execute(update(sessions).where(
+            sessions.c.id == state["session_id"], sessions.c.project_id == batch["project_id"],
+            sessions.c.instance_token == state["instance_token"],
+            sessions.c.task_id.is_(None), sessions.c.lifecycle == "named",
+        ).values(desired_state="stopped"))
+
     async def for_session(self, session_id):
         async with self.db._engine.connect() as conn:
             row = (await conn.execute(select(integration_batches).where(

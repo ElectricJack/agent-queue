@@ -161,7 +161,7 @@ async def test_abort_withdraws_registered_fixer_but_preview_and_pause_keep_it(db
     row = await db.get_session(original["session_id"])
     assert row.desired_state == "stopped"
     assert row.state == "running"  # a database decision is not process-exit proof
-    assert await state(db) == original
+    assert await state(db) == {**original, "status": "aborted", "abort_reason": ""}
 
 
 @pytest.mark.parametrize("mismatch", ["instance", "task", "project", "lifecycle"])
