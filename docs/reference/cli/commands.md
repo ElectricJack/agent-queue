@@ -39,7 +39,7 @@ can never disagree with the daemon. When a table here and `--help` differ,
 | `aq costs` | `get_costs` | hand | Show token spend rolled up into USD. |
 | `aq doctor` | `doctor` | hand | Check whether this install is healthy, and what to do about it. |
 | `aq handoff` | `task_handoff` | hand | Record a handoff note; request a session restart unless ``--auto`` (design §6.1). |
-| `aq inbox` | `message_inbox` | hand | Show pending messages (alias for ``aq message inbox``). |
+| `aq inbox` | `message_inbox` | hand | Show unread messages (alias for ``aq message inbox``). |
 | `aq logs` | `—` | hand | Tail and filter daemon logs. |
 | `aq prime` | `prime` | hand | Print this task's startup prime document (design §5). |
 | `aq reply` | `—` | hand | Reply to a message (alias for `aq message reply`). |
@@ -355,7 +355,7 @@ hook-safe error semantics.
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|
-| `aq message inbox` | `message_inbox` | hand | Show a recipient's pending (undelivered) messages. |
+| `aq message inbox` | `message_inbox` | hand | Show unread mail; --inject returns only undelivered messages. |
 | `aq message list` | `message_list` | hand | List messages, newest first. |
 | `aq message reply` | `—` | hand | Reply to a message by id. |
 | `aq message send` | `message_send` | hand | Queue a message to a session, task, profile, or user. |

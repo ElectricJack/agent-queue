@@ -9,11 +9,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
-from src.database.tables import projects
+from src.database.tables import integration_batch_members, integration_batches, projects
 from src.git.manager import GitManager
 from src.integration.branch_sweep import SweepSafety, sweep_checkout
+from src.integration.delivery_branches import live_branch_references
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
@@ -197,6 +198,84 @@ async def guarded_repo(tmp_path, reuse_database):
         checkout_base_path=str(checkout),
     ))
     yield db, GitManager(), checkout, origin
+
+
+@pytest.mark.parametrize("batch_id", ["train-aborted", "integration-batch-legacy"])
+async def test_terminal_batch_sweep_retires_landed_refs_and_keeps_unique_work(
+    guarded_repo, tmp_path, batch_id,
+):
+    db, git, checkout, origin = guarded_repo
+    _git(checkout, "switch", "-c", "aq/unique")
+    _commit(checkout, "unique work", "unique.txt", "keep me\n")
+    unique = _git(checkout, "rev-parse", "HEAD")
+    _git(checkout, "push", "origin", "aq/unique")
+    _git(checkout, "switch", "main")
+    head = _git(checkout, "rev-parse", "HEAD")
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id=batch_id, project_id="p", repository_id="repo", request_id="request",
+            target_ref="refs/heads/main", integration_branch="refs/heads/aq/candidate",
+            intent="open", lifecycle="sealing", source_manifest_digest="digest",
+            base_sha=head, policy_snapshot={}, artifact_snapshot={}, cleanup_state="retained",
+            fixer_queue={"status": "deferred"}, created_at=1, updated_at=1,
+        ))
+        await conn.execute(insert(integration_batch_members).values(
+            batch_id=batch_id, ordinal=0, task_id="unique", repository_id="repo",
+            source_ref="refs/heads/aq/unique", source_base_sha=head, source_sha=unique,
+            reviewed_head_sha=unique, reviewed_tree_sha=_git(checkout, "rev-parse", unique + "^{tree}"),
+            review_evidence={},
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == batch_id,
+        ).values(intent="aborted", lifecycle="aborted"))
+        holds = await live_branch_references(conn)
+    safety = SweepSafety(db, "repo", default_branch="main", git=git, checkout=str(checkout))
+    report = await sweep_checkout(
+        git, str(checkout), repository_url=str(origin), default_branch="main",
+        holds=holds, backup_path=tmp_path / "audit.tsv", deletion_guard=safety.deletion,
+    )
+    assert [ref for ref, *_ in report.local_deleted] == ["aq/candidate"]
+    assert [ref for ref, *_ in report.remote_deleted] == ["aq/candidate"]
+    assert ("aq/unique", unique) in report.unique_unmerged
+    assert await git.arev_parse(str(checkout), "aq/candidate") is None
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate") is None
+    assert await git.arev_parse(str(checkout), "aq/unique") == unique
+    assert await git.arev_parse(str(origin), "refs/heads/aq/unique") == unique
+
+
+async def test_daily_backstop_lists_terminal_backlog_and_legacy_operator_review(guarded_repo, tmp_path):
+    from src.integration.branch_retirement import request_branch_retirement_on
+    from src.integration.development import DevelopmentPrimitives
+
+    db, git, checkout, origin = guarded_repo
+    head = _git(checkout, "rev-parse", "HEAD")
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="train-terminal", project_id="p", repository_id="repo", request_id="request",
+            target_ref="refs/heads/main", integration_branch="refs/heads/aq/candidate",
+            intent="aborted", lifecycle="aborted", source_manifest_digest="digest",
+            base_sha=head, policy_snapshot={}, artifact_snapshot={}, cleanup_state="retained",
+            fixer_queue={"status": "companion"}, created_at=1, updated_at=1,
+        ))
+        await request_branch_retirement_on(
+            conn, request_id="retire", project_id="p", repository_id="repo",
+            branch="aq/candidate", reason="explicit retirement",
+        )
+        await conn.execute(DevelopmentPrimitives._operation_insert(
+            id="legacy-operation:review-me", project_id="p", repository_id="repo",
+            target_ref="refs/heads/aq/candidate", state="parked", manifest=[],
+            evidence={}, reason="legacy journal", created_at=1, updated_at=1,
+        ))
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+    await orchestrator._run_daily_git_branch_sweep("2026-10-26")
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "Held retirement refs associated with terminal batches: 1 " in body
+    assert "terminal batch backlog (1 refs): integration batch train-terminal is aborted" in body
+    assert "Legacy holders requiring operator review: 1." in body
+    assert "legacy-operation:review-me is parked" in body
+    assert "Failures" not in body
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate") == head
 
 
 @pytest.mark.parametrize("hold", ["task", "owner", "flow", "attached"])
@@ -760,7 +839,9 @@ async def test_sweep_lists_stashes_of_a_bare_store_read_only(tmp_path):
     assert _git(linked, "stash", "list", "--format=%gd %H %s").splitlines() == expected
 
 
-async def test_daily_backstop_skips_job_snapshots_and_reports_unregistered_origin_once(tmp_path):
+async def test_daily_backstop_skips_job_snapshots_and_reports_unregistered_origin_once(
+    tmp_path, reuse_database,
+):
     other, snapshot_source = tmp_path / "other.git", tmp_path / "snapshot-source.git"
     for bare in (other, snapshot_source):
         _git(tmp_path, "init", "--bare", "--initial-branch=main", str(bare))
@@ -780,6 +861,7 @@ async def test_daily_backstop_skips_job_snapshots_and_reports_unregistered_origi
                                  default_branch="main")
     orchestrator = object.__new__(Orchestrator)
     orchestrator.db = SimpleNamespace(
+        _engine=(await reuse_database("branch-sweep"))._engine,
         list_projects=AsyncMock(return_value=[
             SimpleNamespace(id="p", name="One", storage_binding=None),
         ]),
