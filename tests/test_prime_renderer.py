@@ -1759,6 +1759,8 @@ async def test_pool_completion_does_not_prescribe_disabled_message_wait():
     from src.prime.sections import build_completion_protocol_section
 
     body = build_completion_protocol_section("held", lifecycle="pool", waits_enabled=False).body
+    assert "On claim_in_progress" in body
+    assert "same session to observe the" in body and "existing preparation" in body
     assert "use ONE durable message wait" not in body
     assert "preserve it and end the turn awaiting the supervisor's inbox delivery" in body
     assert "--aq-wait" not in body

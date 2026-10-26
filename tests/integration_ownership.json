@@ -2063,7 +2063,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3667,
+    "authorized_owned_delta": 3672,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -2132,6 +2132,122 @@
       "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
       "task_id": "wise-crest-14",
       "thread_id": "wise-crest-14-ci-size"
+    },
+    "claim_rejection_bazel_merge_composition": {
+      "dev_source_revision": "5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b",
+      "inherited_decision_message_ids": [
+        "msg-611f9fbe1b804e8e9b7f127924b38451",
+        "msg-bb1e6d92f91045cd8d823269cabfd72c"
+      ],
+      "inherited_engine_delta": 0,
+      "inherited_owned_delta": 51,
+      "measured_engine_lines": 83613,
+      "measured_owned_total": 159152,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83613,
+      "previous_measured_owned_total": 159101,
+      "previous_measured_table_count": 45,
+      "reason": "Compose the published claim repair cap (159101 owned/83613 engine) with the existing approved Bazel backend-selection +51 shared-owned lines from current dev. Preserve every historical decision and classification, zero remaining headroom, the s4_modules expiry and no new allowance or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "df2529949412858a6292a42dd66a23e191768f77",
+      "task_id": "solid-torrent-24"
+    },
+    "claim_rejection_current_dev_composition": {
+      "decision_message_id": "msg-611f9fbe1b804e8e9b7f127924b38451",
+      "dev_source_revision": "b284dd4aa99a867b6c0968a052b12709ca78e617",
+      "inherited_decision_message_ids": [
+        "msg-2f4fefae40dd4c2ba66ab1d9f102ad2d",
+        "msg-f472c23dbfc24109a7f3f0b0ff2ae00f"
+      ],
+      "inherited_engine_delta": 104,
+      "inherited_owned_delta": 115,
+      "measured_engine_lines": 83538,
+      "measured_owned_total": 159026,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "overlapping_engine_reduction": 12,
+      "overlapping_owned_reduction": 10,
+      "previous_measured_engine_lines": 83446,
+      "previous_measured_owned_total": 158921,
+      "previous_measured_table_count": 45,
+      "reason": "Compose the previous claim repair cap (158921 owned/83446 engine) with the existing approved idle epic refresh (+84 owned/engine) and current admission diagnostics (+31 owned/+20 engine). Reuse the immutable rejection_reasons implementation instead of the duplicate revalidation helper and share the post-reset refusal path: reclaim 10 owned/12 engine lines. Preserve every historical decision and classification, with zero remaining headroom and no new allowance or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "0a6692e9aa602e23db6efc3d77f573f054205117",
+      "task_id": "solid-torrent-24"
+    },
+    "claim_rejection_delivery_proof_merge_composition": {
+      "decision_message_id": "msg-611f9fbe1b804e8e9b7f127924b38451",
+      "dev_source_revision": "11c93a21b2240f0e48e94328427201950a4e8d4b",
+      "inherited_decision_message_ids": [
+        "msg-353d53ff11c84267b72457c36f4c4a5d"
+      ],
+      "inherited_engine_delta": 75,
+      "inherited_owned_delta": 75,
+      "measured_engine_lines": 83613,
+      "measured_owned_total": 159101,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83538,
+      "previous_measured_owned_total": 159026,
+      "previous_measured_table_count": 45,
+      "reason": "Compose the published claim repair cap (159026 owned/83538 engine) with current dev delivery prerequisite proof net +75 owned/engine lines, inherited from the approved +78 delivery proof grant and its three-line merge reduction. Preserve every historical decision and classification, zero remaining headroom, and no new allowance or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "6579ae520248cabde5493dcd6539406289c11575",
+      "task_id": "solid-torrent-24"
+    },
+    "claim_rejection_diagnostics_composition": {
+      "authorized_engine_delta": 12,
+      "authorized_owned_delta": 76,
+      "authorized_shared_owned_delta": 64,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-611f9fbe1b804e8e9b7f127924b38451",
+      "dev_source_revision": "2373e54bf0b2f15f0b966575b88008dcdec617e3",
+      "measured_engine_lines": 83446,
+      "measured_owned_total": 158940,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83434,
+      "previous_measured_owned_total": 158864,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved claim rejection diagnostics, durable failure and explain, guarded detach-or-retain, and AdmissionView.revalidation_reasons. Compose on current dev; preserve original baselines, every historical grant and ownership classification, zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "21dbc84ecd4d1a7f434b8f006d028deb498cb08d",
+      "task_id": "solid-torrent-24",
+      "thread_id": "solid-torrent-24-ci-size"
+    },
+    "claim_rejection_merge_composition": {
+      "decision_message_id": "msg-611f9fbe1b804e8e9b7f127924b38451",
+      "dev_source_revision": "383c1e85b925c00366535716c608bb80797f84c8",
+      "measured_engine_lines": 83446,
+      "measured_owned_total": 158921,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "overlapping_owned_reduction": 18,
+      "reason": "Compose the existing +76 owned/+12 engine claim diagnostics grant with dev’s +25 shared claim epoch churn grant. The merged refusal path shares 18 charged lines; retain both historical grants and all classifications, with zero remaining headroom and no new allowance.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "9cbf7dabfb86f476982a448d8d06790e385385e6",
+      "task_id": "solid-torrent-24"
+    },
+    "claim_rejection_wait_dsn_merge_composition": {
+      "dev_source_revision": "0d13d9185eefffde0d9541e7c4cd2165d28c071d",
+      "inherited_engine_delta": 20,
+      "inherited_grants": [
+        "bazel_dependency_dsn_helper_composition",
+        "wait_listener_deadlock_restart_composition"
+      ],
+      "inherited_owned_delta": 19,
+      "measured_engine_lines": 83633,
+      "measured_owned_total": 159171,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83613,
+      "previous_measured_owned_total": 159152,
+      "previous_measured_table_count": 45,
+      "reason": "Compose the published claim repair cap with the existing approved wait listener deadlock restart (+13 owned/+20 engine) and PostgreSQL test DSN helper (+6 shared owned/+0 engine) grants from dev. Preserve every historical grant, measurement and classification, zero remaining headroom, the s4_modules expiry and no new allowance or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "8e05f9ad995f90e2fb0c4a5d2bbe0c5202cc5a87",
+      "task_id": "solid-torrent-24"
     },
     "dashboard_retirement_overlap": {
       "applied_owned_reduction": 26,
@@ -2458,8 +2574,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83653,
-    "measured_owned_total": 159166,
+    "measured_engine_lines": 83633,
+    "measured_owned_total": 159171,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,

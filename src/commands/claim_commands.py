@@ -1474,9 +1474,6 @@ class ClaimCommandsMixin:
                 except Exception as exc:
                     if not _retryable_preparation_error(exc):
                         raise
-                    from src.preparation_failure import describe_preparation_failure
-
-                    failure = describe_preparation_failure(exc, "preparation_retry")
                     active = await self.db.get_session(session.id)
                     if (active is not None and active.task_id == task.id
                             and active.last_claim_epoch == task.claim_epoch
@@ -1495,6 +1492,9 @@ class ClaimCommandsMixin:
                         session.id, task.id, type(exc).__name__,
                         attempt + 1, len(_PREPARATION_RETRY_DELAYS) + 1,
                     )
+                    from src.preparation_failure import describe_preparation_failure
+
+                    failure = describe_preparation_failure(exc, "preparation_contention")
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
             # The retry budget ended, but this exact preparation still owns
@@ -1786,7 +1786,7 @@ class ClaimCommandsMixin:
 
     async def _record_prepare_failure(
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
-        cleanup_unproved=False,
+        cleanup_unproved=False, admission_reasons=None,
     ) -> None:
         """Record what a failed preparation observed, and who saw it.
 
@@ -1816,6 +1816,8 @@ class ClaimCommandsMixin:
             "attempt": attempt,
             "failed_at": time.time(),
         }
+        if admission_reasons is not None:
+            record["admission_reasons"] = admission_reasons
         # Hold the task epoch through the metadata write: a late failure
         # cannot replace the next claim's diagnostic after this read.
         async with self.db.immediate() as conn:
@@ -1853,6 +1855,7 @@ class ClaimCommandsMixin:
         """
         epoch = task.claim_epoch
         hierarchy_attached = False
+        rejection = None
         # Read by the ``except`` handler below, which can run before the
         # assignment inside ``try`` (a missing slot raises first).
         hierarchy_enabled = False
@@ -1934,7 +1937,7 @@ class ClaimCommandsMixin:
             async def prepare_and_activate(
                 *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
             ):
-                nonlocal prepared_branch, stage, slot, recheck_detail
+                nonlocal prepared_branch, stage, slot, rejection, recheck_detail
                 if conn is None:
                     timing = current_claim_timing.get()
                     if timing is not None and timing.activation_stack is not None:
@@ -2002,6 +2005,7 @@ class ClaimCommandsMixin:
                 if admission is not None and (
                     task.id not in admission.allowed or not await admission.is_fresh(task.id)
                 ):
+                    rejection = "admission_freshness_changed"
                     return None
                 if (
                     admission is not None
@@ -2009,6 +2013,7 @@ class ClaimCommandsMixin:
                     and not await admission.pr.verify_workspace(task.id, slot.workspace_path)
                 ):
                     stage = "admission_recheck"
+                    rejection = "admission_workspace_changed"
                     return None
                 stage = "activate_claim"
                 activation_args = dict(
@@ -2030,11 +2035,15 @@ class ClaimCommandsMixin:
                     )
                 except OrdinaryAdmissionChanged:
                     stage = "admission_recheck"
+                    rejection = "ordinary_admission_changed"
                     recheck_detail = (
-                        "ordinary_admission_changed: artifact-free source, integration policy "
-                        "or graph eligibility changed; retry with current admission"
+                        "Artifact-free source, integration policy or graph eligibility changed; "
+                        "retry with current admission"
                     )
                     return None
+                if (activated is None and admission is not None
+                        and admission.rejection_reasons(task.id)):
+                    rejection = "admission_activation_changed"
                 if activated and hierarchy_enabled:
                     stage = "finalize_preparation"
                     await verify_preparation(origin, conn=conn, finalize=True)
@@ -2503,26 +2512,47 @@ class ClaimCommandsMixin:
                 return out
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
-            if stage == "admission_recheck" or (
+            if rejection is not None or stage == "admission_recheck" or (
                 admission is not None and (
                     admission.rejection_reasons(task.id) or not await admission.matches()
                 )
             ):
-                from src.preparation_failure import describe_preparation_failure
+                from src.preparation_failure import PreparationFailure, safe_text
 
                 reasons = admission.rejection_reasons(task.id) if admission is not None else []
-                detail = "; ".join(
-                    f"{reason['code']}: {reason['detail']}" for reason in reasons
-                ) or recheck_detail or (
-                    "admission_recheck_unexplained: admission guard rejected preparation "
-                    f"at {stage} without comparison diagnostics; inspect task {task.id} "
-                    f"claim epoch {epoch}"
+                if not reasons:
+                    reasons = [{"code": rejection or "admission_recheck_unexplained", "ref": task.id,
+                                "detail": recheck_detail or (
+                                    "admission_recheck_unexplained: admission guard rejected "
+                                    f"preparation at {stage} without comparison diagnostics; "
+                                    f"inspect task {task.id} claim epoch {epoch}"
+                                )}]
+                reasons = [{key: safe_text(str(reason[key])) for key in ("code", "ref", "detail")}
+                           for reason in reasons]
+                failure = PreparationFailure(
+                    stage=stage, error_type="ClaimAdmissionChanged",
+                    reason=safe_text("admission_recheck: " + "; ".join(
+                        f"{r['code']}: {r['detail']}" for r in reasons),
+                                     limit=2000), causes=(),
                 )
-                failure = describe_preparation_failure(RuntimeError(detail), "admission_recheck")
                 await self.db.record_failed_preparation(
                     session.id, instance_token=session.instance_token, task_id=task.id,
                     claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
                     task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+                )
+                # Persist before release can publish task.ready and admit a
+                # successor epoch. A late disposition update is epoch-fenced.
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="retained", admission_reasons=reasons,
+                )
+                # An attached owner vetoes release_claim. Detach under the
+                # existing handoff proof before removing the holder marker;
+                # otherwise a no_ready_work result strands a preparing claim.
+                detachable = not hierarchy_attached or await (
+                    self.orchestrator.arelease_integration_writer_for_retry(
+                        task, reason="delivery_snapshot_changed", pool=True,
+                    )
                 )
                 released = await self.db.release_claim(
                     session.id,
@@ -2536,17 +2566,22 @@ class ClaimCommandsMixin:
                     expected_task_claim_epoch=epoch,
                     context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
                     prepare_backoff=True,
-                )
-                if released.released:
-                    remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
+                ) if detachable else None
+                disposition = "released" if released and released.released else "retained"
                 await self._record_prepare_failure(
                     task, failure, session=session, slot=slot, epoch=epoch,
-                    disposition="released" if released.released else "retained",
+                    disposition=disposition, admission_reasons=reasons,
                 )
+                logger.warning("claim %s/%s epoch %s: %s (%s)",
+                               session.id, task.id, epoch, failure.reason, disposition)
+                if disposition == "released":
+                    remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
-                return self._simple(
-                    ClaimResult.PREPARE_FAILED, failure.reason, row, cap
+                outcome = self._simple(
+                    ClaimResult.PREPARE_FAILED, failure.reason, row, cap,
                 )
+                outcome["admission_reasons"] = reasons
+                return outcome
             remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)

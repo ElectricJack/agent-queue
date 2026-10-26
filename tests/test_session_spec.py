@@ -1238,6 +1238,10 @@ class TestWorkerToolEnv:
         assert "drain-ack" in prompt
         assert "Do not poll claims" in prompt
         assert "daemon_unreachable / exit code 3, keep retrying" in prompt
+        assert "On `claim_in_progress`, repeat" in prompt
+        assert "in this session to observe the existing preparation" in prompt
+        assert "Progress is not a refusal" in prompt
+        assert "After a repeated refusal, if preparation is retained" in prompt
 
     @pytest.mark.parametrize("project_name", ["agent-q", "Agent Queue", ""])
     @pytest.mark.parametrize("prompt_limit", [1024, 16_384], ids=["file", "inline"])
