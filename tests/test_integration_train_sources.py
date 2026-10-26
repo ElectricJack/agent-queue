@@ -5096,8 +5096,9 @@ async def test_missing_completion_provenance_reports_blocked_target_and_task(wor
             CompletionIdentity("p", "r", tid, completion.id), head,
         ))
     assert (await train.tick())["deferred"] == ["/".join(MAIN.key)]
-    now[0] = train.status()[0]["detail"]["retry_at"]
-    await train.tick()
+    now[0] = max(train.status()[0]["detail"]["retry_at"],
+                 now[0] + train.minimum_visit_interval_seconds)
+    assert (await train.tick())["started"] == ["/".join(MAIN.key)]
     await train.drain()
     project = await status.control_status("p")
     assert [b["code"] for b in project["blockers"]] == ["checks_pending"]
@@ -7100,6 +7101,7 @@ async def test_old_epic_workflow_files_repair_and_exact_push_then_delivers(colle
     assert git(case.origin.url, "rev-parse", "aq/epic") == epic
     assert case.github.records == []  # Absence never becomes an attestation.
 
+    clock.now += case.train.minimum_visit_interval_seconds
     await case.train.tick()
     await case.train.drain()
     again = next(row for row in case.train.status() if row["target_ref"] == case.target.target_ref)
