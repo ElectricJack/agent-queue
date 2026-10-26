@@ -110,6 +110,9 @@ class WaitSourceListener:
         # provider; restart makes retained events immediately eligible again.
         self._retry_due = {}
         self._ci_progress_due = {}
+        # Keep fairness across budget-limited passes, even if each pass fits
+        # only one attempt. Restart gives an aged retry the first turn.
+        self._retry_turn = True
 
     async def _connect(self):
         import asyncpg
@@ -384,6 +387,7 @@ class WaitSourceListener:
                      updated_at=self.clock()))
         for seq in attempt["seqs"]:
             self._retry_due[seq] = self.clock() + self.retry_seconds
+        self._retry_turn = not attempt["retry"]
         logger.warning("wait.source_dispatch_deferred seq=%s source_key=%s",
                        attempt["event"]["seq"], attempt["event"]["source_key"])
         return True
@@ -505,14 +509,28 @@ class WaitSourceListener:
             ))
             self._retry_due = {seq: due for seq, due in self._retry_due.items()
                                if due > self.clock()}
-            # Forward events precede retries so a provider outage cannot
-            # hold later messages or task transitions behind its retry budget.
+            retry_query = select(wait_source_events).where(
+                wait_source_events.c.seq <= (position or 0),
+                wait_source_events.c.seq <= watermark,
+                wait_source_events.c.dispatched_at.is_(None),
+                wait_source_events.c.seq.not_in(self._retry_due),
+                wait_source_events.c.seq.not_in(recovery["attempted"]),
+            ).order_by(wait_source_events.c.seq).limit(1)
+            retry = None
+            if retry_pending and self._retry_turn:
+                # Forward-first alone starves retained observations when every
+                # pass exhausts its budget before catching up with new events.
+                retry = (await conn.execute(retry_query.where(
+                    wait_source_events.c.committed_at <= self.clock() - self.safety_seconds,
+                ))).mappings().first()
             candidate = None
             coalesced = []
-            rows = (await conn.execute(select(wait_source_events).where(
-                wait_source_events.c.seq > (position or 0),
-                wait_source_events.c.seq <= watermark,
-            ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings().all()
+            rows = []
+            if retry is None:
+                rows = (await conn.execute(select(wait_source_events).where(
+                    wait_source_events.c.seq > (position or 0),
+                    wait_source_events.c.seq <= watermark,
+                ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings().all()
             prefix = await self._unobserved_prefix(conn, rows)
             prefix_rows = rows[:len(prefix)]
             if rows:
@@ -524,15 +542,8 @@ class WaitSourceListener:
                             break
                         coalesced.append(row["seq"])
                         candidate = row
-            retry = None
-            if candidate is None and retry_pending:
-                retry = (await conn.execute(select(wait_source_events).where(
-                    wait_source_events.c.seq <= (position or 0),
-                    wait_source_events.c.seq <= watermark,
-                    wait_source_events.c.dispatched_at.is_(None),
-                    wait_source_events.c.seq.not_in(self._retry_due),
-                    wait_source_events.c.seq.not_in(recovery["attempted"]),
-                ).order_by(wait_source_events.c.seq).limit(1))).mappings().first()
+            if candidate is None and retry is None and retry_pending:
+                retry = (await conn.execute(retry_query)).mappings().first()
                 if retry is None:
                     # Keep the undispatched partial index usable; combining
                     # these paths with OR scans the full outbox prefix.
@@ -689,6 +700,7 @@ class WaitSourceListener:
                 self._ci_progress_due.pop(self._coalesce_key(candidate), None)
         self._ci_progress_due = {key: due for key, due in self._ci_progress_due.items()
                                  if due > self.clock()}
+        self._retry_turn = not bool(retry)
         return {"processed": processed, "retry_after": retry_after,
                 "event": dict(candidate) if candidate else None, "retry": bool(retry),
                 "retry_pending": retry_pending}
