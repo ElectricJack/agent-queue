@@ -10,6 +10,7 @@ about it.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from pathlib import Path
 
@@ -32,6 +33,166 @@ from tests.pg_dsn import create_scratch_database
 #: the submodule of the same name for a plain ``import`` — same convention as
 #: ``pool_checks``.  Reach the module explicitly to monkeypatch inside it.
 db_checks_module = importlib.import_module("src.doctor.db_checks")
+
+
+class TestSharedMemory:
+    @staticmethod
+    def context(url="postgresql+asyncpg://test:secret@localhost:5533/agent_queue"):
+        return DoctorContext(config=AppConfig(database=DatabaseConfig(url=url)))
+
+    @staticmethod
+    def probe(monkeypatch, *, size=1024**3, total=1000, used=200, ports=None, failure=None):
+        calls = []
+
+        async def output(*args):
+            calls.append(args)
+            if args[0] == "context":
+                return '"unix:///var/run/docker.sock"'
+            if args[0] == "ps":
+                return "container123"
+            if args[0] == "inspect":
+                return json.dumps({"size": size, "ports": ports if ports is not None else {
+                    "5432/tcp": [{"HostPort": "5533", "HostIp": "0.0.0.0"}],
+                }})
+            if failure:
+                raise failure
+            return ("Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                    f"shm {total} {used} {total-used} 20% /dev/shm")
+
+        monkeypatch.setattr(db_checks_module.shutil, "which", lambda _: "/usr/bin/docker")
+        monkeypatch.delenv("DOCKER_HOST", raising=False)
+        monkeypatch.setattr(db_checks_module, "_docker_output", output)
+        return calls
+
+    @pytest.mark.parametrize(("size", "used", "severity"), [
+        (64 * 1024**2, 200, Severity.WARN),
+        (1024**3, 801, Severity.WARN),
+        (256 * 1024**2, 800, Severity.OK),
+        (1024**3, 200, Severity.OK),
+    ])
+    async def test_capacity_and_usage_thresholds(self, monkeypatch, size, used, severity):
+        calls = self.probe(monkeypatch, size=size, used=used)
+        check = next(c for c in db_checks() if c.id == "db.shared_memory")
+        result = await check.run(self.context())
+        assert check.fix is None
+        assert result.severity == severity
+        assert result.complete
+        assert result.data["shm_size_bytes"] == size
+        assert result.data["used_bytes"] == used * 1024
+        assert calls[-1] == ("exec", "container123", "df", "-Pk", "/dev/shm")
+        if severity == Severity.WARN:
+            assert "shm_size: 1g" in result.detail
+
+    @pytest.mark.parametrize("url", [
+        "not-a-url",
+        "postgresql://db.internal:5533/aq",
+        "postgresql:///aq",
+        "postgresql://localhost:5533/aq?host=db.internal",
+        "postgresql://localhost:5533/aq?port=5534",
+    ])
+    async def test_unproven_local_endpoint_never_probes_docker(self, monkeypatch, url):
+        calls = self.probe(monkeypatch)
+        result = await db_checks_module._check_shared_memory(self.context(url))
+        assert calls == []
+        assert result.execution_status == "unavailable"
+        assert not result.complete
+        assert "secret" not in result.detail
+
+    async def test_wrong_container_port_never_measures_unrelated_tmpfs(self, monkeypatch):
+        calls = self.probe(monkeypatch, ports={"5432/tcp": [{
+            "HostPort": "9999", "HostIp": "0.0.0.0",
+        }]})
+        result = await db_checks_module._check_shared_memory(self.context())
+        assert not result.complete
+        assert all(call[0] != "exec" for call in calls)
+
+    @pytest.mark.parametrize("size", [64 * 1024**2, 1024**3])
+    async def test_failed_usage_probe_preserves_known_capacity(self, monkeypatch, size):
+        self.probe(monkeypatch, size=size, failure=TimeoutError())
+        result = await db_checks_module._check_shared_memory(self.context())
+        assert result.data["shm_size_bytes"] == size
+        assert result.severity == (Severity.WARN if size < 256 * 1024**2 else Severity.INFO)
+        assert result.execution_status == "unavailable"
+        assert not result.complete
+
+    async def test_missing_docker_is_unavailable(self, monkeypatch):
+        calls = self.probe(monkeypatch)
+        monkeypatch.setattr(db_checks_module.shutil, "which", lambda _: None)
+        result = await db_checks_module._check_shared_memory(self.context())
+        assert not calls
+        assert result.execution_status == "unavailable"
+
+    @pytest.mark.parametrize("matches", ["", "first\nsecond"])
+    async def test_absent_or_ambiguous_container_is_unavailable(self, monkeypatch, matches):
+        self.probe(monkeypatch)
+        original = db_checks_module._docker_output
+
+        async def output(*args):
+            return matches if args[0] == "ps" else await original(*args)
+
+        monkeypatch.setattr(db_checks_module, "_docker_output", output)
+        result = await db_checks_module._check_shared_memory(self.context())
+        assert result.execution_status == "unavailable"
+        assert not result.complete
+
+    async def test_remote_docker_override_never_measures_a_container(self, monkeypatch):
+        calls = self.probe(monkeypatch)
+        monkeypatch.setenv("DOCKER_HOST", "ssh://other-host")
+        result = await db_checks_module._check_shared_memory(self.context())
+        assert [call[0] for call in calls] == ["context"]
+        assert result.execution_status == "unavailable"
+
+    @pytest.mark.parametrize("failure", ["denied", "malformed", "ports", "zero"])
+    async def test_failed_or_invalid_probe_never_claims_health(self, monkeypatch, failure):
+        from src.doctor.models import ObservationUnavailable
+
+        self.probe(monkeypatch)
+        original = db_checks_module._docker_output
+
+        async def output(*args):
+            if args[0] == "inspect":
+                if failure == "denied":
+                    raise ObservationUnavailable("Docker access denied")
+                if failure == "malformed":
+                    return "not json"
+                if failure == "ports":
+                    return '{"size": 1073741824, "ports": null}'
+            if args[0] == "exec" and failure == "zero":
+                return "shm 0 0 0 0% /dev/shm"
+            return await original(*args)
+
+        monkeypatch.setattr(db_checks_module, "_docker_output", output)
+        result = await db_checks_module._check_shared_memory(self.context())
+        assert result.execution_status == "unavailable"
+        assert not result.complete
+
+    @pytest.mark.parametrize("timeout", [False, True])
+    async def test_probe_reaps_subprocess_on_cancellation_or_timeout(self, monkeypatch, timeout):
+        import asyncio
+        from unittest.mock import AsyncMock, Mock
+
+        error = TimeoutError() if timeout else asyncio.CancelledError()
+        process = Mock(returncode=None)
+        process.communicate = AsyncMock(side_effect=[error, (b"", None)])
+        spawn = AsyncMock(return_value=process)
+        monkeypatch.setattr(db_checks_module.asyncio, "create_subprocess_exec", spawn)
+        with pytest.raises(type(error)):
+            await db_checks_module._docker_output("exec", "container", "df", "-Pk", "/dev/shm")
+        process.kill.assert_called_once_with()
+        assert process.communicate.await_count == 2
+
+    def test_canonical_compose_preserves_cluster_identity_and_capacity(self):
+        import yaml
+
+        compose = yaml.safe_load((Path(__file__).resolve().parents[1] /
+                                  "docker-compose.yml").read_text())
+        assert compose["name"] == "agent-queue2"
+        postgres = compose["services"]["postgres"]
+        assert postgres["container_name"] == "aq-postgres"
+        assert postgres["volumes"] == ["pgdata:/var/lib/postgresql"]
+        assert postgres["restart"] == "unless-stopped"
+        assert postgres["shm_size"] == "1g"
+        assert compose["services"]["postgres-test"]["shm_size"] == "1g"
 
 #: The revision that actually broke the daemon on 2026-09-02.  It has since
 #: been merged, so this repo *can* find its file — which makes it the right

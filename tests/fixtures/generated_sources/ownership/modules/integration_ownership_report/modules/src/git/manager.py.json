@@ -58,6 +58,9 @@
       ],
       "reason": "Integration import, registered surface, schema, policy or adapter."
     },
+    "src/git/manager.py::GitManager.als_remote_snapshot_refs": {
+      "reason": "Integration snapshot acquisition inventories every retained branch, tag and provenance namespace before skipping transport."
+    },
     "src/git/manager.py::GitManager.aprepare_child_branch": {
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     },
