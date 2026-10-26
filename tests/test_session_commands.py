@@ -1402,18 +1402,22 @@ class TestTaskClose:
             "inject": True, "limit": 50, "_scope": scope,
         })
         assert injected["injected"] == 1
-        # A plain re-read is empty — the queue really is drained.
-        assert (await handler.execute("message_inbox", {
+        # A plain re-read still shows delivered mail until it is acknowledged.
+        reread = await handler.execute("message_inbox", {
             "to_kind": recipient_kind, "to_id": recipient_id, "_scope": scope,
-        }))["count"] == 0
+        })
+        assert [m["body"] for m in reread["messages"]] == [message.body]
+        assert (await db.get_message(message.id)).read_at is None
 
-        # The body is still reachable, read-only, through the consumed re-read.
+        # Injection stays drained; its consumed backstop recovers the body read-only.
         recovered = await handler.execute("message_inbox", {
             "to_kind": recipient_kind, "to_id": recipient_id,
-            "include_consumed": True, "limit": 50, "_scope": scope,
+            "include_consumed": True, "inject": True, "limit": 50, "_scope": scope,
         })
         assert recovered["count"] == 0
+        assert recovered["injected"] == 0
         assert [m["body"] for m in recovered["consumed_messages"]] == [message.body]
+        assert (await db.get_message(message.id)).read_at is None
 
         # Recovering the body is not itself a delivery event, and the close
         # that was refused for unread feedback now proceeds on its own merits.

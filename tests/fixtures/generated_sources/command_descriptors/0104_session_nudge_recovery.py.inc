@@ -24,7 +24,7 @@ def test_session_nudge_catalogue_only_adds_optional_pending_recovery():
     assert set(evidence["added_property"]) == {"submit_pending"}
     assert set(evidence["transport_definitions"]) == {"session_nudge"}
     # Each sibling recording predates the other optional transport addition.
-    catalogue = _before_task_list_limit_catalogue()
+    catalogue = _before_unread_inbox_catalogue(_before_task_list_limit_catalogue())
     original = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(original.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
