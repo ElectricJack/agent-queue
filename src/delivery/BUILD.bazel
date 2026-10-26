@@ -9,6 +9,14 @@ filegroup(name = "sources", srcs = [
         "message.py",
         "scheduler.py",
     ])
+exports_files([
+        "__init__.py",
+        "dispatch.py",
+        "message.py",
+        "scheduler.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

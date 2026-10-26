@@ -30,6 +30,35 @@ filegroup(name = "sources", srcs = [
         "readiness.py",
         "validator.py",
     ])
+exports_files([
+        "__init__.py",
+        "activity.py",
+        "batch_checks.py",
+        "batch_digest.py",
+        "batch_retirement.py",
+        "creator.py",
+        "formulas.py",
+        "ingestion.py",
+        "integration_dependencies.py",
+        "layout/__init__.py",
+        "layout/compaction.py",
+        "layout/constants.py",
+        "layout/cost.py",
+        "layout/driver.py",
+        "layout/engine.py",
+        "layout/flow.py",
+        "layout/layering.py",
+        "layout/model.py",
+        "layout/order_key.py",
+        "layout/ordering.py",
+        "layout/view.py",
+        "models.py",
+        "parser.py",
+        "readiness.py",
+        "validator.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
