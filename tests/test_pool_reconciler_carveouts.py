@@ -1161,11 +1161,15 @@ class TestSettledClaimDrain:
         assert (session.state, session.desired_state, session.end_reason) == (
             "stopped", "stopped", "settled_claim"
         )
-        # The owner keeps the claim, hold and binding for owner recovery.
-        assert (session.task_id, session.claim_phase) == ("t1", "active")
+        # Terminal phase history is cleared, but the owner keeps the hold
+        # and task binding until guarded owner recovery preserves the work.
+        assert (session.task_id, session.claim_phase, session.claim_phase_at) == ("t1", None, None)
         workspace = await db.get_workspace("ws-agent-1")
         assert (workspace.locked_by_agent_id, workspace.locked_by_task_id) == ("agent-1", "t1")
         assert await self._owner_state(db) == "attached"
+        assert "ws-agent-1" in await db.protected_workspace_ids(
+            await db.list_workspaces(PROJECT_ID)
+        )
         assert (await db.get_agent("agent-1")).state == AgentState.RETIRED
         # Completion truth is untouched: same status, no new close record.
         task = await db.get_task("t1")

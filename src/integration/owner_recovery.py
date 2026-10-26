@@ -1196,7 +1196,15 @@ class OwnerRecovery:
     ):
         """Release the gone writer's claim, after the owner row stopped protecting it."""
         current = await select_row(conn, sessions, sessions.c.id == session['id'])
-        if current is None or current["claim_phase"] is None:
+        # Stopped terminal history may have lost its obsolete phase already.
+        # Its owner still retains the task binding until this guarded handoff.
+        if current is None:
+            return None
+        if current["claim_phase"] is None and not (
+            current["lifecycle"] == "pool"
+            and current["state"] == "stopped"
+            and current["task_id"] is not None
+        ):
             return None
         if current["task_id"] not in (None, row["owner_id"]):
             evidence["claim_released"] = False
@@ -1224,6 +1232,10 @@ class OwnerRecovery:
                     )
                 ).scalar_one()
             )
+        if current["claim_phase"] is None and status not in (
+            TaskStatus.COMPLETED, TaskStatus.FAILED
+        ):
+            return None
         # Every settled status is kept exactly as it is.  A task still in
         # flight goes back to READY: that is what pool teardown does with a
         # stopped writer's claim (``terminate_pool_session``), and it only

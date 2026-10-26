@@ -41,6 +41,9 @@ async def clear_stale_stopped_claim_phases(conn, *, session_id=None):
     """Repair historical phases without releasing any independent ownership fence."""
     stmt = update(sessions).where(
         sessions.c.state == "stopped",
+        # A taskless phase can be an incomplete preparation. Without a task
+        # identity, this repair cannot prove displacement or settlement.
+        sessions.c.task_id.is_not(None),
         sessions.c.claim_phase.is_not(None),
         ~session_has_retained_task(),
     )

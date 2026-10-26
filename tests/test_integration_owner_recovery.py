@@ -2390,6 +2390,7 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     assert (writer.state, writer.desired_state, writer.end_reason, writer.task_id) == (
         "stopped", "stopped", "settled_claim", "leaf"
     )
+    assert (writer.claim_phase, writer.claim_phase_at) == (None, None)
     assert await provider.confirm_stopped(SessionHandle("n-writer", "fake", "tok-writer"))
     assert (await env.row("owner"))["handoff_state"] == "attached"
     assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "leaf"

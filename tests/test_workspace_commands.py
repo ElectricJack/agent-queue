@@ -1520,6 +1520,20 @@ class TestWorkspaceOwnershipControls:
                 "p1", "project-repo", "exclusive", None, "successor",
             ) is not None
 
+    @pytest.mark.parametrize("phase", ["active", "preparing"])
+    async def test_stopped_taskless_phase_keeps_preparation_evidence(self, setup, phase):
+        from src.workspace_ownership import clear_stale_stopped_claim_phases
+
+        _handler, db, _path = await self._held(setup)
+        await db.update_session(
+            "holder-session", state="stopped", task_id=None,
+            claim_phase=phase, claim_phase_at=10,
+        )
+        async with db.immediate() as conn:
+            assert await clear_stale_stopped_claim_phases(conn) == 0
+        row = await db.get_session("holder-session")
+        assert (row.task_id, row.claim_phase, row.claim_phase_at) == (None, phase, 10)
+
     @pytest.mark.parametrize("stop_first", [False, True])
     async def test_stop_clears_terminal_phase_and_reconciliation_repairs_later_completion(
         self, setup, stop_first,

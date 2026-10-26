@@ -654,6 +654,13 @@ workspace ownership predicate rejects stale stopped claims even before repair.
 The capacity stall sweep names stopped sessions that still retain a slot and
 provides the guarded task-stop control for supervisor inspection and cleanup.
 
+A taskless claim phase is incomplete preparation evidence, not proof of a
+released task. Generic stopped-row repair leaves it for guarded preparation
+recovery. For terminal tasks with an attached integration owner, clearing the
+phase does not release the task binding or the owner's workspace fence. After
+preserving work and proving the writer stopped, owner recovery releases that
+binding even when the obsolete phase has already been cleared.
+
 ### 4.6 Hooks
 
 Hook **wiring** is owned here (which events, when installed, suppression rules); payload
