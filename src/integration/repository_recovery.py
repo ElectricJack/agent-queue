@@ -10,7 +10,9 @@ import re
 import stat
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,7 +40,38 @@ MAX_ATTEMPTS = 2
 FSCK_TIMEOUT_SECONDS = 300
 
 
+@dataclass
+class _Checkout:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    path: Path | None = None
+
+
+_CHECKOUT_SCOPE: ContextVar[dict | None] = ContextVar("retained_checkout_scope", default=None)
+
+
+@contextmanager
+def retained_checkout_scope():
+    token = _CHECKOUT_SCOPE.set({})
+    try:
+        yield
+    finally:
+        _CHECKOUT_SCOPE.reset(token)
+
+
 async def open_retained_checkout(git, store, origin_url):
+    """Reuse one successful checkout open per tick, without caching Git authority."""
+    scope = _CHECKOUT_SCOPE.get()
+    if scope is None:
+        return await _open_retained_checkout(git, store, origin_url)
+    key = id(git), str(Path(store).absolute()), origin_url
+    checkout = scope.setdefault(key, _Checkout())
+    async with checkout.lock:
+        if checkout.path is None:
+            checkout.path = await _open_retained_checkout(git, store, origin_url)
+        return checkout.path
+
+
+async def _open_retained_checkout(git, store, origin_url):
     """Serialize creation when the train and its truth reader share a store."""
     store = Path(store)
     store.parent.mkdir(parents=True, exist_ok=True)
