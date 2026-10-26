@@ -1172,6 +1172,8 @@ class DatabaseBatches:
             if current is None:
                 await _finish_on_cancel(self._refresh_conflicting_prs(
                     target, snapshot, blockers, service))
+            if current is None and pending is None and target.kind == "epic":
+                await _finish_on_cancel(self._refresh_prerequisites(target, snapshot, blockers))
             if current is None:
                 self._frontier_observations[target.key] = tuple({
                     **blocker, "observation": "last_selection", "observed_at": self.clock(),
@@ -1263,6 +1265,88 @@ class DatabaseBatches:
         if target.kind == "root":
             await self._clear_admissions(target)
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
+
+    async def _refresh_prerequisites(self, target, snapshot, blockers):
+        """Unstick idle children only when a default-branch refresh can help.
+
+        Unclaimed children have no completion to select. Examine their declared
+        prerequisites too, without relaxing the target-relative admission rule
+        or changing the inputs of any batch that already owns the lane.
+        """
+        if any(item["code"] != "prerequisite_pending" for item in blockers):
+            return
+        async with self.db._engine.connect() as conn:
+            epic_id = await conn.scalar(select(tasks.c.id).where(
+                tasks.c.project_id == target.project_id,
+                tasks.c.repo_id == target.repository_id,
+                tasks.c.branch_name.in_((target.target_ref,
+                                        target.target_ref.removeprefix("refs/heads/"))),
+            ))
+            if epic_id is None:
+                return
+            rows = (await conn.execute(select(
+                task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+            ).join(tasks, tasks.c.id == task_dependencies.c.task_id).where(
+                tasks.c.parent_task_id == epic_id, task_dependencies.c.dep_type == "blocks",
+                or_(tasks.c.status.not_in(("COMPLETED", "FAILED", "PAUSED")),
+                    tasks.c.id.in_([item["task_id"] for item in blockers])),
+            ))).all()
+            default = await conn.scalar(select(repos.c.default_branch).where(
+                repos.c.id == target.repository_id))
+            ids = {need for _, need in rows}
+            ids.update(need for item in blockers for need in item["prerequisite_task_ids"])
+            bases = dict((await conn.execute(select(
+                task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+            ).where(task_branch_origins.c.task_id.in_(ids),
+                    task_branch_origins.c.repository_id == target.repository_id,
+                    task_branch_origins.c.retired_at.is_(None)))).all())
+        if not ids or not default:
+            return
+        requests = await load_delivery_requests(self.db, ids,
+            repository_id=target.repository_id, target_ref=target.target_ref, reduced=True)
+        missing = set()
+        for task_id in sorted(ids):
+            request = requests.get(task_id)
+            if request is None:
+                missing.add(task_id)
+                continue
+            if not (await snapshot.is_delivered(request, source_base=bases.get(task_id))).satisfied:
+                missing.add(task_id)
+        if not missing:
+            return
+        reported = {item["task_id"] for item in blockers}
+        for task_id in sorted({child for child, need in rows if need in missing} - reported):
+            blockers.append({"code": "prerequisite_pending", "ref": task_id, "task_id": task_id,
+                "detail": "Child waits for prerequisites absent from its epic",
+                "prerequisite_task_ids": sorted(need for child, need in rows
+                                                if child == task_id and need in missing)})
+        main = snapshot.for_target(_branch(default))
+        if main.error or not main.target_oid:
+            return
+        for task_id in sorted(missing):
+            request = requests.get(task_id)
+            if (request is None or request.task_status != "COMPLETED"
+                    or not (await main.is_delivered(
+                        replace(request, target_ref=_branch(default)),
+                        source_base=bases.get(task_id))).satisfied):
+                return
+        from src.integration.stacked_branches import EpicRefresh
+
+        try:
+            refreshed = await EpicRefresh(self.db, clock=self.clock).start(epic_id, snapshot=snapshot)
+        except (GitError, OSError, ValueError):
+            logger.warning("Prerequisite epic refresh unavailable for %s", epic_id, exc_info=True)
+            return
+        if refreshed["outcome"] in {"current", "skipped"}:
+            return
+        if refreshed["outcome"] == "started":
+            await self.db.log_event("integration.epic_refresh", project_id=target.project_id,
+                task_id=epic_id, payload=json.dumps({**refreshed, "trigger": "prerequisite_delivery",
+                                                    "prerequisite_task_ids": sorted(missing)}))
+        blockers[:] = [{"code": "epic_refresh_pending", "task_id": epic_id,
+            "ref": target.target_ref, "refresh": refreshed,
+            "prerequisite_task_ids": sorted(missing),
+            "detail": "Children wait for the attested default-branch refresh"}]
 
     async def _settle_project_delivered(self, target, snapshot, service, batch, members) -> bool:
         """Release an obsolete epic batch using its frozen inputs, even without its ref.

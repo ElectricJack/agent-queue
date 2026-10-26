@@ -41,7 +41,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3370,
+    "authorized_owned_delta": 3485,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -60,6 +60,11 @@
       "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
       "task_id": "wise-crest-14",
       "thread_id": "wise-crest-14-ci-size"
+    },
+    "dashboard_retirement_overlap": {
+      "applied_owned_reduction": 26,
+      "overlapping_owned_reduction": 23,
+      "reason": "Both historical reductions retire the same Focus helper. The surviving BatchDetail implementation uses the responsive_dashboard_reduction total of 26 reclaimed lines, including the 23-line focus_view_retirement_reduction; apply the shared reduction once."
     },
     "deleted_epic_child_recovery_composition": {
       "authorized_engine_delta": 103,
@@ -104,6 +109,20 @@
       "task_id": "stark-rapids-81"
     },
     "expires_at": "s4_modules",
+    "focus_view_retirement_reduction": {
+      "measured_engine_delta": 0,
+      "measured_owned_delta": -23,
+      "measured_owned_total": 157902,
+      "measured_table_delta": 0,
+      "previous_measured_owned_total": 157925,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2029",
+      "reason": "Retire Focus-specific batch display helpers; retain the moved BatchPage ownership. Lower the exact cap by the measured reduction, preserving historical grants, baselines and classifications with zero reusable headroom.",
+      "removed_owned_files": {
+        "dashboard/src/pages/focus/focusFormat.ts": 23
+      },
+      "source_revision": "1ed3e1fe7d2d271f2d03b1081eb110f09b0e0187",
+      "task_id": "azure-delta-20"
+    },
     "fresh_continuation_sentinel_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 15,
@@ -192,6 +211,69 @@
       "task_id": "bold-delta-18",
       "thread_id": "bold-delta-18-ci-contracts"
     },
+    "idle_epic_prerequisite_refresh_composition": {
+      "authorized_engine_delta": 84,
+      "authorized_owned_delta": 84,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/train_sources.py": 84
+      },
+      "decision_message_id": "msg-2f4fefae40dd4c2ba66ab1d9f102ad2d",
+      "dev_source_revision": "2373e54bf",
+      "measured_engine_lines": 83518,
+      "measured_owned_total": 158948,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83434,
+      "previous_measured_owned_total": 158864,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved idle epic prerequisite refresh trigger using the pinned snapshot and existing attested EpicRefresh.start path. Preserve target-relative admission, batch ownership, every historical grant and ownership classification; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "3882a0911",
+      "task_id": "bright-glacier-60"
+    },
+    "idle_epic_prerequisite_refresh_current_dev_composition": {
+      "authorized_engine_delta": 84,
+      "authorized_owned_delta": 84,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/train_sources.py": 84
+      },
+      "decision_message_id": "msg-2f4fefae40dd4c2ba66ab1d9f102ad2d",
+      "dev_source_revision": "383c1e85b925c00366535716c608bb80797f84c8",
+      "measured_engine_lines": 83518,
+      "measured_owned_total": 158947,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83434,
+      "previous_measured_owned_total": 158863,
+      "previous_measured_table_count": 45,
+      "reason": "Compose the unchanged supervisor-approved +84 owned/+84 engine/+0 tables idle epic refresh delta with current dev and its separately approved +25 shared owned lines for pool claim epoch churn. Preserve every historical measurement, grant and ownership classification; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "4cafc66c4097b944191554757fef8c914871505f",
+      "task_id": "bright-glacier-60"
+    },
+    "idle_epic_prerequisite_refresh_merge_composition": {
+      "authorized_engine_delta": 84,
+      "authorized_owned_delta": 84,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/train_sources.py": 84
+      },
+      "decision_message_id": "msg-2f4fefae40dd4c2ba66ab1d9f102ad2d",
+      "dev_source_revision": "2229600c889b1b28cbeee2b26016dcc618f8bde1",
+      "measured_engine_lines": 83518,
+      "measured_owned_total": 158922,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83434,
+      "previous_measured_owned_total": 158838,
+      "previous_measured_table_count": 45,
+      "reason": "Compose the unchanged approved +84 owned/+84 engine/+0 tables idle epic refresh delta with current dev, including its 26-line dashboard reduction. Preserve both historical measurements, all grants, ownership classifications and zero remaining headroom.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "e411d0ca59cbd842a0bee1d558aaf8209bffb23a",
+      "task_id": "bright-glacier-60"
+    },
     "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
     "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
     "large_session_prompt_composition": {
@@ -265,8 +347,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83434,
-    "measured_owned_total": 158869,
+    "measured_engine_lines": 83538,
+    "measured_owned_total": 158984,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -331,6 +413,29 @@
       "source_revision": "aa33d430b7168464dc3a763a33b05ed3448a1059",
       "supervisor_decision_comment_id": "comment-57436ba4352943b8a1762cfc431eda05",
       "task_id": "brisk-zenith-96"
+    },
+    "pool_claim_recheck_diagnostics_composition": {
+      "authorized_engine_delta": 20,
+      "authorized_owned_delta": 31,
+      "authorized_shared_owned_delta": 11,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked": 11,
+        "src/integration/admission.py": 14,
+        "src/integration/pr_admission.py": 6
+      },
+      "dev_source_revision": "792648dc361907adbdc210d91fcb83e13cd70628",
+      "measured_engine_lines": 83538,
+      "measured_owned_total": 158978,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83518,
+      "previous_measured_owned_total": 158947,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +31 owned/+20 engine lines for retaining admission guard diagnostics after publication and transient refusal rereads. Preserve every historical grant, original baseline and ownership classification, zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "supervisor_decision_message_id": "msg-f472c23dbfc24109a7f3f0b0ff2ae00f",
+      "task_id": "agile-stone-92"
     },
     "pr_retirement_snapshot_composition": {
       "authorized_engine_delta": 41,
