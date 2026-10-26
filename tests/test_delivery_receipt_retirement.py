@@ -1,12 +1,9 @@
 """Retirement ratchet: delivery receipts are historical audit, never authority.
 
 Spec 2026-10-12 fast-smooth-integration §3.3 and the receipt consumer inventory
-in ``docs/specs/design/strict-git-containment.md``. The pinned sets below only
-shrink: a new reader or writer of ``task_delivery_receipts`` fails here until
-the inventory names it and its owner.
-
-The branch-retirement cleanup fence has a separate, function-scoped exception:
-it requires a retained child witness before deletion and grants no delivery.
+in ``docs/specs/design/strict-git-containment.md``. A new reader or writer of
+``task_delivery_receipts`` fails here until the inventory names it and its
+owner. Retained witnesses may fence deletion, never grant delivery authority.
 """
 
 from __future__ import annotations
@@ -41,6 +38,7 @@ READERS = {
     "src/integration/cancelled_collection_recovery.py": "cutover: historical recovery",
     "src/integration/child_delivery.py": "watchdog: stale-child diagnosis",
     "src/integration/cutover.py": "cutover: inventory and retagging",
+    "src/integration/delivery_branches.py": "cleanup: retained child witness deletion fence",
     "src/integration/epic_delivery.py": "dashboard: shadow display",
     "src/integration/failed_verification_recovery.py": "cutover: historical recovery",
     "src/integration/legacy_backfill.py": "cutover: historical attestation",
@@ -58,7 +56,7 @@ READERS = {
 }
 
 # branch-retirement.md requires this deletion fence for current child sources.
-# Keep it separate from the shrinking legacy inventory and pin its exact scope.
+# Pin its exact scope as well as its entry in the module inventory above.
 CLEANUP_WITNESS_READERS = {
     "src/integration/delivery_branches.py": "unrecorded_epic_children",
 }
@@ -117,7 +115,7 @@ def test_only_pinned_audit_statements_write_receipts():
 def test_receipt_readers_only_shrink_and_admission_reads_none():
     readers = {path for path, tree in _sources()
                if any(_names_table(node) for node in ast.walk(tree))}
-    assert readers == set(READERS) | set(CLEANUP_WITNESS_READERS)
+    assert readers == set(READERS)
     assert not readers.intersection(ADMISSION)
     for path, scope in CLEANUP_WITNESS_READERS.items():
         tree = dict(_sources())[path]

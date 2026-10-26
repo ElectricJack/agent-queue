@@ -116,7 +116,7 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/integration/drain_owners.py` | Receipt-backed owner release | admission; policy_docs |
 | `src/integration/removal_guard.py` | Receipt fallback for hierarchical archive/delete | admission |
 | `src/integration/cleanup.py` | Batch receipt cleanup gate and descendant receipt projection | admission; dispatch; policy_docs |
-| `src/integration/delivery_branches.py::unrecorded_epic_children` | Current-generation retained child witness deletion fence specified in `branch-retirement.md`; permits cleanup only, never containment or admission | cleanup; dispatch; policy_docs |
+| `src/integration/delivery_branches.py` | Current completed child witness inventory fences epic deletion until Git truth reconciliation retains each source and completion identity; never grants admission or delivery authority (branch-retirement.md, epic cleanup) | dispatch; policy_docs; retain deletion fence |
 | `src/integration/release.py` | Terminal batch release proof from receipt ordinals/reservations | dispatch; policy_docs |
 | `src/integration/cutover.py` | Receipt inventory, target retagging writer and trigger controls | cutover |
 | `src/integration/task_deletion.py` | Receipt snapshot for historical deletion audit | policy_docs; retain audit without delivery authority |
@@ -184,15 +184,19 @@ cutover) and `records.ParentEpisodeRecords.record_disposition` (failed/withdrawn
 lifecycle audit, close_merge). `task_deletion` and `legacy_sqlite_import` copy
 rows through generic helpers. `tests/test_delivery_receipt_retirement.py` pins
 these writers and every module that still names the table with its owner;
-both legacy sets only shrink, and admission consumers read none. The later
-`branch-retirement.md` child-retention fence has a separate, function-scoped
-reader exception: `delivery_branches.unrecorded_epic_children` checks the
-reconciler's retained witness against the current completion and task version
-before permitting epic deletion. It grants no delivery or admission authority
-and leaves the three permitted writers unchanged. The ratchet pins this exception
-to that function; all other receipt access in the module remains forbidden. Historical
+both sets only shrink, and admission consumers read none. Historical
 tables/foreign keys remain until rollback retention and a separately approved
 destructive migration permit deletion.
+
+The branch-retirement safety fence adds the explicitly inventoried
+`delivery_branches` reader: it matches the reconciler's retained Git witness to
+the child's current completion before allowing epic-ref deletion. This is the
+cleanup-only role specified in `branch-retirement.md`; it grants no delivery or
+admission authority and introduces no receipt writer. The ratchet pins this
+reader alongside the remaining historical consumers and restricts its receipt
+access to `delivery_branches.unrecorded_epic_children`; other receipt access in
+that module remains forbidden. The witness binds both the current completion
+and task version before permitting deletion.
 
 The later `azure-ridge-72` adapter retirement removed the unused
 `parent_subjects` receipt query with its parent observer. Its baseline inventory
