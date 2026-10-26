@@ -10629,13 +10629,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:deec543aa9f72f2d679e017c87cff80c896f0db29fcef8ed860ee845034ae0a1",
+      "digest": "sha256:4addaa8dcb6795ee0a74ae35839e563e6ecf2de4922e7119eda8cb7949cb2a42",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -10650,7 +10651,8 @@
         "src.sessions.obsolete"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Git witnesses survive squashes/GC; projection repair is bounded and fenced."
     },

@@ -417,7 +417,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             try:
                 if pending.exists():
                     raise GitError("retained repository recovery pending")
-                if skip_unchanged and reusable and not journal.exists():
+                if skip_unchanged and reusable:
                     no_transfer = await incremental()
                 else:
                     no_transfer = False
