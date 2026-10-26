@@ -227,18 +227,52 @@ async def test_extend_preserves_age_receipt_ceiling_and_allows_next_incident(env
     assert all(row["state"] == "cancelled" for row in resolved.values())
 
 
-async def test_same_deadline_generation_concurrently_creates_one_incident(env):
+@pytest.mark.parametrize("force_contention", [False, True])
+async def test_same_deadline_generation_concurrently_creates_one_incident(
+    env, monkeypatch, force_contention,
+):
     now = [NOW + 60]
     service = service_for(env, now)
     receipt = await waiting(env, escalate_after_seconds=60)
     assert await service.lease()
     args = {"wait_id": receipt["wait_id"], "deadline_type": "escalation", "generation": 1}
-    results = await asyncio.gather(*(service.command("wait_deadline_fire", args) for _ in range(2)))
+    if force_contention:
+        entered, release = asyncio.Event(), asyncio.Event()
+        handlers = service.orch.wait_deadline_handlers
+        effect = handlers["escalation"]
+
+        async def hold_effect(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await effect(*args, **kwargs)
+
+        monkeypatch.setitem(handlers, "escalation", hold_effect)
+        async with asyncio.timeout(30):
+            async with asyncio.TaskGroup() as group:
+                first = group.create_task(service.command("wait_deadline_fire", args))
+                await entered.wait()
+                try:
+                    second = await service.command("wait_deadline_fire", args)
+                    assert second["error_code"] == "wait.graph_busy", second
+                finally:
+                    release.set()
+        results = [first.result(), second]
+    else:
+        results = await asyncio.gather(*(
+            service.command("wait_deadline_fire", args) for _ in range(2)
+        ))
     assert sum(result["success"] for result in results) == 1, results
-    assert next(result for result in results if not result["success"])["error_code"] == (
-        "wait.deadline_stale"
-    )
+    refused = next(result for result in results if not result["success"])
+    if refused["error_code"] == "wait.graph_busy":
+        # Background deadlines defer under contention; retry after the winner commits.
+        refused = await service.command("wait_deadline_fire", args)
+    assert not refused["success"] and refused["error_code"] == "wait.deadline_stale", refused
     assert len(await records(env, escalations)) == len(await records(env, wait_escalations)) == 1
+    deadline = next(row for row in await records(env, wait_deadlines)
+                    if row["deadline_type"] == "escalation")
+    assert deadline["fired_at"] == now[0] and deadline["cancelled_at"] is None
+    assert len([row for row in await records(env, events)
+                if row["event_type"] == "wait.escalated"]) == 1
     notices = await records(env, messages)
     assert len(notices) == 1 and notices[0]["body_kind"] == "wait_escalation"
     assert not await records(env, escalation_deliveries)
