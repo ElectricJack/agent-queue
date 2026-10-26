@@ -1,5 +1,6 @@
 import pathlib
 import subprocess
+from unittest.mock import AsyncMock
 import pytest
 
 from src.git.manager import GitManager, GitError
@@ -64,6 +65,37 @@ def git_repo(tmp_path):
 
 
 class TestGitManager:
+    @pytest.mark.parametrize("isolated", [False, True])
+    async def test_snapshot_inventory_includes_all_remote_namespaces(self, git_repo, isolated):
+        mgr = GitManager()
+        clone, remote = git_repo["clone"], git_repo["remote"]
+        head = _head_sha(clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "tag", "-a", "v1",
+              "-m", "release", head], cwd=clone)
+        tag = _git(["rev-parse", "refs/tags/v1"], cwd=clone)
+        _git(["push", "origin", "refs/tags/v1", f"{head}:refs/aq/provenance/test",
+              f"{head}:refs/heads/another"], cwd=clone)
+        _git(["tag", "local-only"], cwd=clone)
+        if isolated:
+            mgr._apush_destination = AsyncMock(
+                return_value=(pathlib.Path(remote).as_uri(), None))
+        assert await mgr.als_remote_snapshot_refs(clone, repository_url=remote) == {
+            "refs/heads/main": head, "refs/heads/another": head,
+            "refs/tags/v1": tag, "refs/aq/provenance/test": head,
+        }
+
+    @pytest.mark.parametrize("advertisement", [
+        "malformed", "a" * 40 + "\trefs/heads/main\n" + "b" * 40 + "\trefs/heads/main",
+        "a" * 40 + "\trefs/private/secret", "bad\trefs/heads/main",
+    ])
+    async def test_snapshot_inventory_refuses_malformed_remote(self, git_repo, advertisement):
+        mgr = GitManager()
+        mgr._apush_destination = AsyncMock(return_value=("file:///unused", None))
+        mgr._arun_authenticated_git = AsyncMock(return_value=advertisement.encode())
+        with pytest.raises(GitError, match="malformed or duplicate"):
+            await mgr.als_remote_snapshot_refs(
+                git_repo["clone"], repository_url=git_repo["remote"])
+
     async def test_qualified_tag_uses_isolated_push_and_exact_tag_fetch(self, git_repo, tmp_path):
         mgr = GitManager()
         clone = git_repo["clone"]
