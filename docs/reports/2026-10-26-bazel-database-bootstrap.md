@@ -20,8 +20,8 @@ behavior. The internal test helper moves from `tests.db_fixtures` to
 | `tests/test_knowledge_evaluation.py` | 88 | No |
 | Remaining 24 knowledge modules | 1,221 each | Yes |
 
-The foundation recorded 1,218 application inputs for every knowledge module.
-The current source tree has three additional Python files. Inventory's closure
+The dev foundation manifest records 1,219 application inputs for every knowledge module.
+The current source tree has two additional Python files. Inventory's closure
 also includes five test/support files and four other Python files. The regression
 `test_repository_leaf_closure_avoids_database_bootstrap_fanout` verifies its real
 source and conftest dependencies and excludes the PostgreSQL adapter, job queries
@@ -39,6 +39,8 @@ independent dependencies or migrating every legacy area is outside this refactor
 
 Use the repository's disposable test PostgreSQL DSN for collection and pytest.
 Collection executes no tests; it preserves all marker arms and collected nodes.
+Until `swift-meadow-43` fixes path filtering, run these commands in a disposable
+checkout whose absolute path has no `.aq` component, as in the repair below.
 
 ```bash
 python scripts/generate-selection-catalogue.py
@@ -61,22 +63,55 @@ The first query keeps the full universe visible, including conservative and
 legacy targets. The other queries compare the two resolved leaves; they are not
 substitutes for the first query.
 
-Measured `py_test` rule counts after regeneration:
+The query counts previously recorded here came from the incomplete graph at
+`087e4fa6e` and are invalidated. The analyzer tested absolute path components
+against its exclusion list, so generating beneath `.aq` silently omitted
+literal directory data inputs. The repaired graph restores these inputs; both
+resolved leaf targets include `src/knowledge/budget.py` in `data_files`, even
+though it is absent from their Python import closures. The earlier two-leaf
+zero-selection result therefore does not describe the repaired graph. No new
+Bazel query or isolated-execution result is claimed by this repair.
 
-| Query | Selected rules |
-| --- | ---: |
-| All `//tests:all` | 8,531 |
-| Full-universe reverse dependencies of `budget.py` | 8,511 |
-| Full-universe reverse dependencies of `imports/inventory.py` | 8,521 |
-| Two-leaf universe, `imports/inventory.py` | 1: `test_knowledge_inventory` |
-| Two-leaf universe, `scripts/evaluate-knowledge.py` | 2: both leaves |
-| Two-leaf universe, `budget.py` | 0 |
+The 92/88-file import closures remain valid evidence that lazy bootstrap imports
+avoid the adapter/plugin fan-out. They do not establish narrow total action
+inputs: the repaired inventory/evaluation leaves retain 1,453/1,476 data files.
+Further resource-dependency narrowing is separate work.
 
-Among the 26 focused knowledge targets, the budget query retains 24, excluding
-inventory and evaluation. Both leaf tests actually use the evaluation script,
-so retaining both for that input is expected. The full-universe result remains
-broad: the 20 rules absent from the budget result are the focused/workflow
-variants of the two resolved leaves. This is not global precise selection.
+## Reopened graph repair
+
+Regeneration runs from `/tmp/aq-bazel-regen-fair-glacier-79`, a disposable detached
+checkout with no `.aq` path component, using the project Python environment:
+
+```bash
+python scripts/generate-selection-catalogue.py
+python scripts/bazel/inventory.py collect --output /tmp/fair-glacier-79-collection.json
+python scripts/bazel/generate_targets.py --collection /tmp/fair-glacier-79-collection.json
+python -m src.cli.app test tests/test_bazel_manifest.py tests/test_selection_catalogue.py -q
+```
+
+The repair check passed **96 tests**, with six optional isolated-execution checks
+skipped because their opt-in executable settings were absent. In particular,
+`test_graph_is_reproducible_and_matches_catalogue` passed from the `/tmp` checkout.
+The copied generated files match the validated files byte-for-byte.
+
+Fresh collection contains 39,087 nodes: all 39,073 dev nodes plus the same 14
+regressions, with none removed. Regeneration changes only `tests/BUILD.bazel`
+and `tools/bazel/test_suites.json` from the previously published head. Compared
+with dev, only the two deliberately narrowed leaves remove dependency inputs:
+inventory removes 1,128 Python and 2,927 data paths; evaluation removes 1,132
+Python and 2,905 data paths. All other opted-in modules retain their baseline
+data dependencies. The remaining diff reflects those two closures, the added
+helpers/regressions, and collection/workflow metadata; the mass directory-input
+deletions are restored.
+
+Supervisor reply `msg-11563375abaa42d8b3d13f3727608442` confirms cached dev
+`0d13d9185` is current and the required merge is already up to date. The two
+`aq git pull --branch dev` timeouts were daemon load. The supervisor directs
+publication without waiting for `swift-meadow-43` or `calm-summit-34`; the five
+`test_documentation_coverage.py` failures on dev are inherited, pending the latter
+fix. Before publication, dev advanced to `1db2576f1` with the documentation-owner
+fix, so that revision is merged as requested. This repair changes no production code and retains the accepted **0 / 0 / 0**
+owned/engine/tables disposition.
 
 ## Validation and ownership
 
@@ -91,8 +126,9 @@ python -m src.cli.app test tests/test_bazel_manifest.py tests/test_selection_cat
 
 The four commands passed 99, 125, 2 and 96 tests respectively. The last command's
 six optional isolated-execution checks skipped because their opt-in executable
-settings were absent; those skips are not execution acceptance. Its full graph
-regeneration and committed-input comparisons passed. Changed-path Ruff and
+settings were absent; those skips are not execution acceptance. Its graph regeneration and committed-input comparisons passed inside the affected
+`.aq` checkout; that historical pass did not detect the missing directory inputs.
+The reopened repair above supersedes that graph evidence. Changed-path Ruff and
 whitespace checks passed. Fresh independent collection found 39,087
 nodes: all 39,073 prerequisite nodes plus 14 new regression nodes, with none
 removed. The project-environment CLI invocation uses the same AQ admission gate;
@@ -111,5 +147,6 @@ earlier zero-delta/no-grant disposition therefore still applies; the updated
 measurement was sent as `msg-aef7dd20bcb2458e9718234010d2c921`.
 Supervisor reply `msg-777ad73eb25c42ad9c85881e03fd380e` approved the remaining
 helper split and requested the real leaf no-whole-application proof, followed
-by publication and close. The measurements above satisfy that bounded proof;
-they do not claim removal of the independent conservative closures.
+by publication and close. The Python import-closure measurements satisfy that bounded bootstrap proof.
+The reopened repair above corrects the separate generated-graph evidence and
+withdraws the earlier leaf query claims.
