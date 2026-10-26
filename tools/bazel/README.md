@@ -2,7 +2,7 @@
 
 This is the first Bazel substrate from the approved Bazel-for-AQ plan. It does
 not switch `aq test`, CI, code generation or dashboard builds to Bazel. H2 owns
-the general isolated launcher; B3 owns the complete npm/pnpm dependency graph.
+the general isolated launcher. The dashboard shadow graph is described below.
 
 ## Supported execution platform and pins
 
@@ -130,7 +130,7 @@ python tools/bazel/generator_inputs.py --write
 including nested dependency locations. Repository resolution checks it against
 that lock and downloads exact integrity-verified archives, without a package
 solver or lifecycle scripts. This is only the generator closure; B3 owns the
-dashboard dependency graph.
+dashboard dependency graph described below.
 
 On a shared AQ box, admit the two-root acceptance through the existing gate:
 
@@ -147,3 +147,59 @@ source snapshot, resolves in lockfile error mode and runs
 normalized TypeScript manifests are retained in the evidence directory. Missing
 opt-in settings skip acceptance explicitly. Actions clear inherited credentials
 and select declared tools; broader H2 launch/network isolation remains separate.
+
+## B3 dashboard shadow checks
+
+`//checks:dashboard` mirrors `npm --prefix dashboard run typecheck` and
+`npm --prefix dashboard run build`. It compiles the existing test sources but
+does not add a Vitest execution gate. The `@aq/ts-client` workspace consumes
+`//tools/bazel:typescript`, so dashboard actions cannot use ignored generated
+sources from a developer checkout. npm remains the reference backend.
+
+The root `package-lock.json` is authoritative. `import_npm.py` is the pinned,
+versioned importer: it projects npm's installed-location graph to pnpm v9 lock
+syntax without registry queries or version resolution. This preserves aliases,
+nested versions, optional dependencies, peer edges, archive URLs and SHA-512
+integrities. Conflicting contexts or unsupported archives fail closed. The
+committed projection also records every npm installed location and the npm
+lock's SHA-256. A trial with stock pnpm 10.11.0 changed the `react-is` alias from
+19.2.8 to 19.3.1, dropped nested semver 7.7.4, and required registry metadata even
+for an offline import. This versioned, solver-free projector replaces that stock
+import step to meet the approved package/version/integrity equivalence contract.
+
+After an intentional npm dependency update, run:
+
+```bash
+python tools/bazel/import_npm.py --write
+python tools/bazel/lock.py --render-module
+/path/to/bazel-8.3.1 mod deps --lockfile_mode=update
+python tools/bazel/import_npm.py
+```
+
+`npm_translate_lock` consumes the reviewed projection with updates and lifecycle
+hooks disabled. The adjacent workspace file explicitly permits no lifecycle
+builds. All archive downloads retain npm's integrity checks. Actions copy declared
+sources into writable scratch, reconstruct npm's locked installed locations from
+declared package artifacts (including hoisted types), and use pinned
+Node and native tools with an allowlisted environment. Ambient `NODE_PATH`,
+`NODE_OPTIONS`, user npm configuration and ancestor `node_modules` are excluded.
+The declared dashboard inputs include scenario/layout files and environment
+configuration: Tailwind scans beyond the TypeScript project, so omitting a
+scenario class changes CSS and the resulting Vite chunk hashes.
+
+Admit the complete two-root comparison through AQ's test slot:
+
+```bash
+POSTGRES_TEST_DSN=<disposable-test-dsn> \
+AQ_BAZEL_DASHBOARD=/absolute/path/to/bazel-8.3.1 \
+AQ_BAZEL_DASHBOARD_EVIDENCE=/absolute/path/to/new-evidence-directory \
+aq test tests/test_bazel_manifest.py -k clean_root_dashboard_acceptance -p no:xdist -s
+```
+
+This retains two independent checkouts, HOME/repository/output roots, BEP and
+logs. Both run dashboard checks with poisoned ambient Node paths, consuming the
+B2 generator artifacts.
+The first also installs directly from the npm lock and runs the existing npm
+commands using the pinned Node 24 archive. TypeScript filename/byte manifests
+and Vite output manifests must match across both Bazel roots and npm. Missing
+opt-in settings explicitly skip this acceptance, rather than establishing parity.
