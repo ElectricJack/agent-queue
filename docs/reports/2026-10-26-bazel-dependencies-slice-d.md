@@ -17,9 +17,9 @@ interpretation. These rules cover the knowledge export JSON, dashboard source
 inspection and pane fixtures, and the TypeScript client package manifest.
 
 The separate worktree-ancestor exclusion repair belongs to `swift-meadow-43`.
-It was merged from `dev` at `974dbb33b` before regeneration. The disposable
-checkout `/tmp/aq-bazel-regen-swift-pinnacle-final` supplies an independent
-root outside `.aq` for final regeneration. The earlier
+It was merged from `dev` at `974dbb33b` before regeneration. An independent archive checkout supplied the initial regeneration. The final
+regeneration and reproduction use the worker root with its original ignored
+package artifacts present, after merging `dev` at `0cc15c4a7`. The earlier
 `/tmp/aq-bazel-regen-swift-pinnacle-16` preserves the frozen before/after
 factoring specimen.
 
@@ -70,7 +70,7 @@ shared manifest decoder. Three final actual queries for `src/llm/fake.py`,
 sixteen of sixteen declared module targets; all exit zero.
 The independent 638-module audit found zero missing direct imports or detected
 file reads across 12,680 inputs, and retained all baseline node occurrences,
-markers, target labels and suite memberships. The slice retains 24,667 node
+markers, target labels and suite memberships. The slice retains 24,679 node
 occurrences, including the 24,581 baseline occurrences. Knowledge inventory and
 evaluation resolve without the dynamic fallback. Workspace naming and project paths still activate the shared
 PostgreSQL fixture's `LeasePool`, whose migration path reaches plugin discovery.
@@ -99,9 +99,9 @@ script use the same strict decoder; version-one baselines remain readable.
 On the first complete candidate, the factored manifest is 22,216,513 bytes and
 the BUILD file is 19,324,054 bytes, or 41,540,567 bytes combined. Independent
 decoding checks establish exact equality with the unfactored candidate across
-1,013 modules, 39,152 node IDs and eighteen suites. The final graph has a 22,614,614-byte manifest and a 19,325,254-byte BUILD
-file (41,939,868 bytes combined). All 67 generated files total 42,973,949 bytes,
-below the same files on `dev` (62,762,112 bytes); every file is below 40 MB.
+1,013 modules, 39,152 node IDs and eighteen suites. The final graph has a 22,228,917-byte manifest and a 19,329,693-byte BUILD
+file (41,558,610 bytes combined). All 67 generated files total 42,593,188 bytes,
+below the same files on `dev` at `0cc15c4a7` (60,615,575 bytes); every file is below 40 MB.
 Final regeneration binds the equivalence check to the final source and collection
 hashes.
 
@@ -112,16 +112,13 @@ control files are excluded from literal discovery and the repository-data group.
 
 ## Frontend query evidence
 
-All seven read-only queries passed against the final generated workspace,
+All seven frontend read-only queries were refreshed against the merged-dev graph,
 bound to manifest SHA-256
-`c1d1c36b81c97992c75c5c018529e90221e47a4ec43906fb52bec1cb4c19f446`
+`e458f608e2c2d2bb882b964910ddaace45b41ce37bd836ac711f19a2bcd26d96`
 and test BUILD SHA-256
-`52f2593432a33a70ade0e3a51a3d81397aa3a162e1f90d23cb42c9a72217164f`.
-After the runtime-control regression update, the manifest hash is
-`9316753878517f544245f7a0273a1ce6720f6fe5972e9b01c6e0d09b5005964a`.
-Only that regression file's collection source hash changes. All 66 other
-generated outputs, module inputs, suite obligations and collection nodes remain
-exactly equal, retaining the query graph and its evidence.
+`3ec4a9ea05afbe8a78015b779a265327adc3cb51c28b27ba893d8aed6da75dfc`.
+All thirteen scoped provider, frontend and LLM queries run sequentially with
+the same 2 GB server budget and immutable source/graph bindings.
 For each source, query:
 
 ```text
@@ -166,21 +163,25 @@ and compares retained obligations with a pre-migration manifest. Its optional
 
 ## Verification
 
-Final independent collection retained 39,173 nodes: every one of the 39,087
-baseline node IDs and its markers survives, with 86 regression nodes added.
-The focused analyzer, subprocess/path, manifest and CLI checks passed 183 tests,
-with six expected opt-in skips. Documentation and integration-size checks passed
-143 tests. After the runtime-control correction, all 80 analyzer/path checks
-passed again. Four additional conflicting subprocess binding probes retained
-conservative inputs. The schema-cache source diagnostic retains exactly 143
-inputs, including all 136 revisions and `hierarchy_migration.py`.
+Final independent collection retained 39,191 nodes: every one of the 39,087
+baseline node IDs and its markers survives, with 104 nodes added across this
+slice and merged prerequisites. The focused analyzer, subprocess/path, manifest
+and CLI checks passed 184 tests, with six expected opt-in skips. Catalogue,
+documentation and integration-size checks passed 199 tests on the merged tree.
+Slice B’s eleven handed-off regressions match the current tests exactly; its
+fresh schema-cache diagnostic retains all 143 inputs, including all 136
+revisions and `hierarchy_migration.py`.
 
-The integration ownership measurement against `dev` at `974dbb33b` is unchanged:
-159,123 owned lines, 83,633 engine lines, 62,732 shared lines and 45 tables.
-The delta is zero in every category.
+The independent integration ownership inventory against `dev` at `0cc15c4a7`
+is identical: 159,166 owned lines, 83,653 engine lines, 62,739 shared lines and
+45 tables. All category deltas, source-span changes and unknown/sink changes
+are zero. The existing unknowns remain inherited.
 
-The supervisor authorized publication without waiting for PR #2095. That PR
-and slices A–C regenerate on top of this analyzer and renderer after delivery.
+PR #2095 is delivered at `0cc15c4a7`; that exact dev revision and its current
+prerequisite `f1b5b5909` are merged before final generation. Slices A–C
+regenerate on top of this analyzer and renderer after delivery. The complete
+factoring proof below remains bound to its preserved original specimen; the
+thirteen scoped final queries and static audits bind to the merged-dev graph.
 The complete actual Bazel reverse-dependency maps match before and after
 factoring: 8,523 `py_test` targets and 9,676 reachable repository source leaves.
 All 9,677 canonical map rows are identical, with SHA-256
@@ -195,9 +196,12 @@ All 42 query invocations exit zero within the same budget. The frozen specimen
 uses the same explicit root-export repair before and after factoring.
 
 Final full repository generation reproduced all 67 outputs byte for byte
-(`test_graph_is_reproducible_and_matches_catalogue`: one pass in 456.22 seconds).
-Complete V1/V2 equality covers 1,013 modules, 39,173 nodes and eighteen suites;
+(`test_graph_is_reproducible_and_matches_catalogue`: one pass).
+Complete V1/V2 equality covers 1,013 modules, 39,191 nodes and eighteen suites;
 the canonical logical SHA-256 is
-`99d80d0368a2e0488f3a18162dfe23160218f98c0c23da2b739e53953013c784`.
-The complete CLI and selection-catalogue run passed another 114 checks. Ruff
-and the catalogue drift check passed after the runtime-control correction.
+`74ee379bfa5f5ae62c4a1cf07a0e7dad9894c43142ed56e696d6083e36ccff42`.
+The real committed-manifest CLI plan passed separately; the focused checks
+cover the remaining CLI contracts. Ruff, catalogue drift and generator-input
+drift checks pass. The old-input reproduction was stopped when dev changed;
+it is not counted as a pass. The inherited dev failure under the 120-second
+manifest-test deadline remains noted separately from this completed check.
