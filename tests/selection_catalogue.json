@@ -8899,7 +8899,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0b5328f33fa5f4086c5d03e8553c8f04b448a4ed818506832aa991fc9a59c3b2",
+      "digest": "sha256:e3541d9f3407e8b629a079babf6712a726b1c4834a9a73b3812fcf8a92db0d38",
       "imports": [
         "src.database.tables",
         "src.git.manager",
@@ -8907,7 +8907,12 @@
         "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.runtime_contracts",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.models",
+        "src.waits",
+        "src.waits.conditions",
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"
