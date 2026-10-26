@@ -1193,17 +1193,18 @@ async def test_conflicting_batch_publishes_before_real_repair_claim(
         assert (await db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
 
 
-async def settled_claim(handler, args, *, timeout=10):
+async def settled_claim(handler, args, *, timeout=10, progress=None):
     """Await the invoked preparation and return its settled outcome.
 
     Real Git tests assert final ownership or recovery. A no-wait HTTP response
     may arrive before checkout finishes; it must not end the test's fixture.
     Tests that control a preparation barrier must call _cmd_task_claim directly
-    so they can inspect progress before releasing that barrier. Do not issue a
-    follow-up claim: it can discard a moved-target rejection and start another
-    generation instead of observing the one the test invoked.
+    so they can inspect progress before releasing that barrier, then pass that
+    response as ``progress`` to settle the same attempt. Do not issue a follow-up
+    claim: it can race release/refusal recording or start another generation
+    instead of observing the one the test invoked.
     """
-    result = await handler._cmd_task_claim(args)
+    result = progress if progress is not None else await handler._cmd_task_claim(args)
     if result.get("result") != "claim_in_progress":
         return result
     scope = handler._current_scope or {}
@@ -2280,6 +2281,7 @@ class TestClaim:
                 ).values(handoff_state="attached", session_id="unknown", workspace_id="unknown"))
         for attempt in range(1, 3):
             restarted = CommandHandler(handler.orchestrator, handler.config)
+            progress = None
             if response == "deferred":
                 release, prepare = asyncio.Event(), restarted._prepare_and_activate
 
@@ -2293,7 +2295,7 @@ class TestClaim:
                 assert progress["result"] == "claim_in_progress", progress
                 assert progress["task_id"] == "child" and progress["claim_epoch"] == attempt
                 release.set()
-            result = await settled_claim(scoped(restarted, sid), {"next": True})
+            result = await settled_claim(scoped(restarted, sid), {"next": True}, progress=progress)
             assert result["result"] == ("prepare_failed" if attempt == 1 else "drain_requested")
             assert "BranchBusy: canonical branch is not reserved by this task" in result["reason"]
             assert result["task"] is None and result["claim_epoch"] is None
