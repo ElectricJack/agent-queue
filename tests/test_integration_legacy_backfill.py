@@ -15,6 +15,7 @@ from src.config import AppConfig
 from src.database.tables import (
     branch_retirements,
     integration_legacy_deliveries,
+    projects,
     task_branch_origins,
     tasks,
 )
@@ -28,8 +29,8 @@ from src.integration.legacy_backfill import (
     backfill_legacy_deliveries,
 )
 from src.integration.status import IntegrationStatusService
-from src.integration.train_sources import DatabaseBatches
-from src.models import Task, TaskCompletion, TaskStatus
+from src.integration.train_sources import DatabaseBatches, project_delivered
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests import test_integration_train_sources as _sources
 from tests.test_delivery_consumers import git
 from tests.test_integration_train_sources import MAIN, completed, snapshot
@@ -39,25 +40,27 @@ world = _sources.world  # the shared train-sources fixture
 
 
 async def legacy(world, tid, *, record_commits=True, land=False, squash=False,
-                 delete_branch=False, close_row=True, parent=None) -> str:
+                 delete_branch=False, close_row=True, parent=None, record_origin=True,
+                 repo_id="r", completion_outcome="pass", extra_commits=()) -> str:
     """A completed task closed before provenance existed: no retained record."""
     db, origin = world.db, world.origin
     head = origin.work(tid)
     base = git(origin.clone, "rev-parse", f"{head}^")
-    await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid, description="",
+    await db.create_task(Task(id=tid, project_id="p", repo_id=repo_id, title=tid, description="",
                               branch_name=f"aq/{tid}", status=TaskStatus.IN_PROGRESS,
                               parent_task_id=parent))
-    async with db._engine.begin() as conn:
-        await conn.execute(insert(task_branch_origins).values(
-            id=f"{tid}-origin", task_id=tid, repository_id="r", branch_name=f"aq/{tid}",
-            parent_task_id=parent, parent_repository_id="r" if parent else None,
-            parent_ref=f"aq/{parent}" if parent else None, base_sha=base, creation_generation=0, reserved=True, materialized=True,
-            created_at=time.time(),
-        ))
+    if record_origin:
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=f"{tid}-origin", task_id=tid, repository_id="r", branch_name=f"aq/{tid}",
+                parent_task_id=parent, parent_repository_id="r" if parent else None,
+                parent_ref=f"aq/{parent}" if parent else None, base_sha=base,
+                creation_generation=0, reserved=True, materialized=True, created_at=time.time(),
+            ))
     if close_row:
         await db.save_task_completion(TaskCompletion(
-            id=f"close-{tid}", task_id=tid, outcome="pass",
-            commits=[head] if record_commits else [], completed_at=time.time(),
+            id=f"close-{tid}", task_id=tid, outcome=completion_outcome,
+            commits=[head, *extra_commits] if record_commits else [], completed_at=time.time(),
         ))
     await db.transition_task(tid, TaskStatus.COMPLETED)
     if land:
@@ -125,6 +128,156 @@ async def test_backfill_proves_only_git_delivered_legacy_work(world):
     again = await backfill_legacy_deliveries(db, "p", dry_run=False, operator_id="op",
                                              reason="again")
     assert again["recorded"] == 0 and again["examined"] == 2
+
+
+@pytest.mark.parametrize("repo_id", [None, "r"])
+async def test_backfill_proves_completion_without_origin_or_remote_branch(world, repo_id):
+    db = world.db
+    landed = await legacy(world, "landed", land=True, delete_branch=True,
+                          record_origin=False, repo_id=repo_id)
+    await legacy(world, "pending", delete_branch=True, record_origin=False, repo_id=repo_id)
+    await legacy(world, "unlocated", record_commits=False, land=True, delete_branch=True,
+                 record_origin=False, repo_id=repo_id)
+    await completed(world, "modern")
+    ids = ["landed", "pending", "unlocated", "modern"]
+
+    async def delivered():
+        return await project_delivered(
+            db, ids, project_id="p", repository_id="r", target_ref=MAIN.target_ref,
+            snapshot=await snapshot(world),
+        )
+
+    assert await delivered() == set()
+    preview = await backfill_legacy_deliveries(db, "p")
+    assert preview["examined"] == 3  # modern provenance is already retained
+    [result] = preview["results"]
+    assert (result["task_id"], result["proof"], result["via"], result["delivered_sha"]) == (
+        "landed", CONTAINED_PROOF, "completion_commit", landed)
+    assert {item["task_id"] for item in preview["unproven"]} == {"pending", "unlocated"}
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+
+    applied = await backfill_legacy_deliveries(
+        db, "p", dry_run=False, operator_id="op", reason="originless legacy repair")
+    assert applied["recorded"] == 1
+    assert await delivered() == {"landed"}
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_legacy_deliveries))).one()
+    assert (row.task_id, row.project_id, row.repository_id, row.operator_id) == (
+        "landed", "p", "r", "op")
+    assert (row.delivered_sha, row.proof) == (landed, CONTAINED_PROOF)
+    again = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="repeat repair")
+    assert again["recorded"] == 0
+    assert again["examined"] == 2
+
+
+async def test_originless_backfill_preserves_project_repository_and_task_scope(world):
+    db = world.db
+    await db.create_project(Project(id="other-project", name="Other project"))
+    await db.create_repo(RepoConfig(
+        id="other-repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url=world.origin.url,
+    ))
+    for tid in ("eligible", "foreign-project", "foreign-repo", "promotion", "unfinished"):
+        await legacy(world, tid, land=True, delete_branch=True, record_origin=False)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "foreign-project").values(
+            project_id="other-project", repo_id=None))
+        await conn.execute(update(tasks).where(tasks.c.id == "foreign-repo").values(
+            repo_id="other-repo"))
+        await conn.execute(update(tasks).where(tasks.c.id == "promotion").values(
+            task_type="promotion"))
+        await conn.execute(update(tasks).where(tasks.c.id == "unfinished").values(
+            status="IN_PROGRESS"))
+    report = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="scoped repair")
+    assert report["examined"] == report["recorded"] == 1
+    assert [result["task_id"] for result in report["results"]] == ["eligible"]
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries.c.task_id))).scalars().all() == [
+            "eligible"]
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+async def test_originless_backfill_retains_provenance_for_dependency_admission(world, recorded):
+    from src.integration.admission import observe_admission
+
+    db = world.db
+    sources = {}
+    for tid in ("azure-cascade.2", "azure-cascade.3", "azure-cascade.4", "azure-cascade.5"):
+        sources[tid] = await legacy(world, tid, land=True, delete_branch=True, record_origin=False)
+    await legacy(world, "unproven", delete_branch=True, record_origin=False)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="development",
+            hierarchical_integration_desired_mode="development"))
+        if recorded:
+            for tid, sha in sources.items():
+                await conn.execute(insert(integration_legacy_deliveries).values(
+                    task_id=tid, project_id="p", parent_task_id="", repository_id="r",
+                    target_ref=MAIN.target_ref, target_sha=sha, delivered_sha=sha,
+                    proof=CONTAINED_PROOF, operator_id="op", reason="previous backfill",
+                    created_at=time.time(),
+                ))
+    for tid in ("azure-cascade.6", "still-withheld"):
+        await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid,
+                                  description="", status=TaskStatus.READY))
+    for tid in sources:
+        await db.add_dependency("azure-cascade.6", tid)
+    await db.add_dependency("still-withheld", "unproven")
+    service = SimpleNamespace(delivery_observer=db._delivery_observer)
+
+    async def admission():
+        return await observe_admission(db, ["azure-cascade.6", "still-withheld"], service)
+
+    before = await admission()
+    assert before.allowed == set()
+    assert "missing_git_provenance" in str(before.reasons)
+    preview = await backfill_legacy_deliveries(db, "p")
+    assert {r["task_id"] for r in preview["results"]} == set(sources)
+    assert (await admission()).allowed == set()  # preview publishes no provenance
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="retain source")
+    assert applied["recorded"] == 4
+    after = await admission()
+    assert after.allowed == {"azure-cascade.6"}
+    assert "still-withheld" in after.reasons
+    assert await after.is_fresh("azure-cascade.6")
+    assert await after.matches(task_id="azure-cascade.6")
+    assert (await backfill_legacy_deliveries(db, "p"))["results"] == []
+    # A retained source is a binding, never a permanent delivery decision.
+    base = git(world.origin.clone, "rev-list", "--max-parents=0", "origin/main")
+    git(world.origin.clone, "push", "--force", "origin", f"{base}:main")
+    assert not await after.is_fresh("azure-cascade.6")
+    assert (await admission()).allowed == set()
+
+
+@pytest.mark.parametrize("case", ["earlier_commit", "equivalent", "failed", "changed"])
+async def test_originless_backfill_retains_only_current_exact_passing_source(
+    world, monkeypatch, case,
+):
+    from src.integration import legacy_backfill
+    from src.integration.provenance import CompletionIdentity
+
+    db = world.db
+    await legacy(world, "legacy", land=case != "equivalent",
+                 squash=case == "equivalent", delete_branch=True, record_origin=False,
+                 extra_commits=["f" * 40] if case == "earlier_commit" else [],
+                 completion_outcome="fail" if case == "failed" else "pass")
+    if case == "changed":
+        attest = legacy_backfill._attest
+
+        async def reopen(*args):
+            async with db._engine.begin() as conn:
+                await conn.execute(update(tasks).where(tasks.c.id == "legacy").values(
+                    status="IN_PROGRESS"))
+            return await attest(*args)
+
+        monkeypatch.setattr(legacy_backfill, "_attest", reopen)
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="strict binding")
+    assert applied["changed"] == (case == "changed")
+    assert applied["recorded"] == (case != "changed")
+    observed = await snapshot(world)
+    identity = CompletionIdentity("p", "r", "legacy", "close-legacy")
+    assert await observed.read_completion(identity) is None
 
 
 @pytest.mark.parametrize("complete", [False, True])
