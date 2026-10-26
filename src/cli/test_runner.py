@@ -55,6 +55,8 @@ from pathlib import Path
 
 import click
 
+from src.test_dsn import _POSTGRES_SETUP as _POSTGRES_SETUP
+from src.test_dsn import postgres_test_dsn_error as postgres_test_dsn_error
 from src.test_selection.discovery import SKIP_DIRS
 from src.test_selection.discovery import pytest_rootdir as _pytest_rootdir
 from src.test_selection.discovery import test_modules as _test_modules
@@ -68,22 +70,6 @@ CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 _FALLBACK_SLOTS = 2
 _FALLBACK_WORKERS = 4
 _FALLBACK_MARKERS = "not perf and not migration and not slow and not tmux and not integration"
-
-_POSTGRES_SETUP = """POSTGRES_TEST_DSN is not set; PostgreSQL is required by this test suite.
-Nothing was run. Start the separate disposable test service and set a base DSN:
-
-  docker compose up -d postgres-test
-  export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres
-
-The test harness creates uniquely named databases under that server and removes only the
-databases it owns. Do not point POSTGRES_TEST_DSN at the daemon's :5533 server."""
-
-
-def postgres_test_dsn_error(environ: Mapping[str, str] | None = None) -> str | None:
-    """Actionable setup error when the required PostgreSQL test DSN is absent."""
-    values = os.environ if environ is None else environ
-    return None if values.get("POSTGRES_TEST_DSN", "").strip() else _POSTGRES_SETUP
-
 
 def _new_test_run_id() -> str:
     """Opaque ownership token inherited by every pytest-xdist child."""
@@ -593,11 +579,11 @@ def _bazel_plan(args: tuple[str, ...], *, markers: str, all_markers: bool) -> Ba
 
 
 def _bazel_argv(plan: BazelPlan, *, workers: int) -> list[str]:
-    """Bazel owns parallelism; every target conservatively reserves a PG slot.
+    """Bazel owns parallelism; database targets reserve a private PG slot.
 
     Resource estimates are configurable without adding application schema. Pure
-    targets reserve the same capacity as PG targets, so uncertainty cannot exceed
-    the session's database or memory allocation. The launcher itself runs serially.
+    targets release the PG reservation; unknown targets conservatively retain it.
+    Loading and execution use the admitted share, capped at two serial targets.
     Batch mode keeps the admitted process responsible for the entire invocation.
     """
     db_slots = min(workers, _env_int("AQ_BAZEL_DB_SLOTS") or workers)
@@ -610,9 +596,9 @@ def _bazel_argv(plan: BazelPlan, *, workers: int) -> list[str]:
         executable,
         "--batch",
         "test",
-        "--config=local",
+        "--config=local", f"--loading_phase_threads={workers}",
         f"--jobs={workers}",
-        f"--local_test_jobs={workers}",
+        "--local_test_jobs=0",  # Schedule tests by CPU, memory and PostgreSQL reservations.
         f"--local_resources=cpu={workers}",
         f"--local_resources=memory={memory}",
         f"--local_resources=aq_pg={db_slots}",
@@ -1171,10 +1157,10 @@ def test_command(
     Bazel is opt-in and uses tools/bazel/test_suites.json. Unsupported pytest
     arguments (including -k, node IDs and exclusions) and smart enforcement
     are refused with a legacy command. Targets run pytest serially; Bazel's
-    jobs stay within the session worker share. AQ_BAZEL_DB_SLOTS (default:
+    jobs stay within the session worker share, at most two. AQ_BAZEL_DB_SLOTS (default:
     worker share), AQ_BAZEL_TEST_MEMORY_MB (default: 1024) and
     AQ_BAZEL_MEMORY_MB (default: share * estimate) bound local test resources.
-    Every target conservatively reserves one database slot. Set
+    PostgreSQL and unclassified targets reserve one database slot. Set
     AQ_BAZEL_EXECUTABLE to the pinned Bazel binary when it is not on PATH.
     Target HOME/network/PostgreSQL isolation happens after host lock admission.
     """
@@ -1238,7 +1224,7 @@ def test_command(
         if workers < aq_workers:
             console.print(f"[yellow]aq test:[/] --aq-workers clamped to {cores} (cores)")
     if aq_backend == "bazel":
-        workers = min(workers, allocated_workers)
+        workers = min(workers, allocated_workers, 2)
     timeout = _slot_wait_timeout(timeout, aq_timeout)
 
     lock_dir = default_lock_dir(config)

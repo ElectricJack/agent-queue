@@ -9,6 +9,14 @@ filegroup(name = "sources", srcs = [
         "models.py",
         "snapshots.py",
     ])
+exports_files([
+        "__init__.py",
+        "commands.py",
+        "models.py",
+        "snapshots.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

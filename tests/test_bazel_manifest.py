@@ -62,10 +62,12 @@ def _copy_inputs(destination):
     ):
         shutil.copy2(ROOT / path, destination / path)
     shutil.copytree(ROOT / "tools/bazel", destination / "tools/bazel")
-    shutil.copytree(
-        ROOT / "migrations", destination / "migrations",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    # Root BUILD evaluates these globs even for the isolated H1 smoke targets.
+    for directory in ("migrations", "scripts", "docs/reference/playbook-commands"):
+        shutil.copytree(
+            ROOT / directory, destination / directory,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
     shutil.copytree(
         ROOT / "packages/aq-client",
         destination / "packages/aq-client",
@@ -344,6 +346,136 @@ def test_deleted_renamed_and_initializer_inputs_change_the_graph(tmp_path):
     assert deleted["src/alpha"]["files"] != renamed["src/alpha"]["files"]
     # Importing any child includes its package initializer as an action input.
     assert "src/alpha/__init__.py" in deleted["src/alpha"]["files"]
+
+
+def test_dependency_areas_match_catalogue_names_and_module_globs():
+    modules = {
+        "tests/test_knowledge_budget.py": {"areas": ["knowledge"]},
+        "tests/test_knowledge_context.py": {"areas": ["knowledge", "sessions"]},
+        "tests/test_sessions.py": {"areas": ["sessions"]},
+    }
+    expected = set(modules) - {"tests/test_sessions.py"}
+    assert targets.select_areas(modules, ["knowledge"]) == expected
+    assert targets.select_areas(modules, ["tests/test_knowledge_*.py"]) == expected
+    assert targets.select_areas(modules, ["knowledge", "sessions"]) == set(modules)
+    with pytest.raises(ValueError, match="matches no test modules"):
+        targets.select_areas(modules, ["unknown"])
+
+
+def _fine_graph_fixture(root):
+    contents = {
+        "BUILD.bazel": "",
+        "tools/bazel/BUILD.bazel": "",
+        "src/__init__.py": "",
+        "src/used.py": "VALUE = 1\n",
+        "src/unrelated.py": "VALUE = 2\n",
+        "tests/conftest.py": (
+            "import pytest\n"
+            "@pytest.fixture\n"
+            "def selected():\n"
+            "    from src.used import VALUE\n"
+            "    return VALUE\n"
+            "@pytest.fixture\n"
+            "def unused():\n"
+            "    from src.unrelated import VALUE\n"
+            "    return VALUE\n"
+        ),
+        "tests/test_behavior.py": "def test_behavior(selected): assert selected == 1\n",
+    }
+    for relative, content in contents.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    return {"tests/test_behavior.py": {}}
+
+
+def _render_graph(root, modules, fine_grained):
+    libraries, discovered = targets.graph(root, modules, fine_grained=fine_grained)
+    entries = {
+        path: {**info, "target": targets.target(path, "module"), "nodes": [], "targets": {}}
+        for path, info in discovered.items()
+    }
+    return targets.render(root, {
+        "libraries": libraries, "modules": entries, "collection": {"nodes": []},
+        "suites": {}, "aliases": {},
+    })
+
+
+def test_fine_graph_only_carries_used_fixture_sources(tmp_path):
+    modules = _fine_graph_fixture(tmp_path)
+    _, graph = targets.graph(tmp_path, modules, fine_grained=set(modules))
+    info = graph["tests/test_behavior.py"]
+    assert info["source_files"] == ["src/__init__.py", "src/used.py"]
+    assert "tests/conftest.py" in info["test_sources"]
+    assert info["libraries"] == []
+    assert not info["conservative"]
+    rendered = _render_graph(tmp_path, modules, set(modules))
+    build = rendered["tests/BUILD.bazel"]
+    assert '"//src:used.py"' in build
+    assert '"//src:unrelated.py"' not in build
+    assert '"//src:library"' not in build
+    assert '":fixtures"' not in build
+    assert '"//:python_documentation_data"' not in build
+
+
+@pytest.mark.parametrize("fine", [False, True])
+def test_documentation_read_by_shared_helper_reaches_consumers(tmp_path, fine):
+    modules = _fine_graph_fixture(tmp_path)
+    (tmp_path / "tests/doc_helper.py").write_text(
+        "from pathlib import Path\n"
+        "def text(): return Path('docs/guide.md').read_text()\n"
+    )
+    (tmp_path / "tests/test_behavior.py").write_text(
+        "from tests.doc_helper import text\ndef test_behavior(): assert text()\n"
+    )
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "guide.md").write_text("instructions\n")
+    selected = set(modules) if fine else set()
+    _, graph = targets.graph(tmp_path, modules, fine_grained=selected)
+    assert graph["tests/test_behavior.py"]["docs"]
+    output = _render_graph(tmp_path, modules, selected)
+    assert '"//:python_documentation_data"' in output["tests/BUILD.bazel"]
+    repository_data, documentation_data = output["tools/bazel/python_data.bzl"].split(
+        'name = "python_documentation_data"', 1
+    )
+    assert '"docs/**"' not in repository_data
+    assert '"docs/**"' in documentation_data
+
+
+def test_documentation_mentions_do_not_make_a_reader(tmp_path):
+    modules = _fine_graph_fixture(tmp_path)
+    (tmp_path / "tests/test_behavior.py").write_text(
+        '\"\"\"Design reference: docs/guide.md.\"\"\"\n'
+        "def test_behavior(selected): assert selected == 1\n"
+    )
+    _, graph = targets.graph(tmp_path, modules, fine_grained=set(modules))
+    assert not graph["tests/test_behavior.py"]["docs"]
+
+
+@pytest.mark.parametrize("build_name", ["BUILD", "BUILD.bazel"])
+def test_fine_file_labels_respect_nested_bazel_packages(tmp_path, build_name):
+    modules = _fine_graph_fixture(tmp_path)
+    for folder in ("tools/bazel/smoke", "scripts/helpers"):
+        directory = tmp_path / folder
+        directory.mkdir(parents=True)
+        (directory / build_name).write_text("")
+        (directory / "helper.py").write_text("VALUE = 1\n")
+    (tmp_path / "scripts/root_helper.py").write_text("VALUE = 1\n")
+    (tmp_path / "tests/test_behavior.py").write_text(
+        "from tools.bazel.smoke.helper import VALUE\n"
+        "from scripts.helpers import helper\n"
+        "from scripts import root_helper\n"
+        "def test_behavior(): assert VALUE == helper.VALUE == root_helper.VALUE\n"
+    )
+    output = _render_graph(tmp_path, modules, set(modules))
+    build = output["tests/BUILD.bazel"]
+    assert '"//tools/bazel/smoke:helper.py"' in build
+    assert '"//scripts/helpers:helper.py"' in build
+    assert '"//:scripts/root_helper.py"' in build
+    for package in ("tools/bazel/smoke", "scripts/helpers"):
+        assert '"helper.py"' in output[f"{package}/{build_name}"].split("exports_files(")[1]
+    assert '"scripts/root_helper.py"' in output["BUILD.bazel"].split("exports_files(")[1]
 
 
 def test_launcher_rejects_node_drift_before_selecting_split():

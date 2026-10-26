@@ -21,6 +21,26 @@ filegroup(name = "sources", srcs = [
         "registry.py",
         "services.py",
     ])
+exports_files([
+        "__init__.py",
+        "base.py",
+        "internal/__init__.py",
+        "internal/files.py",
+        "internal/git.py",
+        "internal/inbox/__init__.py",
+        "internal/inbox/allowlist.py",
+        "internal/inbox/auth.py",
+        "internal/inbox/gmail_client.py",
+        "internal/inbox/plugin.py",
+        "internal/inbox/poller.py",
+        "internal/notes.py",
+        "internal/vibecop.py",
+        "loader.py",
+        "registry.py",
+        "services.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
