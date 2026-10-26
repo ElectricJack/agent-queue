@@ -421,6 +421,7 @@ _PROCESS_SITES = {
     ("src/doctor/builtin.py", "_probe_binary", "create_subprocess_exec"): 1,
     ("src/doctor/dashboard_server_checks.py", "_run_aq", "create_subprocess_exec"): 1,
     ("src/doctor/db_checks.py", "_git", "create_subprocess_exec"): 1,
+    ("src/doctor/db_checks.py", "_docker_output", "create_subprocess_exec"): 1,
     ("src/doctor/service_checks.py", "_run", "create_subprocess_exec"): 1,
     ("src/doctor/stall_checks.py", "_command", "create_subprocess_exec"): 1,
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,
