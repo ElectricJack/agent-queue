@@ -7,7 +7,8 @@ snapshot per repository, and supplies an ephemeral allowed set to consumers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import logging
+from dataclasses import dataclass, field, fields, replace
 from functools import lru_cache
 from types import MappingProxyType
 
@@ -34,6 +35,21 @@ from src.integration.delivery_truth import (
 )
 from src.integration.delivery_observer import DeliveryTarget
 from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY, legacy_artifact
+
+logger = logging.getLogger(__name__)
+
+
+def _request_changes(before, after):
+    """Name exact source fields, including bookkeeping omitted from the fence."""
+    for task_id in sorted(before.keys() | after.keys()):
+        old, new = before.get(task_id), after.get(task_id)
+        if old is None or new is None:
+            yield task_id, "presence", old is not None, new is not None
+            continue
+        for member in fields(DeliveryRequest):
+            prior, current = getattr(old, member.name), getattr(new, member.name)
+            if prior != current:
+                yield task_id, member.name, prior, current
 
 
 class OrdinaryAdmissionChanged(Exception):
@@ -382,7 +398,11 @@ async def _inputs(db, candidate_ids, conn):
         frozen(children),
         frozen(gate_rows),
         frozen(markers),
-        tuple(sorted(requests.items())),
+        # task_version is tasks.updated_at, including ordinary bookkeeping.
+        # Every delivery/lifecycle field remains fenced independently; retain
+        # full request equality for other delivery consumers and their caches.
+        tuple(sorted((tid, replace(request, task_version=0.0))
+                     for tid, request in requests.items())),
         tuple(
             sorted(
                 (
@@ -425,6 +445,7 @@ class AdmissionSnapshot:
     hierarchy_required: dict = field(default_factory=dict)
     delivery_required: dict = field(default_factory=dict)
     delivery_view: object = None
+    source_requests: dict[str, DeliveryRequest] | None = None
 
     def record_change(self, code, detail, task_id=None):
         """Explain a failed guard before callers discard the allowed set."""
@@ -512,6 +533,15 @@ class AdmissionSnapshot:
         if not await self._delivery_matches(conn=conn, task_id=task_id):
             return False
         current = await _inputs(self.db, self.candidate_ids, conn)
+        if self.source_requests is not None and logger.isEnabledFor(logging.DEBUG):
+            for tid, name, before, after in _request_changes(
+                self.source_requests, current[2],
+            ):
+                logger.debug(
+                    "Admission delivery input %s.%s changed: %r -> %r%s",
+                    tid, name, before, after,
+                    " (ignored bookkeeping)" if name == "task_version" else "",
+                )
         if self.policy_inputs:
             policy, _ = await _frontier_inputs(conn, self.candidate_ids)
             if policy != self.policy_inputs:
@@ -566,10 +596,18 @@ class AdmissionSnapshot:
         if self.inputs != current[-1]:
             groups = ("edges", "children", "gates", "obsolete markers", "delivery requests",
                       "project configuration", "repository configuration", "labels")
-            changed = ", ".join(name for name, before, after in zip(
-                groups, self.inputs, current[-1], strict=True) if before != after)
+            changed = []
+            for name, before, after in zip(groups, self.inputs, current[-1], strict=True):
+                if before == after:
+                    continue
+                if name == "delivery requests":
+                    detail = ", ".join(f"{tid}.{member}" for tid, member, _, _ in
+                                       _request_changes(dict(before), dict(after)))
+                    name += f" ({detail})"
+                changed.append(name)
             return self.record_change(
-                "admission_inputs_changed", f"Admission source inputs changed: {changed}; retry",
+                "admission_inputs_changed",
+                f"Admission source inputs changed: {', '.join(changed)}; retry",
                 task_id,
             )
         if self.pr is not None and not await self.pr.matches(
@@ -624,6 +662,7 @@ async def _observe_sources(
         )
     batch = AdmissionSnapshot(db, candidate_ids, candidate_ids - dev_ids, inputs)
     batch.pr = pr
+    batch.source_requests = requests
     batch.lock_ids = set(requests)
     batch.required = required
     evidence = {}
@@ -732,7 +771,10 @@ async def _frontier_inputs(conn, ids):
         if edge["dep_type"] in {"blocks", "delivery-of"}:
             required.setdefault(edge["task_id"], set()).add(edge["depends_on_task_id"])
     # Fence source generations without a DeliveryView, minus this claim's own rows.
-    sources = (await conn.execute(select(tasks).where(
+    # updated_at is bookkeeping, not a source generation or policy fence.
+    # Keep this consistent with the DeliveryRequest fingerprint above so a
+    # timestamp-only update cannot merely fail the later policy guard instead.
+    sources = (await conn.execute(select(*(c for c in tasks.c if c.name != "updated_at")).where(
         tasks.c.id.in_(set().union(*required.values())),
         or_(tasks.c.id.not_in(ids), tasks.c.status == "COMPLETED")))).all() if required else []
     completions, markers = [(await conn.execute(select(table).where(
