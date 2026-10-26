@@ -945,6 +945,11 @@ async def test_listener_batches_cannot_starve_queued_resume_dispatch(env, monkey
     service.lifecycle.resume.fresh_workspace = AsyncMock(return_value='/tmp/fresh')
     service.orch._launch_session_for_task_locked = AsyncMock()
     service.command = AsyncMock(wraps=service.command)
+    # The synthetic dispatch barrier must survive until the test observes the
+    # queued lock waiter. Keep its work budget outside the ten-second test
+    # deadline so a loaded runner cannot release the fence before that handshake.
+    # Source timeout/rollback behavior is covered in test_wait_dispatch.py.
+    service.listener.event_budget_seconds = 30
     # Use the production batch size: even a backlog of fast events must release
     # the graph fence after the first event, before the renewal interval elapses.
     for n in range(12):
