@@ -936,6 +936,7 @@ HAND_INTEGRATION_RECONCILIATION = {'wait_listener_deadlock_restart_composition':
  'pull_request': 2091,
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'operator_decision': '6679052c',
+ 'decision_message_id': 'msg-06cddacfcdef44cb93421db9f8f8e935',
  'dev_source_revision': '5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b',
  'source_revision': '8ebd8b2174552fe250dcfa40170e1b8faf356b1b',
  'previous_measured_owned_total': 159104,
