@@ -14,6 +14,19 @@ filegroup(name = "sources", srcs = [
         "storage.py",
         "storage_binding.py",
     ])
+exports_files([
+        "__init__.py",
+        "events.py",
+        "github.py",
+        "onboarding.py",
+        "paths.py",
+        "relocation.py",
+        "roots.py",
+        "storage.py",
+        "storage_binding.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

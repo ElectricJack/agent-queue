@@ -14,6 +14,19 @@ filegroup(name = "sources", srcs = [
         "relay_stats.py",
         "settings.py",
     ])
+exports_files([
+        "__init__.py",
+        "__main__.py",
+        "app.py",
+        "bundle.py",
+        "edge.py",
+        "process.py",
+        "proxy.py",
+        "relay_stats.py",
+        "settings.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

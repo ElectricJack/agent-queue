@@ -23,6 +23,28 @@ filegroup(name = "sources", srcs = [
         "scheduler.py",
         "service.py",
     ])
+exports_files([
+        "__init__.py",
+        "cancellation.py",
+        "cycle.py",
+        "eviction.py",
+        "hibernate.py",
+        "job_wait.py",
+        "legacy_audit.py",
+        "legacy_bridge.py",
+        "legacy_human.py",
+        "legacy_parking.py",
+        "legacy_pass.py",
+        "legacy_projection.py",
+        "lifecycle.py",
+        "measurements.py",
+        "restart.py",
+        "resume.py",
+        "scheduler.py",
+        "service.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
