@@ -1001,6 +1001,14 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                        'supervisor_decision_comment_id': 'comment-ccb6fb19a24f447c97da075bc800a9a2',
                                        'task_id': 'wise-crest-14',
                                        'thread_id': 'wise-crest-14-ci-size'},
+ 'dashboard_retirement_overlap': {'applied_owned_reduction': 26,
+                                  'overlapping_owned_reduction': 23,
+                                  'reason': 'Both historical reductions retire the same Focus '
+                                            'helper. The surviving BatchDetail implementation uses '
+                                            'the responsive_dashboard_reduction total of 26 '
+                                            'reclaimed lines, including the 23-line '
+                                            'focus_view_retirement_reduction; apply the shared '
+                                            'reduction once.'},
  'deleted_epic_child_recovery_composition': {'authorized_engine_delta': 103,
                                              'authorized_owned_delta': 103,
                                              'authorized_table_delta': 0,
@@ -1052,6 +1060,20 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                                  'referenced_decision': 'size-cap-delegation-2026-10-23',
                                                  'task_id': 'stark-rapids-81'},
  'expires_at': 's4_modules',
+ 'focus_view_retirement_reduction': {'measured_engine_delta': 0,
+                                     'measured_owned_delta': -23,
+                                     'measured_owned_total': 157902,
+                                     'measured_table_delta': 0,
+                                     'previous_measured_owned_total': 157925,
+                                     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2029',
+                                     'reason': 'Retire Focus-specific batch display helpers; '
+                                               'retain the moved BatchPage ownership. Lower the '
+                                               'exact cap by the measured reduction, preserving '
+                                               'historical grants, baselines and classifications '
+                                               'with zero reusable headroom.',
+                                     'removed_owned_files': {'dashboard/src/pages/focus/focusFormat.ts': 23},
+                                     'source_revision': '1ed3e1fe7d2d271f2d03b1081eb110f09b0e0187',
+                                     'task_id': 'azure-delta-20'},
  'fresh_continuation_sentinel_composition': {'authorized_engine_delta': 0,
                                              'authorized_owned_delta': 15,
                                              'authorized_shared_owned_delta': 15,
@@ -1290,6 +1312,31 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                                 'referenced_decision': 'size-cap-delegation-2026-10-23',
                                                 'source_revision': 'legacy-backfill epic',
                                                 'task_id': 'fair-quest-48'},
+ 'pool_claim_epoch_churn_composition': {'authorized_engine_delta': 0,
+                                        'authorized_owned_delta': 25,
+                                        'authorized_shared_owned_delta': 25,
+                                        'authorized_table_delta': 0,
+                                        'charged_files': {'src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked': 25},
+                                        'dev_source_revision': '2229600c889b1b28cbeee2b26016dcc618f8bde1',
+                                        'measured_engine_lines': 83434,
+                                        'measured_owned_total': 158863,
+                                        'measured_table_count': 45,
+                                        'operator_decision': '6679052c',
+                                        'previous_measured_engine_lines': 83434,
+                                        'previous_measured_owned_total': 158838,
+                                        'previous_measured_table_count': 45,
+                                        'reason': 'Exact supervisor-preapproved +25 shared owned '
+                                                  'lines for fenced post-reset admission failure '
+                                                  'recording, backoff and claim release. Compose '
+                                                  'on current dev after its dashboard retirement; '
+                                                  'preserve every historical grant, original '
+                                                  'baseline and ownership classification, with '
+                                                  'zero remaining headroom and no new storage '
+                                                  'category.',
+                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                        'source_revision': 'aa33d430b7168464dc3a763a33b05ed3448a1059',
+                                        'supervisor_decision_comment_id': 'comment-57436ba4352943b8a1762cfc431eda05',
+                                        'task_id': 'brisk-zenith-96'},
  'pr_retirement_snapshot_composition': {'authorized_engine_delta': 41,
                                         'authorized_owned_delta': 41,
                                         'authorized_table_delta': 0,
@@ -1926,32 +1973,7 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
                                         'source_revision': '79edb0bab5bce7897ff00a2b5443710f1e424299',
                                         'task_id': 'clear-journey-76',
-                                        'thread_id': 'clear-journey-76-size'},
- 'pool_claim_epoch_churn_composition': {'authorized_engine_delta': 0,
-                                        'authorized_owned_delta': 25,
-                                        'authorized_shared_owned_delta': 25,
-                                        'authorized_table_delta': 0,
-                                        'charged_files': {'src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked': 25},
-                                        'dev_source_revision': '2229600c889b1b28cbeee2b26016dcc618f8bde1',
-                                        'measured_engine_lines': 83434,
-                                        'measured_owned_total': 158863,
-                                        'measured_table_count': 45,
-                                        'operator_decision': '6679052c',
-                                        'previous_measured_engine_lines': 83434,
-                                        'previous_measured_owned_total': 158838,
-                                        'previous_measured_table_count': 45,
-                                        'reason': 'Exact supervisor-preapproved +25 shared owned '
-                                                  'lines for fenced post-reset admission failure '
-                                                  'recording, backoff and claim release. Compose '
-                                                  'on current dev after its dashboard retirement; '
-                                                  'preserve every historical grant, original '
-                                                  'baseline and ownership classification, with '
-                                                  'zero remaining headroom and no new storage '
-                                                  'category.',
-                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
-                                        'source_revision': 'aa33d430b7168464dc3a763a33b05ed3448a1059',
-                                        'supervisor_decision_comment_id': 'comment-57436ba4352943b8a1762cfc431eda05',
-                                        'task_id': 'brisk-zenith-96'}}
+                                        'thread_id': 'clear-journey-76-size'}}
 
 
 def integration_table(name: str) -> bool:
