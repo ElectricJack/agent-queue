@@ -8774,13 +8774,13 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     # Epic deletion waits for each child's current completion to be retained,
     # even after the repaired parent has reached main (branch-retirement.md).
     async with db._engine.connect() as conn:
-        hold = await train_cleanup_hold(conn, repository_id="r", ref="refs/heads/aq/epic")
-    assert hold and "child" in hold
+        hold = await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref)
+    assert hold and "child" in hold and "has no retained completion witness" in hold
     assert git(origin.url, "rev-parse", "aq/epic") == head
     reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
     await reconciler.tick(case.now[0])
     async with db._engine.connect() as conn:
-        assert await train_cleanup_hold(conn, repository_id="r", ref="refs/heads/aq/epic") is None
+        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])

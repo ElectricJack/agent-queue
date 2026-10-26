@@ -46,6 +46,12 @@ unavailable observations retain the wait, respect provider retry intervals, and
 remain eligible after restart without a new provider revision. Successful
 settlement uses ordinary outcome delivery and remains idempotent.
 
+Forward dispatch and dispatched-hint reconciliation share the pending-progress
+safety cadence. A fresh unfinished observation during forward dispatch defers
+another observation of that source until the cadence expires; recovery then
+visits sources within its per-pass retry budget. A terminal hint bypasses the
+pending-progress cadence and still requires an authenticated current observation.
+
 ## Temporary CI observation failures — 2026-10-25
 
 A train visit that cannot freshly observe a disappearing pending wait preserves
