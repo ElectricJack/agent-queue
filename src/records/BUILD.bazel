@@ -17,6 +17,22 @@ filegroup(name = "sources", srcs = [
         "search.py",
         "service.py",
     ])
+exports_files([
+        "__init__.py",
+        "artifacts.py",
+        "auth.py",
+        "backfill.py",
+        "export.py",
+        "graph.py",
+        "identity.py",
+        "models.py",
+        "outbox.py",
+        "schema.py",
+        "search.py",
+        "service.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

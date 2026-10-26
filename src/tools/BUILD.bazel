@@ -11,6 +11,17 @@ filegroup(name = "sources", srcs = [
         "registry.py",
         "tool_index.py",
     ])
+exports_files([
+        "__init__.py",
+        "command_catalogue.json",
+        "command_catalogue.py",
+        "definitions.py",
+        "registry.py",
+        "tool_index.py",
+    ])
+filegroup(name = "resources", srcs = [
+        "command_catalogue.json",
+    ])
 py_library(
     name = "library",
     srcs = [

@@ -21,6 +21,26 @@ filegroup(name = "sources", srcs = [
         "manager.py",
         "process.py",
     ])
+exports_files([
+        "__init__.py",
+        "askpass_broker.py",
+        "askpass_fd.py",
+        "check_runs.py",
+        "ci_gate.py",
+        "github.py",
+        "github_activity.py",
+        "github_app.py",
+        "github_auth.py",
+        "github_cache.py",
+        "github_cli.py",
+        "github_contracts.py",
+        "identity.py",
+        "locks.py",
+        "manager.py",
+        "process.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

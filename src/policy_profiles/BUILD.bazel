@@ -11,6 +11,16 @@ filegroup(name = "sources", srcs = [
         "models.py",
         "service.py",
     ])
+exports_files([
+        "__init__.py",
+        "archive.py",
+        "builtin.py",
+        "integration.py",
+        "models.py",
+        "service.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

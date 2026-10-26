@@ -15,6 +15,20 @@ filegroup(name = "sources", srcs = [
         "test_db_reaper.py",
         "test_runs.py",
     ])
+exports_files([
+        "__init__.py",
+        "box_lock.py",
+        "limits.py",
+        "procs.py",
+        "project_tests.py",
+        "semaphore.py",
+        "slot_report.py",
+        "test_baseline.py",
+        "test_db_reaper.py",
+        "test_runs.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
