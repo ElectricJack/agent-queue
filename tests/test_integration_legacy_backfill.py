@@ -388,6 +388,122 @@ async def test_open_epic_child_on_epic_branch_gets_retained_provenance(world):
         assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
 
 
+@pytest.mark.parametrize("recorded", [False, True])
+@pytest.mark.parametrize("mode", ["train", "development"])
+async def test_deleted_epic_backfill_admits_only_proven_child(world, recorded, mode):
+    from src.integration.admission import observe_admission
+
+    db, origin = world.db, world.origin
+    head = await epic_with_child(world, "epic", "child", epic_status=TaskStatus.IN_PROGRESS)
+    await legacy(world, "unproven", parent="epic", delete_branch=True)
+    origin.land("epic")
+    await db.transition_task("epic", TaskStatus.COMPLETED)
+    git(origin.clone, "push", "-q", "origin", "--delete", "aq/epic", "aq/child")
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).values(
+            hierarchical_integration_mode=mode, hierarchical_integration_desired_mode=mode))
+        if recorded:
+            await conn.execute(insert(integration_legacy_deliveries).values(
+                task_id="child", project_id="p", parent_task_id="epic", repository_id="r",
+                target_ref=MAIN.target_ref, target_sha=head, delivered_sha=head,
+                proof=CONTAINED_PROOF, operator_id="op", reason="old row", created_at=time.time(),
+            ))
+    for tid, prerequisite in (("dependent", "child"), ("withheld", "unproven")):
+        await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid,
+                                  description="", status=TaskStatus.READY))
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=tid + "-origin", task_id=tid, repository_id="r", branch_name="aq/" + tid,
+                base_sha=head, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+        await db.add_dependency(tid, prerequisite)
+    service = SimpleNamespace(delivery_observer=db._delivery_observer)
+
+    async def admission():
+        return await observe_admission(db, ["dependent", "withheld"], service)
+
+    assert (await admission()).allowed == set()
+    preview = await backfill_legacy_deliveries(db, "p")
+    assert "child" in {r["task_id"] for r in preview["results"]}
+    assert (await admission()).allowed == set()
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="hand landed")
+    assert "child" in {r["task_id"] for r in applied["results"]}
+    assert "unproven" in {r["task_id"] for r in applied["unproven"]}
+    after = await admission()
+    assert after.allowed == {"dependent"}, after.reasons
+    assert await after.is_fresh("dependent") and await after.matches(task_id="dependent")
+    assert (await backfill_legacy_deliveries(db, "p"))["results"] == []
+    base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
+    git(origin.clone, "push", "--force", "origin", f"{base}:main")
+    assert not await after.is_fresh("dependent")
+    view = await db._delivery_observer.prerequisite_view("p", task_ids=["dependent"])
+    assert not view.default.satisfied("child")
+
+
+@pytest.mark.parametrize("case", ["earlier_commit", "equivalent", "failed", "changed"])
+async def test_deleted_epic_requires_current_passing_final_source(world, monkeypatch, case):
+    from src.integration import legacy_backfill
+    from src.integration.provenance import CompletionIdentity
+
+    db = world.db
+    await db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
+                              description="", branch_name="aq/missing", status=TaskStatus.COMPLETED))
+    await legacy(world, "child", parent="epic", land=case != "equivalent",
+                 squash=case == "equivalent", delete_branch=True,
+                 extra_commits=["f" * 40] if case == "earlier_commit" else [],
+                 completion_outcome="fail" if case == "failed" else "pass")
+    if case == "changed":
+        attest = legacy_backfill._attest
+
+        async def reopen(*args):
+            async with db.immediate() as conn:
+                await conn.execute(update(tasks).where(tasks.c.id == "child").values(
+                    status="IN_PROGRESS"))
+            return await attest(*args)
+
+        monkeypatch.setattr(legacy_backfill, "_attest", reopen)
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="strict source")
+    assert applied["recorded"] == 0
+    observed = await snapshot(world)
+    assert await observed.read_completion(CompletionIdentity("p", "r", "child", "close-child")) is None
+
+
+async def test_epic_deletion_holds_until_child_witness_is_retained(world, tmp_path):
+    from src.integration.branch_retirement import BranchRetirementService
+    from src.integration.delivery_branches import live_branch_references, train_cleanup_hold
+    from src.integration.truth_reconciler import GitTruthReconciler
+
+    db = world.db
+    await epic_with_child(world, "epic", "child", epic_status=TaskStatus.IN_PROGRESS)
+    async with db._engine.connect() as conn:
+        assert "child" in (await live_branch_references(conn))["aq/epic"]
+        assert "child" in await train_cleanup_hold(conn, repository_id="r", ref="refs/heads/aq/epic")
+    await backfill_legacy_deliveries(db, "p", dry_run=False, reason="retain child")
+    world.origin.land("epic")
+    await db.transition_task("epic", TaskStatus.COMPLETED)
+    async with db.immediate() as conn:
+        retirement_id = await request_branch_retirement_on(
+            conn, request_id="retire-epic", project_id="p", repository_id="r", task_id="epic",
+            branch="aq/epic", reason="hand landed")
+    retirement = BranchRetirementService(db, git_manager=world.truth.git, data_dir=tmp_path)
+    state, reason = await retirement.advance(retirement_id)
+    assert state == "pending" and "child" in reason
+    assert git(world.origin.clone, "ls-remote", "origin", "refs/heads/aq/epic")
+    reconciler = GitTruthReconciler(db, world.truth.git, data_dir=tmp_path)
+    await reconciler.tick(time.time())
+    async with db._engine.connect() as conn:
+        assert "aq/epic" not in await live_branch_references(conn)
+        assert await train_cleanup_hold(conn, repository_id="r", ref="refs/heads/aq/epic") is None
+    assert await retirement.advance(retirement_id, now=time.time() + 3600) == ("complete", None)
+    assert not git(world.origin.clone, "ls-remote", "origin", "refs/heads/aq/epic")
+    # A reclose must retain its own evidence before losing the parent ref.
+    await db.save_task_completion(TaskCompletion(
+        id="new-close", task_id="child", outcome="pass", commits=["f" * 40], completed_at=time.time()))
+    async with db._engine.connect() as conn:
+        assert "child" in (await live_branch_references(conn))["aq/epic"]
+
+
 async def branchless(world, tid, *, child=None):
     """A completed task with no branch of its own, optionally over one legacy child.
 

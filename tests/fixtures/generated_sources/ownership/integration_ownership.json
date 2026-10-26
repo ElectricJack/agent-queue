@@ -2063,7 +2063,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3110,
+    "authorized_owned_delta": 3213,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2082,6 +2082,28 @@
       "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
       "task_id": "wise-crest-14",
       "thread_id": "wise-crest-14-ci-size"
+    },
+    "deleted_epic_child_recovery_composition": {
+      "authorized_engine_delta": 103,
+      "authorized_owned_delta": 103,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/delivery_branches.py": 76,
+        "src/integration/delivery_truth.py": 1,
+        "src/integration/legacy_backfill.py": 26
+      },
+      "decision_message_id": "msg-18a65dbb43bf4491ae77cc71bfd931a8",
+      "dev_source_revision": "389f345d17ce86fd52f4e4e7aace9fcd35c0a7eb",
+      "measured_engine_lines": 83324,
+      "measured_owned_total": 158712,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83221,
+      "previous_measured_owned_total": 158609,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor pre-approved delta on current dev for strict final-source recovery of deleted-epic children and a generation-fenced retained-witness deletion hold. Preserve all historical grants, baselines and ownership classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "stark-rapids-81"
     },
     "expires_at": "s4_modules",
     "fresh_continuation_sentinel_composition": {
@@ -2228,8 +2250,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83221,
-    "measured_owned_total": 158609,
+    "measured_engine_lines": 83324,
+    "measured_owned_total": 158712,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
