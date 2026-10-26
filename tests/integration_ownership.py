@@ -932,7 +932,29 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'task_id': 'stark-orbit-64',
+HAND_INTEGRATION_RECONCILIATION = {'stopped_terminal_claim_owner_recovery_composition': {'task_id': 'stark-beacon-84',
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2092',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'supervisor_decision_message_id': 'msg-c4c2f1c830884de4a9f8c174065a5434',
+ 'dev_source_revision': '974dbb33b4ca95b16b8a9171a0a3ae4753900796',
+ 'source_revision': '44c64d7337eff04b966afc7d945d36f9a854dd27',
+ 'previous_measured_owned_total': 159123,
+ 'previous_measured_engine_lines': 83633,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 12,
+ 'authorized_engine_delta': 12,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 159135,
+ 'measured_engine_lines': 83645,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/integration/owner_recovery.py::_release_claim': 12},
+ 'reason': 'Exact supervisor-approved +12 owned/+12 engine/+0 tables for PR #2092: release a '
+           "stopped pool writer's terminal task binding after its obsolete claim phase is cleared, "
+           'retaining lifecycle, terminal-status and ownership guards. Preserve original '
+           'baselines, historical grants and ownership classifications, zero remaining headroom, '
+           'the s4_modules expiry and no new storage category.'},
+ 'bazel_dependency_dsn_helper_composition': {'task_id': 'stark-orbit-64',
  'pull_request': 2094,
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'operator_decision': '6679052c',
@@ -1039,7 +1061,7 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3624,
+ 'authorized_owned_delta': 3636,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1610,8 +1632,8 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83633,
- 'measured_owned_total': 159123,
+ 'measured_engine_lines': 83645,
+ 'measured_owned_total': 159135,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
