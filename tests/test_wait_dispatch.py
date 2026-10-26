@@ -3,7 +3,7 @@
 from dataclasses import replace
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -385,6 +385,100 @@ async def test_observation_retries_are_bounded_and_keep_monotonic_cursor(runtime
     await service.listener.tick()
     assert all(event["dispatched_at"] is not None
                for event in await records(runtime_env, wait_source_events))
+
+
+@pytest.mark.parametrize("restart", [None, "reconnect", "process"])
+@pytest.mark.parametrize("failure", ["observation", "timeout"])
+async def test_live_retries_follow_deadlines_without_notifications(
+    runtime_env, monkeypatch, restart, failure,
+):
+    """Advance a controlled clock at sleeps, not by issuing new source hints."""
+    env = runtime_env
+    now = [NOW]
+    service = runtime(env, clock=lambda: now[0])
+    seq = await env.db.wait_source_commit(source_key="test:quiet-retry", generation=0,
+        revision="1", outcome_ref="retry", payload={})
+    seen, delays = [], []
+    retry_after = 1 if failure == "observation" else service.listener.retry_seconds
+    event_budget = None
+
+    class StopLive(Exception):
+        pass
+
+    async def dispatch(conn, event):
+        seen.append((event["seq"], now[0]))
+        if failure == "timeout" and len(seen) <= 12:
+            event_budget.reschedule(asyncio.get_running_loop().time())
+            await asyncio.Event().wait()
+        return 1 if len(seen) <= 12 else 0
+
+    service.listener._dispatch = dispatch
+
+    async def wait_for(awaitable, timeout):
+        awaitable.close()
+        # Eleven consecutive deferrals, including ten deadline-driven retries.
+        if restart and len(seen) == 11:
+            raise StopLive
+        if len(seen) == 13:
+            raise StopLive
+        delays.append(timeout)
+        now[0] += timeout
+        raise TimeoutError
+
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.wait_for = wait_for
+    if failure == "timeout":
+        def controlled_timeout(seconds):
+            nonlocal event_budget
+            budget = asyncio.timeout(None)
+            if seconds == service.listener.event_budget_seconds:
+                event_budget = budget
+            return budget
+
+        listener_asyncio.timeout = controlled_timeout
+    # Avoid making host query latency part of this scheduling assertion.
+    listener_asyncio.get_running_loop.return_value = SimpleNamespace(time=lambda: 0)
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+    connection = SimpleNamespace(is_closed=lambda: False)
+    with pytest.raises(StopLive):
+        await service.listener._live(connection)
+    if restart:
+        assert len(seen) == 11
+        assert service.listener._retry_due[seq] == now[0] + retry_after
+        await service.lease(release=True)
+        if restart == "process":
+            service = runtime(env, clock=lambda: now[0])
+            service.listener._dispatch = dispatch
+        assert await service.lease()
+        await service.listener.rearm_retries()
+        assert service.listener._retry_heap == [(now[0], seq)]
+        # Continue without a source commit or notification after restart.
+        restart = None
+        with pytest.raises(StopLive):
+            await service.listener._live(connection)
+    assert len(seen) == 13 and {item[0] for item in seen} == {seq}
+    assert delays and set(delays) == {retry_after}
+    assert all(b[1] - a[1] <= retry_after for a, b in zip(seen, seen[1:]))
+    assert (await records(env, wait_source_events))[0]["dispatched_at"] is not None
+
+
+async def test_retry_batch_limit_keeps_live_loop_awake(runtime_env):
+    env = runtime_env
+    service = runtime(env)
+    listener = service.listener
+    listener.retry_batch_size = 1
+    listener._dispatch = AsyncMock(return_value=1)
+    for n in range(3):
+        await env.db.wait_source_commit(source_key="test:retry-batch", generation=0,
+            revision=str(n), outcome_ref="retry", payload={})
+    await listener.tick()
+    await listener.rearm_retries()
+    listener._dispatch = AsyncMock(return_value=0)
+    for expected in (1, 2, 3):
+        listener.changed.clear()
+        await listener.tick()
+        assert listener._dispatch.await_count == expected
+        assert listener.changed.is_set()
 
 
 async def test_aged_retry_respects_backoff_and_shares_turns_across_drains(runtime_env):
@@ -1302,6 +1396,7 @@ async def test_live_listener_subscribes_reconnects_and_replays_while_disconnecte
     connections = []
     reconnecting, allow_connect, drained = asyncio.Event(), asyncio.Event(), asyncio.Event()
     original_connect, original_drain = service.listener._connect, service.drain
+    rearm = service.listener.rearm_retries = AsyncMock(wraps=service.listener.rearm_retries)
 
     async def connect():
         if connections:
@@ -1333,6 +1428,7 @@ async def test_live_listener_subscribes_reconnects_and_replays_while_disconnecte
         await asyncio.wait_for(drained.wait(), 10)
         assert (await records(env))[0]["outcome"] == "satisfied"
         assert len(connections) == 2
+        assert rearm.await_count == 2
     finally:
         background.cancel()
         await asyncio.gather(background, return_exceptions=True)
@@ -1763,7 +1859,10 @@ async def test_lag_alert_includes_deferred_rows_and_deduplicates_after_restart(r
         await conn.execute(update(wait_source_events).values(committed_at=NOW - 121
                                                             if reason == "age" else NOW))
     assert await service.lease()
-    seq = max(r["seq"] for r in await records(env, wait_source_events))
+    source_rows = await records(env, wait_source_events)
+    seq = max(r["seq"] for r in source_rows)
+    oldest = min(r["seq"] for r in source_rows)
+    service.listener._schedule_retry(oldest, NOW + 1)
     async with env.db._engine.begin() as conn:
         # A deferred event behind the cursor is still outstanding source work.
         await conn.execute(update(wait_listener_cursors).values(last_seq=seq))
@@ -1778,6 +1877,10 @@ async def test_lag_alert_includes_deferred_rows_and_deduplicates_after_restart(r
     assert notices[0]["to_id"] == "supervisor-p"
     assert len(await records(env, wait_source_events)) == 2
     assert '"pending_events": 2' in notices[0]["body"]
+    import json
+
+    assert json.loads(notices[0]["body"])["oldest_next_retry_at"] == NOW + 1
+    assert json.loads(notices[0]["body"])["oldest_retry_in_seconds"] == 1
 
 
 @pytest.mark.parametrize("minutes", [15, 3])
