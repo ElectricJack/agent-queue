@@ -14,6 +14,12 @@ restart respects the persisted retry deadline. Quarantine never asserts a wait
 outcome or prevents later events from dispatching.
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
+Retained undispatched events older than the listener safety cadence share alternating
+turns with forward work once their observation backoff expires. Preserve the next
+turn across drain passes, including timeouts, so a continuous forward backlog cannot
+starve retries and an unavailable source cannot starve forward work even when a pass
+fits only one attempt. Existing retry batch limits still apply. Retry selection and
+coalescing never advance the cursor past unrelated forward events.
 
 CI observations of the same source and generation reobserve once at the newest
 sequence through the captured committed watermark. This includes hints interleaved

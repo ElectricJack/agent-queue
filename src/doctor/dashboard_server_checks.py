@@ -492,8 +492,8 @@ def _reason(error: BaseException) -> str:
     return str(error) or type(error).__name__
 
 
-def _focus_shell_probe(origin: str, timeout: float = _PROBE_SECONDS) -> tuple[int, str]:
-    """``(status, why)`` for ``GET <origin>/focus``; blocking.
+def _shell_probe(origin: str, timeout: float = _PROBE_SECONDS) -> tuple[int, str]:
+    """``(status, why)`` for ``GET <origin>/``; blocking.
 
     ``why`` is empty when the dashboard shell answered (200, HTML).  A
     host:port that is not listening is told apart from one that answers
@@ -510,26 +510,26 @@ def _focus_shell_probe(origin: str, timeout: float = _PROBE_SECONDS) -> tuple[in
         return 0, f"{host}:{port} is not listening ({_reason(error)})"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with opener.open(f"{origin}/focus", timeout=timeout) as response:
+        with opener.open(f"{origin}/", timeout=timeout) as response:
             status = response.getcode()
             content_type = response.headers.get("Content-Type", "") or ""
     except urllib.error.HTTPError as error:
         error.close()
-        return error.code, f"GET /focus answered {error.code}"
+        return error.code, f"GET / answered {error.code}"
     except (urllib.error.URLError, OSError) as error:
         cause = getattr(error, "reason", None)
         reason = _reason(cause if isinstance(cause, BaseException) else error)
-        return 0, f"GET /focus failed ({reason})"
+        return 0, f"GET / failed ({reason})"
     if status != 200:
-        return status, f"GET /focus answered {status}"
+        return status, f"GET / answered {status}"
     if "html" not in content_type.lower():
-        return status, "GET /focus did not answer with the dashboard's HTML shell"
+        return status, "GET / did not answer with the dashboard's HTML shell"
     return status, ""
 
 
 async def _check_public_url(ctx: DoctorContext) -> CheckResult:
     """Spec §6.3: set, HTTPS (Tailscale Serve) or a tailnet address, listening, and
-    ``GET /focus`` returns the shell.  Plain HTTP works on the tailnet but is not
+    ``GET /`` returns the shell.  Plain HTTP works on the tailnet but is not
     the approach chosen in §8 Q1, so it warns with the steps to move."""
     from src.remote_links import (
         DashboardLink,
@@ -587,8 +587,8 @@ async def _check_public_url(ctx: DoctorContext) -> CheckResult:
                 data=data,
             )
 
-    status, failure = await asyncio.to_thread(_focus_shell_probe, origin)
-    data["focus_status"] = status
+    status, failure = await asyncio.to_thread(_shell_probe, origin)
+    data["shell_status"] = status
     if failure:
         detail = f"dashboard.server.public_url {origin}: {failure}"
         return CheckResult(
@@ -612,7 +612,7 @@ async def _check_public_url(ctx: DoctorContext) -> CheckResult:
     return CheckResult(
         id=PUBLIC_URL,
         severity=Severity.OK,
-        detail=f"{origin} serves the dashboard shell at /focus over HTTPS{proxy}",
+        detail=f"{origin} serves the dashboard shell at / over HTTPS{proxy}",
         data=data,
     )
 
@@ -633,7 +633,7 @@ def dashboard_server_checks() -> list[DoctorCheck]:
         DoctorCheck(id=EXPOSURE, run=_check_exposure, owner=OWNER),
         # The Tailscale probe's 2 s deadline plus the health probe's 3 s.
         DoctorCheck(id=REMOTE_LINK, run=_check_remote_link, timeout_s=10.0, owner=OWNER),
-        # Connect, then GET /focus: two probe deadlines, plus slack.
+        # Connect, then GET /: two probe deadlines, plus slack.
         DoctorCheck(
             id=PUBLIC_URL, run=_check_public_url, timeout_s=_PROBE_SECONDS + 5, owner=OWNER
         ),

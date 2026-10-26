@@ -142,6 +142,11 @@ export async function startStubServer({ distDir, fixtures }) {
     const url = new URL(req.url, "http://stub.invalid");
     const body = await readBody(req);
     requests.push({ method: req.method, path: url.pathname, body });
+    if (/^\/api\/sessions\/[^/]+\/stream$/.test(url.pathname)) {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+      res.write(`data: ${JSON.stringify({ source: "transcript", uuid: "fixture-transcript", type: "assistant", text: "Saved session transcript", ts: 100 })}\n\n`);
+      return;
+    }
     const pane = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pane$/);
     if (pane) return openPane(decodeURIComponent(pane[1]), res);
     const access = url.pathname.match(/^\/ws\/terminal\/([^/]+)$/);

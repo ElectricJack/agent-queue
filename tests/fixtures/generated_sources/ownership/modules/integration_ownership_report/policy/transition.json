@@ -59,7 +59,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3646,
+      "authorized_owned_delta": 3620,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -284,7 +284,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 83513,
-      "measured_owned_total": 159145,
+      "measured_owned_total": 159119,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -411,6 +411,24 @@
         "task_id": "bright-torrent-86"
       },
       "remaining_headroom": 0,
+      "responsive_dashboard_reduction": {
+        "current_charged_files": {
+          "dashboard/src/pages/BatchDetail.tsx": 33
+        },
+        "measured_engine_lines": 82649,
+        "measured_owned_total": 157899,
+        "measured_table_count": 45,
+        "previous_charged_files": {
+          "dashboard/src/pages/focus/FocusBatch.tsx": 36,
+          "dashboard/src/pages/focus/focusFormat.ts": 23
+        },
+        "previous_measured_owned_total": 157925,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2028",
+        "reason": "Retire Focus UI and simplify its surviving batch helpers in the main dashboard. Lower the exact cap by 26 removed owned lines; preserve historical grants, fixed baselines, integration ownership, equality assertions and zero remaining headroom. No cap growth or new storage category.",
+        "reclaimed_owned_lines": 26,
+        "source_revision": "db4c9af789df269ba20ddcaa30143ccc7137cd5c",
+        "task_id": "grand-ember-55"
+      },
       "retained_fixer_authority_composition": {
         "authorized_engine_delta": 78,
         "authorized_owned_delta": 124,
@@ -857,7 +875,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159145,
+    "owned_total_cap": 159119,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
