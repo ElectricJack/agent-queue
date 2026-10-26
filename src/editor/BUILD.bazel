@@ -8,6 +8,13 @@ filegroup(name = "sources", srcs = [
         "brush.py",
         "models.py",
     ])
+exports_files([
+        "__init__.py",
+        "brush.py",
+        "models.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

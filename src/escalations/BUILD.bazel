@@ -18,6 +18,23 @@ filegroup(name = "sources", srcs = [
         "sweep.py",
         "transport.py",
     ])
+exports_files([
+        "__init__.py",
+        "autoresolve.py",
+        "dispatch.py",
+        "facts.py",
+        "intake.py",
+        "interactions.py",
+        "plan.py",
+        "render.py",
+        "sources.py",
+        "state.py",
+        "supervisor.py",
+        "sweep.py",
+        "transport.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
