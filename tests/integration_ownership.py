@@ -932,32 +932,7 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
-                                                 'authorized_owned_delta': 16,
-                                                 'authorized_table_delta': 0,
-                                                 'charged_files': {'src/integration/legacy_backfill.py': 16},
-                                                 'decision_message_id': 'msg-9b501b0a8c2f4c258c07a43cb924a8da',
-                                                 'dev_source_revision': '7bff0f25e71c4502b9f8cd9266fb047f0f6cc3fc',
-                                                 'measured_engine_lines': 83434,
-                                                 'measured_owned_total': 158864,
-                                                 'measured_table_count': 45,
-                                                 'operator_decision': '6679052c',
-                                                 'previous_measured_engine_lines': 83418,
-                                                 'previous_measured_owned_total': 158848,
-                                                 'previous_measured_table_count': 45,
-                                                 'reason': 'Exact supervisor-approved +16 '
-                                                           'owned/engine lines for authoritative '
-                                                           'deleted-parent selection and '
-                                                           'default-target reproof of retained '
-                                                           'child completions, including retired '
-                                                           'origins. Compose on current dev; '
-                                                           'preserve all historical grants, '
-                                                           'original baselines and ownership '
-                                                           'classifications, zero remaining '
-                                                           'headroom and no new storage category.',
-                                                 'referenced_decision': 'size-cap-delegation-2026-10-23',
-                                                 'task_id': 'stark-rapids-81'},
-'aborted_batch_fixer_composition': {'authorized_engine_delta': 37,
+HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_fixer_composition': {'authorized_engine_delta': 37,
                                      'authorized_owned_delta': 37,
                                      'authorized_table_delta': 0,
                                      'charged_files': {'src/integration/batches.py': 5,
@@ -981,7 +956,47 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
                                      'source_revision': '541b7f30c5859cd7adb27728405e7e78f3f80252',
                                      'task_id': 'smart-rapids-92',
                                      'thread_id': 'smart-rapids-92-ci-size'},
-'deleted_epic_child_recovery_composition': {'task_id': 'stark-rapids-81',
+ 'pool_claim_epoch_churn_composition': {'task_id': 'brisk-zenith-96',
+ 'supervisor_decision_comment_id': 'comment-57436ba4352943b8a1762cfc431eda05',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'dev_source_revision': '2229600c889b1b28cbeee2b26016dcc618f8bde1',
+ 'source_revision': 'aa33d430b7168464dc3a763a33b05ed3448a1059',
+ 'previous_measured_owned_total': 158838,
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 25,
+ 'authorized_shared_owned_delta': 25,
+ 'authorized_engine_delta': 0,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 158863,
+ 'measured_engine_lines': 83434,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked': 25},
+ 'reason': 'Exact supervisor-preapproved +25 shared owned lines for fenced post-reset admission '
+           'failure recording, backoff and claim release. Compose on current dev after its '
+           'dashboard retirement; preserve every historical grant, original baseline and ownership '
+           'classification, with zero remaining headroom and no new storage category.'},
+ 'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
+ 'authorized_owned_delta': 16,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/legacy_backfill.py': 16},
+ 'decision_message_id': 'msg-9b501b0a8c2f4c258c07a43cb924a8da',
+ 'dev_source_revision': '7bff0f25e71c4502b9f8cd9266fb047f0f6cc3fc',
+ 'measured_engine_lines': 83434,
+ 'measured_owned_total': 158864,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83418,
+ 'previous_measured_owned_total': 158848,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved +16 owned/engine lines for authoritative deleted-parent '
+           'selection and default-target reproof of retained child completions, including retired '
+           'origins. Compose on current dev; preserve all historical grants, original baselines '
+           'and ownership classifications, zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'task_id': 'stark-rapids-81'},
+ 'deleted_epic_child_recovery_composition': {'task_id': 'stark-rapids-81',
  'decision_message_id': 'msg-18a65dbb43bf4491ae77cc71bfd931a8',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'operator_decision': '6679052c',
@@ -1024,7 +1039,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3376,
+ 'authorized_owned_delta': 3401,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1229,7 +1244,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83471,
- 'measured_owned_total': 158875,
+ 'measured_owned_total': 158900,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
