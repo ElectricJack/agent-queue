@@ -9043,8 +9043,13 @@ async def test_managed_admission_rejection_preserves_or_releases_owner_proof(
         return detach
 
     handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(side_effect=release)
-    result = await settled_claim(scoped(handler, sid), {"next": True})
+    # A released first rejection may settle after the no-wait response budget.
+    # Keep the caller waiting through the bounded second rejection.
+    result = await settled_claim(scoped(handler, sid), {"next": True, "wait": 10})
     assert result["result"] == "prepare_failed", result
+    assert handler.orchestrator.arelease_integration_writer_for_retry.await_count == (
+        2 if detach else 1
+    )
     failure = await db.get_task_meta("child", "prepare_failure")
     assert failure["disposition"] == ("released" if detach else "retained")
     assert failure["admission_reasons"][0]["code"] == "admission_freshness_changed"
