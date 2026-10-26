@@ -59,7 +59,7 @@ def _walk(node: ast.AST):
 class DependencyAnalyzer:
     """Reusable index; create a fresh instance after changing repository inputs."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, trees: dict[str, ast.Module] | None = None):
         self.root = Path(root).resolve()
         self.files = sorted(
             p.relative_to(self.root).as_posix()
@@ -71,7 +71,7 @@ class DependencyAnalyzer:
         for path in self.files:
             if path.startswith("packages/aq-client/agent_queue_api_client/"):
                 self.known[_module(path.split("packages/aq-client/", 1)[1])] = path
-        self.trees: dict[str, ast.Module] = {}
+        self.trees = {} if trees is None else trees
         self.full_scans: dict[str, tuple] = {}
         self.scans: dict[tuple, tuple] = {}
         self.fixture_imports: dict[str, dict] = {}
@@ -225,7 +225,8 @@ class DependencyAnalyzer:
                                 data.update(p.relative_to(self.root).as_posix()
                                             for p in candidate.rglob("*") if p.is_file()
                                             and p.name not in {"BUILD", "BUILD.bazel"}
-                                            and not any(part in _SKIP for part in p.parts))
+                                            and not any(part in _SKIP for part in
+                                                        p.relative_to(self.root).parts))
                 for target in targets:
                     imports.update(self._resolve(target))
                     parent = self.known.get(target.rpartition(".")[0])
