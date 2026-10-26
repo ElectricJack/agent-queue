@@ -1010,6 +1010,155 @@ async def test_transient_deadline_refusal_is_not_quarantined(runtime_env, refusa
     assert not await records(env, messages)
 
 
+async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_deadlines(
+    runtime_env,
+):
+    from tests.test_wait_queries import owner
+
+    env = runtime_env
+    first = await register(env, {"kind": "timer", "due_at": NOW + 10})
+    later_scope = await owner(env.db, "later-owner", "later-session", "later-agent")
+    later = await register(env, {"kind": "timer", "due_at": NOW + 11},
+                           scope=later_scope, idempotency_key="later")
+    now = [NOW + 12]
+    service = runtime(env, clock=lambda: now[0])
+    assert await service.lease()
+    original = service.command
+    busy = True
+
+    async def command(name, args):
+        if busy and args["wait_id"] == first["wait_id"]:
+            return {"success": False, "error_code": "wait.graph_busy", "error": "retry"}
+        return await original(name, args)
+
+    service.command = AsyncMock(side_effect=command)
+    for attempt, delay in enumerate((1, 2, 4, 8, 16, 30, 30)):
+        assert await service.lease()
+        await service.timers.rearm()
+        assert await service.timers.tick() == (1 if attempt == 0 else 0)
+        rows = await records(env, wait_deadlines)
+        first_due = next(r for r in rows if r["wait_id"] == first["wait_id"]
+                         and r["deadline_type"] == "due")
+        assert first_due["fired_at"] is None and first_due["cancelled_at"] is None
+        assert next(r for r in rows if r["wait_id"] == later["wait_id"]
+                    and r["deadline_type"] == "due")["fired_at"] == NOW + 12
+        calls = service.command.await_count
+        now[0] += delay - 0.01
+        await service.timers.rearm()  # Notifications cannot bypass backoff.
+        assert await service.timers.tick() == 0
+        assert service.command.await_count == calls
+        now[0] += 0.01
+    busy = False
+    assert await service.lease()
+    await service.timers.rearm()
+    assert await service.timers.tick() == 1
+    assert await service.timers.tick() == 0
+    assert not await records(env, messages)
+
+
+async def test_deadline_graph_lock_contention_retains_retry_after_transaction_rollback(runtime_env):
+    from sqlalchemy import func
+    from src.waits.graph import GRAPH_LOCK
+
+    env = runtime_env
+    receipt = await register(env, {"kind": "timer", "due_at": NOW + 10})
+    now = [NOW + 11]
+    service = runtime(env, clock=lambda: now[0])
+    assert await service.lease()
+    await service.timers.rearm()
+    async with env.db._engine.begin() as holder:
+        await holder.execute(select(func.pg_advisory_xact_lock(GRAPH_LOCK)))
+        assert await service.timers.tick() == 0
+    assert not await records(env, wait_source_events)
+    assert all(r["fired_at"] is None and r["cancelled_at"] is None
+               for r in await records(env, wait_deadlines))
+    assert await service.timers.tick() == 0
+    now[0] += 1
+    assert await service.timers.tick() == 1
+    assert len([r for r in await records(env, wait_source_events)
+                if r["source_key"].startswith("timer:")]) == 1
+    assert (await records(env))[0]["id"] == receipt["wait_id"]
+
+
+async def test_graph_busy_deadline_effect_rolls_back_and_retries(runtime_env):
+    env = runtime_env
+    receipt = await register(env, {"kind": "timer", "due_at": NOW + 10})
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_deadlines).values(cancelled_at=NOW))
+        await conn.execute(insert(wait_deadlines).values(
+            id="transition", wait_id=receipt["wait_id"], deadline_type="transition",
+            generation=2, due_at=NOW + 10,
+        ))
+    now = [NOW + 11]
+    service = runtime(env, clock=lambda: now[0])
+    busy = True
+
+    async def effect(conn, deadline, wait, **kwargs):
+        await conn.execute(update(wait_records).values(decision_reason="effect"))
+        return {"success": not busy, "error_code": "wait.graph_busy"}
+
+    service.orch.wait_deadline_handlers["transition"] = effect
+    assert await service.lease()
+    await service.timers.rearm()
+    assert await service.timers.tick() == 0
+    assert (await records(env))[0]["decision_reason"] != "effect"
+    busy = False
+    now[0] += 1
+    assert await service.timers.tick() == 1
+    assert (await records(env))[0]["decision_reason"] == "effect"
+
+
+async def test_graph_busy_quarantine_retries_without_retiring_deadline(runtime_env):
+    from src.waits.conditions import WaitError
+
+    env = runtime_env
+    await register(env, {"kind": "timer", "due_at": NOW + 10})
+    now = [NOW + 11]
+    service = runtime(env, clock=lambda: now[0])
+    assert await service.lease()
+    await service.timers.rearm()
+    service.command = AsyncMock(return_value={"success": False, "error_code": "stale_claim"})
+    quarantine = service.quarantine_deadline
+    service.quarantine_deadline = AsyncMock(side_effect=WaitError("wait.graph_busy", "retry"))
+    assert await service.timers.tick() == 0
+    assert service.timers.heap
+    assert all(r["cancelled_at"] is None for r in await records(env, wait_deadlines))
+    service.quarantine_deadline = quarantine
+    now[0] += 1
+    assert await service.timers.tick() == 0
+    assert all(row["deadline_type"] != "due" for _, _, row in service.timers.heap)
+    due = next(r for r in await records(env, wait_deadlines) if r["deadline_type"] == "due")
+    assert due["cancelled_at"] == now[0] and due["fired_at"] is None
+
+
+@pytest.mark.parametrize("raised", [False, True])
+async def test_graph_busy_dispatch_rolls_back_batch_and_retries(runtime_env, raised):
+    from src.waits.conditions import WaitError
+
+    env = runtime_env
+    await register(env)
+    dispatcher = ObservingDispatcher(env.registry)
+    original = dispatcher.commit
+
+    async def busy(conn, row, event, **kwargs):
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="rollback"))
+        if raised:
+            raise WaitError("wait.graph_busy", "retry")
+        return {"success": False, "error_code": "wait.graph_busy", "error": "retry"}
+
+    dispatcher.commit = busy
+    service = runtime(env, dispatcher=dispatcher)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await service.listener.tick()
+    assert (await records(env))[0]["outcome"] == "pending"
+    assert (await env.db.get_task("owner")).title != "rollback"
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+    assert all(r["dispatched_at"] is None for r in await records(env, wait_source_events))
+    dispatcher.commit = original
+    assert await service.listener.tick()
+    assert (await records(env))[0]["outcome"] == "satisfied"
+
+
 async def test_old_terminal_owner_is_retired_before_deadline_effect(runtime_env):
     env = runtime_env
     await register(env, escalate_after_seconds=10)

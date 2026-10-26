@@ -6,8 +6,9 @@ def _wait_source_recovery_changes():
     )
 
 
-def _before_wait_source_recovery_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+def _before_wait_source_recovery_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = json.loads(render_command_catalogue())
     evidence = _wait_source_recovery_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["definition"]
@@ -28,7 +29,10 @@ def test_wait_source_recovery_only_extends_existing_scoped_command():
     assert schema["required"] == ["project_id"]
     assert set(schema["properties"]) - set(evidence["previous_definition"]["input_schema"][
         "properties"]) == {"action", "limit"}
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+    catalogue = _before_unread_inbox_catalogue(
+        _before_batch_authority_catalogue(json.loads(render_command_catalogue()))
+    )
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"])
-    previous = json.dumps(_before_wait_source_recovery_catalogue(), indent=2) + "\n"
+    previous = json.dumps(_before_wait_source_recovery_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]

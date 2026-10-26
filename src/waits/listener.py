@@ -198,6 +198,8 @@ class WaitSourceListener:
     async def _commit(dispatcher, conn, row, event, **kwargs):
         result = await dispatcher.commit(conn, row, event, **kwargs)
         if not isinstance(result, dict) or result.get("success") is not True:
+            if isinstance(result, dict) and result.get("error_code") == "wait.graph_busy":
+                raise WaitError("wait.graph_busy", result.get("error", "graph busy"))
             raise ListenerUnavailable(f"wait dispatch refused: {result}")
         return result
 
@@ -393,6 +395,13 @@ class WaitSourceListener:
                     result = await self._drain_one(
                         watermark, retry_pending and retries < self.retry_batch_size, attempt, recovery,
                         admission_ready=admission_ready)
+            except WaitError as exc:
+                if exc.code != "wait.graph_busy":
+                    raise
+                # The attempt transaction has rolled back. Preserve the cursor
+                # and let the live loop retry without cancelling sibling tasks.
+                self._graph_busy = True
+                return count
             except TimeoutError:
                 if not budget.expired():
                     raise

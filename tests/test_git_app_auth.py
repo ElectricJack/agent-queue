@@ -583,6 +583,44 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
 
 
+@pytest.mark.asyncio
+async def test_isolated_partial_origin_fetch_limits_transport_and_import(tmp_path, monkeypatch):
+    checkout, source, trap, base, tip = _git_push_case(tmp_path)
+    destination = tmp_path / "destination"
+    _git(["clone", str(source), str(destination)], tmp_path)
+    _git(["push", str(source), f"{base}:refs/heads/keep", f"{tip}:refs/heads/changed",
+          f"{tip}:refs/heads/unrelated"], checkout)
+    _git(["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"], destination)
+    _git(["push", str(source), f"{tip}:refs/tags/new"], checkout)
+    provenance = "refs/aq/provenance/completions/subject/generation"
+    _git(["push", str(source), f"{tip}:{provenance}"], checkout)
+    _git(["update-ref", "refs/remotes/origin/changed", base], destination)
+    _git(["update-ref", "refs/remotes/origin/unrelated", base], destination)
+    _git(["config", "remote.origin.url", str(trap)], destination)
+    manager = GitManager()
+    transport = AsyncMock(wraps=manager._arun_authenticated_git)
+    imported = AsyncMock(wraps=manager._run_isolated_import_git)
+    monkeypatch.setattr(manager, "_arun_authenticated_git", transport)
+    monkeypatch.setattr(manager, "_run_isolated_import_git", imported)
+    selected = ["refs/heads/changed", "refs/tags/new", provenance]
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token", refs=selected,
+    )
+    for calls in (transport.await_args_list, imported.await_args_list):
+        fetches = [call.args[0] for call in calls if "fetch" in call.args[0]]
+        assert len(fetches) == 1
+        assert not any("*" in arg for arg in fetches[0])
+        assert "--prune" not in fetches[0]
+        assert "fetch.fsckObjects=true" in fetches[0]
+    assert _git(["rev-parse", "refs/remotes/origin/changed"], destination) == tip
+    assert _git(["rev-parse", "refs/tags/new"], destination) == tip
+    assert _git(["rev-parse", provenance], destination) == tip
+    assert _git(["rev-parse", "refs/remotes/origin/keep"], destination) == base
+    assert _git(["rev-parse", "refs/remotes/origin/unrelated"], destination) == base
+    assert _git(["rev-parse", "HEAD"], destination) == base
+    assert _git(["config", "--get", "remote.origin.url"], destination) == str(trap)
+
+
 @pytest.mark.parametrize("operation", ["origin", "exact", "clone", "push"])
 @pytest.mark.parametrize("exit_kind", ["success", "failure", "cancellation", "cancel_cleanup"])
 async def test_isolated_git_cleanup_runs_off_loop_and_retains_ownership(

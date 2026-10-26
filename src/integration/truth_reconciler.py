@@ -37,7 +37,7 @@ class GitTruthReconciler:
             raise ValueError("page size must be positive")
         self.db, self.git = db, git
         self.observer = DeliveryObserver(
-            db, git=git, data_dir=Path(data_dir) / "truth-reconciliation",
+            db, git=git, data_dir=data_dir, store_name="repository",
             truth=GitTruth(git, share_fetches=True, skip_unchanged=True),
         )
         self.owner_recovery = owner_recovery
@@ -53,7 +53,7 @@ class GitTruthReconciler:
         self._lock = asyncio.Lock()
 
     async def tick(self, now):
-        with snapshot_scope():
+        with snapshot_scope(reuse=True):
             return await self._tick(now)
 
     async def _tick(self, now):
