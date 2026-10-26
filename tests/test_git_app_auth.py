@@ -1381,7 +1381,19 @@ async def test_corrupt_lender_is_unavailable_without_losing_local_sources(
     else:
         obj.write_bytes(b"" if damage == "empty" else obj.read_bytes()[:3])
     before = {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()}
-    network = AsyncMock(side_effect=AssertionError("corrupt lender must not negotiate"))
+    may_recover = damage == "missing" and operation != "exact"
+    transport = manager._arun_authenticated_git
+
+    async def isolated_recovery(args, **kwargs):
+        staged = Path(next(arg.removeprefix("--git-dir=")
+                           for arg in args if arg.startswith("--git-dir=")))
+        assert staged != store
+        assert not (staged / "objects/info/alternates").exists()
+        assert "core.alternateRefsCommand=true" not in args
+        return await transport(args, **kwargs)
+
+    network = (AsyncMock(side_effect=isolated_recovery) if may_recover else
+               AsyncMock(side_effect=AssertionError("corrupt lender must not negotiate")))
     monkeypatch.setattr(manager, "_arun_authenticated_git", network)
 
     with pytest.raises(GitError, match="integrity is unavailable"):
@@ -1392,7 +1404,12 @@ async def test_corrupt_lender_is_unavailable_without_losing_local_sources(
                 str(store), source_url=source.as_uri(), token="test-token",
             )
 
-    network.assert_not_awaited()
+    if may_recover:
+        # The unpublished blob is absent upstream. One isolated acquisition is
+        # permitted, but it cannot authorize a local import or discard work.
+        network.assert_awaited_once()
+    else:
+        network.assert_not_awaited()
     assert {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()} == before
     assert _git(["rev-parse", "refs/heads/unique"], store) == unique
     if operation != "origin-local-only":

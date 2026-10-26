@@ -2675,7 +2675,9 @@ class GitManager:
             )
             if [(parts[0], parts[1]) for line in found.decode("ascii").splitlines()
                     if len(parts := line.split()) == 3] != list(missing):
-                raise GitError("retained Git missing objects are unavailable from origin")
+                raise GitError("retained Git object integrity is unavailable: "
+                               "missing objects are unavailable from origin: "
+                               + " ".join(oid for oid, _kind in missing))
             await self._run_isolated_import_git(
                 [f"--git-dir={staged}", *check[1:]], home=home, deadline=deadline,
                 verify_integrity=True,
