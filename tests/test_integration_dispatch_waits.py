@@ -289,10 +289,10 @@ async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_stat
     # the progress cadence and must not immediately repeat those provider reads.
     await case.service.listener.tick()
     observe.assert_not_awaited()
-    case.now[0] += case.service.listener.safety_seconds + 1
+    case.now[0] += case.service.listener.safety_seconds - 1
     await case.service.listener.tick()
     assert observe.await_count == 0  # unchanged hints retain the CI polling interval
-    case.now[0] += case.service.listener.safety_seconds + 1
+    case.now[0] += 2  # Cross the cadence deadline; only one source gets this turn.
     await case.service.listener.tick()
     assert observe.await_count == 1
     assert all(row["outcome"] == "pending" for row in await rows(world))
