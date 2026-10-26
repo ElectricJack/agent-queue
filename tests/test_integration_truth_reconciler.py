@@ -10,7 +10,7 @@ from sqlalchemy import func, insert, select, update
 
 from src.database import tables as t
 from src.git.manager import RemoteRefState
-from src.integration.delivery_observer import source_bases_on
+from src.integration.delivery_observer import DeliveryTarget, source_bases_on
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState
 from src.integration.git_truth import GitDeliveryEvidence
 from src.integration.truth_reconciler import GitTruthReconciler
@@ -111,6 +111,32 @@ async def test_retire_all_three_retrospective_populations_without_starvation(
         assert await source_bases_on(conn, ["task-0000"], "r") == {"task-0000": "b" * 40}
     again = await service.tick(101.0)
     assert again["repaired"] == 0
+
+
+async def test_reconciliation_stages_reuse_one_repository_snapshot(db, repository, tmp_path):
+    repo = repository
+    service = GitTruthReconciler(db, repo.git, data_dir=tmp_path)
+    service.observer.truth = repo.truth
+    service.observer._store = AsyncMock(return_value=repo.path)
+    repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
+    observations = []
+
+    async def observe(*_args):
+        snapshot = await service.observer.snapshot(DeliveryTarget(
+            "p", "r", str(repo.remote), "refs/heads/main"))
+        observations.append(snapshot.target_oid)
+        return 0
+
+    for name in ("_completed", "_owners", "_sentinels", "_orphans", "_origins", "_repairs"):
+        setattr(service, name, observe)
+    await service.tick(100.0)
+    repo.git.afetch_origin.assert_awaited_once()
+    assert observations == [repo.base] * 6
+    head = await repo.commit("next-reconciliation")
+    await repo.publish()
+    await service.tick(200.0)
+    assert repo.git.afetch_origin.await_count == 2
+    assert observations[-6:] == [head] * 6
 
 
 @pytest.mark.parametrize("state", [DeliveryState.UNKNOWN, DeliveryState.PENDING])

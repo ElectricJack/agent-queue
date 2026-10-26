@@ -11,13 +11,17 @@ Origin fetches also verify local-only refs when no origin tip can be advertised.
 Tip naming is transactional in the disposable import repository. The local
 exact-commit shortcut must walk the requested history without excluding seeded
 refs; an unreferenced commit needs the same full-body check before local success.
-These checks use the existing acquisition deadline. No increased budget, global
-lock or persistent integrity cache is introduced. Full verification has a cost
-proportional to the retained object store; timeout leaves that observation
-unavailable. Independent stores retain their existing concurrency.
+Default isolated origin and exact acquisitions give retained verification its
+own bounded 300-second phase before lending objects. This phase includes the
+store-lock wait and all retries, and preserves the transfer's remaining budget
+instead of giving full verification only that remainder. An explicit exact-fetch
+timeout remains an overall cap; enclosing visit cancellation still propagates.
+No global lock or persistent integrity cache is introduced. Full verification
+has a cost proportional to the retained object store; timeout leaves that
+observation unavailable. Independent stores retain their existing concurrency.
 
 A failed full verification is retried up to three times with one-, two- and
-four-second backoff within the same acquisition deadline (including lock waits
+four-second backoff within the same integrity deadline (including lock waits
 and backoff). Verification and GitManager's foreground `gc`, `repack` and
 `maintenance` share per-common-store exclusion, including linked worktrees and
 commands inside repository transactions. Independent Git processes do not take
@@ -45,6 +49,14 @@ replaced or truncated files and expired checks still require full verification.
 Failed acquisitions never extend the baseline. Incident recovery retains its
 full checks and durable journal.
 
+The isolated origin and exact-fetch seams carry this baseline forward after
+successful transport, checked local import and exact ref readback. Both legs of
+an exact fetch enable `fetch.fsckObjects`, just as origin fetches do. Unknown
+additions still invalidate verification; only successful checked acquisitions
+under the caller's repository writer exclusion may extend it.
+Full-fallback exact imports use `--refetch` so a partial destination's tips do
+not negotiate away promised blobs that the staged acquisition downloaded.
+
 Admission shares a five-second snapshot-wait budget across one request's Git
 observations. A slow fetch or recovery continues as the existing shared flight
 under its repository exclusion. The caller receives unavailable evidence and
@@ -58,6 +70,32 @@ Local Git subprocesses used by creation and result-returning writers must retain
 their handles through cancellation during spawn, and terminate/reap their process
 groups before cancellation or timeout releases the caller's exclusion. This
 closes a writer-lifetime gap; it does not identify the cause of a past corruption.
+
+## Tick-scoped observations
+
+Train lanes dispatched by one tick share one repository acquisition, including
+lanes arriving after that acquisition starts or completes. Reconciliation stages
+likewise share one observation per repository in their tick. The train and Git
+truth reconciler use the same GitTruth service for immutable facts and backoff.
+Only work dispatched by that tick retains its scope; later ticks and publication
+follow-ups enter a new scope. Each reader retains independent answer and freshness caches.
+Mutable authority and remote target identity still require their existing checks
+before a proof can authorize a state change.
+
+For these background observations, a reusable full integrity baseline allows a
+fresh authenticated `ls-remote --refs` inventory before transport, under the
+repository transaction. All branches, tags and provenance refs are compared
+with the retained import inventory, including additions, deletions and rewinds.
+Exact equality permits skipping transfer, full fsck and foreground maintenance.
+An expired or changed baseline, unequal inventories or a recovery journal or
+pending marker retains normal acquisition and recovery. A failed remote probe
+leaves the observation unavailable. Conservatively retained or unimported tags
+can prevent the shortcut; no tag or retained object is removed to obtain a hit.
+
+Per-visit selection metrics distinguish `snapshot_acquisition`,
+`snapshot_scope_wait`, `snapshot_ref_probe`, `retained_fetch`, `retained_fsck`
+and `retained_maintenance`. Counters include `tick_snapshot_hits`,
+`snapshot_ref_probes`, `snapshot_unchanged` and `retained_fetch_starts`.
 
 ## Recovery authority
 
