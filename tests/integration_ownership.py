@@ -932,7 +932,32 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_child_recovery_composition': {'task_id': 'stark-rapids-81',
+HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
+                                                 'authorized_owned_delta': 16,
+                                                 'authorized_table_delta': 0,
+                                                 'charged_files': {'src/integration/legacy_backfill.py': 16},
+                                                 'decision_message_id': 'msg-9b501b0a8c2f4c258c07a43cb924a8da',
+                                                 'dev_source_revision': '7bff0f25e71c4502b9f8cd9266fb047f0f6cc3fc',
+                                                 'measured_engine_lines': 83434,
+                                                 'measured_owned_total': 158864,
+                                                 'measured_table_count': 45,
+                                                 'operator_decision': '6679052c',
+                                                 'previous_measured_engine_lines': 83418,
+                                                 'previous_measured_owned_total': 158848,
+                                                 'previous_measured_table_count': 45,
+                                                 'reason': 'Exact supervisor-approved +16 '
+                                                           'owned/engine lines for authoritative '
+                                                           'deleted-parent selection and '
+                                                           'default-target reproof of retained '
+                                                           'child completions, including retired '
+                                                           'origins. Compose on current dev; '
+                                                           'preserve all historical grants, '
+                                                           'original baselines and ownership '
+                                                           'classifications, zero remaining '
+                                                           'headroom and no new storage category.',
+                                                 'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                 'task_id': 'stark-rapids-81'},
+ 'deleted_epic_child_recovery_composition': {'task_id': 'stark-rapids-81',
                                              'decision_message_id': 'msg-18a65dbb43bf4491ae77cc71bfd931a8',
                                              'referenced_decision': 'size-cap-delegation-2026-10-23',
                                              'operator_decision': '6679052c',
@@ -982,7 +1007,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_child_recovery_composition': {'
                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
                                      'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3411,
+ 'authorized_owned_delta': 3427,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
                                        'authorized_owned_delta': 116,
                                        'authorized_shared_owned_delta': 15,
@@ -1205,8 +1230,8 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_child_recovery_composition': {'
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83479,
- 'measured_owned_total': 158910,
+ 'measured_engine_lines': 83495,
+ 'measured_owned_total': 158926,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -2017,7 +2042,34 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_child_recovery_composition': {'
                                                                                'supervisor '
                                                                                'comment, '
                                                                                '1792967507.3855598',
-                                                 'task_id': 'sharp-grove-84'}}
+                                                 'task_id': 'sharp-grove-84'},
+ 'delivery_watchdog_epoch16_final_merge_composition': {'authorized_engine_delta': 61,
+                                                       'authorized_owned_delta': 62,
+                                                       'authorized_shared_owned_delta': 1,
+                                                       'authorized_table_delta': 0,
+                                                       'dev_source_revision': '2373e54bf0b2f15f0b966575b88008dcdec617e3',
+                                                       'source_revision': '75776cfbf5839aa75593f83b3a4fcff4b9e47bdc',
+                                                       'measured_engine_lines': 83495,
+                                                       'measured_owned_total': 158926,
+                                                       'measured_table_count': 45,
+                                                       'operator_decision': '6679052c',
+                                                       'previous_measured_engine_lines': 83434,
+                                                       'previous_measured_owned_total': 158864,
+                                                       'previous_measured_table_count': 45,
+                                                       'reason': 'Carry the unchanged approved '
+                                                                 'watchdog ownership delta onto '
+                                                                 'current dev. Preserve both '
+                                                                 'implementations, every '
+                                                                 'historical grant, baseline and '
+                                                                 'ownership classification; zero '
+                                                                 'remaining headroom and no new '
+                                                                 'storage category.',
+                                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                       'supervisor_grant_reference': 'sharp-grove-84 '
+                                                                                     'supervisor '
+                                                                                     'comment, '
+                                                                                     '1792967507.3855598',
+                                                       'task_id': 'sharp-grove-84'}}
 
 
 def integration_table(name: str) -> bool:
