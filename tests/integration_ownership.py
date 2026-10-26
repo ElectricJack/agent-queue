@@ -1007,7 +1007,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
                                      'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3426,
+ 'authorized_owned_delta': 3510,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
                                        'authorized_owned_delta': 116,
                                        'authorized_shared_owned_delta': 15,
@@ -1230,8 +1230,8 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83495,
- 'measured_owned_total': 158925,
+ 'measured_engine_lines': 83579,
+ 'measured_owned_total': 159009,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -2212,7 +2212,87 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
                                                                                      'supervisor '
                                                                                      'comment, '
                                                                                      '1792967507.3855598',
-                                                       'task_id': 'sharp-grove-84'}}
+                                                       'task_id': 'sharp-grove-84'},
+ 'idle_epic_prerequisite_refresh_composition': {'authorized_engine_delta': 84,
+ 'authorized_owned_delta': 84,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/train_sources.py': 84},
+ 'decision_message_id': 'msg-2f4fefae40dd4c2ba66ab1d9f102ad2d',
+ 'dev_source_revision': '2373e54bf',
+ 'measured_engine_lines': 83518,
+ 'measured_owned_total': 158948,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_owned_total': 158864,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved idle epic prerequisite refresh trigger using the pinned '
+           'snapshot and existing attested EpicRefresh.start path. Preserve target-relative '
+           'admission, batch ownership, every historical grant and ownership classification; '
+           'zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '3882a0911',
+ 'task_id': 'bright-glacier-60'},
+ 'idle_epic_prerequisite_refresh_current_dev_composition': {'authorized_engine_delta': 84,
+ 'authorized_owned_delta': 84,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/train_sources.py': 84},
+ 'decision_message_id': 'msg-2f4fefae40dd4c2ba66ab1d9f102ad2d',
+ 'dev_source_revision': '383c1e85b925c00366535716c608bb80797f84c8',
+ 'measured_engine_lines': 83518,
+ 'measured_owned_total': 158947,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_owned_total': 158863,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Compose the unchanged supervisor-approved +84 owned/+84 engine/+0 tables idle '
+           'epic refresh delta with current dev and its separately approved +25 shared owned '
+           'lines for pool claim epoch churn. Preserve every historical measurement, grant '
+           'and ownership classification; zero remaining headroom and no new storage '
+           'category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '4cafc66c4097b944191554757fef8c914871505f',
+ 'task_id': 'bright-glacier-60'},
+ 'idle_epic_prerequisite_refresh_merge_composition': {'authorized_engine_delta': 84,
+ 'authorized_owned_delta': 84,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/train_sources.py': 84},
+ 'decision_message_id': 'msg-2f4fefae40dd4c2ba66ab1d9f102ad2d',
+ 'dev_source_revision': '2229600c889b1b28cbeee2b26016dcc618f8bde1',
+ 'measured_engine_lines': 83518,
+ 'measured_owned_total': 158922,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_owned_total': 158838,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Compose the unchanged approved +84 owned/+84 engine/+0 tables idle epic refresh '
+           'delta with current dev, including its 26-line dashboard reduction. Preserve both '
+           'historical measurements, all grants, ownership classifications and zero remaining '
+           'headroom.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': 'e411d0ca59cbd842a0bee1d558aaf8209bffb23a',
+ 'task_id': 'bright-glacier-60'},
+ 'delivery_watchdog_epoch20_merge_composition': {'task_id': 'sharp-grove-84',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'supervisor_grant_reference': 'comment-1b7fad96f62c49979956ff5fb09df8e3',
+ 'source_revision': '1faefeb7c6a5162b5ca47e21b7c6bcf5d724df94',
+ 'dev_source_revision': '792648dc361907adbdc210d91fcb83e13cd70628',
+ 'previous_measured_owned_total': 158947,
+ 'previous_measured_engine_lines': 83518,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 62,
+ 'authorized_engine_delta': 61,
+ 'authorized_shared_owned_delta': 1,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 159009,
+ 'measured_engine_lines': 83579,
+ 'measured_table_count': 45,
+ 'reason': 'Carry the unchanged approved watchdog ownership delta onto current dev. Preserve '
+           'both implementations, every historical grant, baseline and ownership '
+           'classification; zero remaining headroom and no new storage category.'}}
 
 
 def integration_table(name: str) -> bool:
