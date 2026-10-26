@@ -267,9 +267,20 @@ class WaitSourceListener:
         including the conservative cross-project resource subscription check.
         Task retirement and provider recovery always require dispatch.
         """
+        from src.waits.recovery import TERMINAL_TASK_STATUSES
+
         window = []
         for row in rows[:self.batch_size]:
-            if not row["source_key"].startswith(_OBSERVATION_ONLY_PREFIXES):
+            key = row["source_key"]
+            if key.startswith("resource_invalidation:provider:"):
+                break
+            if key.startswith("task:"):
+                if row["payload"].get("status") in TERMINAL_TASK_STATUSES:
+                    break
+            elif not key.startswith((
+                "ci_check:", "ci_run:", "message:", "dependency:", "batch:",
+                "job:", "playbook_condition:", "resource_invalidation:",
+            )):
                 break
             window.append(row)
         if not window:

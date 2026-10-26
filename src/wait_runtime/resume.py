@@ -4,6 +4,7 @@ import errno
 import json
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from src.database.tables import (
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
 from src.waits.conditions import WaitError
-from src.waits.admission import admission_pass
+from src.waits.admission import AdmissionReader
 
 from src.waits.graph import background_graph_work, lock_graph
 from src.wait_runtime.hibernate import locked_suspension
@@ -89,17 +90,15 @@ class ResumeTransaction:
 
     @background_graph_work()
     async def reserve(self, continuation_id, generation):
-        """Refresh Git before capturing admission, outside the global graph lock."""
-        from src.integration.delivery_observer import hierarchy_frontier_modes
+        """Replace inherited admission with fresh evidence for this task alone."""
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(continuations.c.task_id).where(
-                continuations.c.id == continuation_id, continuations.c.resume_state == 'queued',
-            ))
-        if task_id:
-            await hierarchy_frontier_modes(self.db, task_id=task_id)
-        return await self._reserve(continuation_id, generation)
+                continuations.c.id == continuation_id, continuations.c.resume_state == 'queued'))
+        reader = getattr(getattr(self.service, 'scheduler', None), 'reader', None)
+        async with (reader.prepared(task_ids=[task_id], cached_only=False)
+                    if task_id and isinstance(reader, AdmissionReader) else nullcontext()):
+            return await self._reserve(continuation_id, generation)
 
-    @admission_pass("service.scheduler.reader")
     async def _reserve(self, continuation_id, generation):
         async with self.db._engine.begin() as conn:
             # Join PostgreSQL's lock queue before transaction reads. A listener
@@ -114,9 +113,8 @@ class ResumeTransaction:
             if intent['resume_state'] == 'reserved' and task['status'] == 'RESUME_PENDING':
                 return AssignAction(task['assigned_agent_id'], task['id'], task['project_id'],
                                     continuation_id=intent['id'], generation=generation)
-            if intent['resume_state'] != 'queued':
-                return None
-            if (task['status'] != 'RESUME_PENDING' or wait['outcome'] == 'pending'
+            if (intent['resume_state'] != 'queued' or task['status'] != 'RESUME_PENDING'
+                    or wait['outcome'] == 'pending'
                     or not await parked(conn, task, wait, intent)):
                 return None
             observed = await self.service.scheduler.reader.observe_task(
