@@ -16,6 +16,21 @@ filegroup(name = "sources", srcs = [
         "token_efficiency.py",
         "waits.py",
     ])
+exports_files([
+        "__init__.py",
+        "delivery_latency.py",
+        "histogram.py",
+        "host.py",
+        "loop_watchdog.py",
+        "operation_profile.py",
+        "perf.py",
+        "relay.py",
+        "sampler.py",
+        "token_efficiency.py",
+        "waits.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

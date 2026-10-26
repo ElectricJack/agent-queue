@@ -23,6 +23,28 @@ filegroup(name = "sources", srcs = [
         "windows_owner.py",
         "workspace.py",
     ])
+exports_files([
+        "__init__.py",
+        "adapters.py",
+        "artifacts.py",
+        "e2e.py",
+        "editor_pin.py",
+        "identity.py",
+        "matter.py",
+        "matter_capture.py",
+        "output.py",
+        "playbook.py",
+        "policy.py",
+        "pytest_output.py",
+        "result.py",
+        "runner.py",
+        "script_runner.py",
+        "service.py",
+        "windows_owner.py",
+        "workspace.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

@@ -20,6 +20,25 @@ filegroup(name = "sources", srcs = [
         "slash_commands.py",
         "task_delete.py",
     ])
+exports_files([
+        "__init__.py",
+        "adapter.py",
+        "ask_buttons.py",
+        "bot.py",
+        "cutover.py",
+        "escalation_buttons.py",
+        "escalation_intake.py",
+        "escalation_transport.py",
+        "inbound.py",
+        "intake_diagnostics.py",
+        "links.py",
+        "rate_guard.py",
+        "render_budget.py",
+        "slash_commands.py",
+        "task_delete.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
