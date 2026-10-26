@@ -7653,11 +7653,13 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:1a7fbddd31920bc6285ebdca2ad3bdfed9a31dee4119c0a9585c573a0eec0397",
+      "digest": "sha256:c8cd4c884f96f7f7042e820689bde62886dde6df3332ce3fccb53b9395d5f35a",
       "imports": [
         "src.git.manager"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": ""
     },
     "tests/test_git_manager_async.py": {
@@ -9776,7 +9778,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:1cdb2d9a08ca1d8711d976a4aed6a60a2824cd58af525bce7e606dc37db6f587",
+      "digest": "sha256:b3fdd2dfc7e883b8ca879ce83e4cee2dd7de40044565f0a632a0b923248e6817",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9786,6 +9788,8 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
+        "src.integration.delivery_observer",
+        "src.integration.git_truth",
         "src.integration.pr_cleanup",
         "src.integration.pr_delivery",
         "src.integration.repository_git",
