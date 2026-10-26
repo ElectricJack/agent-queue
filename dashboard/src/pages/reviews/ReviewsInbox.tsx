@@ -1,4 +1,4 @@
-import { AskInbox } from "../focus/FocusInbox";
+import { AskInbox } from "../../components/asks/AskInbox";
 import PullRequestsSection from "./PullRequestsSection";
 
 /** Pull-request workspaces stay distinct from document decision counts. */

@@ -1474,6 +1474,9 @@ class ClaimCommandsMixin:
                 except Exception as exc:
                     if not _retryable_preparation_error(exc):
                         raise
+                    from src.preparation_failure import describe_preparation_failure
+
+                    failure = describe_preparation_failure(exc, "preparation_retry")
                     active = await self.db.get_session(session.id)
                     if (active is not None and active.task_id == task.id
                             and active.last_claim_epoch == task.claim_epoch
@@ -1494,10 +1497,22 @@ class ClaimCommandsMixin:
                     )
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
-            remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch, session_id=session.id)
-            self._resolve_claim_waiters(session.id, task.claim_epoch, "no_ready_work")
+            # The retry budget ended, but this exact preparation still owns
+            # its task, workspace and possibly a ref reservation. Report the
+            # concrete failure through the durable refusal cooldown instead
+            # of disguising retained work as an empty frontier.
+            await self.db.record_failed_preparation(
+                session.id, instance_token=session.instance_token, task_id=task.id,
+                claim_epoch=task.claim_epoch, preparation_started_at=row.claim_phase_at,
+                task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+            )
+            await self._record_prepare_failure(
+                task, failure, session=session, slot=slot, epoch=task.claim_epoch,
+                disposition="retained",
+            )
+            self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
             return self._simple(
-                ClaimResult.NO_READY_WORK, "claim preparation transient contention", row, cap
+                ClaimResult.PREPARE_FAILED, failure.reason, row, cap
             )
 
     async def _branch_fenced_prepare_failed(
@@ -1773,7 +1788,7 @@ class ClaimCommandsMixin:
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
         cleanup_unproved=False,
     ) -> None:
-        """Record what a permanent preparation failure observed, and who saw it.
+        """Record what a failed preparation observed, and who saw it.
 
         The identity (session instance, claim epoch, workspace) makes a late
         or stale completion attributable; the record decides nothing --
@@ -2483,20 +2498,45 @@ class ClaimCommandsMixin:
                 return out
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
-            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             if stage == "admission_recheck" or (
                 admission is not None and not await admission.matches()
             ):
-                await self.db.release_claim(
+                from src.preparation_failure import describe_preparation_failure
+
+                reasons = admission.reasons.get(task.id, []) if admission is not None else []
+                detail = "; ".join(
+                    f"{reason['code']}: {reason['detail']}" for reason in reasons
+                ) or "delivery_snapshot_changed"
+                failure = describe_preparation_failure(RuntimeError(detail), "admission_recheck")
+                await self.db.record_failed_preparation(
+                    session.id, instance_token=session.instance_token, task_id=task.id,
+                    claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
+                    task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+                )
+                released = await self.db.release_claim(
                     session.id,
                     expected_task_id=task.id, expected_claim_epoch=epoch,
                     expected_instance_token=session.instance_token, task_status=TaskStatus.READY,
+                    # A prerequisite/gate can now block the selected task.
+                    # Release that exact IN_PROGRESS claim even when its
+                    # blocked projection changed; preserve the epoch so the
+                    # settled refusal still matches this preparation.
+                    expected_task_status=TaskStatus.IN_PROGRESS,
+                    expected_task_claim_epoch=epoch,
                     context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
+                    prepare_backoff=True,
+                )
+                if released.released:
+                    remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="released" if released.released else "retained",
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(
-                    ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", row, cap
+                    ClaimResult.PREPARE_FAILED, failure.reason, row, cap
                 )
+            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
         if prepared_branch:
