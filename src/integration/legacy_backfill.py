@@ -62,7 +62,7 @@ from src.database.tables import (
     task_delivery_receipts,
     tasks,
 )
-from src.git.manager import GitError, is_valid_git_oid
+from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.delivery_truth import load_delivery_requests
 from src.integration.git_truth import merge_noop
 from src.integration.provenance import CompletionIdentity, GitProvenance
@@ -224,14 +224,26 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
             or_(tasks.c.repo_id.is_(None), tasks.c.repo_id == target.repository_id),
             or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
         ))).all()
-        absent_parent = {tid for tid, branch in children if
-                         "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
-                         not in observation.source_heads}
-        ids = sorted(set(ids) | originless | absent_parent)
+    # Retained tracking refs can outlive a hand-deleted parent. Only a fresh
+    # remote advertisement proves absence; unavailable reads prove nothing.
+    parent_refs = {branch: "refs/heads/" + branch.removeprefix("refs/heads/")
+                   for _, branch in children}
+    remote = await observation.git.als_remote_qualified_refs(
+        str(observation.store), sorted(set(parent_refs.values())),
+        repository_url=observation.repository_url,
+    ) if parent_refs else {}
+    absent_parent = {tid for tid, branch in children
+                     if remote[parent_refs[branch]].state is RemoteRefState.ABSENT}
+    ids = sorted(set(ids) | originless | absent_parent)
     delivered = await project_delivered(
         db, ids, project_id=project_id, repository_id=target.repository_id,
         target_ref=target.target_ref, snapshot=snap,
     )
+    row_delivered = await project_delivered(
+        db, sorted(absent_parent), project_id=project_id, repository_id=target.repository_id,
+        target_ref=target.target_ref,
+    )
+    delivered -= absent_parent - row_delivered
     async with db._engine.connect() as conn:
         # An epic's delivery is its readiness (children collected, checks,
         # review), never a row: its branch sits on the tip before any child is
@@ -264,9 +276,11 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
                 continue
             identity = CompletionIdentity(project_id, target.repository_id, task_id,
                                           request.completion_id or request.legacy_generation)
+            record = None
             try:
-                if await provenance.read_completion(identity, refs=observation.source_heads):
-                    continue  # retained provenance: the train already answers it
+                record = await provenance.read_completion(identity, refs=observation.source_heads)
+                if record and (task_id not in absent_parent or task_id in row_delivered):
+                    continue  # default recovery is already audited, or the train answers it
             except (GitError, ValueError):
                 pass
             if task_id in delivered and (
@@ -289,6 +303,8 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
                 # parent delivery. Earlier commits, branch tips and equivalent
                 # trees must never invent a completion's provenance.
                 if (request.completion_outcome == "pass"
+                        and (record is None or record["artifact"]
+                             and record["source_oid"] == request.reported_source)
                         and is_valid_git_oid(request.reported_source or "")
                         and await snap.strictly_contains_source(request.reported_source) is True):
                     verdict.outcome, verdict.proof, verdict.via, verdict.delivered_sha = (
@@ -312,7 +328,7 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
             if task_id in delivered and not retain_root:
                 continue
             if verdict.outcome == "proven" and not dry_run:
-                if verdict.proof == EPIC_PROOF or retain_root:
+                if verdict.proof == EPIC_PROOF or retain_root and record is None:
                     verdict.outcome = await _attest(
                         db, provenance, request, target, identity, verdict,
                     )

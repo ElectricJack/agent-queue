@@ -143,7 +143,14 @@ freshness, so this fence works with the shared Git truth snapshot API.
 
 The same strict recovery includes completed epic children whose parent branch
 has disappeared, even when they retain filing origins. Backfill inventories
-these children against the fetched default target and retains only the current
+these children regardless of whether their origins are live or retired. A fresh,
+repository-authorized remote advertisement establishes parent absence; stale
+tracking refs and unavailable remote reads cannot establish presence or absence.
+An existing child completion marker is a source locator, not proof that its work
+landed on the default target, and does not suppress this recovery preview. Apply
+preserves an existing matching immutable source binding and records the audited
+root delivery once; a conflicting binding stays unproven. Backfill proves against
+the fetched default target and retains only the current
 passing completion's final reported source under exact ancestry. An old legacy
 delivery row cannot replace this binding. Deleted child refs are harmless when
 the exact commit is reachable from the default target; missing or equivalent
