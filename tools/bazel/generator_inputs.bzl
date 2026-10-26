@@ -3894,6 +3894,7 @@ GENERATOR_INPUTS = [
     "src/discord/escalation_transport.py",
     "src/discord/inbound.py",
     "src/discord/intake_diagnostics.py",
+    "src/discord/links.py",
     "src/discord/rate_guard.py",
     "src/discord/render_budget.py",
     "src/discord/slash_commands.py",
