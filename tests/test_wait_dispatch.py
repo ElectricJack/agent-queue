@@ -1073,6 +1073,11 @@ async def test_poisoned_deadline_is_quarantined_and_later_deadlines_fire_after_r
 @pytest.mark.parametrize("refusal", [
     {"success": False, "error_code": "wait.unavailable"},
     {"success": False, "error": "database temporarily unavailable"},
+    {"success": False, "error_code": "command_runtime_error", "error": "connection lost"},
+    {"success": False, "error_code": "command_runtime_error",
+     "error": "deadline effect failed: not a refusal dictionary"},
+    {"success": False, "error_code": "command_runtime_error",
+     "error": "deadline effect failed: {'success': False, 'error_code': 'wait.unavailable'}"},
 ])
 async def test_transient_deadline_refusal_is_not_quarantined(runtime_env, refusal):
     env = runtime_env
@@ -1089,8 +1094,14 @@ async def test_transient_deadline_refusal_is_not_quarantined(runtime_env, refusa
     assert not await records(env, messages)
 
 
-async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_deadlines(
-    runtime_env,
+@pytest.mark.parametrize("deadline_type,code,wrapped", [
+    ("due", "wait.graph_busy", False),
+    ("reservation", "wait.source_unresolved", False),
+    ("reservation", "wait.source_unresolved", True),
+    ("transition", "wait.effect_refused", False),
+])
+async def test_refused_deadline_retries_with_backoff_without_blocking_later_deadlines(
+    runtime_env, deadline_type, code, wrapped, caplog,
 ):
     from tests.test_wait_queries import owner
 
@@ -1099,15 +1110,29 @@ async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_d
     later_scope = await owner(env.db, "later-owner", "later-session", "later-agent")
     later = await register(env, {"kind": "timer", "due_at": NOW + 11},
                            scope=later_scope, idempotency_key="later")
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_deadlines).where(
+            wait_deadlines.c.wait_id == first["wait_id"], wait_deadlines.c.deadline_type == "due",
+        ).values(deadline_type=deadline_type))
     now = [NOW + 12]
     service = runtime(env, clock=lambda: now[0])
     assert await service.lease()
     original = service.command
     busy = True
 
+    async def effect(conn, deadline, wait, **kwargs):
+        return {"success": True}
+
+    if deadline_type != "due":
+        service.orch.wait_deadline_handlers[deadline_type] = effect
+
     async def command(name, args):
         if busy and args["wait_id"] == first["wait_id"]:
-            return {"success": False, "error_code": "wait.graph_busy", "error": "retry"}
+            refusal = {"success": False, "error_code": code, "error": "retry"}
+            if wrapped:
+                return {"success": False, "error_code": "command_runtime_error",
+                        "error": f"deadline effect failed: {refusal}"}
+            return refusal
         return await original(name, args)
 
     service.command = AsyncMock(side_effect=command)
@@ -1117,7 +1142,7 @@ async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_d
         assert await service.timers.tick() == (1 if attempt == 0 else 0)
         rows = await records(env, wait_deadlines)
         first_due = next(r for r in rows if r["wait_id"] == first["wait_id"]
-                         and r["deadline_type"] == "due")
+                         and r["deadline_type"] == deadline_type)
         assert first_due["fired_at"] is None and first_due["cancelled_at"] is None
         assert next(r for r in rows if r["wait_id"] == later["wait_id"]
                     and r["deadline_type"] == "due")["fired_at"] == NOW + 12
@@ -1133,6 +1158,46 @@ async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_d
     assert await service.timers.tick() == 1
     assert await service.timers.tick() == 0
     assert not await records(env, messages)
+    assert f"wait_id={first['wait_id']} deadline_type={deadline_type} generation=1" in caplog.text
+
+
+@pytest.mark.parametrize("code,deadline_type", [
+    ("wait.out_of_scope", "reservation"),
+    ("wait.invalid", "reservation"),
+    ("wait.condition_required", "reservation"),
+    ("wait.not_escalated", "reservation"),
+    ("wait.source_unresolved", "transition"),
+    ("continuation.stale_generation", "reservation"),
+    ("stale_claim", "reservation"),
+])
+async def test_structured_permanent_deadline_effect_is_quarantined_immediately(
+    runtime_env, code, deadline_type,
+):
+    env = runtime_env
+    receipt = await register(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_deadlines).values(cancelled_at=NOW))
+        await conn.execute(insert(wait_deadlines).values(
+            id="refused-effect", wait_id=receipt["wait_id"], deadline_type=deadline_type,
+            generation=2, due_at=NOW,
+        ))
+    service = runtime(env)
+
+    async def effect(conn, deadline, wait, **kwargs):
+        await conn.execute(update(wait_records).values(decision_reason="must-rollback"))
+        return {"success": False, "error_code": code, "error": "permanent refusal"}
+
+    service.orch.wait_deadline_handlers[deadline_type] = effect
+    assert await service.lease()
+    await service.timers.rearm()
+    assert await service.timers.tick() == 0
+    deadline = next(r for r in await records(env, wait_deadlines) if r["id"] == "refused-effect")
+    assert deadline["fired_at"] is None and deadline["cancelled_at"] == NOW
+    assert (await records(env))[0]["decision_reason"] != "must-rollback"
+    assert not service.timers._retry_deadlines
+    notice = next(r for r in await records(env, messages)
+                  if r["body_kind"] == "wait_deadline_quarantined")
+    assert code in notice["body"]
 
 
 async def test_deadline_graph_lock_contention_retains_retry_after_transaction_rollback(runtime_env):
@@ -1159,13 +1224,19 @@ async def test_deadline_graph_lock_contention_retains_retry_after_transaction_ro
     assert (await records(env))[0]["id"] == receipt["wait_id"]
 
 
-async def test_graph_busy_deadline_effect_rolls_back_and_retries(runtime_env):
+@pytest.mark.parametrize("deadline_type,code", [
+    ("transition", "wait.graph_busy"),
+    ("reservation", "wait.source_unresolved"),
+])
+async def test_retryable_deadline_effect_rolls_back_and_preserves_code(
+    runtime_env, deadline_type, code,
+):
     env = runtime_env
     receipt = await register(env, {"kind": "timer", "due_at": NOW + 10})
     async with env.db._engine.begin() as conn:
         await conn.execute(update(wait_deadlines).values(cancelled_at=NOW))
         await conn.execute(insert(wait_deadlines).values(
-            id="transition", wait_id=receipt["wait_id"], deadline_type="transition",
+            id="transition", wait_id=receipt["wait_id"], deadline_type=deadline_type,
             generation=2, due_at=NOW + 10,
         ))
     now = [NOW + 11]
@@ -1174,10 +1245,15 @@ async def test_graph_busy_deadline_effect_rolls_back_and_retries(runtime_env):
 
     async def effect(conn, deadline, wait, **kwargs):
         await conn.execute(update(wait_records).values(decision_reason="effect"))
-        return {"success": not busy, "error_code": "wait.graph_busy"}
+        return {"success": not busy, "error_code": code}
 
-    service.orch.wait_deadline_handlers["transition"] = effect
+    service.orch.wait_deadline_handlers[deadline_type] = effect
     assert await service.lease()
+    result = await service.command("wait_deadline_fire", {
+        "wait_id": receipt["wait_id"], "deadline_type": deadline_type, "generation": 2,
+    })
+    assert result["error_code"] == code
+    assert result["effect_refusal"] == {"success": False, "error_code": code}
     await service.timers.rearm()
     assert await service.timers.tick() == 0
     assert (await records(env))[0]["decision_reason"] != "effect"
