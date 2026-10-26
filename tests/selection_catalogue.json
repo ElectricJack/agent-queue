@@ -3404,7 +3404,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:ee994f9e990dc5155d7d61fe6ccb94019c94c5152b60bdea61a9722a342ee1de",
+      "digest": "sha256:05e73771149f91762df6261a737e1b94b2482797151c2ae6247fe3f22efd4f37",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
@@ -3413,6 +3413,7 @@
         "src.integration.branch_retirement",
         "src.integration.cleanup",
         "src.integration.delivery_branches",
+        "src.integration.development",
         "src.integration.train_sources",
         "src.models",
         "src.sessions.obsolete"
@@ -3427,13 +3428,16 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4712135f0f3e7055ed6a73f979616acc8bdaa0b32ea92c4df58bd5dba0ae91cf",
+      "digest": "sha256:fc43afea0a93b861e531dc5a46b705edd7b5d777c4c209c79b427f924bb73891",
       "imports": [
         "src.database.tables",
         "src.git.manager",
         "src.integration",
         "src.integration.branch_discard",
+        "src.integration.branch_retirement",
         "src.integration.branch_sweep",
+        "src.integration.delivery_branches",
+        "src.integration.development",
         "src.integration.lock",
         "src.integration.models",
         "src.models",
@@ -5905,7 +5909,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:e087908c515c23056028086aefe69981140b4077116c70078710a422bd8c8fcc",
+      "digest": "sha256:529603ba9c698540188eb1a2974ade5d903d01bc568a06b7f7f1663517e6459b",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5920,10 +5924,12 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.git_truth",
         "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.repository_incidents",
+        "src.integration.repository_recovery",
         "src.models",
         "src.prime.sections",
         "src.profiles.capabilities"
@@ -10436,7 +10442,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a3c63dda0647babb731b09d07e93dc29878b57e3efb193037b843a9adf0ff612",
+      "digest": "sha256:28aa9ec120abd074457aaa16efc43825522b916324f7772ffc6835d18f830222",
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
@@ -10465,6 +10471,8 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.epics",
+        "src.integration.fixer_runtime",
+        "src.integration.fixers",
         "src.integration.git_truth",
         "src.integration.github_review_poll",
         "src.integration.gitops",

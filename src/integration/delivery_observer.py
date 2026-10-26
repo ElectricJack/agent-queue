@@ -764,6 +764,17 @@ class DeliveryObserver:
             and (recent[1].error is None or cached_only)
             and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
+        if self.truth is not None and not cached_only:
+            try:
+                shared = await within_git_read_budget(partial(
+                    self.truth.tick_snapshot, str(path), project_id=target.project_id,
+                    repository_id=target.repository_id, repository_url=target.repository_url,
+                    target_ref=target.target_ref,
+                ))
+            except Exception as exc:
+                return self._unavailable(target, path, f"observer_error: {type(exc).__name__}")
+            if shared is not None:
+                return replace(shared.observation, git=self.git)
         observe = (partial(self._shared_observation, max_age=max_age)
                    if max_age > 0 else self._shared_observation)
         if cached_only or (shared := await within_git_read_budget(
