@@ -994,7 +994,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3365,
+ 'authorized_owned_delta': 3441,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1198,8 +1198,8 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83434,
- 'measured_owned_total': 158864,
+ 'measured_engine_lines': 83446,
+ 'measured_owned_total': 158940,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1729,7 +1729,28 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
              'Preserve every historical grant; zero remaining headroom and no new storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': 'ebb6a75bb',
-   'task_id': 'sound-meadow-89'}}
+   'task_id': 'sound-meadow-89'},
+ 'claim_rejection_diagnostics_composition': {'authorized_engine_delta': 12,
+ 'authorized_owned_delta': 76,
+ 'authorized_shared_owned_delta': 64,
+ 'authorized_table_delta': 0,
+ 'decision_message_id': 'msg-611f9fbe1b804e8e9b7f127924b38451',
+ 'dev_source_revision': '2373e54bf0b2f15f0b966575b88008dcdec617e3',
+ 'measured_engine_lines': 83446,
+ 'measured_owned_total': 158940,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_owned_total': 158864,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved claim rejection diagnostics, durable failure and '
+           'explain, guarded detach-or-retain, and AdmissionView.revalidation_reasons. '
+           'Compose on current dev; preserve original baselines, every historical grant and '
+           'ownership classification, zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '21dbc84ecd4d1a7f434b8f006d028deb498cb08d',
+ 'task_id': 'solid-torrent-24',
+ 'thread_id': 'solid-torrent-24-ci-size'}}
 
 
 def integration_table(name: str) -> bool:

@@ -2063,7 +2063,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3365,
+    "authorized_owned_delta": 3441,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2082,6 +2082,26 @@
       "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
       "task_id": "wise-crest-14",
       "thread_id": "wise-crest-14-ci-size"
+    },
+    "claim_rejection_diagnostics_composition": {
+      "authorized_engine_delta": 12,
+      "authorized_owned_delta": 76,
+      "authorized_shared_owned_delta": 64,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-611f9fbe1b804e8e9b7f127924b38451",
+      "dev_source_revision": "2373e54bf0b2f15f0b966575b88008dcdec617e3",
+      "measured_engine_lines": 83446,
+      "measured_owned_total": 158940,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83434,
+      "previous_measured_owned_total": 158864,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved claim rejection diagnostics, durable failure and explain, guarded detach-or-retain, and AdmissionView.revalidation_reasons. Compose on current dev; preserve original baselines, every historical grant and ownership classification, zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "21dbc84ecd4d1a7f434b8f006d028deb498cb08d",
+      "task_id": "solid-torrent-24",
+      "thread_id": "solid-torrent-24-ci-size"
     },
     "deleted_epic_child_recovery_composition": {
       "authorized_engine_delta": 103,
@@ -2287,8 +2307,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83434,
-    "measured_owned_total": 158864,
+    "measured_engine_lines": 83446,
+    "measured_owned_total": 158940,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
