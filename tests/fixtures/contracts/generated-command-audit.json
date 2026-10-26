@@ -4293,13 +4293,14 @@
         "return": "{'success': False, 'error': str(exc), 'code': exc.code}"
       }
     ],
-    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Reviewed hierarchy-lock ordering correction: preflight and task creation acquire the project hierarchy lock before the batch row. Argument reads, authority checks, return branches and the typed result contract are unchanged; deterministic graph-writer overlap coverage verifies dispatch replay and preserved ingestion holds.",
     "schema_quality": "typed",
-    "source_digest": "sha256:5d8241ade06c27411ebedd03845e39664533a2799b03ee2acf354dcdf7cab4de",
+    "source_digest": "sha256:a67c2033885e0604ad4e5c45621ce0a13c591a86eeac3209af24b729c7902ecd",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_fidelity_review.py",
-      "tests/test_routing_mandatory.py"
+      "tests/test_routing_mandatory.py",
+      "tests/test_fidelity_review.py::test_dispatch_waits_for_graph_writer_without_locking_batch"
     ]
   },
   "ensure_spec_ingest": {
@@ -8334,6 +8335,54 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_rebind_batch_authority": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_rebind_batch_authority",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', 'unknown batch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', refusal)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', 'apply requires a nonblank reason')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', 'the in-place batch fixer is not active')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await service.runtime.rebind_authority(batch, operator_id=operator, reason=request.reason, dry_run=request.dry_run)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('refused', str(exc))"
+      }
+    ],
+    "review_notes": "Local operator or live owning project/global supervisor only. Preview rechecks fresh Git evidence and retained fixer/session binding. Apply requires an audit reason and records proof without moving refs, resetting work or granting future publication authority. Every refusal uses the explicit failure envelope.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:8a8b3f276e55dfe19c0fb0d6549a5508d0b25477ea7801a1a2b728193b42d135",
+    "tests": [
+      "tests/test_integration_fixers.py::test_rebind_authority_control_checks_live_owning_supervisor",
+      "tests/test_integration_train_sources.py::test_retained_epic_fixer_publication_refreshes_authority_after_restart",
+      "tests/test_cli_integration.py::test_rebind_batch_authority_forwards_preview_and_reason"
+    ]
+  },
   "integration_reconcile_expired_mutation": {
     "argument_reads_diagnostic_only": [],
     "denial_reason": null,
@@ -9671,7 +9720,7 @@
     "return_branches": [
       {
         "protocol": "explicit_boolean: True",
-        "return": "{'success': True, **result}"
+        "return": "{'success': True, **await train.tick(visit_now)}"
       },
       {
         "protocol": "delegated_producer",
@@ -9682,9 +9731,9 @@
         "return": "_failure('unavailable', 'the integration train is not active')"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Repair assembly audit: the added best-effort watchdog scan delegates observation and landing-agent handoff; exceptions are logged and existing explicit-boolean command exits remain unchanged. Root-origin recovery audit: the watchdog now receives the hierarchy service so landing-task filing reserves an eligible origin atomically; the system-scope gate and explicit-boolean return branches remain unchanged.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Repair assembly audit: the added best-effort watchdog scan delegates observation and landing-agent handoff; exceptions are logged and existing explicit-boolean command exits remain unchanged. Root-origin recovery audit: the watchdog now receives the hierarchy service so landing-task filing reserves an eligible origin atomically; the system-scope gate and explicit-boolean return branches remain unchanged. Handler-cost repair audit: single-flight inventory ownership and cadence are reserved before awaits and released in finally, including cancellation; the inline train result retains the same explicit-boolean merge and original service-principal gate. Return branches and resource requirements remain unchanged.",
     "schema_quality": "declared",
-    "source_digest": "sha256:a69821b49164958b74abd18e161a0bfad6ce8fec005de52dfdb61b481cabb332",
+    "source_digest": "sha256:f713707cf6552e77f7ec9ef3b557f34a60e572d5359bcf480a6d38d5563ebc8d",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -11589,6 +11638,7 @@
       "display_mode",
       "include_completed",
       "labels",
+      "limit",
       "project_id",
       "show_all",
       "show_dependencies",
@@ -11625,14 +11675,28 @@
       {
         "protocol": "delegated_producer",
         "return": "context"
+      },
+      {
+        "protocol": "explicit_boolean_false",
+        "return": "{'success': False, 'error': 'limit must be a positive integer'}"
+      },
+      {
+        "protocol": "explicit_boolean_false",
+        "return": "{'success': False, 'error': 'Use page_size instead of limit for snapshots'}"
+      },
+      {
+        "protocol": "explicit_boolean_false",
+        "return": "{'success': False, 'error': 'limit is only supported for flat listings'}"
       }
     ],
-    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Task-list limit: reviewed three explicit refusal exits for nonpositive/noninteger limits, snapshot limits and hierarchical limits. Flat live lists apply the cap after filters and preserve uncapped total; no-limit behavior and authorization are unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:49ee843726c3a54c254a33b94d1352edaf5f416ef1565552b9c68507498811dd",
+    "source_digest": "sha256:c58071cf7af7b2fda237bbfffbd93b7ae00fc48878bcf5f5476a3086b71297fe",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
-      "tests/test_observation_snapshots.py"
+      "tests/test_observation_snapshots.py",
+      "tests/test_task_deps_command.py",
+      "tests/test_fidelity_review.py"
     ]
   },
   "list_workflows": {
@@ -11895,9 +11959,9 @@
         "return": "scope_error"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Conversation intake correction: session callers skip conversation_input rows addressed to another supervisor before delivery CAS, preventing consumption and archival. Reviewed return branches, argument reads, resource gates and result protocol remain unchanged. Unread inbox correction: reviewed symmetric supervisor alias lookup and include_delivered selection; the existing scope refusals, explicit success envelopes and injection delivery CAS are unchanged.",
     "schema_quality": "declared",
-    "source_digest": "sha256:807561f708421b2bbcaa5a37be5d9efbb062227787c96ba6b0f5f90e8356cd00",
+    "source_digest": "sha256:0678713e25a0bf207a35b08d27e6afca5f1613e79d6b495781962222a1638689",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -11905,7 +11969,8 @@
       "tests/test_api_messages.py",
       "tests/test_message_commands.py",
       "tests/test_project_supervisors.py",
-      "tests/test_session_commands.py"
+      "tests/test_session_commands.py",
+      "tests/test_conversation_wiring.py::test_other_supervisor_injection_and_status_leave_conversation_unread"
     ]
   },
   "message_list": {
@@ -11990,7 +12055,7 @@
     "denial_reason": null,
     "effect": "destructive",
     "helper_producers": {
-      "_cmd_supervisor_inbox_reply": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+      "_cmd_supervisor_inbox_reply": "sha256:135977a151311b006278e1dc0ed715a878d0116f0d0eaa6c9b079553cbccddff",
       "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95",
       "_send_collaboration_message": "sha256:47207c4d2dcca9b0e53bb086936bf805ab07722ac121832c2d0cb94abd998632",
       "_system_message_scope_error": "sha256:bb8b3907d3e936931d43b2c4f37118e164281848c268d5477789213e2ed1afb7"
@@ -12075,7 +12140,7 @@
         "return": "scope_error"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Ordinary conversation replies delegate to the live global supervisor check, including legacy project-addressed inputs; ask discussions retain their existing authority.",
     "schema_quality": "declared",
     "source_digest": "sha256:bedde816848173d18bc19c5bb306b06f39df563c88c648a0c9b307bed11d53ef",
     "tests": [
@@ -15470,9 +15535,9 @@
         "return": "result"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Fresh-continuation recovery: a bound RESUME_PENDING outcome is recorded as delivered before knowledge context preparation. The record.stale_claim refusal keeps success false and its code, adding only the exact fenced wait_ack command and a prime retry instruction. Genuine stale ownership and other context refusals retain their existing envelopes; no mutation or context grant is bypassed. Cancelled-wait follow-up: the same pre-ack record.stale_claim refusal explicitly requires acknowledging cancelled outcomes and confirms the task claim is retained. Only diagnostic guidance changes; return branches, success false, error code and original-principal resource gates remain unchanged. The satisfied/cancelled regression covers delivery, acknowledgement and the later genuine stale-claim refusal.",
     "schema_quality": "declared",
-    "source_digest": "sha256:7f55f881df7d457c23be4348d72ed66e10569e924019174dc24fff0e2792250d",
+    "source_digest": "sha256:f8a4cb94f0c012edfbd63bdad83b8f5d962f60854e90be0e5a8cad71ec1e3822",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -15481,7 +15546,8 @@
       "tests/test_claim_commands.py",
       "tests/test_delivery_integration.py",
       "tests/test_github_access_workflow.py",
-      "tests/test_jobs_waits.py"
+      "tests/test_jobs_waits.py",
+      "tests/test_wait_hibernation.py::test_resume_prime_stale_context_claim_guides_ack_then_prime"
     ]
   },
   "probe_mcp_server": {
@@ -17274,6 +17340,42 @@
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_collaboration_lifecycle.py"
+    ]
+  },
+  "reconcile_project_schedules": {
+    "argument_reads_diagnostic_only": [
+      "now"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_reconcile_project_schedules",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'fired': fired}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(ScheduleError('out_of_scope', 'daemon service only'))"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:e57e27ddbeb69061153e1c7e362f88e06740937e87f7272ecf8e8613960e257c",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "record_capabilities": {
@@ -19286,7 +19388,7 @@
       },
       {
         "protocol": "explicit_boolean: True",
-        "return": "{'success': True, **await service.submit(project_id=project_id, author_task_id=author_task_id, kind=kind, title=str(args.get('title') or ''), content=content, submitted_by=principal.describe(), decider=decider, single_author=bool(experiment and experiment['final_result']), playbook=playbook), **({'playbook': playbook.meta} if playbook else {})}"
+        "return": "{'success': True, **await service.submit(project_id=project_id, author_task_id=author_task_id, kind=kind, title=str(args.get('title') or ''), content=content, submitted_by=principal.describe(), decider=decider, single_author=bool(experiment and experiment['final_result']), changes_note=changes_note, playbook=playbook), **({'playbook': playbook.meta} if playbook else {})}"
       },
       {
         "protocol": "delegated_producer",
@@ -19314,15 +19416,15 @@
       },
       {
         "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
         "return": "_error('not_your_task', f'this revision task must update review {assigned_id}; use aq review submit --review-id {assigned_id} --file <draft.md> --changes \"<comment dispositions and evidence>\"')"
-      },
-      {
-        "protocol": "delegated_producer",
-        "return": "error"
-      },
-      {
-        "protocol": "delegated_producer",
-        "return": "error"
       },
       {
         "protocol": "delegated_producer",
@@ -19339,11 +19441,19 @@
       {
         "protocol": "delegated_producer",
         "return": "_error('object_result_language', error)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "error"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('not_your_task', 'an amendment requires the assigned predecessor to remain approved at the follow-up revision')"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Post-approval follow-up amendment audit (PR 1921): omitted review_id requires the assigned predecessor to remain approved at its assigned revision; identity lookup failures and stale predecessor refusals preserve delegated boolean errors. Amendment submit explicitly returns success and records predecessor provenance in changes_note. Revision-task assignment and explicit-id guards remain enforced.",
     "schema_quality": "declared",
-    "source_digest": "sha256:170db8480c85c42685e44df867aed0f1a13a21cc10742f5b12f1b3ea2a7dd006",
+    "source_digest": "sha256:0feab9af4a457a41fcee67669209bb29e73ac06c167b70eddae66d4cafb08b86",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -19352,7 +19462,9 @@
       "tests/test_object_loop_playbook.py",
       "tests/test_review_commands.py",
       "tests/test_task_attachments_api.py",
-      "tests/test_playbook_script.py"
+      "tests/test_playbook_script.py",
+      "tests/test_review_commands.py::test_approved_followup_submits_an_amendment_and_can_revise_its_draft",
+      "tests/test_review_commands.py::test_revision_task_cannot_create_amendment_after_approval"
     ]
   },
   "review_withdraw": {
@@ -19547,6 +19659,146 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "schedule_cancel": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_cancel",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:2ba91b8d04442ee0f6d46d8e6ca0d00b46322a8266cb43b86763e577742344ce",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "schedule_get": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_get",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:c56dc8407e4e4fbccd7f64043c10ca68ef5e3fab53ab06709d3c2600e1c5bf2c",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "schedule_list": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "read",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_list",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedules': [visible_schedule(row) for row in rows], 'count': len(rows)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:08615b0db0cf498d9c5068b095bbeeb2ab4290cc6d66997649b1d0afcc06a5fd",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "schedule_register": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_schedule_error": "sha256:15236bc91ef6ac37d1d7a5995637249d0d4e33e384d0eea20f8d2eecb5a789bf"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/schedule_commands.py:ScheduleCommandsMixin._cmd_schedule_register",
+    "resource_gates": [
+      "project_resources",
+      "handler_gates"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'schedule': visible_schedule(row)}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "self._schedule_error(exc)"
+      }
+    ],
+    "review_notes": "Public operations require a local operator or elevated scoped supervisor, and scope all rows by explicit project. Reconcile requires the named daemon service. Refusals return explicit false through _schedule_error; successes follow committed database operations. Message creation and firing receipt share a transaction.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:5bac3f6afeb72167383b94d43ad5c54dc3397613bfd3b03ccbcde26081b4f031",
+    "tests": [
+      "tests/test_project_schedules.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "scheduler_wait_sync": {
@@ -21304,13 +21556,14 @@
         "return": "_error('invalid_envelope', 'a follow-up must name the channel conversation or its observed thread')"
       }
     ],
-    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
+    "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Conversation intake correction: recipient resolution occurs inside accept_conversation_input; after commit both new inputs and gateway replays emit the delivery wake for the existing durable notice. Reviewed return branches, argument reads, resource gates and typed result contract remain unchanged.",
     "schema_quality": "typed",
-    "source_digest": "sha256:01c742ff4e41328de9bc690f038f6531c19d1dc953f1719987de5e893648bb63",
+    "source_digest": "sha256:c8924f02bfa52481c6c455f5e97f0e7ed24be74a5f991babf4448367c45369f6",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_conversation_wiring.py::test_committed_conversation_wakes_delivery_without_a_cycle"
     ]
   },
   "supervisor_inbox_reply": {
@@ -21338,7 +21591,7 @@
       },
       {
         "protocol": "delegated_producer",
-        "return": "_error('out_of_scope', 'reply requires the live addressed supervisor launch')"
+        "return": "_error('out_of_scope', 'reply requires the live global supervisor launch')"
       },
       {
         "protocol": "delegated_producer",
@@ -21355,10 +21608,6 @@
       {
         "protocol": "delegated_producer",
         "return": "_error('input_not_in_conversation', 'input does not belong to this conversation')"
-      },
-      {
-        "protocol": "delegated_producer",
-        "return": "_error('out_of_scope', 'input is addressed to another supervisor')"
       },
       {
         "protocol": "delegated_producer",
@@ -21397,12 +21646,93 @@
         "return": "{'success': True, 'created': recorded['created'], 'reply_message_id': reply_message_id, 'delivery_dedup_key': dedup_key, 'discord_text_chars': len(discord_text), 'truncated': discord_text != f'{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}'}"
       }
     ],
+    "review_notes": "Discord chat is global-owned regardless of configured project or legacy notice address. Live global launch and instance fencing replace project recipient authorization; local operator authority and existing input, destination, quota and replay guards remain.",
     "schema_quality": "typed",
-    "source_digest": "sha256:931c04add5fe4b4452fc3ad2ad445c281b2233fcabb6af4c7afb9822708bf469",
+    "source_digest": "sha256:135977a151311b006278e1dc0ed715a878d0116f0d0eaa6c9b079553cbccddff",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "supervisor_inbox_say": {
+    "argument_reads_diagnostic_only": [
+      "conversation_id",
+      "idempotency_key",
+      "text"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/conversation_commands.py:ConversationCommandsMixin._cmd_supervisor_inbox_say",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'created': recorded['created'], 'reply_message_id': reply_message_id, 'delivery_id': delivery_id, 'delivery_dedup_key': dedup_key, 'discord_text_chars': len(discord_text), 'truncated': discord_text != f'{sanitise_reply(text, base_url=base_url)}{conversation_marker(dedup_key)}'}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('spoofed_identity', 'caller identity and destination are server-derived')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'conversation_id, text and idempotency_key are required')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('invalid_request', 'post text or idempotency key exceeds its limit')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('preconditions_unmet', 'conversation preconditions unmet', unmet=list(preconditions.unmet))"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_open', 'conversation has no active delivery destination')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('visibility_changed', 'conversation destination or audience is unauthorized')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('out_of_scope', 'say requires the live global supervisor launch')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('rate_limited', 'supervisor post rate limit reached', scope=exc.scope)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_found', 'conversation does not exist')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('idempotency_conflict', 'idempotency key belongs to another sender')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_error('conversation_not_open', 'conversation must be open before posting')"
+      }
+    ],
+    "review_notes": "Initiated conversation posts retain typed outcomes. Live global launch and instance fencing, audience/destination preconditions, durable quotas and deterministic message/outbox keys are enforced before delivery. Configured projects and legacy notice addresses confer no chat authority. No input is consumed. Reviewed return branches include explicit scope, visibility, quota and idempotency refusals.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:1368147b89cf82dcde23fef764affbb5df607fd62c0242a4ba37765a1d9db572",
+    "tests": [
+      "tests/test_supervisor_inbox_say.py",
+      "tests/test_ask_intake.py::test_answer_to_initiated_supervisor_post_returns_to_conversation",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },
   "supervisor_inbox_status": {
@@ -21626,7 +21956,8 @@
     "denial_reason": null,
     "effect": "destructive",
     "helper_producers": {
-      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509"
+      "_change_set_failure": "sha256:84e95e25ec389a8657dd596d04936f2a7401df67c54e8819ca34922f8ffdf509",
+      "_settle_delivered_design": "sha256:6927269bddd39ad360268ed9dc25d7c64288f9917620dac7c37c87c1c5b423a6"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -21674,18 +22005,23 @@
       {
         "protocol": "explicit_boolean: True",
         "return": "{'success': True, 'committed': True, 'already_committed': True, **existing['receipt']}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._settle_delivered_design(conn, args, ingest, packet)"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Post-release structure merge: reviewed strict split validation and exact acceptance partition, original operator/live-supervisor authorization, guarded generation and quiescence refusals, and released-batch supervisor repair scope. Failure branches return explicit false or preserve the delegated producer; successful mutations retain explicit true. Existing resource gates and generated execution policy are unchanged. The _change_set_failure helper retains hierarchy owner/context fields, then forces success=false and the producer code/error; caller context cannot override the failure flag. Explicit no_op settlement retains the original live-ingester and immutable design approval locks, requires reason/citations and no graph operations, and stores a succeeded materialization receipt; preview and receipt returns carry success=true, and malformed or unauthorized settlement preserves the explicit failure envelope.",
     "schema_quality": "declared",
-    "source_digest": "sha256:4cffa4e392d1cde6ec81833558f9561ff4f8876388162b0ff13a3d4ca3901b6b",
+    "source_digest": "sha256:d1ecc5fd2b1203c66f7639996c4d74d5376fcfeb1805e3320c89193efeb05004",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_integration_hierarchy.py",
       "tests/test_session_commands.py",
-      "tests/test_task_batch_commands.py"
+      "tests/test_task_batch_commands.py",
+      "tests/test_task_batch_commands.py::test_delivered_design_settles_without_work_and_closes_pass"
     ]
   },
   "task_batch_release": {
@@ -22096,8 +22432,9 @@
       "_attempt_claim_once": "sha256:6f0fe6eabd83a5bcf0598e97603fee5498408e394c2efccb0ed3af89ead0d9ba",
       "_claim_precondition_refusal": "sha256:43692f096a7f7a1c94305812d7f4090d90ea2a53de5d6924659e30310d648b7d",
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
+      "_drain_missing_claim_session": "sha256:2e9c65d8d584fa5022c2c51dfd083036ffe417edf42613301360fddcc66638cd",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:e4435a5a486fa26cbef8921b33f086329a596b84c5459fce535ff4e59c5e990d",
+      "_prepare_and_activate_locked": "sha256:fc5232b5bf1c516c084d6c467c7cb485c3d0c9e6ef3b544ad3e28a2fb171738f",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
@@ -22118,7 +22455,7 @@
         "return": "outcome"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Fast-smooth completion merge: retain dev preparation-result and delivery-snapshot fences while using epic AdmissionView for shared hierarchical eligibility; helper return protocol remains unchanged. Hand-integration reconciliation: reviewed _attempt_claim_once independent-candidate first pass and full dependent fallback from b13bf05af/PR1845; both paths retain the existing boolean claim envelopes, source snapshot fences, original-principal gates and preparation ownership. No new return protocol.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Fast-smooth completion merge: retain dev preparation-result and delivery-snapshot fences while using epic AdmissionView for shared hierarchical eligibility; helper return protocol remains unchanged. Hand-integration reconciliation: reviewed _attempt_claim_once independent-candidate first pass and full dependent fallback from b13bf05af/PR1845; both paths retain the existing boolean claim envelopes, source snapshot fences, original-principal gates and preparation ownership. No new return protocol. Missing-claim-marker recovery: reviewed marker write/readback before activation and the delegated _drain_missing_claim_session producer. Its stale-instance/epoch branch returns PREPARE_FAILED; confirmed current sessions go through ordinary pool teardown and return DRAIN_REQUESTED. Both retain _simple boolean claim envelopes and existing original-principal resource gates. Attached writer bindings remain owned by guarded teardown. Slot preparation queue allowance: reviewed configured reset budget plus the mutation allowance in _prepare_and_activate_locked; current-fence and expiry enforcement, lock ordering, claim envelopes and resource gates remain unchanged.",
     "schema_quality": "declared",
     "source_digest": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
     "tests": [
@@ -22129,7 +22466,8 @@
       "tests/test_claim_commands.py",
       "tests/test_default_assignment_routing_playbook.py",
       "tests/test_git_identity.py",
-      "tests/test_pool_lifecycle_integration.py"
+      "tests/test_pool_lifecycle_integration.py",
+      "tests/test_pool_reconciler_carveouts.py::TestMissingPoolClaimFile"
     ]
   },
   "task_close": {
@@ -22147,8 +22485,9 @@
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
       "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
+      "_drain_missing_claim_session": "sha256:2e9c65d8d584fa5022c2c51dfd083036ffe417edf42613301360fddcc66638cd",
       "_prepare_and_activate": "sha256:18945c36fdfbd5e69b9ef6f4fb0befef0e3123554b7cb1fdc4cdd71f3bd06b00",
-      "_prepare_and_activate_locked": "sha256:e4435a5a486fa26cbef8921b33f086329a596b84c5459fce535ff4e59c5e990d",
+      "_prepare_and_activate_locked": "sha256:fc5232b5bf1c516c084d6c467c7cb485c3d0c9e6ef3b544ad3e28a2fb171738f",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
       "_refusal_response": "sha256:3d822aff2b782bcd5ddf3cfec3a6f085095a046cb78df46d756c558b1f869aeb",
@@ -22177,7 +22516,7 @@
         "return": "await self._close_task_obsolete(args, dispositions[0])"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Fast-smooth completion merge: the next-claim helper uses the merged AdmissionView and dev preparation-result fences without changing the close return protocol. Hand-integration reconciliation: reviewed _attempt_claim_once independent-candidate first pass and full dependent fallback from b13bf05af/PR1845; both paths retain the existing boolean claim envelopes, source snapshot fences, original-principal gates and preparation ownership. No new return protocol.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Reviewed unified hierarchy admission and admission recheck after preparation verification; helpers retain their claim result envelopes, boolean success values, and original-principal resource gates. Fast-smooth completion merge: the next-claim helper uses the merged AdmissionView and dev preparation-result fences without changing the close return protocol. Hand-integration reconciliation: reviewed _attempt_claim_once independent-candidate first pass and full dependent fallback from b13bf05af/PR1845; both paths retain the existing boolean claim envelopes, source snapshot fences, original-principal gates and preparation ownership. No new return protocol. Missing-claim-marker recovery: the close claim-next path delegates to the same reviewed marker write/readback and _drain_missing_claim_session helper as task_claim. PREPARE_FAILED and DRAIN_REQUESTED retain explicit false boolean success through _simple; the accepted close envelope and original-principal held-session gate remain unchanged. Slot preparation queue allowance: reviewed configured reset budget plus the mutation allowance in _prepare_and_activate_locked; current-fence and expiry enforcement, lock ordering, claim envelopes and resource gates remain unchanged.",
     "schema_quality": "declared",
     "source_digest": "sha256:fb2726483301443e8e36942c0d9e3c5d79b68636697e6443ee66669bb29ce077",
     "tests": [
@@ -22188,7 +22527,8 @@
       "tests/test_hierarchy_commands.py",
       "tests/test_integration_owner_recovery.py",
       "tests/test_integration_repair.py",
-      "tests/test_lifecycle_cleanup.py"
+      "tests/test_lifecycle_cleanup.py",
+      "tests/test_pool_reconciler_carveouts.py::TestMissingPoolClaimFile"
     ]
   },
   "task_comment": {
@@ -24751,6 +25091,45 @@
     "tests": [
       "tests/test_wait_commands.py",
       "tests/test_wait_surfaces.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
+  "wait_source_redispatch": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {
+      "_wait_v2_command": "sha256:03fd5f8eef8abced5000704b522faf62458654a25f2cf10fae3aa8fd8310e58d"
+    },
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/wait_v2_commands.py:WaitV2CommandsMixin._cmd_wait_source_redispatch",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._wait_v2_command('wait_source_redispatch', args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('wait.unavailable', 'source re-dispatch exceeded its work budget')"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "refusal('wait.unavailable', str(exc))"
+      }
+    ],
+    "review_notes": "Normal dispatch retains the typed command envelope. Timeout and listener lease/unavailability failures delegate to refusal(), which returns success false with wait.unavailable; recovery never fabricates a wake.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:083a3b2d906e990fcff9826fbb69b849f53ed719c84e203ec1b2d3726c24afb2",
+    "tests": [
+      "tests/test_wait_commands.py::test_source_redispatch_requires_live_scoped_supervisor",
+      "tests/test_wait_dispatch.py",
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ]
   },

@@ -1,7 +1,8 @@
-"""Production outbox binding and project-supervisor conversation round trips."""
+"""Production outbox binding and global-supervisor conversation round trips."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import signal
 from datetime import UTC, datetime
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import update
 
 import src.main as main_mod
 import tests.test_main_lifecycle as lifecycle_tests
@@ -16,6 +18,7 @@ import tests.test_supervisor_inbox_commands as inbox_tests
 import tests.test_tmux_integration as tmux_tests
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import load_config
+from src.database.tables import conversation_inputs, messages
 from src.conversations.intake import dm_thread_id
 from src.conversations.outbox import UnboundOutbox
 from src.conversations.preconditions import conversation_preconditions
@@ -29,7 +32,9 @@ from src.escalations.transport import (
     TransportAmbiguous,
     TransportUnavailable,
 )
+from src.event_bus import EventBus
 from src.messages.delivery import MessageDeliveryEngine
+from src.messages.service import MessageDeliveryService
 from src.messages.session_lens import SessionLens
 from src.models import Project, SessionRecord
 from src.profiles.capabilities import CapabilityPolicy
@@ -75,6 +80,8 @@ async def delivery(db, conversation_id, kind):
 
 
 async def supervisor(db, project_id=None, *, state="running", token="live-token", work_dir="/tmp"):
+    if project_id:
+        await db.update_project(project_id, supervisor_enabled=True)
     address = f"supervisor-{project_id or 'global'}"
     row = SessionRecord(
         id=f"launch-{address}",
@@ -89,12 +96,13 @@ async def supervisor(db, project_id=None, *, state="running", token="live-token"
         instance_token=token,
         started_at=NOW,
         state=state,
+        desired_state=state if state in {"stopped", "sleeping"} else "running",
     )
     await db.create_session(row)
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=CapabilityPolicy.from_namespaces(
-            aq_commands=["message_reply", "supervisor_inbox_reply"]
+            aq_commands=["message_reply", "supervisor_inbox_reply", "message_inbox", "message_status"]
         ),
         session_id=row.id,
         session_instance_token=token,
@@ -165,16 +173,19 @@ async def test_production_startup_binds_outbox_and_passes_documented_preconditio
 @pytest.mark.parametrize(
     "project_live,global_live,expected",
     [
-        (True, True, "supervisor-agent-queue"),
+        (True, True, "supervisor-global"),
         (False, True, "supervisor-global"),
-        (False, False, "conversation-queued"),
+        (False, False, "supervisor-global"),
     ],
 )
-async def test_recipient_project_then_global_then_queued(env, project_live, global_live, expected):
+async def test_global_owns_chat_despite_configured_live_project(
+    env, project_live, global_live, expected
+):
     handler, db = env
     await db.create_project(Project(id="agent-queue", name="AQ"))
     await supervisor(db, "agent-queue", state="running" if project_live else "stopped")
     await supervisor(db, state="running" if global_live else "stopped")
+    handler.config.discord.project_id = "agent-queue"
     accepted = await post(handler)
     message = await db.get_message(accepted["supervisor_message_id"])
     assert message.to_id == expected
@@ -198,8 +209,8 @@ async def test_a_shared_channel_across_projects_routes_to_the_global_supervisor(
     accepted = await post(handler)
     message = await db.get_message(accepted["supervisor_message_id"])
     assert (message.to_id, message.project_id) == ("supervisor-global", None)
-    # No live supervisor at all: the input stays queued, and says so out loud.
-    await db.update_session(global_row.id, state="stopped")
+    # No supervisor at all: the input stays queued, and says so out loud.
+    await db.delete_session(global_row.id)
     queued = await post(handler, args(1))
     assert (await db.get_message(queued["supervisor_message_id"])).to_id == "conversation-queued"
     assert [
@@ -207,12 +218,13 @@ async def test_a_shared_channel_across_projects_routes_to_the_global_supervisor(
         for row in handler.orchestrator.conversation_outbox.rows
         if row["dedup_key"] == f"conv-notice:supervisor-missing:{queued['conversation_id']}"
     ] == ["supervisor_missing"]
-    # An explicit project id still wins when the operator sets one.
+    # An explicit project id cannot route chat to a project supervisor.
     handler.config.discord.project_id = "agent-queue"
     explicit = await post(handler, args(2))
     assert (
         await db.get_message(explicit["supervisor_message_id"])
-    ).to_id == "supervisor-agent-queue"
+    ).to_id == "conversation-queued"
+    assert await db.get_pending_messages("session", "supervisor-agent-queue") == []
 
 
 def test_discord_project_id_is_loaded_from_yaml(tmp_path):
@@ -237,36 +249,34 @@ async def test_offline_inputs_stay_pending_then_drain_in_order(env):
     assert (await engine.run_delivery_pass())["delivered"] == 0
     lens.activity.assert_not_awaited()
     lens.ensure_started.assert_not_awaited()
-    await supervisor(db, "agent-queue")
+    await supervisor(db)
     assert await db.route_queued_conversation_inputs() == 2
     assert await db.route_queued_conversation_inputs() == 0
-    pending = await db.get_pending_messages("session", "supervisor-agent-queue")
+    pending = await db.get_pending_messages("session", "supervisor-global")
     assert [row.id for row in pending] == [
         first["supervisor_message_id"],
         second["supervisor_message_id"],
     ]
 
 
-async def test_only_addressed_live_project_launch_can_reply(env):
+async def test_only_live_global_launch_can_reply_with_project_configured(env):
     from dataclasses import replace
 
     handler, db = env
     await db.create_project(Project(id="agent-queue", name="AQ"))
-    row, project = await supervisor(db, "agent-queue")
-    _global_row, global_principal = await supervisor(db)
+    handler.config.discord.project_id = "agent-queue"
+    _, project = await supervisor(db, "agent-queue")
+    row, global_principal = await supervisor(db)
     accepted = await post(handler)
+    assert (await reply(handler, reply_args(accepted), project))["error_code"] == "out_of_scope"
+    stale = replace(global_principal, session_instance_token="stale")
+    assert (await reply(handler, reply_args(accepted), stale))["error_code"] == "out_of_scope"
+    assert (await reply(handler, reply_args(accepted), global_principal))["success"]
+    assert await db.get_pending_messages("session", "supervisor-agent-queue") == []
+    await db.update_session(row.id, state="stopped")
     assert (await reply(handler, reply_args(accepted), global_principal))[
         "error_code"
     ] == "out_of_scope"
-    assert (
-        await reply(handler, reply_args(accepted), replace(project, session_instance_token="stale"))
-    )["error_code"] == "out_of_scope"
-    assert (await reply(handler, reply_args(accepted), project))["success"]
-    assert (
-        await db.get_message(accepted["supervisor_message_id"])
-    ).to_id == "supervisor-agent-queue"
-    await db.update_session(row.id, state="stopped")
-    assert (await reply(handler, reply_args(accepted), project))["error_code"] == "out_of_scope"
 
 
 async def test_shared_dispatch_opens_thread_and_posts_one_explicit_reply(env):
@@ -410,7 +420,7 @@ async def test_a_plain_message_in_the_channel_is_answered_there_and_opens_no_thr
     handler, db = env
     handler.config.discord.conversation.require_mention = False
     await db.create_project(Project(id="agent-queue", name="AQ"))
-    await supervisor(db, "agent-queue")
+    await supervisor(db)
     transport = SinkTransport()
     service = bind(handler, db, transport)
     router = inbound_router(handler)
@@ -477,7 +487,7 @@ async def test_a_channel_message_with_no_supervisor_running_says_so_in_the_chann
 
     # A supervisor appearing drains the queue by itself; no reply required.
     await db.create_project(Project(id="agent-queue", name="AQ"))
-    await supervisor(db, "agent-queue")
+    await supervisor(db)
     assert await db.route_queued_conversation_inputs() == 1
 
 
@@ -485,7 +495,7 @@ async def test_a_follow_up_in_the_channel_continues_the_same_conversation(env):
     handler, db = env
     handler.config.discord.conversation.require_mention = False
     await db.create_project(Project(id="agent-queue", name="AQ"))
-    await supervisor(db, "agent-queue")
+    await supervisor(db)
     transport = SinkTransport()
     service = bind(handler, db, transport)
     router = inbound_router(handler)
@@ -499,17 +509,82 @@ async def test_a_follow_up_in_the_channel_continues_the_same_conversation(env):
         channel_gateway_message(1, "still blocked?"), bot_user_id=None
     ) == "posted:created"
 
-    # One conversation, two turns, and the second answers to the first message.
+    # One conversation, two turns, and the acknowledgement references the root.
     assert (await db.get_conversation(conversation["id"]))["updated_at"] == NOW + 10
     assert len(await db.list_conversation_inputs(conversation["id"])) == 2
     await service.pump()
     assert transport.threads == {}
-    # Every post this conversation makes replies to its first message.
+    # Intake has queued only the acknowledgement; answers are explicit.
     assert {
         message.reference_message_id
         for message in transport.messages.values()
         if message.id != "900000000000000000"
     } == {"800000000000000000"}
+
+
+@pytest.mark.parametrize("direct", [False, True], ids=["channel", "dm"])
+async def test_follow_up_answers_reference_each_input_and_preserve_conversation(env, direct):
+    handler, db = env
+    handler.config.discord.conversation.require_mention = False
+    handler.config.discord.conversation.allow_dm = direct
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    _, principal = await supervisor(db)
+    transport = SinkTransport()
+    service = bind(handler, db, transport)
+    router = inbound_router(handler)
+    gateway_message = dm_gateway_message if direct else channel_gateway_message
+    channel_id = DM_CHANNEL if direct else CHANNEL
+    root_id = str(gateway_message(0, "first question").id)
+    conversation_id = None
+
+    # Answer the root and two later turns in the same conversation. Replaying a
+    # follow-up answer must retain its reference and produce no duplicate post.
+    for index in range(3):
+        handler._clock = lambda: NOW + index * 10
+        incoming = gateway_message(index, f"question {index}")
+        assert await router.route(incoming, bot_user_id=None) == "posted:created"
+        conversation = await db.find_channel_conversation(
+            transport="discord", channel_id=channel_id
+        )
+        if conversation_id is None:
+            conversation_id = conversation["id"]
+        assert conversation["id"] == conversation_id
+        item = await db.find_conversation_input_by_external(
+            transport="discord", external_message_id=str(incoming.id)
+        )
+        values = reply_args(
+            {"conversation_id": conversation_id, "input_id": item["id"]},
+            text=f"Answer to question {index}",
+            idempotency_key=f"answer-{index}",
+        )
+        result = await reply(handler, values, principal)
+        assert result["success"], result
+        if index == 1:
+            replay = await reply(handler, {**values, "text": "changed on retry"}, principal)
+            assert replay["success"] and not replay["created"]
+        await service.pump()
+        answers = [
+            message for message in transport.messages.values()
+            if f"Answer to question {index}" in message.content
+        ]
+        assert len(answers) == 1
+        assert (answers[0].where, answers[0].thread_id, answers[0].reference_message_id) == (
+            channel_id, None, str(incoming.id),
+        )
+        rows = await db.list_outbound_deliveries(
+            owner_kind="conversation", owner_id=conversation_id
+        )
+        answer_row = next(
+            row for row in rows if row["dedup_key"] == result["delivery_dedup_key"]
+        )
+        assert answer_row["payload"]["reference_message_id"] == str(incoming.id)
+        assert answer_row["state"] == "sent"
+        stored = await db.get_conversation(conversation_id)
+        assert stored["external_root_message_id"] == root_id
+        assert stored["external_thread_id"] == (dm_thread_id(channel_id) if direct else None)
+    assert len(await db.list_conversation_inputs(conversation_id)) == 3
+    assert transport.threads == {}
+    assert "ensure_thread" not in transport.calls
 
 
 async def test_a_direct_message_conversation_answers_in_its_own_channel(env):
@@ -655,18 +730,18 @@ def test_shared_outbound_bucket_counts_twenty_mutations_then_refills():
 
 
 @pytest.mark.tmux
-async def test_mention_project_supervisor_tmux_inbox_reply_outbox_round_trip(
+async def test_mention_global_supervisor_tmux_inbox_reply_outbox_round_trip(
     env, provider, stub_path, tmp_path
 ):
     handler, db = env
     await db.create_project(Project(id="agent-queue", name="AQ"))
     transport = SinkTransport()
     service = bind(handler, db, transport)
-    spec = _spec(tmp_path, stub_path, name="n-supervisor--agent-queue")
+    spec = _spec(tmp_path, stub_path, name="n-supervisor--global")
     handle = await provider.start(spec)
     try:
         _row, principal = await supervisor(
-            db, "agent-queue", token=handle.instance_token, work_dir=spec.work_dir
+            db, token=handle.instance_token, work_dir=spec.work_dir
         )
         intake = SimpleNamespace(
             handle_detailed=AsyncMock(
@@ -693,7 +768,7 @@ async def test_mention_project_supervisor_tmux_inbox_reply_outbox_round_trip(
             webhook_id=None,
         )
         assert await router.route(message, bot_user_id=int(BOT)) == "posted:created"
-        pending = await db.get_pending_messages("session", "supervisor-agent-queue")
+        pending = await db.get_pending_messages("session", "supervisor-global")
         assert len(pending) == 1
         lens = SessionLens(
             db=db,
@@ -737,11 +812,11 @@ async def test_channel_message_without_a_mention_reaches_the_supervisor_tmux(
     transport.messages["900000000000000001"] = SinkMessage(
         id="900000000000000001", where=CHANNEL, content="what is blocking the release?"
     )
-    spec = _spec(tmp_path, stub_path, name="n-supervisor--agent-queue")
+    spec = _spec(tmp_path, stub_path, name="n-supervisor--global")
     handle = await provider.start(spec)
     try:
         _row, principal = await supervisor(
-            db, "agent-queue", token=handle.instance_token, work_dir=spec.work_dir
+            db, token=handle.instance_token, work_dir=spec.work_dir
         )
         router = DiscordInboundRouter(
             bot=handler.orchestrator._discord_bot,
@@ -772,7 +847,7 @@ async def test_channel_message_without_a_mention_reaches_the_supervisor_tmux(
             (await db.find_channel_conversation(transport="discord", channel_id=CHANNEL))["id"]
         )
         assert conversation["kind"] == "channel"
-        pending = await db.get_pending_messages("session", "supervisor-agent-queue")
+        pending = await db.get_pending_messages("session", "supervisor-global")
         assert [row.id for row in pending] == [
             (await db.list_conversation_inputs(conversation["id"]))[0]["supervisor_message_id"]
         ]
@@ -806,3 +881,197 @@ async def test_channel_message_without_a_mention_reaches_the_supervisor_tmux(
         assert answers[0].thread_id == bound["external_thread_id"]
     finally:
         await provider.stop(handle, grace=0)
+
+
+@pytest.mark.parametrize("state", ["running", "stopped", "sleeping"])
+async def test_committed_conversation_wakes_delivery_without_a_cycle(env, state):
+    handler, db = env
+    await db.create_project(Project(id="agent-queue", name="AQ", supervisor_enabled=True))
+    await supervisor(db, "agent-queue")
+    await supervisor(db, state=state)
+    handler.config.discord.project_id = "agent-queue"
+    bus = EventBus(env="dev")
+    handler.orchestrator.bus = bus
+    handler.config.messages.delivery_interval = 3600
+    handler.config.messages.transcript_tail_fallback = False
+    completed_passes = asyncio.Queue()
+    seen = []
+
+    async def nudge(**target):
+        # A separate connection sees the complete input and notice at wake time.
+        pending = await db.get_pending_messages("session", "supervisor-global")
+        assert len(pending) == 1
+        item = await db.find_conversation_input_by_supervisor_message(pending[0].id)
+        assert item is not None and item["text"] == "hello supervisor"
+        assert target["target_id"] == "supervisor-global"
+        assert pending[0].id in target["text"]
+        seen.append(pending[0].id)
+        return True
+
+    lens = SimpleNamespace(
+        activity=AsyncMock(return_value="idle" if state == "running" else "sleeping"),
+        ensure_started=AsyncMock(return_value=True),
+        nudge=AsyncMock(side_effect=nudge),
+    )
+    engine = MessageDeliveryEngine(db, lens, handler.config, bus=bus)
+    run_pass = engine.run_delivery_pass
+
+    async def observed_pass():
+        result = await run_pass()
+        completed_passes.put_nowait(result)
+        return result
+
+    engine.run_delivery_pass = observed_pass
+    service = MessageDeliveryService(engine, lambda: handler.config.messages, bus)
+    service.start()
+    try:
+        # Synchronize on complete passes, including the real database work.
+        # The test timeout guards deadlock; the 3600s routine interval cannot
+        # satisfy this test without the committed input's immediate wake.
+        async with asyncio.timeout(120):
+            await completed_passes.get()
+            assert seen == []
+            accepted = await post(handler)
+            await completed_passes.get()
+            assert seen == [accepted["supervisor_message_id"]]
+            if state != "running":
+                lens.ensure_started.assert_awaited_once_with(
+                    kind="session", target_id="supervisor-global", project_id=None
+                )
+            else:
+                lens.ensure_started.assert_not_awaited()
+            # A gateway replay repairs the event without duplicating the notice/nudge.
+            assert not (await post(handler))["created"]
+            await run_pass()
+            assert len(seen) == 1
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("supervisor_exists", [True, False])
+@pytest.mark.parametrize("read_without_delivery", [True, False])
+async def test_restart_recovers_unanswered_conversation_without_event_or_cycle(
+    env, supervisor_exists, read_without_delivery
+):
+    handler, db = env
+    if supervisor_exists:
+        await supervisor(db)
+    # Intake commits while the independent service is stopped. Its event is
+    # deliberately lost; restarting must use only the durable rows.
+    accepted = await post(handler)
+    message_id = accepted["supervisor_message_id"]
+    if read_without_delivery:
+        async with db._engine.begin() as conn:
+            await conn.execute(update(messages).where(messages.c.id == message_id).values(
+                read_at=NOW, last_notified_at=NOW, notification_attempts=3,
+            ))
+    if not supervisor_exists:
+        await supervisor(db)
+    handler.config.messages.delivery_interval = 3600
+    handler.config.messages.transcript_tail_fallback = False
+    bus = EventBus(validate_events=False)
+    lens = SimpleNamespace(
+        activity=AsyncMock(return_value="idle"),
+        nudge=AsyncMock(return_value=True),
+    )
+    engine = MessageDeliveryEngine(db, lens, handler.config, bus=bus)
+    completed = asyncio.Event()
+    run_pass = engine.run_delivery_pass
+
+    async def observed_pass():
+        result = await run_pass()
+        completed.set()
+        return result
+
+    engine.run_delivery_pass = observed_pass
+    service = MessageDeliveryService(engine, lambda: handler.config.messages, bus)
+    service.start()
+    try:
+        await asyncio.wait_for(completed.wait(), timeout=10)
+        lens.nudge.assert_awaited_once()
+        target = lens.nudge.await_args.kwargs
+        assert (target["kind"], target["target_id"], target["project_id"]) == (
+            "session", "supervisor-global", None,
+        )
+        assert message_id in target["text"]
+        notice = await db.get_message(message_id)
+        assert notice.read_at is None and notice.delivered_at is None
+        assert notice.notification_attempts == 1
+        # A retry pass must respect the durable notification reservation.
+        await run_pass()
+        lens.nudge.assert_awaited_once()
+    finally:
+        await service.stop()
+    # An actual recipient read stays consumed across a further daemon restart.
+    await db.mark_read(message_id)
+    await MessageDeliveryEngine(db, lens, handler.config).run_delivery_pass()
+    lens.nudge.assert_awaited_once()
+
+
+@pytest.mark.parametrize("settled", [
+    "answered", "reply_recorded", "expired", "revoked", "archived", "closed",
+])
+async def test_recovery_preserves_settled_read_only_conversation_notices(env, settled):
+    handler, db = env
+    await supervisor(db)
+    accepted = await post(handler)
+    message_id = accepted["supervisor_message_id"]
+    if settled == "answered":
+        assert (await reply(handler, reply_args(accepted)))["success"]
+    elif settled == "reply_recorded":
+        await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="user", to_id="dashboard", body="Already answered",
+            reply_to_id=message_id,
+        )
+    elif settled == "closed":
+        await db.set_conversation_state(accepted["conversation_id"], state="closed", now=NOW)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(messages).where(messages.c.id == message_id).values(
+            read_at=NOW, delivered_at=None,
+            archived_at=NOW if settled == "archived" else None,
+        ))
+        if settled in {"expired", "revoked"}:
+            await conn.execute(update(conversation_inputs).where(
+                conversation_inputs.c.id == accepted["input_id"],
+            ).values(state=settled))
+    lens = SimpleNamespace(activity=AsyncMock(), nudge=AsyncMock())
+    await MessageDeliveryEngine(db, lens, handler.config).run_delivery_pass()
+    assert (await db.get_message(message_id)).read_at == NOW
+    lens.activity.assert_not_awaited()
+    lens.nudge.assert_not_awaited()
+
+
+async def test_other_supervisor_injection_and_status_leave_conversation_unread(env):
+    handler, db = env
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    _row, owner = await supervisor(db)
+    _project, other = await supervisor(db, "agent-queue")
+    accepted = await post(handler)
+    message_id = accepted["supervisor_message_id"]
+    with principal_context(other):
+        diagnostic = await handler.execute("message_status", {"message_id": message_id})
+        assert diagnostic["success"]
+        injected = await handler.execute("message_inbox", {
+            "to_kind": "session", "to_id": "supervisor-global", "inject": True,
+        })
+        assert not injected["success"]
+        assert injected["error"] == "out of scope: system messages require global admin"
+    notice = await db.get_message(message_id)
+    assert notice.delivered_at is None and notice.read_at is None
+    with principal_context(owner):
+        injected = await handler.execute("message_inbox", {
+            "to_kind": "session", "to_id": "supervisor-global", "inject": True,
+        })
+        assert injected["injected"] == 1
+
+
+async def test_disabled_project_falls_back_to_existing_sleeping_global_supervisor(env):
+    handler, db = env
+    await db.create_project(Project(id="agent-queue", name="AQ"))
+    await supervisor(db, "agent-queue")
+    await db.update_project("agent-queue", supervisor_enabled=False)
+    await supervisor(db, state="sleeping")
+    accepted = await post(handler)
+    notice = await db.get_message(accepted["supervisor_message_id"])
+    assert (notice.to_id, notice.project_id) == ("supervisor-global", None)

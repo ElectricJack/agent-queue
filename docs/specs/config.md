@@ -170,16 +170,27 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 |---|---|---|---|
 | `bot_token` | `str` | `""` | Discord bot token. |
 | `guild_id` | `str` | `""` | Discord server ID. |
-| `channel_id` | `str` | `""` | Numeric shared channel ID for digests and escalation roots. |
+| `channel_id` | `str` | `""` | Numeric shared channel ID for global-supervisor conversations across all projects, digests and escalation roots. |
+| `project_id` | `str` | `""` | Shared ask intake/admission scope; does not select the chat supervisor. |
 | `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
 | `escalations` | object | `stateful: false` | The stateful-escalation phase: in-place post edits, collapsed forms and auto-resolution. |
-| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the addressed elevated supervisor. |
+| `conversation` | object | `enabled: false`, `require_mention: true`, `allow_dm: false` | Opt-in conversations with the elevated global supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
+
+The single channel is the global supervisor's interface for all projects.
+Ordinary chat and reference notices always belong to global, even when
+`discord.project_id` names a project with a live supervisor. A missing global
+session leaves chat queued; project supervisors never take over that conversation.
+`project_id` remains part of shared ask-channel admission, ask intake scope and the
+configuration fingerprint. Those uses and project-scoped ask decisions/discussions
+are preserved; this routing change requires no configuration migration. Keep the
+installed value when adopting global chat ownership. Changing it still invokes the
+existing ask-channel configuration reconciliation and cutover rules.
 
 #### 4.2.1 Supervisor-authored digest (phase P3, gated)
 
@@ -295,10 +306,14 @@ Hourly supervisor authoring is opt-in and defaults off. `full_fleet_visibility`
 must be explicitly true, and `discord.digest.project_ids` must be empty, before
 the global supervisor can author text for the shared destination. Quiet hours
 use local `HH:MM` times, may cross midnight, and suppress author wakes while
-the deterministic digest remains eligible to send. Omitting `quiet_hours`
+the one-line no-report notice remains eligible to send. Omitting `quiet_hours`
 disables that suppression. `grace_minutes` is 1–60; `max_requests_per_day` is
 1–24, with reservations counted even when a report falls back. An inactive
-authoring playbook keeps delivery deterministic. The request/CAS slice does
+authoring playbook sends only a one-line no-report notice for full-fleet hourly
+windows, as do missed submissions and unavailable author slots. The brief stays
+input only; the supervisor authors a short developer-style progress narrative.
+Feature-off and restricted-destination deterministic digests are unchanged.
+The request/CAS slice does
 not activate an authoring playbook by itself.
 
 Morning scheduling is opt-in. `time` must be a zero-padded local `HH:MM`;
@@ -987,6 +1002,13 @@ Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
 `loop_window_seconds: 3600`, `branch_admission_deadline_seconds: 1800`,
 `transition_budget_seconds: 120`, `resume_launch_attempts: 2`, and
 `resume_stall_seconds: 300`.
+
+The listener alerts when undispatched events exceed `listener_lag_events: 500`
+or the oldest commit is over 120 seconds old. `listener_lag_alert_minutes: 15`
+sets the global alert bucket duration in positive integer minutes. Each project
+with pending verified waits receives at most one notice per bucket, including
+across restarts and changes to the oldest sequence. These diagnostic notices do
+not create wait source events.
 
 `kinds` maps each wait kind to `WaitKindPolicy`, with
 `escalate_after_seconds` and `expected_duration_seconds`. Partial global

@@ -126,8 +126,12 @@ An older branch may carry reviewed evidence only in the former aggregates:
 `tests/fixtures/generated_sources/ownership/integration_ownership_report.json`,
 `tests/fixtures/contracts/generated-command-audit.json`, or
 `tests/test_command_descriptors.py`. Those deltas must be transferred before
-regeneration. The train checks both source sides against their own shards,
+regeneration. The train checks both source sides against their shards,
 including clean single-sided changes, before restoring any generated output.
+Shared ancestry supplies the evidence baseline even when the source merge uses
+an older explicit base. Deltas already represented in the other side's shards
+are inherited evidence too; an older dev tree or an earlier dev merge into an
+epic does not need another migration. The requested Git merge base stays intact.
 Unrepresented evidence produces an **Unmigrated legacy bookkeeping evidence**
 conflict naming the paths and this recipe. Normal regeneration and `--check`
 also refuse committed or edited aggregate evidence absent from the shards;
@@ -509,6 +513,15 @@ that command's existing helper pin, preserving the handler and other helper
 digests. Repeat the command explicitly if multiple audit rows pin that helper.
 Unknown selections are refused. This workflow is separate from bulk
 generated-artifact regeneration.
+
+The unread inbox correction records the `message_inbox` help-text change in
+`unread-inbox-contract-changes.json`. Its descriptor tests restore the previous
+definition before checking historical catalogue hashes. The argument schema,
+effects and return protocol stay unchanged; inbox regressions cover delivered
+unread visibility, supervisor aliases and undelivered-only injection. When merged
+with the independent task-list limit correction, each descriptor reverses the
+other change before checking its own recorded catalogue hashes. The supervisor
+conversation checks reverse both changes; the original recordings remain intact.
 
 Generated results must be JSON objects with an actual boolean `success` at
 every producer exit, including early refusals and delegated helpers. Only the

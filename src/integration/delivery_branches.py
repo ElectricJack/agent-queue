@@ -59,6 +59,7 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_completion_records,
+    task_delivery_receipts,
     task_metadata,
     tasks,
 )
@@ -100,6 +101,9 @@ ACTIVE_BATCH_LIFECYCLES = (
     "sealing", "sealed", "building", "testing", "repairing", "human_blocked",
     "promoting", "cleanup_pending",
 )
+#: Supersede records an abort; settlement records promotion. Keep the terminal
+#: decision authoritative even when legacy queue/cleanup metadata survives it.
+TERMINAL_BATCH_LIFECYCLES = ("aborted", "promoted")
 #: Promotion intents in these states have finished with their refs.
 SETTLED_INTENT_STATES = ("committed", "conflict", "superseded")
 #: Refs deleted per ``git push``.
@@ -150,6 +154,47 @@ async def completed_branch_tasks(conn: Any, branches: Iterable[str]) -> set[str]
     )
 
 
+async def batch_branch_references(conn, *, project_id=None, include_terminal=False):
+    """Live batch holds and terminal batch identities by ref, from current rows.
+
+    Terminal membership is diagnostic history, never a live-owner assertion.
+    Unknown legacy batches remain explicit operator-review holds.
+    """
+    batch, member = integration_batches.c, integration_batch_members.c
+    query = select(
+        batch.id, batch.intent, batch.lifecycle, batch.integration_branch,
+        batch.cleanup_state, batch.fixer_queue, member.task_id, member.source_ref,
+    ).select_from(integration_batches.outerjoin(
+        integration_batch_members, member.batch_id == batch.id,
+    ))
+    if project_id is not None:
+        query = query.where(batch.project_id == project_id)
+    if not include_terminal:
+        query = query.where(batch.intent != "aborted",
+                            batch.lifecycle.not_in(TERMINAL_BATCH_LIFECYCLES))
+    held, terminal = {}, {}
+    for row in (await conn.execute(query)).mappings():
+        ended = (row["intent"] == "aborted"
+                 or row["lifecycle"] in TERMINAL_BATCH_LIFECYCLES)
+        legacy = row["id"].startswith("integration-batch-")
+        retained = (row["cleanup_state"] == "retained"
+                    and (row["fixer_queue"] or {}).get("status") in {"deferred", "companion"})
+        if not ended and not (legacy or retained or row["lifecycle"] in ACTIVE_BATCH_LIFECYCLES):
+            continue
+        reason = f"integration batch {row['id']} is {row['lifecycle']} (intent={row['intent']})"
+        if legacy and not ended:
+            reason = "operator review required: legacy " + reason
+        refs = {branch_of(row["integration_branch"]), branch_of(row["source_ref"])}
+        if row["task_id"]:
+            refs.add(f"aq/{row['task_id']}")
+        for ref in refs - {None}:
+            if ended:
+                terminal.setdefault(ref, set()).add(reason)
+            else:
+                held.setdefault(ref, reason)
+    return held, terminal
+
+
 async def live_branch_references(
     conn: Any, *, delivery: Any = None, retiring_task_id: str | None = None,
     retiring_owner_id: str | None = None,
@@ -183,6 +228,7 @@ async def live_branch_references(
       still pending (``BranchDiscardService`` owns that delete).
     """
     held: dict[str, str] = {}
+    held.update(await unrecorded_epic_children(conn))
 
     def hold(ref: Any, reason: str, *, wip: bool = False) -> None:
         name = branch_of(ref)
@@ -248,6 +294,8 @@ async def live_branch_references(
         if row["state"] not in UNSETTLED_DELIVERY_STATES:
             continue
         reason = f"development batch {row['id']} is {row['state']}"
+        if row["id"].startswith("legacy-operation:"):
+            reason = "operator review required: legacy " + reason
         target = branch_of(row["target_ref"])
         if target and target.startswith(TASK_BRANCH_PREFIX):
             hold(target, reason)  # an assembly publish still in flight
@@ -327,29 +375,9 @@ async def live_branch_references(
         for task_id, branch in await _branches_of(conn, operation_tasks):
             hold(branch, operation_tasks[task_id], wip=True)
 
-    for row in await rows(
-        select(integration_batches.c.id, integration_batches.c.integration_branch).where(
-            integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES)
-            | (integration_batches.c.fixer_queue["status"].astext.in_(("deferred", "companion")))
-            | (
-                (integration_batches.c.lifecycle == "promoted")
-                & (integration_batches.c.cleanup_state != "complete")
-            )
-        )
-    ):
-        reason = f"integration batch {row['id']} is active"
-        hold(row["integration_branch"], reason)
-        members = (
-            await conn.execute(
-                select(
-                    integration_batch_members.c.task_id,
-                    integration_batch_members.c.source_ref,
-                ).where(integration_batch_members.c.batch_id == row["id"])
-            )
-        ).all()
-        for task_id, source_ref in members:
-            hold(source_ref, reason)
-            hold(f"aq/{task_id}", reason)
+    batch_holds, _terminal = await batch_branch_references(conn)
+    for ref, reason in batch_holds.items():
+        hold(ref, reason)
 
     for row in await rows(
         select(
@@ -428,6 +456,77 @@ async def remote_heads(run_git, store) -> dict[str, str]:
     return heads
 
 
+async def unrecorded_epic_children(conn, *, repository_id=None, ref=None) -> dict[str, str]:
+    """Keep epic refs until each current child has independently retained evidence.
+
+    A parent's reachable tip cannot replace a child's completion binding. The
+    Git truth reconciler writes these witnesses only after retaining the source
+    and its generation in Git. This is a deletion fence, never delivery proof.
+    """
+    from src.integration.delivery_truth import load_delivery_requests
+
+    children = []
+    for parent_table in (tasks, archived_tasks):
+        parent = parent_table.alias("retained_parent")
+        for child_table in (tasks, archived_tasks):
+            child = child_table.alias("retained_child")
+            children.extend((await conn.execute(select(
+                child.c.id, parent.c.branch_name, repos.c.id.label("repository_id"),
+                repos.c.default_branch,
+            ).select_from(child.join(parent, parent.c.id == child.c.parent_task_id).join(
+                projects, projects.c.id == parent.c.project_id,
+            ).join(repos, repos.c.id == projects.c.integration_repository_id)).where(
+                child.c.project_id == parent.c.project_id,
+                child.c.status == TaskStatus.COMPLETED.value,
+                parent.c.branch_name.is_not(None),
+                or_(child.c.repo_id.is_(None), child.c.repo_id == repos.c.id),
+                *([repos.c.id == repository_id] if repository_id else []),
+                *([parent.c.branch_name.in_((branch_of(ref), "refs/heads/" + branch_of(ref)))]
+                  if ref else []),
+            ))).all())
+    held = {}
+    for repository_id in {row.repository_id for row in children}:
+        rows = [row for row in children if row.repository_id == repository_id]
+        requests = await load_delivery_requests(
+            None, [row.id for row in rows], repository_id=repository_id,
+            target_ref="refs/heads/" + rows[0].default_branch.removeprefix("refs/heads/"),
+            conn=conn, reduced=True,
+        )
+        receipts = (await conn.execute(select(task_delivery_receipts).where(
+            task_delivery_receipts.c.source_task_id.in_(requests),
+            task_delivery_receipts.c.repository_id == repository_id,
+        ))).mappings().all()
+        by_task = {}
+        for receipt in receipts:
+            by_task.setdefault(receipt["source_task_id"], []).append(receipt)
+        for row in rows:
+            request = requests.get(row.id)
+            if request and (request.lifecycle_disposition or (
+                not request.branch_name and not request.has_recorded_source
+            )):
+                continue
+            recorded = False
+            for receipt in by_task.get(row.id, ()) if request is not None else ():
+                witness = (receipt["resolution_evidence"] or {}).get("git_truth", {})
+                identity = witness.get("request", {})
+                if (receipt["source_task_id"] == row.id
+                        and str(witness.get("ref", "")).startswith("refs/aq/provenance/delivery/")
+                        and witness.get("source_oid") == receipt["reviewed_head_sha"]
+                        and identity.get("reported_source") == request.reported_source
+                        and identity.get("claim_epoch") == request.claim_epoch
+                        and identity.get("completion_id") == request.completion_id
+                        and identity.get("task_version") == request.task_version
+                        and identity.get("project_id") == request.project_id
+                        and identity.get("repository_id") == repository_id
+                        and identity.get("task_id") == row.id):
+                    recorded = True
+                    break
+            if not recorded:
+                held.setdefault(branch_of(row.branch_name),
+                                f"child {row.id} has no retained completion witness")
+    return held
+
+
 async def train_cleanup_hold(conn, *, repository_id: str, ref: str) -> str | None:
     """Protect current writers and open collection targets during train cleanup.
 
@@ -435,6 +534,9 @@ async def train_cleanup_hold(conn, *, repository_id: str, ref: str) -> str | Non
     exact remote tip reachable in Git and deletes under a managed ref lease.
     """
     name = branch_of(ref)
+    unrecorded = await unrecorded_epic_children(conn, repository_id=repository_id, ref=ref)
+    if name in unrecorded:
+        return unrecorded[name]
     aliases = (name, f"refs/heads/{name}")
     for table in (tasks, archived_tasks):
         live = await conn.scalar(select(table.c.id).where(

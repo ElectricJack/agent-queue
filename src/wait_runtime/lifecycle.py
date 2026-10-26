@@ -4,6 +4,7 @@ import time
 import json
 import asyncio
 import logging
+from collections import OrderedDict
 
 from sqlalchemy import Float, Integer, and_, cast, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -31,7 +32,9 @@ class WaitLifecycle:
         self.resume = ResumeTransaction(service, clock=clock)
         self.medians = {}
         self._resume_tasks = {}
+        self._resume_graph_busy = {}
         self._hibernate_tasks = {}
+        self._turn_token_cache = OrderedDict()
 
     async def register(self, args, *, principal, scope, handler):
         watermark = await self.db.wait_source_watermark()
@@ -58,10 +61,10 @@ class WaitLifecycle:
                                       "project_id": scope.project_id, "session_id": scope.session_id}])
         await lock_graph(conn)
         anchor = await ceiling_anchor(conn, scope, now=now, policy=policy)
-        if scope.project_id not in self.medians:
-            self.medians[scope.project_id] = await measurement_medians(
-                conn, scope.project_id, now=now,
-            )
+        medians = self.medians.get(scope.project_id)
+        if medians is None:
+            medians = await measurement_medians(conn, scope.project_id, now=now)
+            self.medians[scope.project_id] = medians
         task_profile = await conn.scalar(select(tasks.c.profile_id).where(
             tasks.c.id == scope.owner_id,
         )) if scope.owner_kind == 'task' else None
@@ -70,7 +73,7 @@ class WaitLifecycle:
         )
         def measured_decision(cond, evidence):
             return decide_sleep(measured_inputs(
-                cond, evidence, policy=policy, medians=self.medians[scope.project_id],
+                cond, evidence, policy=policy, medians=medians,
                 pressure=pressure, anchor=anchor, now=now,
             ))
 
@@ -111,6 +114,7 @@ class WaitLifecycle:
 
     async def sleep_decide(self, args, *, principal, scope, handler):
         from src.waits.conditions import Condition
+        from src.waits.recovery import retire_terminal_task_waits
         from src.wait_runtime.measurements import capture_costs
 
         await capture_costs(self, args['wait_id'])
@@ -121,7 +125,21 @@ class WaitLifecycle:
                 select(wait_records).where(wait_records.c.id == args['wait_id']))).mappings().first()
             if wait is None:
                 raise WaitError('wait.source_unresolved', 'wait disappeared')
+            # Historical holds can outlive the owner's terminal source event.
+            # Retire them before the cleared-wait shortcut or writer-stop fences;
+            # neither path would otherwise remove them from tick's retry query.
+            if wait['owner_kind'] == 'task' and await retire_terminal_task_waits(
+                conn, wait['owner_id'], now=self.clock(),
+            ):
+                return {'success': True, 'retired': True}
             if wait['cleared_at'] is not None:
+                if wait['owner_kind'] == 'task':
+                    from src.database.queries.continuation_queries import retire_task_waits
+
+                    await retire_task_waits(
+                        conn, wait['owner_id'], wait_id=wait['id'],
+                        reason='wait_cleared', now=self.clock(),
+                    )
                 return {'success': True, 'measurements_updated': True}
             evicted = wait['decision_reason'] == 'evicted'
             if wait['sleep_decision'] == 'in_place':
@@ -287,15 +305,28 @@ class WaitLifecycle:
             if pending is not None and not pending.done():
                 continue
             self._resume_tasks[key] = asyncio.create_task(self._dispatch_resume(intent, key))
+        ready_keys = {(intent["id"], intent["suspension_generation"]) for intent in ready}
+        self._resume_graph_busy = {key: count for key, count in self._resume_graph_busy.items()
+                                   if key in ready_keys}
 
     async def _dispatch_resume(self, intent, key):
         try:
             result = await self.service.command("wait_resume_dispatch", {
                 "continuation_id": intent["id"], "generation": intent["suspension_generation"],
             })
-            if not result.get("success"):
-                logger.warning("Wait resume dispatch refused for %s: %s", intent["id"], result)
+            if result.get("error_code") == "wait.graph_busy" and not result.get("success"):
+                count = self._resume_graph_busy.get(key, 0) + 1
+                self._resume_graph_busy[key] = count
+                logger.warning(
+                    "wait.resume_graph_busy: continuation_id=%s generation=%s "
+                    "consecutive_refusals=%d", *key, count,
+                )
+            else:
+                self._resume_graph_busy.pop(key, None)
+                if not result.get("success"):
+                    logger.warning("Wait resume dispatch refused for %s: %s", intent["id"], result)
         except Exception:
+            self._resume_graph_busy.pop(key, None)
             logger.exception("Wait resume dispatch failed for %s", intent["id"])
         finally:
             self._resume_tasks.pop(key, None)

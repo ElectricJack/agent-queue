@@ -123,8 +123,9 @@ Mail for a project supervisor that is disabled is rerouted to
 - `profile:<id>` is a broadcast inbox read by `aq message inbox` or
   `aq prime`. Nobody is woken for it. `profile:supervisor` is the common
   case.
-- `user:<id>` is a human. These rows go out through the chat platform and
-  are marked `via=platform`.
+- `user:dashboard` is the human inbox, marked `via=platform`. Ordinary
+  `message_send` refuses other `user:` destinations before writing a row,
+  with `unsupported_user_destination` and the supported Discord command.
 
 ### 2.3 Waking a recipient: the delivery service
 
@@ -182,10 +183,17 @@ anything consequential.
 
 ### 2.4 Reading, replying and waiting
 
-- **`aq message inbox`** lists pending rows and changes nothing.
+- **`aq message inbox`** lists unread, unarchived rows, including mail already
+  handed over by inject or prime, without acknowledging them. A supervisor's
+  logical address, runtime name and current named-session UUID share this view.
+  Held mail and obsolete notices remain excluded; priority and the row limit apply
+  across the combined mailboxes.
   **`--inject`** returns the bodies and marks them delivered with no `via`
   and no `read_at` (`message_commands.py`). An injected message is consumed
-  but not read.
+  but not read. Injection returns only pending, undelivered rows, so repeating
+  it cannot deliver the same body twice. **`--include-consumed`** adds other
+  consumed rows (including archived/read history) in `consumed_messages`,
+  without duplicating the main `messages` list or changing delivery state.
 - **`aq message status <id>`** returns the durable body even after it has
   left the inbox, and stamps `via=read` and `read_at`.
 - **`aq prime`** consumes pending mail with `via=prime`.
@@ -269,6 +277,16 @@ principal `discord-gateway`:
 
 1. If the destination is in ask **channel mode** (§2.10), every message goes
    to `ask_intake`. There is no fallthrough.
+   A Discord reply reference resolves either an ask binding or a conversation
+   reply's outbound receipt in the observed transport/channel. Conversation
+   replies continue that conversation, preserve the reference in the input and
+   supervisor notice, and bypass inference of a pending ask from words such as
+   “yes”. Destination and conversation audience must still agree. A reply in
+   the parent channel may continue a conversation that retains a bound thread;
+   a reply inside a thread must match that conversation's bound thread.
+   An unresolved reference produces a durable clarification receipt, a supervisor
+   notice and a deduplicated public resend request. A correlation failure keeps
+   the input queued for reconciliation and records the same visible notice.
 2. Otherwise, with conversations off, only escalation thread intake runs.
 3. With conversations on, escalation intake runs first, then
    `classify_conversation`, then `supervisor_inbox_post` (§2.7).
@@ -299,7 +317,8 @@ users and roles.
 
 With `discord.conversation.enabled` (default off; it also needs an
 allowlist, a guild and a channel), a plain message in the channel becomes a
-conversation with the supervisor. The route fails closed on an empty
+conversation with the global supervisor, regardless of `discord.project_id`.
+That setting still scopes asks and escalations. The route fails closed on an empty
 allowlist.
 
 1. `src/conversations/` checks intake and preconditions. Limits
@@ -309,12 +328,57 @@ allowlist.
    the input in `conversation_inputs`, deduplicated on
    `(transport, external_message_id)`. Text is nulled after 30 days.
 3. `src/asks/intake.py` inserts a message `msg-<input_id>` with
-   `body_kind=conversation_input`, addressed to the supervisor, or to
-   `conversation-queued` if no supervisor can take it yet. A cycle step
-   (`route_queued_conversation_inputs`) retries the routing.
+   `body_kind=conversation_input`, addressed to `supervisor-global`, or to
+   `conversation-queued` only if the global named session does not exist.
+   Project supervisors never receive ordinary chat or reference notices directly;
+   global can consult them through internal messages. Resolution and
+   notice insertion share the acceptance transaction. A stopped supervisor retains
+   its address and is woken through the named-session delivery path. A cycle step
+   (`route_queued_conversation_inputs`) recovers unassigned notices and retargets
+   undelivered, unarchived legacy project chat and reference notices to global.
+   After commit, intake emits `message.sent`; conversation inputs wake the independent
+   delivery service immediately, bypassing its routine delivery interval. Replays
+   repair a missed wake using the original notice and notification deduplication.
+   Another supervisor may inspect the notice but cannot consume it through inbox
+   injection or mark it read.
+   The independent delivery pass also reconciles routing before scanning its
+   backlog, including its first pass after restart; it needs no scheduler cycle
+   or replayed event. An undelivered, unarchived notice with a read stamp is
+   returned to pending only when its durable input is still accepted in an
+   active conversation and has no recorded reply. Answered, expired, revoked,
+   archived and delivered inputs retain their consumption history. Recording a
+   conversation reply stamps both read and delivery atomically.
 4. The supervisor answers with `aq message reply`. The reply (at most 1900
    characters) goes through `DurableConversationOutbox` into
-   `outbound_deliveries`.
+   `outbound_deliveries`. For channel and DM conversations, the Discord reply
+   reference is the answered input's `external_message_id`, including follow-up
+   inputs. The conversation's root and destination stay unchanged.
+5. `supervisor_inbox_say` starts a message in an existing active conversation
+   without an `input_id`, including when all earlier inputs are answered.
+   It requires the live global supervisor or the local operator, as do replies.
+   Project supervisors are refused even for legacy project-addressed chat.
+   Conversation preconditions, the configured guild/channel (or opted-in DM), and the entire current audience
+   are checked before persistence and again by the delivery adapter.
+   `(conversation_id, idempotency_key)` identifies a durable `conversation_say`
+   message; its first body and sender win on retry, including after a crash
+   before enqueue. Serialized database quotas allow 10 posts per supervisor
+   and 60 per channel per 600 seconds; replays consume no additional quota.
+   The command returns `delivery_id` and `delivery_dedup_key` for the shared
+   outbox's normal receipt/retry lifecycle. It uses the conversation `reply`
+   delivery action, so a Discord reply to its receipt routes back to the
+   conversation; a new channel message also continues that conversation.
+   Earlier inputs keep their state. Closed or delivery-blocked conversations
+   and thread conversations without a bound thread refuse initiated posts.
+
+**Existing conversations.** IDs, destinations, input evidence and reply keys stay
+unchanged. The routing sweep moves pending legacy notices to global; consumed or
+archived notices retain their historical address and are never reopened. Global
+can reply to those older inputs immediately, even before the sweep, subject to the
+existing closed/revoked/answered guards. New replies are attributed to global;
+already-recorded replies retain their original author and idempotent replay.
+Project supervisors cannot consume ordinary chat notices, including legacy ones.
+Ask discussions and decision authority keep their existing project-scoped resolver.
+No schema migration or operator data rewrite is required.
 
 `supervisor_conversations` tracks each conversation. On bot `READY`, a
 backfill reads up to 24 hours or 1000 missed messages
@@ -592,7 +656,9 @@ arrives, the deterministic text goes out.
 Both reports follow one pattern: the daemon reserves the slot, freezes a
 brief of facts and a deterministic **fallback text**, and only then wakes a
 supervisor to author it. The fallback goes out if the supervisor misses the
-deadline. Requests are rows in `supervisor_report_requests` (kind `hourly`,
+deadline; for full-fleet hourly reporting it is only a one-line unavailable
+notice, never a concatenation of the evidence. Requests are rows in
+`supervisor_report_requests` (kind `hourly`,
 `morning` or `digest`), with the frozen brief, its hash and the fallback.
 Supervisor policy (the playbooks, what to write) is
 [supervisors-and-policy](supervisors-and-policy.md). The mechanism is here.
@@ -603,10 +669,27 @@ When a digest window would speak, the digest dispatcher creates an hourly
 request with a 24 KiB brief instead of posting directly (`src/reports/hourly.py`).
 It emits `digest.window_ready`. The `supervisor-hourly-report` playbook calls
 `report_reconcile`, and the supervisor runs `aq report brief` and
-`aq report submit`. Submit rejects URLs, validates references against the frozen
+`aq report submit`. The brief is input only: bounded facts, counts, links and
+active work, never delivered prose. The durable wake instructs the supervisor
+to write a short first-person developer update in plain English: what changed
+since the last update, highlights, anything blocked or needing Jack, and what
+comes next. It prioritizes meaningful changes and human decisions, combines
+related evidence and omits repeated noise; it does not invent progress or plans
+when evidence is missing.
+The update avoids internal IDs and train, batch or loop jargon unless Jack must
+act on one; a blocker asks the exact question he needs to answer. A window with
+no new facts stays silent even if work is still active.
+Only the submitted narrative becomes the report body, with server-owned links
+and marker. Submit rejects URLs, validates references against the frozen
 brief and requires a `delivery:` reference for any claim that something shipped.
 The enforced 600-character limit includes the server footer and marker. A grace
 period of 5 minutes and a limit of 12 per day apply.
+If a full-fleet hourly author is unavailable, late, capped or busy, the pump
+sends only “No report this hour: the supervisor update is unavailable.” This
+also applies when an authoring activation is missing or disabled. Quiet hours
+still suppress author wakes; they do not enable a fact dump. Feature-off and
+restricted-destination deterministic digests retain their existing behavior.
+Reservations, deadlines, visibility checks and one-post idempotency are unchanged.
 
 **Morning** (`reports.morning`, default off, at 07:00 in `reports.timezone`).
 `MorningDueEmitter` (`src/reports/morning_due.py`) emits `report.morning_due`

@@ -75,14 +75,20 @@ class WaitV2CommandsMixin:
                 or principal.session_instance_token != session.instance_token):
             return
         async with self.db._engine.begin() as conn:
-            intent_id = await conn.scalar(select(continuations.c.id).where(
+            intent = (await conn.execute(select(
+                continuations.c.id, continuations.c.wait_id,
+                continuations.c.suspension_generation, continuations.c.resume_state,
+            ).where(
                 continuations.c.new_session_id == session_id,
-                continuations.c.resume_state == "launching",
-            ))
-            if intent_id:
-                await mark_delivered(conn, continuation_id=intent_id, session_id=session_id,
+                continuations.c.resume_state.in_(("launching", "delivered")),
+            ))).mappings().first()
+            if intent and intent['resume_state'] == 'launching':
+                await mark_delivered(conn, continuation_id=intent['id'], session_id=session_id,
                                      instance_token=session.instance_token,
                                      claim_epoch=session.last_claim_epoch, now=time.time())
+            if intent:
+                return dict(wait_id=intent['wait_id'], continuation_id=intent['id'],
+                            generation=intent['suspension_generation'])
 
     async def _wait_mutation_fence(self, name, principal, *, mutating):
         if (not mutating or principal is None
@@ -126,6 +132,11 @@ class WaitV2CommandsMixin:
     async def wait_service_drain(self, listener, watermark):
         with principal_context(ExecutionPrincipal.service("waits-listener")):
             return await self.wait_listener_drain(listener, watermark)
+
+    async def wait_service_report_lag(self, listener):
+        with principal_context(ExecutionPrincipal.service("waits-listener")):
+            self._wait_listener_authorize(listener)
+            return await listener.report_lag()
 
     async def wait_service_quarantine_deadline(self, timers, deadline, refusal):
         """Internal service mutation; no public worker quarantine authority."""
@@ -478,6 +489,7 @@ class WaitV2CommandsMixin:
                     scope = {"project_id": project}
                     params["project_id"] = project
                 else:
+                    # Source re-dispatch shares the project filter without a wait id.
                     scope = await self._wait_v2_authorize_target(params)
             elif name in SERVICE_WAIT_COMMANDS or name == "wait_legacy_bridge":
                 scope = None
@@ -513,6 +525,16 @@ class WaitV2CommandsMixin:
 
     async def _cmd_wait_lift(self, args):
         return await self._wait_v2_command("wait_lift", args)
+
+    async def _cmd_wait_source_redispatch(self, args):
+        from src.waits.listener import LeaseLost, ListenerUnavailable
+
+        try:
+            return await self._wait_v2_command("wait_source_redispatch", args)
+        except TimeoutError:
+            return refusal("wait.unavailable", "source re-dispatch exceeded its work budget")
+        except (LeaseLost, ListenerUnavailable) as exc:
+            return refusal("wait.unavailable", str(exc))
 
     async def _cmd_wait_source_commit(self, args):
         return await self._wait_v2_command("wait_source_commit", args)

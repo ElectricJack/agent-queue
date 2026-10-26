@@ -23,7 +23,7 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             _hibernation_changes(), _dispatch_changes(), _merge_changes(),
             _leaf_changes(), _completion_changes(), _restart_hold_changes(),
             _updater_changes(), _held_release_changes(), _workspace_changes(),
-            _git_first_changes(), _obsolete_child_changes(),
+            _git_first_changes(), _obsolete_child_changes(), _task_list_limit_changes(),
         ):
             if name in recording["transport_definitions"]:
                 approved = recording["transport_definitions"][name]
@@ -33,6 +33,14 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = _structure_changes()["transport_definitions"][name]
             assert _digest(approved["previous"]) == digest
             digest = _digest(approved["current"])
+        if name == "task_batch_propose":
+            settlement = _delivered_design_changes()
+            assert _digest(settlement["previous_definition"]) == digest
+            digest = _digest(settlement["definition"])
+        if name in _unread_inbox_changes()["transport_definitions"]:
+            approved = _unread_inbox_changes()["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
     actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()

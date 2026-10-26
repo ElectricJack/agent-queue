@@ -125,6 +125,16 @@ profiles), `diagnostics.json`, and optionally `traces.json` (recorded replays).
 artifact hash, an enabled bit and a health. Only an activation that is enabled, `ready`
 and points at an artifact runs.
 
+The runtime refreshes an event-type interest catalog with activation changes.
+An event absent from a complete catalog skips background dispatch and task hydration.
+Scope checks, literal filters and guards still run through the engine for subscribed
+types. Before the first refresh, or if a ready artifact cannot be loaded, dispatch
+remains conservative so artifact failures can retain pending events.
+Refresh generations also prevent an older read from restoring stale coverage
+after a newer post-commit refresh is cancelled. Required
+`task.route_needed` retention is independent of the catalog. Durable integration
+acceptance and pinned replay retain their separate delivery boundary.
+
 **Run.** One execution of one rule of one artifact, pinned to that artifact's hash for
 its whole life. A run has a mode (`live`, `dry_run`, `shadow`); the mode chooses which
 executors run, never a different graph.
@@ -204,11 +214,12 @@ sequence; the cutover history is in the
 
 #### 3.3.2 An event becomes a run
 
-1. `V2PlaybookRuntime.subscribe_to_events` subscribes to every bus event (`"*"`). Each
-   event becomes an asyncio task that calls `engine.dispatch_event` under the service
-   principal `playbook-dispatch`.
+1. `V2PlaybookRuntime.subscribe_to_events` subscribes to every bus event (`"*"`).
+   Events absent from the complete trigger catalog skip dispatch. Matching events
+   become asyncio tasks calling `engine.dispatch_event` under the service principal
+   `playbook-dispatch`; unknown coverage and required routing events also dispatch.
 2. `DatabaseActivationSource.ready_activations` lists every activation and loads each
-   ready artifact. This happens on every event; there is no prefilter by trigger.
+   ready artifact for events that pass the runtime's trigger prefilter.
 3. Scope filtering: system activations see all events; project activations need a
    matching `project_id`, except that `timer.*` and `cron.*` events carry no project and
    reach every project activation.
@@ -354,6 +365,12 @@ reactivates. Repair is explicit: `aq doctor --check playbooks.required --fix` re
 and re-enables the three required ids, and `aq doctor --check playbooks.reviewed_bundles
 --fix` refreshes drifted copies of bundles that are already installed (the old copy moves
 to `<id>.bak-<epoch>`). Everything else is a manual `aq playbook import … --activate`.
+The reviewed-bundle check also compares enabled activations with installed shipped
+bundles at the same scope. A different active hash is reported with both hashes and
+an explicit import/activation command, even when the vault bundle already matches
+the release. It may be an operator customization; doctor never replaces optional
+activations. After refreshing files, `--fix` still reports any pending activation
+difference. Missing or disabled optional activations remain an operator choice.
 The [isolated acceptance kit](../../guides/e2e-swarm.md) exercises these boundaries.
 
 **Projects.** Project create offers a policy: `default`, `exported` or `none`

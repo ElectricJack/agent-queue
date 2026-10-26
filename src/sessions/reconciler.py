@@ -8,7 +8,8 @@ one does not skip the rest:
 
 1. **Refresh observation** — who is actually alive.
 2. **Drain-ack** — the explicit end of the completion protocol.
-3. **Prepare timeout** — a pool claim stuck mid-preparation is released.
+3. **Claim preparation** — release timeouts and stop active pool claims
+   whose claim file is missing.
 4. **Exit classifier** — dead process, task still open → typed verdict.
 5. **Abandoned claim loop** — an idle worker that stopped claiming is
    recycled, behind a compare-and-set.
@@ -39,8 +40,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 
-from src.claim_file import read_claim_file, remove_claim_file_if_matches
+from src.claim_file import CLAIM_FILE, read_claim_file, remove_claim_file_if_matches
 from src.models import ProjectStatus, SessionRecord, TaskStatus
 from src.pool_claims import (
     CLAIM_FAILURE_DRAIN_REASON,
@@ -74,6 +76,7 @@ from src.sessions.usage_limit_screen import (
     UsageLimitScreen,
     detect_usage_limit_screen,
 )
+from src.waits.occupancy import continuation_occupancy
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +350,7 @@ class SessionReconciler:
             self._step_drain_ack,
             self._step_stopped_idle_workspaces,
             self._step_prepare_timeout,
+            self._step_missing_pool_claim_file,
             self._step_exits,
             self._step_abandoned_pool_claim_loop,
             self._step_orphans,
@@ -910,6 +914,79 @@ class SessionReconciler:
                         fut.set_result("prepare_failed")
                 await self._emit(
                     "session.claim_timeout", session_id=s.id, task_id=s.task_id
+                )
+
+    @staticmethod
+    def _pool_claim_file_missing(row: SessionRecord) -> bool:
+        """Prove absence in an accessible checkout; unreadable is unknown.
+
+        lstat preserves malformed files and dangling symlinks as evidence.
+        An unavailable checkout is not proof its claim marker was lost.
+        """
+        if not row.work_dir:
+            return False
+        try:
+            if not Path(row.work_dir).is_dir():
+                return False
+            Path(row.work_dir, CLAIM_FILE).lstat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+
+    async def _step_missing_pool_claim_file(
+        self, live: list[SessionRecord], now: float,
+    ) -> None:
+        """Stop and requeue active pool claims that lost their CLI fence.
+
+        Preparation writes the marker before activation, so absence here
+        cannot be a normal startup window. Stop through pool teardown before
+        releasing resources; attached owners retain their stopped writer's
+        bindings for the existing owner recovery path.
+        """
+        if not getattr(self.config.swarm, "enabled", True) or self.orchestrator is None:
+            return
+        for observed in live:
+            if (observed.lifecycle != "pool" or observed.claim_phase != "active"
+                    or not observed.task_id or self._is_deferred(observed.name)
+                    or not self._pool_claim_file_missing(observed)
+                    or self._task_control_held(observed.task_id)):
+                continue
+            async with self.orchestrator._task_control_lock(observed.task_id):
+                current = await self._still_live(observed)
+                if (current is None or current.lifecycle != "pool"
+                        or current.claim_phase != "active"
+                        or current.desired_state not in ("running", "stopped")
+                        or any(getattr(current, key) != getattr(observed, key) for key in (
+                            "instance_token", "task_id", "last_claim_epoch", "work_dir", "agent_id",
+                        ))):
+                    continue
+                preparations = getattr(self.orchestrator, "claim_preparations", {})
+                preparation = preparations.get(
+                    (current.id, current.task_id, current.last_claim_epoch),
+                )
+                if preparation is not None and not preparation.done():
+                    continue
+                task = await self.db.get_task(current.task_id)
+                if (task is None or task.status != TaskStatus.IN_PROGRESS
+                        or task.claim_epoch != current.last_claim_epoch
+                        or task.assigned_agent_id != current.agent_id):
+                    continue
+                waiting, _ = await self._wait_lease(current, now)
+                if waiting or not self._pool_claim_file_missing(current):
+                    continue
+                logger.warning(
+                    "Pool session %s active on %s epoch %s has no claim file — stopping",
+                    current.id, current.task_id, current.last_claim_epoch,
+                )
+                await self.orchestrator._terminate_pool_session(
+                    current, reason="claim_file_missing",
+                )
+                await self._emit(
+                    "session.claim_file_missing", session_id=current.id,
+                    task_id=current.task_id, project_id=current.project_id,
+                    claim_epoch=current.last_claim_epoch,
                 )
 
     # -- pool: abandoned claim loop ----------------------------------------
@@ -2532,6 +2609,7 @@ class SessionReconciler:
         hold: pool sizing owns any later drain decision and its grace period.
         """
         # (a) live session, task closed or gone.
+        resuming: frozenset[str] | None = None
         for row in live:
             if row.lifecycle not in ("task", "pool"):
                 continue
@@ -2550,6 +2628,13 @@ class SessionReconciler:
             still_open = task is not None and is_live_pool_claim_task_status(task.status)
             if still_open:
                 continue
+            if task is not None and task.status is TaskStatus.RESUME_PENDING:
+                # Resume owns this new writer until acknowledgment. The old
+                # session is still excluded by the ordinary claim predicate.
+                if resuming is None:
+                    resuming, _ = await continuation_occupancy(self.db, self.config)
+                if row.id in resuming:
+                    continue
             if row.lifecycle == "pool":
                 # A terminal close can commit before its CLI response is
                 # lost to a daemon restart.  Its attached integration owner

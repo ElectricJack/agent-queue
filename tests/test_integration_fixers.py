@@ -716,6 +716,7 @@ async def live_fixer(db, tmp_path, monkeypatch, request):
     repo = RetainedRepository("r", store, GitHubRepositoryBinding(123, "test/repo"), "main")
     lane = SimpleNamespace(service=SimpleNamespace(
         gitops=SimpleNamespace(repository=AsyncMock(return_value=repo)),
+        publication_eligibility=AsyncMock(return_value=AsyncMock(return_value=True)),
         _authorized=AsyncMock(return_value=True),
     ))
     orch = SimpleNamespace(db=db, git=transport, config=config, daemon_epoch="epoch",
@@ -926,7 +927,6 @@ async def test_authenticated_push_reason_reaches_command_blocker_and_notice(
         f"exit {7 if failure == 'git_exit' else 0}\n"
     )
     fake_git.chmod(0o700)
-    runtime.git._APP_GIT_EXECUTABLE = str(fake_git)
     spawn = runtime.git._spawn_isolated_git
 
     async def start(*args, **kwargs):
@@ -935,6 +935,9 @@ async def test_authenticated_push_reason_reaches_command_blocker_and_notice(
                 raise FileNotFoundError(token)
             if failure == "timeout":
                 raise TimeoutError(token)
+            # Substitute only the push; preparation and credential topology
+            # validation must still run with the real Git executable.
+            return await spawn(str(fake_git), *args[1:], **kwargs)
         return await spawn(*args, **kwargs)
 
     async def push(path, *, tip_oid, branch, expected_old_oid, **kwargs):
@@ -1374,3 +1377,48 @@ async def test_fixer_honors_configured_round_budget_above_three(db, fixer):
     assert result["outcome"] == "deferred"
     assert result["reason"] == "fixer CI round budget exhausted"
     assert len(await notices(db, supervisor=True)) == 1
+
+
+@pytest.mark.parametrize("authority", ["local", "supervisor", "worker", "foreign", "stopped"])
+async def test_rebind_authority_control_checks_live_owning_supervisor(db, live_fixer, authority):
+    from dataclasses import replace
+
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import TRUSTED_LOCAL, principal_context
+    from src.models import SessionRecord
+
+    service, runtime, orch, row, _, source, _ = live_fixer
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(integration_train=SimpleNamespace(repair=service))
+    principal = principal_for(row)
+    if authority == "local":
+        principal = TRUSTED_LOCAL
+    elif authority != "worker":
+        supervisor = SessionRecord(
+            id=str(uuid4()), project_id="foreign" if authority == "foreign" else "p",
+            profile_id="supervisor", harness="codex", provider="fake", name="n-supervisor",
+            work_dir="/supervisor",
+            lifecycle="named", epoch="new", instance_token="supervisor-instance",
+            started_at=1, state="stopped" if authority == "stopped" else "running",
+            desired_state="running",
+        )
+        if authority == "foreign":
+            await db.create_project(Project(id="foreign", name="Foreign"))
+        await db.create_session(supervisor)
+        principal = replace(principal_for(supervisor), elevated=True)
+    before = await db.get_integration_batch("real")
+    with principal_context(principal):
+        result = await handler._cmd_integration_rebind_batch_authority({
+            "batch_id": "real", "reason": "recover after daemon restart", "dry_run": False,
+        })
+    after = await db.get_integration_batch("real")
+    if authority in {"local", "supervisor"}:
+        assert result["success"] and result["outcome"] == "rebound", result
+        assert result["candidate_sha"] == source
+        assert after["fixer_state"]["authority_refresh"]["reason"] == "recover after daemon restart"
+        assert after["repair_attempt_count"] == before["repair_attempt_count"]
+        assert runtime.git.pushes == 0
+    else:
+        assert result["outcome"] == "refused", result
+        assert after["fixer_state"] == before["fixer_state"]

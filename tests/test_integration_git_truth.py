@@ -1,6 +1,7 @@
 """Remote Git delivery proofs with real histories and retained completion identities."""
 
 from dataclasses import dataclass, replace
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -15,6 +16,7 @@ from src.integration.git_truth import (
     commits_added,
     epic_complete,
     repair_progress,
+    snapshot_scope,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
@@ -73,6 +75,17 @@ async def repository(tmp_path):
     await repo.publish()
     await repo.run("checkout", "-b", "source")
     return repo
+
+
+@pytest.fixture
+async def remote_writer(repository, tmp_path):
+    repo = repository
+    path = tmp_path / "writer"
+    await repo.git._arun(["clone", "-b", "main", str(repo.remote), str(path)], cwd=str(tmp_path))
+    for key, value in (("user.name", "Writer"), ("user.email", "writer@example.com"),
+                       ("commit.gpgsign", "false")):
+        await repo.git._arun(["config", key, value], cwd=str(path))
+    return Repository(repo.git, path, repo.remote, repo.base, repo.truth)
 
 
 async def source_work(repo):
@@ -1101,6 +1114,192 @@ async def test_overlapping_train_targets_share_two_fetches_but_next_visit_is_fre
     assert (await repo.snapshot(truth=truth)).target_oid == head
     assert repo.git.afetch_origin.await_count == 3
     assert snapshots[0].target_oid == repo.base
+
+
+async def test_tick_scope_shares_started_and_sequential_fetches_with_isolated_answers(repository):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    head = await repo.commit("tick-source")
+    await repo.run("push", "origin", "HEAD:refs/heads/epic")
+    fetch = repo.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    repo.git.afetch_origin = AsyncMock(side_effect=blocked)
+    metrics = SelectionMetrics()
+    with snapshot_scope(), selection_metrics_scope(metrics):
+        first = asyncio.create_task(repo.snapshot(truth=truth))
+        await entered.wait()
+        peer = asyncio.create_task(repo.snapshot(truth=truth, target="refs/heads/epic"))
+        await asyncio.sleep(0)
+        release.set()
+        main, epic = await asyncio.gather(first, peer)
+        missing = await repo.snapshot(truth=truth, target="refs/heads/missing")
+        assert (main.target_oid, epic.target_oid, missing.error) == (
+            repo.base, head, "target_ref_missing")
+        assert repo.git.afetch_origin.await_count == 1
+        main.observation._freshness["refs/heads/main"] = False
+        assert not epic.observation._freshness
+        assert metrics.counts["tick_snapshot_hits"] == 2
+    await repo.publish()
+    with snapshot_scope():
+        assert (await repo.snapshot(truth=truth)).target_oid == head
+    assert repo.git.afetch_origin.await_count == 2
+
+
+@pytest.mark.parametrize("recovered", [False, True])
+async def test_unchanged_snapshot_skips_transfer_fsck_and_maintenance(repository, recovered):
+    repo = repository
+    truth = GitTruth(repo.git, skip_unchanged=True)
+    first = await repo.snapshot(truth=truth)
+    if recovered:
+        historical_recovery_journal(repo)
+    repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
+    repo.git.arun_git_result = AsyncMock(wraps=repo.git.arun_git_result)
+    metrics = SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        second = await repo.snapshot(truth=truth)
+    assert second.target_oid == first.target_oid == repo.base
+    assert second.observation.observation_token != first.observation.observation_token
+    repo.git.afetch_origin.assert_not_awaited()
+    assert not any("fsck" in call.args[0] or "gc" in call.args[0]
+                   for call in repo.git.arun_git_result.await_args_list)
+    assert metrics.counts["snapshot_unchanged"] == 1
+    assert metrics.stages["snapshot_ref_probe"]["calls"] == 1
+    assert await second.is_fresh()
+
+
+def historical_recovery_journal(repo):
+    root = repo.path / ".git/aq-empty-object-backups"
+    root.mkdir(exist_ok=True)
+    (root / "incident.json").write_text(json.dumps({
+        "cache": str(repo.path.absolute()), "project_id": "p", "repository_id": "r",
+        "status": "recovered", "backup": str(root / "historical"), "attempts": 1,
+        "id": "historical", "moves": [], "checks": [],
+    }))
+    (root / "pending").touch()  # A completed journal also clears a leftover sentinel.
+
+
+async def test_recovered_journal_cannot_bypass_a_durable_recovery_hold(repository):
+    repo = repository
+    truth = GitTruth(repo.git, skip_unchanged=True)
+    await repo.snapshot(truth=truth)
+    historical_recovery_journal(repo)
+    repo.git.retained_recovery_state = AsyncMock(return_value={
+        "status": "exhausted", "attempts": 2,
+    })
+    repo.git.als_remote_snapshot_refs = AsyncMock()
+    repo.git.afetch_origin = AsyncMock()
+    snapshot = await repo.snapshot(truth=truth)
+    assert snapshot.error.startswith("snapshot_git_error: retained recovery exhausted")
+    assert snapshot.target_oid is None
+    repo.git.als_remote_snapshot_refs.assert_not_awaited()
+    repo.git.afetch_origin.assert_not_awaited()
+    assert (repo.path / ".git/aq-empty-object-backups/pending").exists()
+
+
+@pytest.mark.parametrize("recovered", [False, True])
+@pytest.mark.parametrize("change", ["branch", "tag", "provenance", "delete", "force"])
+async def test_snapshot_probe_detects_every_imported_ref_namespace(
+    repository, remote_writer, change, recovered,
+):
+    repo = repository
+    writer = remote_writer
+    truth = GitTruth(repo.git, skip_unchanged=True)
+    if change == "delete":
+        await writer.run("push", "origin", "HEAD:refs/heads/disappearing")
+    if change == "force":
+        await writer.commit("before-rewind")
+        await writer.publish()
+    await repo.snapshot(truth=truth)
+    if recovered:
+        historical_recovery_journal(repo)
+    head = repo.base if change in {"force", "delete"} else await writer.commit("next-tip")
+    if change == "delete":
+        await writer.run("push", "origin", ":refs/heads/disappearing")
+    elif change == "force":
+        # A push from this retained checkout also updates its tracking ref;
+        # emulate a separate writer so only the remote moves backwards.
+        ref = "refs/heads/main"
+        await repo.git._arun(["update-ref", ref, head], cwd=str(repo.remote))
+    else:
+        ref = {"branch": "refs/heads/new", "tag": "refs/tags/new",
+               "provenance": "refs/aq/provenance/new", "force": "refs/heads/main"}[change]
+        await writer.run("push", "--force", "origin", f"{head}:{ref}")
+    repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
+    metrics = SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        snapshot = await repo.snapshot(truth=truth)
+    if change == "delete":
+        repo.git.afetch_origin.assert_not_awaited()
+        assert metrics.counts["snapshot_removed_refs"] == 1
+    else:
+        repo.git.afetch_origin.assert_awaited_once()
+        assert repo.git.afetch_origin.call_args.kwargs["refs"] == [ref]
+        assert metrics.counts["snapshot_changed_refs"] == 1
+    assert snapshot.error is None
+    if change == "delete":
+        assert "refs/remotes/origin/disappearing" not in snapshot.observation.source_heads
+    elif change == "tag":
+        assert await repo.run("rev-parse", ref) == head
+    else:
+        local = ref.replace("refs/heads/", "refs/remotes/origin/")
+        assert snapshot.observation.source_heads[local] == head
+
+
+async def test_unrelated_push_fetches_only_its_ref_once_for_all_tick_lanes(repository, remote_writer):
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True, skip_unchanged=True)
+    await repo.run("push", "origin", "HEAD:refs/heads/epic")
+    await repo.snapshot(truth=truth)
+    head = await remote_writer.commit("unrelated-work")
+    await remote_writer.run("push", "origin", f"{head}:refs/heads/aq/unrelated")
+    repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
+    with snapshot_scope():
+        main = await repo.snapshot(truth=truth)
+        epic = await repo.snapshot(truth=truth, target="refs/heads/epic")
+        assert main.target_oid == epic.target_oid == repo.base
+    repo.git.afetch_origin.assert_awaited_once_with(
+        str(repo.path), repository_url=str(repo.remote), all_heads=True,
+        lock_held=True, refs=["refs/heads/aq/unrelated"],
+    )
+    # Subsequent ticks see the imported tip and perform no transport at all.
+    with snapshot_scope():
+        assert (await repo.snapshot(truth=truth)).target_oid == repo.base
+    assert repo.git.afetch_origin.await_count == 1
+
+
+async def test_snapshot_probe_failure_cannot_reuse_old_tracking_refs(repository):
+    repo = repository
+    truth = GitTruth(repo.git, skip_unchanged=True)
+    await repo.snapshot(truth=truth)
+    repo.git.als_remote_snapshot_refs = AsyncMock(side_effect=GitError("probe unavailable"))
+    snapshot = await repo.snapshot(truth=truth)
+    assert snapshot.error == "snapshot_git_error: probe unavailable"
+    assert snapshot.target_oid is None
+
+
+@pytest.mark.parametrize("recovered", [False, True])
+async def test_unchanged_remote_requires_a_reusable_local_integrity_baseline(repository, recovered):
+    repo = repository
+    truth = GitTruth(repo.git, skip_unchanged=True)
+    await repo.snapshot(truth=truth)
+    if recovered:
+        historical_recovery_journal(repo)
+    repo.git.aretained_store_verified = AsyncMock(return_value=False)
+    repo.git.afetch_origin = AsyncMock(wraps=repo.git.afetch_origin)
+    metrics = SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        assert (await repo.snapshot(truth=truth)).target_oid == repo.base
+    repo.git.afetch_origin.assert_awaited_once()
+    assert not metrics.counts["snapshot_unchanged"]
+    assert metrics.stages["retained_fsck"]["calls"] == 1
 
 
 async def test_shared_fetch_started_before_a_push_cannot_answer_its_caller(repository, tmp_path):

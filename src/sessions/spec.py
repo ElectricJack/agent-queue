@@ -136,9 +136,8 @@ def knowledge_startup_delivery(
 #: ``Cap.NUDGE`` skips straight to interrupt+kill.  Nothing else in the
 #: system tells the agent to heartbeat, so this prompt has to. A registered
 #: durable wait exempts a quiet owner until its bounded result is available.
-BOOTSTRAP_PROMPT = (
-    "You are running task {task_id} in {work_dir}.\n"
-    "Run `aq prime` first and follow what it tells you.\n"
+_TASK_BOOTSTRAP_HEADER = "You are running task {task_id} in {work_dir}.\n"
+_TASK_BOOTSTRAP_LIFECYCLE = (
     "Before a command quiet for minutes, run `aq task heartbeat {task_id}`; "
     "silence past the lease triggers interruption.\n"
     "For supported waits, use `aq wait register` and end the turn. Your lease "
@@ -147,6 +146,25 @@ BOOTSTRAP_PROMPT = (
     "  aq task close {task_id} --outcome pass --work-outcome shipped\n"
     "  aq session drain-ack\n"
     "Exiting without `aq task close` is treated as a failure, not a success."
+)
+BOOTSTRAP_PROMPT = (
+    _TASK_BOOTSTRAP_HEADER
+    + "Run `aq prime` first and follow what it tells you.\n"
+    + _TASK_BOOTSTRAP_LIFECYCLE
+)
+_CONTINUATION_BOOTSTRAP_PROMPT = (
+    _TASK_BOOTSTRAP_HEADER
+    + "You are resuming continuation {continuation_id}, generation {generation}.\n"
+    "Complete outcome acknowledgment before any task work:\n"
+    "1. Run `aq prime` once to receive the wait outcome. If it returns "
+    "`record.stale_claim` with a wait ack command while RESUME_PENDING, "
+    "continue to step 2; do not stop or exit.\n"
+    "2. Run the exact `aq wait ack` command from prime, with its wait id, "
+    "continuation id and generation. Ack requires the outcome delivery from step 1.\n"
+    "A `cancelled` wait outcome still requires `aq wait ack`: cancellation resolves "
+    "the wait, and you still hold the task claim. Do not stop or exit.\n"
+    "3. Run `aq prime` again and follow the task instructions.\n"
+    + _TASK_BOOTSTRAP_LIFECYCLE
 )
 
 
@@ -237,9 +255,9 @@ SUPERVISOR_PATROL_PROMPT = (
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
 #: scope at launch; the worker claims its own work in a loop.  ``{}`` fields:
-#: project_name, profile_id, message_wait_guidance.
+#: project_id, profile_id, message_wait_guidance.
 POOL_BOOTSTRAP_PROMPT = (
-    "You are a pool worker for project {project_name} (profile {profile_id}).\n"
+    "You are a pool worker for project {project_id} (profile {profile_id}).\n"
     "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
     "work, then `aq task close --outcome pass|fail --summary \"...\" --claim-next --wait 60`.\n"
     "On `no_ready_work`, claim again. On `session_exhausted` or `drain_requested`, exit 0.\n"
@@ -414,8 +432,11 @@ class SessionSpecBuilder:
         this harness and never re-selected, ranked or budgeted here.
         """
         name = task_session_name(task.id)
-        bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
-            task_id=task.id, work_dir=work_dir
+        continuation = (extra_env or {}).get("AQ_CONTINUATION_ID")
+        template = _CONTINUATION_BOOTSTRAP_PROMPT if continuation else BOOTSTRAP_PROMPT
+        bootstrap = prompt if prompt is not None else template.format(
+            task_id=task.id, work_dir=work_dir, continuation_id=continuation,
+            generation=(extra_env or {}).get("AQ_CONTINUATION_GENERATION"),
         )
         return self._build(
             harness=harness,
@@ -562,7 +583,6 @@ class SessionSpecBuilder:
         """
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
-        project_name = getattr(project, "name", "") or project_id
         from src.waits.policy import enabled as waits_enabled
 
         message_wait_guidance = (
@@ -572,7 +592,7 @@ class SessionSpecBuilder:
             "preserve it and end the turn awaiting the supervisor's inbox delivery."
         )
         bootstrap = prompt if prompt is not None else POOL_BOOTSTRAP_PROMPT.format(
-            project_name=project_name, profile_id=profile_id,
+            project_id=project_id, profile_id=profile_id,
             message_wait_guidance=message_wait_guidance,
         )
         extra_env = {

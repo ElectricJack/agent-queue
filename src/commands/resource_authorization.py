@@ -26,7 +26,7 @@ digest_status discord_purge_channel read_logs scan_stub_staleness vault_rebuild_
 list_projects list_active_tasks_all_projects orchestrator_control pool_scale pool_rename pool_delete
 pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
 provider_recheck provider_set_state provider_status provider_held_tasks
-reconcile_agent_cron reconcile_agent_waits reconcile_collaborations cron_delivery_begin
+reconcile_agent_cron reconcile_project_schedules reconcile_agent_waits reconcile_collaborations cron_delivery_begin
 cron_delivery_finish integration_train_tick integration_reconcile_git_truth job_reconcile
 job_submit_integration
 observe_integration_source_ci queue_sync_workspaces session_cleanup
@@ -63,6 +63,7 @@ approved_spec_packet
 # Each of these producers confines its primary query/mutation to project_id, or
 # to the rows named by TARGET_RESOLVERS. Its own claim/review/CAS gates still run.
 PROJECT_COMMANDS = frozenset("""
+schedule_register schedule_get schedule_list schedule_cancel
 add_workspace advance_workflow_stage agent_message archive_task cancel_playbook_run get_agent list_agents
 create_mcp_server probe_mcp_server create_task_graph create_workflow dashboard_state_get dashboard_state_list
 dashboard_state_put dashboard_state_reset delete_mcp_server delete_project delete_task

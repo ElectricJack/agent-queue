@@ -108,6 +108,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_promotion_policy_input`](integration_promotion_policy_input.md) | Integration Promotion Policy Input | Read pinned source and outstanding promotion facts for reviewed policy. |
 | [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
+| [`integration_rebind_batch_authority`](integration_rebind_batch_authority.md) | Integration Rebind Batch Authority | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
 | [`integration_reconcile_git_truth`](integration_reconcile_git_truth.md) | Integration Reconcile Git Truth | Daemon-only repair of Git-derived integration projections. |
 | [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
@@ -361,7 +362,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status, owner identity and bounded diagnostics. |
 | [`load_tools`](load_tools.md) | Load Tools | Load tools by category or individual name. |
 | [`merge_branch`](merge_branch.md) | Merge Branch | Execute the merge_branch command. |
-| [`message_inbox`](message_inbox.md) | Message Inbox | List a recipient's pending messages, optionally marking them delivered. |
+| [`message_inbox`](message_inbox.md) | Message Inbox | List unread, unarchived mail; inject claims only undelivered messages. |
 | [`message_list`](message_list.md) | Message List | List messages with project/thread/recipient filters. |
 | [`message_reply`](message_reply.md) | Message Reply | Reply to a message: marks it read and writes the linked reply row. |
 | [`message_status`](message_status.md) | Message Status | Return the durable delivery state of one message. |
@@ -479,6 +480,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`reconcile_agent_cron`](reconcile_agent_cron.md) | Reconcile Agent Cron | Execute the reconcile_agent_cron command. |
 | [`reconcile_agent_waits`](reconcile_agent_waits.md) | Reconcile Agent Waits | Execute the reconcile_agent_waits command. |
 | [`reconcile_collaborations`](reconcile_collaborations.md) | Reconcile Collaborations | Execute the reconcile_collaborations command. |
+| [`reconcile_project_schedules`](reconcile_project_schedules.md) | Reconcile Project Schedules | Execute the reconcile_project_schedules command. |
 | [`record_capabilities`](record_capabilities.md) | Record Capabilities | Describe what this caller may do with records. |
 | [`record_file_inspection`](record_file_inspection.md) | Record File Inspection | Execute the record_file_inspection command. |
 | [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
@@ -520,6 +522,10 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`review_withdraw`](review_withdraw.md) | Review Withdraw | Execute the review_withdraw command. |
 | [`run_playbook`](run_playbook.md) | Run Playbook | Execute the run_playbook command. |
 | [`scan_stub_staleness`](scan_stub_staleness.md) | Scan Stub Staleness | Scan vault reference stubs for staleness by comparing source_hash. |
+| [`schedule_cancel`](schedule_cancel.md) | Schedule Cancel | Cancel a pending project schedule; a fired notice cannot be recalled. |
+| [`schedule_get`](schedule_get.md) | Schedule Get | Read a project schedule and its durable firing or cancellation receipt. |
+| [`schedule_list`](schedule_list.md) | Schedule List | List project schedules, including long-horizon pending notices. |
+| [`schedule_register`](schedule_register.md) | Schedule Register | Schedule one supervisor notification at an absolute UTC instant, without holding a worker. |
 | [`scheduler_wait_sync`](scheduler_wait_sync.md) | Scheduler Wait Sync | Scheduler wait sync through verified wait state. |
 | [`search_files`](search_files.md) | Search Files | Execute the search_files command. |
 | [`search_github_repositories`](search_github_repositories.md) | Search Github Repositories | Search GitHub repositories visible to the daemon host's gh session. |
@@ -555,6 +561,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
 | [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
 | [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
+| [`supervisor_inbox_say`](supervisor_inbox_say.md) | Supervisor Inbox Say | Start a supervisor message in an existing conversation without answering an input. |
 | [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
 | [`supervisor_restart`](supervisor_restart.md) | Supervisor Restart | Execute the supervisor_restart command. |
 | [`task_batch_discard`](task_batch_discard.md) | Task Batch Discard | Execute the task_batch_discard command. |
@@ -618,6 +625,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`wait_resume_dispatch`](wait_resume_dispatch.md) | Wait Resume Dispatch | Wait resume dispatch through verified wait state. |
 | [`wait_sleep_decide`](wait_sleep_decide.md) | Wait Sleep Decide | Wait sleep decide through verified wait state. |
 | [`wait_source_commit`](wait_source_commit.md) | Wait Source Commit | Wait source commit through verified wait state. |
+| [`wait_source_redispatch`](wait_source_redispatch.md) | Wait Source Redispatch | Wait source redispatch through verified wait state. |
 | [`workflow_pipeline_view`](workflow_pipeline_view.md) | Workflow Pipeline View | Return structured pipeline view data for dashboard rendering of a workflow. |
 | [`workspace_clear_sentinel`](workspace_clear_sentinel.md) | Workspace Clear Sentinel | Clear a slot sentinel that still names a terminal task. |
 | [`workspace_cutover`](workspace_cutover.md) | Workspace Cutover | Execute the workspace_cutover command. |

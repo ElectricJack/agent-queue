@@ -521,6 +521,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
 
     from sqlalchemy import and_, select
 
+    from src.database.queries.result_queries import ResultQueryMixin
     from src.database.queries.task_queries import (
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
@@ -611,7 +612,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         ).where(task_metadata.c.task_id.in_(task_ids | parent_history),
                 task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all())
     completion_by_id = {
-        row["task_id"]: db._row_to_task_completion(row) for row in completions
+        row["task_id"]: ResultQueryMixin._row_to_task_completion(row) for row in completions
     }
     requests = {}
     for rows, is_archived in ((live, False), (archived, True)):
@@ -1134,7 +1135,7 @@ async def undeliverable_repairs_on(db, conn, ids, *, repository_id) -> dict[str,
 
 
 async def delivery_snapshot(git, store, *, project_id, repository_id, repository_url,
-                            target_ref):
+                            target_ref, skip_unchanged=False):
     """Fetch once and pin all batch observations to its exact target OID.
 
     Git failure yields an unknown snapshot even if stale tracking refs exist.
@@ -1151,7 +1152,8 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         await _run(git, store, "check-ref-format", target_ref)
         try:
             await fetch_retained_origin(git, store, repository_url=repository_url,
-                                        project_id=project_id, repository_id=repository_id)
+                                        project_id=project_id, repository_id=repository_id,
+                                        skip_unchanged=skip_unchanged)
         except GitError as exc:
             # Ref retirement requires no readable objects. A clean, independent
             # remote read can diagnose absence even when the retained cache

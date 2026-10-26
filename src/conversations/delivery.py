@@ -135,6 +135,8 @@ class ConversationDeliveryAdapter:
         reference = (
             payload.get("reference_message_id") or conversation["external_root_message_id"]
         ) if in_channel else None
+        if not conversation and action == ACTION_NOTICE:
+            reference = payload.get("reference_message_id")
         if direct or in_channel:
             thread_id = None
         elif action == ACTION_THREAD_OPEN and not thread_id:

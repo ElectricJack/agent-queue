@@ -1,5 +1,80 @@
 # Wait outcome integration contract
 
+## Recoverable listener failures — 2026-10-25
+
+Outcome measurements are idempotent by measurement id. A duplicate preserves
+the existing sample, including any later resume-cost updates, and does not
+roll back outcome delivery or source-cursor progress.
+
+Graph contention is a local retry, never a reason to restart the listener's
+TaskGroup. A refused deadline remains unfired and uncancelled and retries with
+per-deadline exponential backoff from one second up to thirty seconds. Heap
+rebuilds preserve that cadence; other due deadlines can proceed. Restart may
+retry immediately from durable deadlines. This applies to graph-busy refusals
+from deadline effects and quarantine as well as firing itself. Source dispatch
+preserves the graph-busy classification and rolls back the attempted batch,
+then retries on the listener's existing graph-contention cadence. Unknown
+failures and lease loss retain their existing recovery behavior.
+
+## Previously dispatched CI evidence — 2026-10-25
+
+The listener also reconciles pending verified CI check/run waits whose latest
+dispatched source event is newer than their registration watermark. Older
+dispatch stamps do not prove that a wait consumed an observation. Reconciliation
+shares the bounded retry budget and the normal lease, graph, source and owner
+fences, observes the current exact-head condition, and never moves the main
+cursor backwards. A dispatched hint cannot itself prove success. Pending or
+unavailable observations retain the wait, respect provider retry intervals, and
+remain eligible after restart without a new provider revision. Successful
+settlement uses ordinary outcome delivery and remains idempotent.
+
+Forward dispatch and dispatched-hint reconciliation share the pending-progress
+safety cadence. A fresh unfinished observation during forward dispatch defers
+another observation of that source until the cadence expires; recovery then
+visits sources within its per-pass retry budget. A terminal hint bypasses the
+pending-progress cadence and still requires an authenticated current observation.
+
+## Temporary CI observation failures — 2026-10-25
+
+A train visit that cannot freshly observe a disappearing pending wait preserves
+that subscription, records the observation error in `dispatch.wait_errors`, and
+continues reconciling other waits. An unavailable observation is not evidence
+that the subscription is obsolete and must not abort publication maintenance.
+
+When source dispatch cannot obtain an observation, it leaves the outbox event's
+`dispatched_at` unset, but advances the leased main cursor so unrelated later
+events can proceed. Before draining new events, the listener retries at most 20
+such earlier events per pass, each under its normal graph, lease, source and
+owner fences. Provider retry intervals defer repeat attempts in process; after
+restart, the durable undispatched rows remain eligible. A retry never moves the
+main cursor backwards. This recovers unchanged CI conclusions without requiring
+a new provider result or cache revision. Deferred observations log source sequence,
+source key, retry interval and event age; successful replays log their sequence.
+Other transaction failures retain the existing rollback and cursor semantics.
+
+## Dedicated listener connection arguments — 2026-10-24
+
+The listener opens a dedicated asyncpg connection using the SQLAlchemy engine
+URL. It omits unset URL fields and merges query parameters into one argument
+dictionary, with query values taking precedence. Unix-socket query hosts and
+ports must reach asyncpg without duplicate keyword arguments; ordinary TCP
+fields and other query parameters pass through unchanged.
+
+## Cancelled transaction recovery — 2026-10-24
+
+Graph-lock watchdog cleanup uses local connection-lifetime state, without
+accessing `Connection.info` or reconnecting. When cancellation invalidates an
+asyncpg connection, SQLAlchemy must finish rollback before any subsequent use.
+Scheduler sync and listener drain preserve committed prefixes, roll back the
+interrupted owner's work or event together with its cursor, and retry on a clean
+connection. A failed attempt must not prevent a later matching message event
+from resolving its pending wait.
+
+The `wait_scheduler` health check reports consecutive sync failures per project,
+including exhausted sync budgets. A successful completed sync clears only that
+project's failure streak. Ordinary graph contention defers work without adding
+or clearing failures. Health inspection performs no database work for this check.
+
 ## Supervisor delivery and CI observation correction — 2026-10-23
 
 Operational wait and continuation incidents remain internal during initial
@@ -147,7 +222,52 @@ single-flight lock; it does not acquire a project-wide database fence.
 
 ## Transaction and graph ownership
 
+### Resume graph-lock fairness — 2026-10-24
+
+The source listener commits one event, its dispatch effects and its cursor in
+each graph transaction. It releases the fence between events even when the
+backlog fits in one batch and no renewal interval has elapsed. A slow individual
+event still uses the lease budget and rolls back atomically on failure.
+
+Supervisor requeue joins the advisory-lock queue before reading or writing its
+held continuation. Refusal and cancellation roll back all changes, including
+the version and audit record; suspension generation is preserved on success as
+well. Restart starts continuation maintenance alongside legacy bridge adoption,
+so a blocked startup bridge cannot suppress RESUME_PENDING retries.
+
+After external admission preparation, resume reservation joins PostgreSQL's
+advisory-lock queue before reading its wait/task/continuation transaction state.
+The listener's nonblocking acquisition cannot overtake a queued resume between
+batches. Resume uses a 35-second acquisition budget, exceeding the listener's
+30-second batch lease budget; unrelated background reconciliation retains its
+short polling budget. An acquisition timeout remains `wait.graph_busy`, rolls
+back its savepoint and restores the connection's prior `lock_timeout`. A successful
+acquisition retains the same transaction-scoped graph fence through all reservation
+revalidation and mutations. Generation, stopped-writer, task-control and admission
+checks remain required; queue position supplies no authority to resume.
+
+The lifecycle emits `wait.resume_graph_busy` with continuation id, suspension
+generation and consecutive refusal count. Any other dispatch result resets that
+generation's streak; continuations leaving the ready set discard their local
+counter. The diagnostic is process-local and does not rewrite durable outcomes
+or reset the wait's age.
+
 ### Short graph transactions — 2026-10-22
+
+Resource subscription verification reads only the named admission constraint.
+The initial scheduler/resume admission observation still evaluates all constraints;
+verifying a subscription is not an admission grant. Each verification and
+post-subscribe observation reads current owner, claim, project, profile and config
+bindings, plus the SQL inputs for that constraint, on the caller's connection.
+Frontier predicates, workspace capacity and fleet token aggregation are not
+repeated for unrelated blockers. Token aggregation is omitted when neither a
+global nor a project budget is configured. No constraint verdict is cached across
+observations, transactions or passes; committed source changes remain visible.
+Before acquiring the graph fence, the listener prepares Git progress only for
+task waits matching its next source event (resource waits for an invalidation).
+It rechecks the cursor under the lease lock and retries preparation if another
+drain advanced it. The candidate set is not truncated to the first 200 unrelated
+pending waits; dispatch still revalidates current source and owner rows.
 
 The graph fence protects database revalidation and mutations. Git, filesystem,
 provider/terminal operations, router artifact loading and observations using
@@ -299,6 +419,20 @@ so suspension history and admission audit keep their task identity, and the
 independent wait outcome audit is retained. Bulk hierarchy changes publish every changed dependency source
 in the mutation transaction using a bounded number of database statements.
 All wait feature flags remain disabled by default.
+
+CI cache refreshes publish a source event only when the check's evidence changes;
+refreshing observation/due timestamps alone updates the cache without another wake.
+The comparison and cache write serialize per check, including concurrent first
+observations. A transition back to an earlier result still publishes a new revision.
+
+The listener retires contiguous batches of CI events without pending verified
+subscriptions and pool invalidations without pending verified resource waits.
+It checks subscriptions under the registration graph fence and commits dispatched
+stamps with the leased cursor. It never skips past an event requiring dispatch.
+Task retirement and provider recovery events retain their per-event side effects.
+This same automatic drain repairs an existing irrelevant backlog on deployment;
+no operator deletion or cursor jump is required. Relevant events retain fresh
+observation, progress preparation, ownership fences and per-event rollback.
 
 
 ## Retry and repair of resume workspace preparation

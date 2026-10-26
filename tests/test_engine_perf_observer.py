@@ -11,6 +11,7 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool
 from src.database import Database
 from src.database.engine import ObservedQueuePool, create_postgres_engine
 from src.metrics.perf import PerfRegistry, install_registry
+from src.metrics.operation_profile import operation_profile
 from tests.db_fixtures import lease_dsn
 
 
@@ -30,14 +31,19 @@ def test_the_private_pool_hook_still_exists():
 async def test_query_duration_is_recorded_without_statement_text(registry):
     engine = create_postgres_engine(lease_dsn("perf-observer.db"), pool_min=1, pool_max=2)
     try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT pg_sleep(0.05), 'needle-in-sql'"))
+        with operation_profile() as profile:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT pg_sleep(0.05), 'needle-in-sql'"))
     finally:
         await engine.dispose()
     snap = registry.snapshot()
     assert snap["db"]["query"]["count"] >= 1
     assert snap["db"]["query"]["max"] >= 40
     assert "needle" not in repr(snap)
+    measured = profile.as_dict()
+    assert measured["operations"]["db.query"]["seconds"] >= 0.04
+    assert measured["operations"]["db.pool_wait"]["calls"] >= 1
+    assert "needle" not in repr(measured)
 
 
 async def test_pool_wait_is_recorded_when_every_connection_is_out(registry):

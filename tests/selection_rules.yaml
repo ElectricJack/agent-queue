@@ -67,6 +67,9 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["tools/bazel/runtime.py", "tools/bazel/pytest_plugin.py", "tools/bazel/runtime-contract.md", "tools/bazel/runtime-ledger.json"], areas: ["bazel-runtime"] }
+  - { paths: [".bazelversion", ".bazelrc", "MODULE.bazel", "MODULE.bazel.lock", "BUILD.bazel", "tools/bazel/**"], areas: ["bazel-toolchains", "bazel-environment"] }
+  - { paths: ["scripts/bazel/inventory.py", "scripts/bazel/report_metrics.py"], areas: ["bazel-metrics"] }
   - { paths: ["src/stall_watch.py", "src/database/queries/stall_watch_queries.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/policy_profiles/**", "src/commands/policy_commands.py", "src/api/models/policy.py", "src/cli/policy.py", "dashboard/src/pages/project/PolicyProfiles.tsx", "dashboard/src/api/policy.ts"], areas: ["policy-profiles"] }
   - { paths: ["tests/integration_ownership.py", "tests/integration_ownership.json", "tests/integration_ownership_report.json"], areas: ["integration-trains"] }
@@ -104,6 +107,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
   - { paths: ["packages/**", "openapi.json"], areas: ["api-contract", "file-access"] }
   - { paths: [".github/workflows/**"], areas: ["ci-sentinel", "epic-trains"] }
+  - { paths: [".github/scripts/start-postgres.sh"], areas: ["ci-sentinel"] }
   # The committed trust manifest is pinned to the reviewed policy's builder output.
   - { paths: [".github/agent-queue-integration.json", "docs/config/agent-queue-train-policy.json"], areas: ["integration-controls"] }
   - { paths: [".test_durations", "scripts/merge_test_durations.py"], areas: ["ci-sentinel"] }
@@ -159,6 +163,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/fixtures/integration/**"], areas: ["integration-promotion"] }
   - { paths: ["tests/fixtures/integration/failure-groups.json"], areas: ["integration-trains"] }
   - { paths: ["tests/fixtures/integration_replay/**"], areas: ["integration-trains"] }
+  - { paths: ["tests/fixtures/git_truth_repair_before_bright_torrent.py.txt"], areas: ["integration-trains"] }
   - { paths: ["tests/fixtures/contracts/**"], areas: ["ci-sentinel", "playbook-engine", "provider-failover", "shipped-playbooks"] }
   - { paths: ["tests/fixtures/fake_gh/**"], areas: ["projects", "github"] }
   - { paths: ["tests/fixtures/formulas/**"], areas: ["formulas", "intelligence-classes", "e2e-kit"] }
@@ -196,6 +201,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/dashboard_paths.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/remote_links.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
+  - { paths: ["src/project_schedules.py", "src/database/queries/project_schedule_queries.py", "src/commands/schedule_commands.py", "src/commands/contracts/schedule.py"], areas: ["scheduling"] }
   - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }
   - { paths: ["src/surface_schema.py"], areas: ["command-dispatch"] }
   - { paths: ["src/warm_workspaces.py", "src/build_cache.py"], areas: ["workspaces", "integration-trains", "managed-jobs"] }

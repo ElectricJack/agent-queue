@@ -843,6 +843,8 @@ def s16_canary_surfaces(monkeypatch, request):
         if args[:2] == ("session", "token"):
             return {"token": "canary-token"}
         if args[:2] == ("task", "claim"):
+            # A busy fixture row must not select other queued work through --next.
+            assert args[2] == expected
             return responses.pop(0) if len(responses) > 1 else responses[0]
         raise AssertionError(args)
 
@@ -885,6 +887,35 @@ def test_s16_canary_retries_empty_claims_then_holds_its_pools_task(
                if args[:2] == ("task", "claim"))
 
 
+def test_s16_canary_retries_a_locked_ready_fixture(s16_canary_surfaces):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    responses.insert(0, {"result": "claim_conflict"})
+
+    worker, _canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert held == expected == worker.task_id
+    assert len(_claims(calls)) == 2
+
+
+@pytest.mark.parametrize("change", [
+    {"status": "IN_PROGRESS"}, {"assigned_agent": "other-worker"},
+    {"claimed_by": "other-session"}, {"is_blocked": True},
+])
+def test_s16_canary_does_not_retry_an_unavailable_fixture(
+    s16_canary_surfaces, monkeypatch, change,
+):
+    smoke, responses, calls, clock, _profile, _expected = s16_canary_surfaces
+    original = smoke.task_show
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {**original(task_id), **change})
+    responses[:] = [{"result": "claim_conflict"}]
+
+    with pytest.raises(smoke.Failure, match="claim_conflict"):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+    assert clock.now == 0
+
+
 @pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
 def test_s16_canary_does_not_retry_other_claim_failures(s16_canary_surfaces, result):
     smoke, responses, calls, clock, _profile, _expected = s16_canary_surfaces
@@ -908,12 +939,13 @@ def test_s16_canary_rejects_the_other_pools_held_task(s16_canary_surfaces):
     assert len(_claims(calls)) == 1
 
 
+@pytest.mark.parametrize("result", ["no_ready_work", "claim_conflict"])
 def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
-    s16_canary_surfaces,
+    s16_canary_surfaces, result,
 ):
     smoke, responses, calls, clock, profile, expected = s16_canary_surfaces
     # The shape of the CI failure this retry absorbs (run 37983264206).
-    responses[:] = [{"result": "no_ready_work", "session": {
+    responses[:] = [{"result": result, "session": {
         "id": "canary", "claims": 0, "claim_phase": "claiming",
     }}]
 
@@ -922,7 +954,7 @@ def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
 
     assert clock.now == 1
     assert len(_claims(calls)) > 1
-    for detail in (expected, "no_ready_work", "claim_phase", "READY", profile, "pin"):
+    for detail in (expected, result, "claim_phase", "READY", profile, "pin"):
         assert detail in str(error.value)
 
 
@@ -1879,7 +1911,7 @@ def test_disposable_fixture_builds_once_and_cleans_even_after_failure(monkeypatc
     home = tmp_path / "world"
     env = acceptance.world_env(home)
     calls = []
-    world = SimpleNamespace(timing=lambda _: None, cli_server=None)
+    world = SimpleNamespace(timing=lambda _: None, cli_server=None, cli_socket_directory=None)
     monkeypatch.setattr(acceptance, "World", lambda *_: world)
     monkeypatch.setattr(acceptance, "start_cli_server", lambda _: None)
 

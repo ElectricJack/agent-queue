@@ -1681,6 +1681,18 @@ class ClaimCommandsMixin:
             + "Workspace quarantined. Run `aq session drain-ack` and exit 0."
         )}
 
+    async def _drain_missing_claim_session(self, session, epoch, failure, cap) -> dict:
+        """A worker without a usable marker cannot continue its preparation."""
+        current = await self.db.get_session(session.id)
+        if (current is None or current.instance_token != session.instance_token
+                or current.last_claim_epoch != epoch):
+            return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, current, cap)
+        await self.orchestrator._terminate_pool_session(current, reason="claim_file_missing")
+        return self._simple(
+            ClaimResult.DRAIN_REQUESTED, failure.reason,
+            await self.db.get_session(session.id) or current, cap,
+        )
+
     async def _quarantine_slot(self, session, slot, failure, cap) -> dict | None:
         """Quarantine a slot whose checkout contradicts its sentinel.
 
@@ -1952,19 +1964,17 @@ class ClaimCommandsMixin:
                 )
                 stage = "claim_file"
                 prepared_branch = branch if isinstance(branch, str) and branch else None
-                # Writing the claim file joins the same guard as the slot
-                # reset: any failure after ``record_holder`` committed — a slot
-                # reset error or an OSError on this write — must release the
-                # claim and leave no claim file behind.
-                write_claim_file(
-                    row.work_dir,
-                    {
-                        "task_id": task.id,
-                        "claim_epoch": epoch,
-                        "session_id": session.id,
-                        "claimed_at": time.time(),
-                    },
-                )
+                # Reset and marker writes share cleanup: failures release the
+                # committed holder and remove the claim file.
+                marker = {
+                    "task_id": task.id,
+                    "claim_epoch": epoch,
+                    "session_id": session.id,
+                    "claimed_at": time.time(),
+                }
+                write_claim_file(row.work_dir, marker)
+                if read_claim_file(row.work_dir) != marker:
+                    raise RuntimeError("claim file missing or changed before activation")
                 # Reset's returned branch is authoritative. Persist with activation
                 # so development claims have the branch required for completion.
                 if hierarchy_enabled:
@@ -1987,11 +1997,8 @@ class ClaimCommandsMixin:
                 stage = "activate_claim"
                 activation_args = dict(
                     epoch=epoch, now=time.time(), branch_name=prepared_branch,
-                    # A successful preparation clears its pause checkpoint
-                    # and failure ladder together, so a later, unrelated
-                    # prepare starts at minimum.  Done inside the activation
-                    # transaction rather than after it: same guards, same
-                    # table, one fewer pooled checkout.
+                    # Clear pause and failure metadata atomically with activation;
+                    # a later preparation starts at the minimum backoff.
                     clear_preparation_metadata=True,
                     admission=admission,
                     ordinary_admission_guard=admission is None,
@@ -2087,24 +2094,30 @@ class ClaimCommandsMixin:
                     )
                 hierarchy_attached = True
                 stage = "activation_lock"
+                from src.integration.lock import slot_preparation_timeout_seconds
+
+                preparation_timeout = slot_preparation_timeout_seconds(
+                    self.config.worktrees, task.project_id,
+                )
                 if previous_owner and previous_owner.get("fence") is not None:
-                    # Managed recovery/filing takes task before ref. Holding
-                    # ref while activate_claim locks session/task reverses
-                    # that order, including FK key-share locks from filing.
+                    # Match recovery/filing: session/task before ref, including
+                    # filing's FK key-share locks, then repository mutex.
                     async with self.db.immediate() as conn:
                         claim = await self.db.lock_claim_for_activation(
                             conn, session.id, task.id, epoch=epoch
                         )
                         if claim is not None:
                             async with ownership.mutation_exclusion_on(
-                                conn, fence, state="attached", expected_role=owner_role
+                                conn, fence, state="attached", expected_role=owner_role,
+                                timeout_seconds=preparation_timeout,
                             ):
                                 fresh = await prepare_and_activate(
                                     conn=conn, **preparation_args,
                                 )
                 else:
                     async with ownership.mutation_exclusion(
-                        fence, state="attached", expected_role=owner_role
+                        fence, state="attached", expected_role=owner_role,
+                        timeout_seconds=preparation_timeout,
                     ) as conn:
                         fresh = await prepare_and_activate(
                             conn=conn, **preparation_args,
@@ -2382,6 +2395,8 @@ class ClaimCommandsMixin:
                     },
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                if stage == "claim_file":
+                    return await self._drain_missing_claim_session(session, epoch, failure, cap)
                 return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             if isinstance(exc, ChildPreparationConflict):
                 # The merge was cleanly aborted. Without a managed train
@@ -2439,14 +2454,15 @@ class ClaimCommandsMixin:
                 "retry": "manual" if attempt >= 3 else "automatic",
             })
             poisoned = isinstance(exc, SlotSourceDisagreement) and slot is not None
-            await self.db.release_claim(
+            marker_failed = stage == "claim_file"
+            released = await self.db.release_claim(
                 session.id,
                 expected_task_id=task.id, expected_claim_epoch=epoch,
                 expected_instance_token=session.instance_token,
                 task_status=TaskStatus.BLOCKED if attempt >= 3 else TaskStatus.READY,
                 context="slot_reset_failed", now=time.time(), result="prepare_failed",
                 needs_attention="slot_reset_failed", prepare_backoff=True,
-                release_workspace_lock=poisoned, drain_after_release=poisoned,
+                release_workspace_lock=poisoned, drain_after_release=poisoned or marker_failed,
             )
             await self._record_prepare_failure(
                 task, failure, session=session, slot=slot, epoch=epoch,
@@ -2461,6 +2477,8 @@ class ClaimCommandsMixin:
                 },
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+            if marker_failed and released.released:
+                return await self._drain_missing_claim_session(session, epoch, failure, cap)
             if poisoned and (out := await self._quarantine_slot(session, slot, failure, cap)):
                 return out
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)

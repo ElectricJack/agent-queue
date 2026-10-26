@@ -676,6 +676,11 @@
             "type": "string",
             "description": "Filter by project ID (optional, but required for tree/compact modes)"
           },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum tasks in a flat live listing, after filtering. The total remains uncapped. Use page_size for snapshots."
+          },
           "status": {
             "type": "string",
             "description": "Filter by exact status: DEFINED, READY, IN_PROGRESS, COMPLETED, etc. When provided, show_all, include_completed, and completed_only are ignored."
@@ -5510,7 +5515,7 @@
     },
     {
       "name": "message_inbox",
-      "description": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
+      "description": "List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor aliases and the current named session UUID share an inbox. With inject=true, return only undelivered messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed additionally returns other consumed rows for this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -6313,7 +6318,7 @@
     },
     {
       "name": "task_batch_propose",
-      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
+      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. For an already delivered design, explicit no_op records delivered evidence without creating work; only its live ingester may settle an empty change set. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -6328,6 +6333,30 @@
           "dry_run": {
             "type": "boolean",
             "description": "Validate and return the diff without storing a proposal."
+          },
+          "no_op": {
+            "type": "object",
+            "description": "Design-ingest settlement when every approved goal is already delivered; requires no change operations.",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "delivered_evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Merged PR or commit citations checked by the ingester."
+              }
+            },
+            "required": [
+              "reason",
+              "delivered_evidence"
+            ],
+            "additionalProperties": false
           },
           "edits": {
             "type": "array",
@@ -8854,6 +8883,35 @@
         "required": [
           "conversation_id",
           "input_id",
+          "text",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "supervisor_inbox_say",
+      "description": "Initiate a supervisor message in an existing open Discord conversation.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16000
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "conversation_id",
           "text",
           "idempotency_key"
         ],
@@ -12754,6 +12812,38 @@
       }
     },
     {
+      "name": "wait_source_redispatch",
+      "description": "Reobserve one durable source event in a supervisor project.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_seq": {
+            "minimum": 1,
+            "title": "Source Seq",
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_seq",
+          "note"
+        ],
+        "title": "WaitSourceRedispatchArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "playbook_script_run",
       "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
       "input_schema": {
@@ -13914,6 +14004,151 @@
             "type": "string"
           }
         }
+      }
+    },
+    {
+      "name": "schedule_register",
+      "description": "Schedule a project supervisor notification at an absolute UTC instant, without holding a worker.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "body": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "due_at": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Due At",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "body",
+          "due_at",
+          "idempotency_key"
+        ],
+        "title": "ScheduleRegisterArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schedule_get",
+      "description": "Read a project schedule and its firing/cancellation receipt.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schedule_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "schedule_id"
+        ],
+        "title": "SchedulePointerArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schedule_list",
+      "description": "List project-owned one-shot notifications and due times.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "fired",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "State"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "ScheduleListArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "schedule_cancel",
+      "description": "Cancel a pending project notification schedule.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "schedule_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Schedule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "schedule_id"
+        ],
+        "title": "SchedulePointerArgs",
+        "type": "object"
       }
     }
   ],
@@ -15712,6 +15947,35 @@
           "reason"
         ],
         "title": "IntegrationQuiesceArgs",
+        "type": "object"
+      }
+    },
+    "integration_rebind_batch_authority": {
+      "name": "integration_rebind_batch_authority",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
         "type": "object"
       }
     },
@@ -20146,6 +20410,22 @@
         "additionalProperties": false
       }
     },
+    "reconcile_project_schedules": {
+      "name": "reconcile_project_schedules",
+      "description": "Execute the reconcile_project_schedules command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "now"
+        ],
+        "additionalProperties": false
+      }
+    },
     "scheduler_wait_sync": {
       "name": "scheduler_wait_sync",
       "description": "Scheduler wait sync through verified wait state.",
@@ -21019,6 +21299,7 @@
   "categories": {
     "operator": "Scoped operator setup and preflight",
     "policy": "Portable project policy profiles: export, diff and selective import",
+    "schedule": "Project-owned one-shot supervisor notifications at absolute UTC instants.",
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "ci": "Required CI evidence and completed task audits",
@@ -21162,6 +21443,7 @@
     "escalation_sweep": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
+    "supervisor_inbox_say": "supervisor_inbox",
     "supervisor_inbox_status": "supervisor_inbox",
     "supervisor_inbox_history": "supervisor_inbox",
     "review_submit": "review",
@@ -21208,6 +21490,7 @@
     "wait_ack": "wait",
     "wait_decide": "wait",
     "wait_lift": "wait",
+    "wait_source_redispatch": "wait",
     "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
@@ -21466,7 +21749,11 @@
     "ask_cutover_status": "review",
     "ask_repair_delivery": "review",
     "ask_intake": "review",
-    "ask_button": "review"
+    "ask_button": "review",
+    "schedule_register": "schedule",
+    "schedule_get": "schedule",
+    "schedule_list": "schedule",
+    "schedule_cancel": "schedule"
   },
   "cli_category_overrides": {
     "ask_list": "ask",

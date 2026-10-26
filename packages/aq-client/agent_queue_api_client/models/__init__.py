@@ -1743,6 +1743,18 @@ from .sampler_metrics import SamplerMetrics
 from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
 from .scan_stub_staleness_response_422 import ScanStubStalenessResponse422
+from .schedule_cancel_response_422 import ScheduleCancelResponse422
+from .schedule_get_response_422 import ScheduleGetResponse422
+from .schedule_list_args import ScheduleListArgs
+from .schedule_list_args_state_type_0 import ScheduleListArgsStateType0
+from .schedule_list_response import ScheduleListResponse
+from .schedule_list_response_422 import ScheduleListResponse422
+from .schedule_list_response_schedules_item import ScheduleListResponseSchedulesItem
+from .schedule_pointer_args import SchedulePointerArgs
+from .schedule_register_args import ScheduleRegisterArgs
+from .schedule_register_response_422 import ScheduleRegisterResponse422
+from .schedule_response import ScheduleResponse
+from .schedule_response_schedule_type_0 import ScheduleResponseScheduleType0
 from .scoped_conftest import ScopedConftest
 from .script_execution_dto import ScriptExecutionDTO
 from .script_execution_dto_output_refs import ScriptExecutionDTOOutputRefs
@@ -1907,6 +1919,8 @@ from .supervisor_inbox_history_request_states_type_0_item import SupervisorInbox
 from .supervisor_inbox_history_response import SupervisorInboxHistoryResponse
 from .supervisor_inbox_reply_request import SupervisorInboxReplyRequest
 from .supervisor_inbox_reply_response import SupervisorInboxReplyResponse
+from .supervisor_inbox_say_request import SupervisorInboxSayRequest
+from .supervisor_inbox_say_response import SupervisorInboxSayResponse
 from .supervisor_inbox_status_request import SupervisorInboxStatusRequest
 from .supervisor_inbox_status_response import SupervisorInboxStatusResponse
 from .supervisor_restart_request import SupervisorRestartRequest
@@ -1934,6 +1948,7 @@ from .task_batch_commit_response_skipped_operations_item import TaskBatchCommitR
 from .task_batch_discard_request import TaskBatchDiscardRequest
 from .task_batch_discard_response_422 import TaskBatchDiscardResponse422
 from .task_batch_propose_request import TaskBatchProposeRequest
+from .task_batch_propose_request_no_op_type_0 import TaskBatchProposeRequestNoOpType0
 from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
 from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
@@ -2236,6 +2251,8 @@ from .wait_response_wait_type_1 import WaitResponseWaitType1
 from .wait_sleep_explanation import WaitSleepExplanation
 from .wait_sleep_explanation_inputs import WaitSleepExplanationInputs
 from .wait_slot_seconds import WaitSlotSeconds
+from .wait_source_redispatch_args import WaitSourceRedispatchArgs
+from .wait_source_redispatch_response_422 import WaitSourceRedispatchResponse422
 from .wait_task_explanation import WaitTaskExplanation
 from .wait_verified_evidence import WaitVerifiedEvidence
 from .wait_verified_evidence_condition import WaitVerifiedEvidenceCondition
@@ -4007,6 +4024,18 @@ __all__ = (
     "ScanStubStalenessRequest",
     "ScanStubStalenessResponse",
     "ScanStubStalenessResponse422",
+    "ScheduleCancelResponse422",
+    "ScheduleGetResponse422",
+    "ScheduleListArgs",
+    "ScheduleListArgsStateType0",
+    "ScheduleListResponse",
+    "ScheduleListResponse422",
+    "ScheduleListResponseSchedulesItem",
+    "SchedulePointerArgs",
+    "ScheduleRegisterArgs",
+    "ScheduleRegisterResponse422",
+    "ScheduleResponse",
+    "ScheduleResponseScheduleType0",
     "ScopedConftest",
     "ScriptExecutionDTO",
     "ScriptExecutionDTOOutputRefs",
@@ -4171,6 +4200,8 @@ __all__ = (
     "SupervisorInboxHistoryResponse",
     "SupervisorInboxReplyRequest",
     "SupervisorInboxReplyResponse",
+    "SupervisorInboxSayRequest",
+    "SupervisorInboxSayResponse",
     "SupervisorInboxStatusRequest",
     "SupervisorInboxStatusResponse",
     "SupervisorRestartRequest",
@@ -4196,6 +4227,7 @@ __all__ = (
     "TaskBatchDiscardRequest",
     "TaskBatchDiscardResponse422",
     "TaskBatchProposeRequest",
+    "TaskBatchProposeRequestNoOpType0",
     "TaskBatchProposeResponse",
     "TaskBatchProposeResponse422",
     "TaskBatchProposeResponseDiffType0",
@@ -4498,6 +4530,8 @@ __all__ = (
     "WaitSleepExplanation",
     "WaitSleepExplanationInputs",
     "WaitSlotSeconds",
+    "WaitSourceRedispatchArgs",
+    "WaitSourceRedispatchResponse422",
     "WaitTaskExplanation",
     "WaitVerifiedEvidence",
     "WaitVerifiedEvidenceCondition",

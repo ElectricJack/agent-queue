@@ -122,6 +122,7 @@ HANDCRAFTED_COVERAGE = {
     "cron_list",
     "cron_cancel",
     "reconcile_agent_cron",
+    "reconcile_project_schedules",
     "cron_delivery_begin",
     "cron_delivery_finish",
     "message_wait",
@@ -129,7 +130,7 @@ HANDCRAFTED_COVERAGE = {
     "wait_list",
     "wait_cancel",
     "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
-    "wait_decide", "wait_lift", "wait_legacy_bridge",
+    "wait_decide", "wait_lift", "wait_legacy_bridge", "wait_source_redispatch",
     # collaboration.py — positional THREAD ids and --claim-epoch resolution.
     "collaboration_create",
     "collaboration_accept",
@@ -200,6 +201,7 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "reconcile_project_schedules",
     "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
     "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
     "integration_train_tick",  # daemon-only git-first train dispatch
@@ -491,7 +493,7 @@ def _make_auto_command(
     input_schema = tool_def.get("input_schema", {})
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
-    if cmd_name == "supervisor_inbox_reply":
+    if cmd_name in {"supervisor_inbox_reply", "supervisor_inbox_say"}:
         required.discard("text")  # The callback enforces --text XOR --file.
 
     params: list[click.Parameter] = []
@@ -536,7 +538,7 @@ def _make_auto_command(
                 help="Conversation state filter; repeat for multiple states.",
             )
         )
-    if cmd_name == "supervisor_inbox_reply":
+    if cmd_name in {"supervisor_inbox_reply", "supervisor_inbox_say"}:
         params.append(
             click.Option(
                 ["--file", "reply_file"],
@@ -563,7 +565,7 @@ def _make_auto_command(
                     if kwargs.get("states") is not None:
                         raise click.UsageError("Use either --state or --states.")
                     kwargs["states"] = list(states)
-            if name == "supervisor_inbox_reply":
+            if name in {"supervisor_inbox_reply", "supervisor_inbox_say"}:
                 from pathlib import Path
 
                 reply_file = kwargs.pop("reply_file", None)

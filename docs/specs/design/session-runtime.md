@@ -169,6 +169,11 @@ exit classifier:
 | Task already closed, session lingering | Normal drain path (kill, `stopped`) |
 | Productive death (ran long, exited, task open) | `needs_attention` / re-queue per retry policy — never silently READY |
 
+During orphan reconciliation, a `RESUME_PENDING` task's live session is retained
+when its id is in `continuation_occupancy()`'s resuming set. Read that set at most
+once per tick. This protects the continuation's new session until acknowledgment
+without treating old sessions or all `RESUME_PENDING` tasks as live pool claims.
+
 Restart counters (`restarts`) and `quarantined_at` are **persisted on the session row**, so
 the ladder survives daemon restarts.
 
@@ -296,6 +301,18 @@ pool teardown even if the worker ignores the response. Attached branch ownership
 and its claim/workspace bindings remain available for recovery; quarantining a
 workspace never deletes its checkout or removes an index lock. An operator repairs
 and re-enables it after proving the retained work safe.
+
+An active pool claim must retain its workspace's `.aq/claim.json`. Preparation
+reads back the marker before activation; a failed write/readback releases ordinary
+preparation with backoff and drains the unusable worker. Each reconciliation pass
+also detects active claims whose marker is absent in an accessible checkout,
+rechecks the session instance, task binding and epoch under the task control lock,
+and stops the worker through confirmed pool teardown. Only then may the task return
+to READY, with `prepare_failed`, `needs_attention = claim_file_missing` and preparation
+backoff. Unconfirmed stops retain resources for retry. Attached integration owners
+retain the stopped writer's claim and workspace for owner recovery. Preparations,
+verified waits, terminal tasks, successor bindings, unreadable markers and unavailable
+checkouts are excluded. Recovery never recreates a claim marker from database state.
 
 Both operator stall sweeps report live pool workers with zero activated claims
 after 15 minutes, even when repeated claim attempts keep `last_activity` fresh.

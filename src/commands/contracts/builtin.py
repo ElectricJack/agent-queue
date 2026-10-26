@@ -302,16 +302,10 @@ class GateResolveValue(CommandValue):
 
 
 class ListTasksArgs(SnapshotArgs, CommandArgs):
-    """The arguments ``_cmd_list_tasks`` actually reads.
-
-    ``limit`` is deliberately absent.  No path in
-    ``src/commands/task_commands.py`` reads it, so a step that set it got the
-    handler's own 200-row cap and no warning; leaving it undeclared makes
-    ``extra="forbid"`` reject it at compile time instead, which is a
-    diagnostic an author can act on.
-    """
+    """Arguments for task listings; ``limit`` bounds flat live reads."""
 
     project_id: str | None = None
+    limit: int | None = Field(default=None, gt=0, strict=True)
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
@@ -2394,6 +2388,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.cron import register_cron_contracts
 
     register_cron_contracts(registry)
+    from src.commands.contracts.schedule import register_schedule_contracts
+
+    register_schedule_contracts(registry)
     from src.commands.contracts.message_wait import register_message_wait_contract
 
     register_message_wait_contract(registry)
