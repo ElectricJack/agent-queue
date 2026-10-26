@@ -412,6 +412,7 @@ class AdmissionSnapshot:
     allowed: set[str]
     inputs: tuple
     snapshots: list = field(default_factory=list)
+    snapshot_tasks: dict[int, frozenset[str]] = field(default_factory=dict)
     reasons: dict[str, list[dict]] = field(default_factory=dict)
     lock_ids: set[str] = field(default_factory=set)
     required: dict[str, set[str]] = field(default_factory=dict)
@@ -452,7 +453,7 @@ class AdmissionSnapshot:
             [
                 snapshot.error is not None or await snapshot.is_fresh()
                 for snapshot in self.snapshots
-                if required is None or required.intersection(snapshot._identities)
+                if required is None or required.intersection(self.snapshot_tasks[id(snapshot)])
             ]
         )
 
@@ -642,6 +643,7 @@ async def _observe_sources(
                 for r in requests.values()
                 if (r.project_id, r.repository_id, r.target_ref) == (project_id, repo_id, target)
             ]
+            batch.snapshot_tasks[id(snapshot)] = frozenset(r.task_id for r in scoped)
             observed = await snapshot.evaluate_many(scoped)
             evidence.update(observed)
         except (GitError, OSError, ValueError):
@@ -676,7 +678,7 @@ async def _observe_sources(
         if not await snapshot.is_fresh():
             batch.changed |= snapshot.error is None
             for task_id, deps in required.items():
-                if deps.intersection(snapshot._identities):
+                if deps.intersection(batch.snapshot_tasks[id(snapshot)]):
                     batch.allowed.discard(task_id)
                     batch.reasons.setdefault(task_id, []).append(
                         {

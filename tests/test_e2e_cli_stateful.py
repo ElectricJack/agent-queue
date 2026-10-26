@@ -9,19 +9,20 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import socket
 import signal
 import subprocess
 import sys
+import tempfile
 import time
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import urlsplit
 
 import pytest
 import yaml
+
+from scripts.e2e.environment import unused_loopback_port as _unused_loopback_port
+from scripts.e2e.environment import world_env
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Each scenario item's own limit, including a fresh world's setup on its
@@ -36,52 +37,12 @@ SCENARIO_GROUPS = {
 PREREQUISITES = {"S2": ("S1",), "S3": ("S1", "S2")}
 
 
-def _unused_loopback_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-def world_env(home: Path) -> dict[str, str]:
-    env = {
-        **{k: v for k, v in os.environ.items()
-           if not k.startswith(("AQ_E2E_", "E2E_"))},
-        "AQ_E2E_HOME": str(home),
-        "AQ_E2E_PORT": str(_unused_loopback_port()),
-        "AQ_E2E_TMUX_SOCKET": f"aq-e2e-{uuid.uuid4().hex[:12]}",
-        "E2E_DB_NAME": f"aq_e2e_cli_{os.getpid()}_{uuid.uuid4().hex[:8]}",
-        "AQ_E2E_SESSION_PROVIDER": "fake",
-        "AQ_E2E_CONVERGE_TIMEOUT": "90",
-        "AQ_E2E_CYCLE_SECONDS": "1",
-        "AQ_E2E_CONFIG_POLL_SECONDS": "0.5",
-        "AQ_E2E_GRAPH_SWEEP_SECONDS": "1",
-        "AQ_E2E_POLL_SECONDS": "0.25",
-        "PYTHONUNBUFFERED": "1",
-    }
-    if target := os.environ.get("AQ_E2E_TIMINGS_DIR"):
-        env["AQ_E2E_TIMINGS_DIR"] = target
-    # A caller's operator/other E2E endpoint must never override our free port.
-    env["AQ_E2E_API_URL"] = f"http://127.0.0.1:{env['AQ_E2E_PORT']}"
-    env["AQ_API_URL"] = env["AQ_E2E_API_URL"]
-    env.pop("AQ_E2E_EXTRA_CONFIG", None)
-    postgres_test_dsn = env.get("POSTGRES_TEST_DSN")
-    if postgres_test_dsn:
-        parsed = urlsplit(postgres_test_dsn)
-        env.update({
-            "E2E_PG_HOST": parsed.hostname or "localhost",
-            "E2E_PG_PORT": str(parsed.port or 5432),
-            "E2E_PG_USER": parsed.username or "agent_queue",
-            "E2E_PG_PASSWORD": parsed.password or "agent_queue_dev",
-        })
-    return env
-
-
 def load_smoke(env):
     spec = importlib.util.spec_from_file_location("e2e_fixture_smoke", REPO_ROOT / "scripts/e2e/smoke.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     try:
-        with patch.dict(os.environ, env):
+        with patch.dict(os.environ, env, clear=True):
             spec.loader.exec_module(module)
     finally:
         sys.modules.pop(spec.name, None)
@@ -97,6 +58,7 @@ class World:
         self.smoke = load_smoke(env)
         self.swarm = None
         self.cli_server = None
+        self.cli_socket_directory = None
 
     def timing(self, data):
         row = {"group": self.group, **data}
@@ -111,7 +73,7 @@ class World:
         """Clear frontiers and held work through the disposable daemon's API."""
         self.completed.clear()
         smoke = self.smoke
-        with patch.dict(os.environ, self.env):
+        with patch.dict(os.environ, self.env, clear=True):
             def empty():
                 sessions = smoke.collection_rows(
                     smoke.api_checked("session_list", {"live_only": True}), "sessions",
@@ -193,6 +155,14 @@ def start_cli_server(world):
     # retaining Click/REST/formatting coverage and its real process exit.
     world.env["AGENT_QUEUE_DATA"] = world.env["AQ_E2E_HOME"]
     world.env["AQ_E2E_CLI_SOCKET"] = str(Path(world.env["AQ_E2E_HOME"]) / "cli.sock")
+    if len(os.fsencode(world.env["AQ_E2E_CLI_SOCKET"])) > 100:
+        # H3 explicitly declares the namespace's private short socket directory.
+        # Never silently substitute the host /tmp for a long target path.
+        root = world.env.get("AQ_E2E_SOCKET_ROOT")
+        if root is None:
+            raise ValueError("long E2E socket path requires a declared private socket root")
+        world.cli_socket_directory = tempfile.TemporaryDirectory(prefix="aq-cli-", dir=root)
+        world.env["AQ_E2E_CLI_SOCKET"] = str(Path(world.cli_socket_directory.name) / "cli.sock")
     started = time.monotonic()
     with (Path(world.env["AQ_E2E_HOME"]) / "cli-server.log").open("w") as log:
         world.cli_server = subprocess.Popen(
@@ -201,7 +171,10 @@ def start_cli_server(world):
         )
     deadline = time.monotonic() + 30
     while not Path(world.env["AQ_E2E_CLI_SOCKET"]).exists():
-        assert world.cli_server.poll() is None, "CLI preload server exited"
+        assert world.cli_server.poll() is None, (
+            "CLI preload server exited: "
+            + (Path(world.env["AQ_E2E_HOME"]) / "cli-server.log").read_text()
+        )
         assert time.monotonic() < deadline, "CLI preload server did not become ready"
         time.sleep(0.05)
     world.timing({"stage": "cli_preload", "seconds": time.monotonic() - started})
@@ -241,6 +214,8 @@ def disposable_world(group, env):
             except subprocess.TimeoutExpired:
                 os.killpg(world.cli_server.pid, signal.SIGKILL)
                 world.cli_server.wait(timeout=5)
+        if world.cli_socket_directory is not None:
+            world.cli_socket_directory.cleanup()
         if (Path(env["AQ_E2E_HOME"]) / ".aq-e2e").exists():
             started = time.monotonic()
             # A cleanup refusal is a test failure, never a silent successful run.

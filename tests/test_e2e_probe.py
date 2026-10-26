@@ -25,7 +25,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -473,7 +472,6 @@ def test_smoke_refuses_to_run_the_scenarios_against_an_unusable_database(
     assert "swarm e2e (Tier 1)" not in smoked.stdout
 
 
-@pytest.mark.skipif(shutil.which("curl") is None, reason="the kit shells out to curl")
 def test_env_reset_refuses_to_drop_a_database_under_a_daemon_it_does_not_own(tmp_path):
     # No pid file: from this home's point of view, whoever is answering on
     # the port belongs to somebody else — most likely another checkout on
@@ -493,7 +491,6 @@ def test_env_reset_refuses_to_drop_a_database_under_a_daemon_it_does_not_own(tmp
     assert (home / ".aq-e2e").exists()
 
 
-@pytest.mark.skipif(shutil.which("curl") is None, reason="the kit shells out to curl")
 def test_env_reset_stops_the_daemon_this_home_owns_before_rebuilding(
     tmp_path, fake_daemon_process
 ):

@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from sqlalchemy import insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.database.tables import (
-    continuations, events, messages, tasks, wait_deadlines, wait_edges,
+    continuations, events, integration_check_evidence, messages, repos, tasks, wait_deadlines, wait_edges,
     wait_escalations, wait_measurements, wait_records, wait_source_events,
 )
-from src.waits.conditions import Condition, SourceEvent, WaitError
+from src.waits.conditions import Condition, Observation, SourceEvent, WaitError
 from src.waits.explain import owner_key
 from src.waits.graph import clear_edges, lock_component_tasks, lock_graph, recompute_from
 from src.waits.listener import ListenerUnavailable
@@ -27,6 +27,29 @@ from src.waits.loops import prepare_progress, progress
 from src.waits.ownership import fence_owner
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 from src.wait_runtime.legacy_parking import legacy_parked
+
+
+EXTERNAL_OBSERVATIONS = frozenset({"ci_check", "ci_run", "pull_request"})
+
+
+@dataclass(frozen=True)
+class PreparedObservation:
+    condition: Condition
+    bindings: tuple
+    observation: Observation | WaitError
+
+
+async def observation_bindings(conn, cond):
+    """Snapshot the SQL identities protected by the external source owner's fence."""
+    repository = (await conn.execute(select(repos).where(
+        repos.c.id == cond.parameters["repository_id"],
+    ))).mappings().first()
+    checks = (await conn.execute(select(integration_check_evidence).where(
+        integration_check_evidence.c.repository_id == cond.parameters["repository_id"],
+        integration_check_evidence.c.sha == cond.parameters.get(
+            "head_sha", cond.parameters.get("expected_head_sha")),
+    ).order_by(integration_check_evidence.c.id))).mappings().all()
+    return (dict(repository) if repository else None, [dict(row) for row in checks])
 
 
 class WakeDispatcher:
@@ -38,7 +61,22 @@ class WakeDispatcher:
         self.resolve_escalation = resolve_escalation
         self.lock_source = lock_source
 
-    async def commit(self, conn, candidate, event, *, evidence=None):
+    async def prepare_observations(self, conn, candidates):
+        """Fresh provider reads before the graph fence; never use event payload verdicts."""
+        prepared = {}
+        for row in candidates:
+            cond = Condition.from_record(row["condition"])
+            if cond.kind not in EXTERNAL_OBSERVATIONS:
+                continue
+            bindings = await observation_bindings(conn, cond)
+            try:
+                observation = await self.registry.observe(conn, cond)
+            except WaitError as exc:
+                observation = exc
+            prepared[row["id"]] = PreparedObservation(cond, bindings, observation)
+        return prepared
+
+    async def commit(self, conn, candidate, event, *, evidence=None, observations=None):
         """Source events and bridge evidence are hints, never satisfaction proofs."""
         if await conn.get_isolation_level() != "READ COMMITTED":
             raise ValueError("wait dispatch requires READ COMMITTED observations")
@@ -117,7 +155,18 @@ class WakeDispatcher:
             observed = fresh.observation
         else:
             try:
-                observed = await self.registry.observe(conn, cond)
+                if observations is not None and cond.kind in EXTERNAL_OBSERVATIONS:
+                    prepared = observations.get(row["id"])
+                    if (prepared is None or prepared.condition != cond
+                            or prepared.bindings != await observation_bindings(conn, cond)):
+                        # A subscription or source changed during the unlocked read.
+                        # Retry outside the fence, never perform remote work here.
+                        return {"success": True, "committed": False, "retry_after": 1}
+                    observed = prepared.observation
+                    if isinstance(observed, WaitError):
+                        raise observed
+                else:
+                    observed = await self.registry.observe(conn, cond)
             except WaitError as exc:
                 # Retain the source event for another observation. Advancing
                 # the main cursor must not discard the only terminal CI event.
