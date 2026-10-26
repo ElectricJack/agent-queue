@@ -932,7 +932,9 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'authorized_engine_delta': 0,
+HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {
+ 'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
+ 'authorized_engine_delta': 0,
  'authorized_owned_delta': 51,
  'authorized_shared_owned_delta': 51,
  'authorized_table_delta': 0,

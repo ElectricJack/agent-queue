@@ -2822,6 +2822,7 @@
     "authority": "size-cap-delegation-2026-10-23",
     "authorized_owned_delta": 3416,
     "bazel_backend_selection_composition": {
+      "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 51,
       "authorized_shared_owned_delta": 51,
@@ -16899,6 +16900,7 @@
       "authority": "size-cap-delegation-2026-10-23",
       "authorized_owned_delta": 3416,
       "bazel_backend_selection_composition": {
+        "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 51,
         "authorized_shared_owned_delta": 51,
