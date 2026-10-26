@@ -22,6 +22,27 @@ filegroup(name = "sources", srcs = [
         "tool_conversion.py",
         "types.py",
     ])
+exports_files([
+        "__init__.py",
+        "cli.py",
+        "client.py",
+        "fake.py",
+        "providers/__init__.py",
+        "providers/adapters/__init__.py",
+        "providers/adapters/gemini_adapter.py",
+        "providers/adapters/openai_adapter.py",
+        "providers/anthropic.py",
+        "providers/base.py",
+        "providers/errors.py",
+        "providers/google.py",
+        "providers/local_probe.py",
+        "providers/openai.py",
+        "spec.py",
+        "tool_conversion.py",
+        "types.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

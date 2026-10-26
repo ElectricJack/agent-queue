@@ -35,6 +35,40 @@ filegroup(name = "sources", srcs = [
         "wizard.py",
         "wsl.py",
     ])
+exports_files([
+        "__init__.py",
+        "command.py",
+        "dashboard.py",
+        "deploy.py",
+        "deploy_history.py",
+        "engine.py",
+        "git_identity.py",
+        "graft.py",
+        "lifecycle.py",
+        "logins.py",
+        "macos.py",
+        "node_toolchain.py",
+        "onboarding.py",
+        "platform.py",
+        "pools.py",
+        "postgres.py",
+        "postgres_steps.py",
+        "prerequisites.py",
+        "providers.py",
+        "redaction.py",
+        "registry.py",
+        "results.py",
+        "service.py",
+        "state.py",
+        "steps.py",
+        "update.py",
+        "update_finish.py",
+        "watchdog.py",
+        "wizard.py",
+        "wsl.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

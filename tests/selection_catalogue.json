@@ -108,7 +108,8 @@
     "bazel-toolchains": {
       "description": "Pinned toolchain, dependency lock and Linux ABI integrity boundaries.",
       "modules": [
-        "tests/test_bazel_manifest.py"
+        "tests/test_bazel_manifest.py",
+        "tests/test_bazel_test_dependencies.py"
       ]
     },
     "capabilities": {
@@ -3394,6 +3395,16 @@
         "parametrize"
       ],
       "summary": "H5 contracts: real pytest lifecycles with synthetic time, never timing benchmarks."
+    },
+    "tests/test_bazel_test_dependencies.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:cad60e4e27d2421bde11d37843c9a85b8ab3cdab735e117c25ee449d9acd7aa6",
+      "imports": [],
+      "markers": [],
+      "summary": "Per-test Bazel dependency discovery preserves runtime inputs without global fanout."
     },
     "tests/test_blocked_state.py": {
       "areas": [
@@ -8886,7 +8897,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0b5328f33fa5f4086c5d03e8553c8f04b448a4ed818506832aa991fc9a59c3b2",
+      "digest": "sha256:e3541d9f3407e8b629a079babf6712a726b1c4834a9a73b3812fcf8a92db0d38",
       "imports": [
         "src.database.tables",
         "src.git.manager",
@@ -8894,7 +8905,12 @@
         "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.runtime_contracts",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.models",
+        "src.waits",
+        "src.waits.conditions",
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"

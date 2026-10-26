@@ -22,6 +22,37 @@ filegroup(name = "sources", srcs = [
         "templates/tool_guidance_opencode.md",
         "templates/wait_guidance.md",
     ])
+exports_files([
+        "__init__.py",
+        "budgets.py",
+        "hook_envelopes.py",
+        "models.py",
+        "overrides.py",
+        "renderer.py",
+        "sections.py",
+        "templates/completion_protocol.md",
+        "templates/completion_protocol_pool.md",
+        "templates/emergent_work.md",
+        "templates/hooks/claude.json",
+        "templates/hooks/codex.json",
+        "templates/infrastructure_incidents.md",
+        "templates/operator_decisions.md",
+        "templates/tool_guidance.md",
+        "templates/tool_guidance_opencode.md",
+        "templates/wait_guidance.md",
+    ])
+filegroup(name = "resources", srcs = [
+        "templates/completion_protocol.md",
+        "templates/completion_protocol_pool.md",
+        "templates/emergent_work.md",
+        "templates/hooks/claude.json",
+        "templates/hooks/codex.json",
+        "templates/infrastructure_incidents.md",
+        "templates/operator_decisions.md",
+        "templates/tool_guidance.md",
+        "templates/tool_guidance_opencode.md",
+        "templates/wait_guidance.md",
+    ])
 py_library(
     name = "library",
     srcs = [
