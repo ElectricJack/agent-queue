@@ -41,7 +41,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3110,
+    "authorized_owned_delta": 3169,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -206,9 +206,32 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83221,
-    "measured_owned_total": 158609,
+    "measured_engine_lines": 83280,
+    "measured_owned_total": 158668,
     "measured_table_count": 45,
+    "missing_target_abort_composition": {
+      "authorized_engine_delta": 59,
+      "authorized_owned_delta": 59,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/batches.py": 4,
+        "src/integration/fixers.py": 26,
+        "src/integration/train_controls.py": 15,
+        "src/integration/train_sources.py": 14
+      },
+      "dev_source_revision": "389f345d17ce86fd52f4e4e7aace9fcd35c0a7eb",
+      "measured_engine_lines": 83280,
+      "measured_owned_total": 158668,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83221,
+      "previous_measured_owned_total": 158609,
+      "previous_measured_table_count": 45,
+      "reason": "Exact task-preapproved missing-target abort and epic-refresh retirement delta on merged dev. Preserve historical baselines, grants and ownership classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "39242c4c5",
+      "task_id": "grand-falcon-16"
+    },
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
     "originless_backfill_provenance_composition": {
