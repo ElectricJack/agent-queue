@@ -120,6 +120,7 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/integration/cutover.py` | Receipt inventory, target retagging writer and trigger controls | cutover |
 | `src/integration/task_deletion.py` | Receipt snapshot for historical deletion audit | policy_docs; retain audit without delivery authority |
 | `src/integration/truth_reconciler.py` | Idempotent historical receipt after fresh Git verification and retained immutable witness; records first observation, never receipt-based delivery authority | watchdog; policy_docs; retain audit without delivery authority |
+| `src/integration/delivery_branches.py` | Epic deletion fence checks retained child witness identity against the current completion and task version; receipt presence never grants delivery | cleanup; policy_docs; retain source before deleting its collection target |
 | `src/integration/legacy_backfill.py` | Historical delivery attestation/relanding and receipt-based source locator | cutover; policy_docs |
 | `src/integration/shadow.py` | Indirect selected_receipt_id comparison against Git | cutover; policy_docs |
 | `src/integration/promotion_contracts.py` | Promotion receipt IDs in historical result contract | policy_docs; retain recovery identity if needed |
