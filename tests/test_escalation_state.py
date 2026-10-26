@@ -614,7 +614,7 @@ async def test_a_closed_incident_collapses_its_post_once_and_stamps_the_clock(wo
     assert collapsed.startswith("✅ Resolved: Cut from main")
     # One line, no link, no mention: §3.2's collapsed row.
     assert len(collapsed.splitlines()) == 2 and collapsed.splitlines()[1].startswith("-# ")
-    assert "/focus/" not in collapsed
+    assert "/" not in collapsed
     stamped = await world.db.get_escalation(row["id"])
     assert stamped["collapsed_at"] == world.clock()
     # The thread is archived exactly once and the closed post is one line.

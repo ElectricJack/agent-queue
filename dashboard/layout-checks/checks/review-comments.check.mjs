@@ -166,6 +166,8 @@ export async function run(t) {
   await assertDraft(t.page, "Clarify these details.");
   await t.shot("resized-draft");
   await t.page.keyboard.press("Escape");
+  await assertDraft(t.page, "Clarify these details.");
+  await t.page.click('[aria-label="Add review comment"] button::-p-text(Discard draft)');
   await t.page.waitForFunction(() => !document.querySelector("#review-comment-body"));
   assert.equal(await t.page.evaluate(() => document.activeElement.textContent.trim()), "Comment on this section");
   assert.equal(await t.page.$eval('[data-review-body]', (el) => el.scrollTop), resized.scrollTop);
