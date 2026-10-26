@@ -95,10 +95,6 @@
       },
       {
         "protocol": "delegated_producer",
-        "return": "_error('digest.invalid', 'digest links are inserted by the daemon')"
-      },
-      {
-        "protocol": "delegated_producer",
         "return": "_error('digest.invalid', str(exc))"
       },
       {
@@ -110,14 +106,15 @@
         "return": "{'success': True, 'request_id': changed['id'], 'window_id': window['id'], 'state': changed['state'], 'version': changed['version'], 'text': text, 'characters': len(text)}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Authored HTTP(S) links now pass to render_authored_digest; only the obsolete URL-only refusal branch was removed. Empty-body, authority, window ownership and deadline refusals remain explicit false envelopes; successful submission retains its explicit true flag.",
     "schema_quality": "declared",
-    "source_digest": "sha256:ac4c7c8df03f160dd0cfa73280982f6cd09eccac02ca1995b6d6c903fd19fa45",
+    "source_digest": "sha256:aa30cf59376d384779a6ede449f8c4778b2dd3011e8ce199367c0e2c3866cbcb",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_digest_supervisor.py"
+      "tests/test_digest_supervisor.py",
+      "tests/test_digest_supervisor.py::test_a_body_with_a_link_is_accepted_but_an_empty_body_is_refused"
     ]
   },
   "digest_preview": {

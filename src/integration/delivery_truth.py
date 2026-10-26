@@ -268,7 +268,7 @@ class DeliveryEvidence:
 
     @property
     def unloaded(self):
-        """Unknown only because Git has not been observed; never an admission veto."""
+        """Unknown because Git has not been observed; `blocks` may still prepare."""
         return self.state is DeliveryState.UNKNOWN and self.reason not in UNPROVABLE_SOURCE_REASONS
 
 

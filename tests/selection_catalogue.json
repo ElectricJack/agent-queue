@@ -168,6 +168,7 @@
     "cli-test-runner": {
       "description": "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, signal forwarding and the no-tests-collected exit.",
       "modules": [
+        "tests/test_bazel_cli.py",
         "tests/test_cli_test_runner.py",
         "tests/test_resource_semaphore.py"
       ]
@@ -3329,6 +3330,23 @@
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
     },
+    "tests/test_bazel_cli.py": {
+      "areas": [
+        "cli-test-runner"
+      ],
+      "default_arm": true,
+      "digest": "sha256:44115f6bc7de42464a8bdcc794f8e48fb45baac07b69801ff3dba5c39561c99e",
+      "imports": [
+        "src.cli.app",
+        "src.cli.test_runner",
+        "src.resources.box_lock",
+        "src.resources.semaphore"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bazel CLI selections and real shared admission/cancellation boundaries."
+    },
     "tests/test_bazel_environment.py": {
       "areas": [
         "bazel-environment"
@@ -5261,13 +5279,15 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:fb352d2eda1a59d8bf44c0bbd2f0fe74bbc38002f384e722620f2ffb04cde801",
+      "digest": "sha256:c5aa418ec1140f40bf101be6497fd575b8bba605a15dc171ff23fba7ef36e294",
       "imports": [
         "src.conversations.render",
         "src.delivery.message"
       ],
-      "markers": [],
-      "summary": "Explicit replies are bounded, mention-free and link-filtered."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit replies are bounded, mention-free and preserve links."
     },
     "tests/test_conversation_wiring.py": {
       "areas": [
@@ -5398,7 +5418,7 @@
         "messaging-adapters"
       ],
       "default_arm": true,
-      "digest": "sha256:9e95940c2d115da12282aa361dd9315b852c940d29032eebd89373e61e0ea5d4",
+      "digest": "sha256:c71ee1ca9963e84562bc96231db835a5aae2b5b6f3b5e19d0967d71c6a1e1119",
       "imports": [
         "src.dashboard_paths",
         "src.digest",
@@ -5410,7 +5430,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "One link resolver, one path scheme, one link per post (spec §6.1, §6.2)."
+      "summary": "One link resolver, one path scheme, clickable dashboard links (spec §6.1, §6.2)."
     },
     "tests/test_dashboard_perf_kit.py": {
       "areas": [
@@ -8866,7 +8886,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0b5328f33fa5f4086c5d03e8553c8f04b448a4ed818506832aa991fc9a59c3b2",
+      "digest": "sha256:e3541d9f3407e8b629a079babf6712a726b1c4834a9a73b3812fcf8a92db0d38",
       "imports": [
         "src.database.tables",
         "src.git.manager",
@@ -8874,7 +8894,12 @@
         "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.runtime_contracts",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.models",
+        "src.waits",
+        "src.waits.conditions",
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"
@@ -20231,7 +20256,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:ea48167444a746e0165f4d347bdb51d5789123941d0833fbfdb5c97065a96ed2",
+      "digest": "sha256:fa758b7c0e0afee67f6f333448a60d0cf2c70830931cdf50df3f66bd19a00357",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20253,6 +20278,7 @@
         "src.waits.registry",
         "src.waits.resource_sources",
         "src.waits.sources",
+        "src.waits.timers",
         "src.waits.watchers.ci"
       ],
       "markers": [
@@ -20433,14 +20459,15 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:ace1960f57f6b36f4349132aa8dfd50991a7d7b5844acefc26a7c927c64ca4e9",
+      "digest": "sha256:1c32bc5b8b7299bb92e80adf0bd82e3de0024e16d400d4429d762dd69c84f950",
       "imports": [
+        "src.git.manager",
         "src.waits.listener"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."
+      "summary": "Dedicated LISTEN connection arguments and service-loop cleanup safety."
     },
     "tests/test_wait_metrics.py": {
       "areas": [
