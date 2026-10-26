@@ -250,6 +250,52 @@ async def test_originless_backfill_retains_provenance_for_dependency_admission(w
     assert (await admission()).allowed == set()
 
 
+async def test_hand_landed_epics_with_retired_origins_and_mixed_child_refs(world):
+    from src.integration.admission import observe_admission
+
+    db, origin = world.db, world.origin
+    base = git(origin.clone, "rev-parse", "origin/main")
+    children = {}
+    for parent in ("h", "a"):
+        kept, gone = parent + "-kept", parent + "-gone"
+        children[kept] = await epic_with_child(
+            world, parent, kept, epic_status=TaskStatus.IN_PROGRESS,
+        )
+        children[gone] = await legacy(world, gone, parent=parent, land=True, delete_branch=True)
+        origin.land(parent)
+        await db.transition_task(parent, TaskStatus.COMPLETED)
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=parent + "-origin", task_id=parent, repository_id="r",
+                branch_name="aq/" + parent, base_sha=base, creation_generation=0,
+                reserved=True, materialized=True, created_at=time.time(), retired_at=time.time(),
+            ))
+        git(origin.clone, "push", "-q", "origin", "--delete", "aq/" + parent)
+    target = git(origin.clone, "ls-remote", "origin", "refs/heads/main").split()[0]
+    await db.create_task(Task(id="b", project_id="p", repo_id="r", title="b", description="",
+                              branch_name="aq/b", status=TaskStatus.IN_PROGRESS))
+    git(origin.clone, "push", "-q", "origin", target + ":refs/heads/aq/b")
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", parent_task_id="b", status=TaskStatus.READY))
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="b", parent_repository_id="r",
+            parent_ref="aq/b", base_sha=target, creation_generation=0,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    for child in children:
+        await db.add_dependency("dependent", child)
+    service = SimpleNamespace(delivery_observer=db._delivery_observer)
+    assert (await observe_admission(db, ["dependent"], service)).allowed == set()
+    preview = await backfill_legacy_deliveries(db, "p")
+    assert {r["task_id"]: r["delivered_sha"] for r in preview["results"]} == children
+    assert preview["proven"] == 4 and preview["recorded"] == 0
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="hand landed epics")
+    assert applied["recorded"] == 4
+    assert (await observe_admission(db, ["dependent"], service)).allowed == {"dependent"}
+
+
 @pytest.mark.parametrize("case", ["earlier_commit", "equivalent", "failed", "changed"])
 async def test_originless_backfill_retains_only_current_exact_passing_source(
     world, monkeypatch, case,
