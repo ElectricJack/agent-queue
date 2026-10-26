@@ -59,3 +59,10 @@ The subsequent dev merge retains the approved tick snapshot sharing grant
 reduction, the exact ceiling is 158,167 owned lines and 82,877 engine lines,
 with 45 tables and zero remaining headroom. The grant's original measurements
 and decision evidence remain unchanged.
+
+The next dev refresh composes its approved retained-fixer authority (+124
+owned / +78 engine), changed-ref fetches (+87 / +86), aborted-batch branch
+retirement (+63 / +55), and checkout reuse (+67 / +67) grants with the same
+26-line dashboard reduction. The exact ceiling is 158,508 owned lines and
+83,163 engine lines, with 45 tables and zero remaining headroom. Every prior
+grant and merge measurement remains intact.
