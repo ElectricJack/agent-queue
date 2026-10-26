@@ -2456,6 +2456,70 @@ async def test_resume_hold_requires_new_current_provider_generation(env):
     assert row['hold_reason'] is None
 
 
+@pytest.mark.parametrize('inherited_pass', [False, True])
+@pytest.mark.parametrize('changed_task', ['owner', 'unrelated'])
+async def test_resume_refreshes_own_admission_despite_backlog_and_other_graph_changes(
+    env, monkeypatch, inherited_pass, changed_task,
+):
+    from contextlib import nullcontext
+    from src.integration import admission
+    from src.models import AgentProfile, RepoConfig, RepoSourceType, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    await env.db.create_profile(AgentProfile(id='worker', name='Worker', lifecycle='pool'))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url='https://example.test/repo',
+        source_type=RepoSourceType.CLONE, checkout_base_path='/tmp/resume-admission'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    await env.db.create_workspace(Workspace(id='available', project_id='p',
+        workspace_path='/tmp/resume-available', source_type=RepoSourceType.CLONE,
+        kind_id='project-repo'))
+    await env.db.create_task(Task(id='unrelated', project_id='p', title='Other', description=''))
+    await env.db.update_task('unrelated', status='READY')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker', route_source='override'))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'workspace_released_at': NOW + 20}))
+    for n in range(20):
+        await env.db.wait_source_commit(source_key='message:backlog', generation=0,
+            revision=str(n), outcome_ref=f'message:{n}', payload={})
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _pool_quarantine_state=lambda *a: (None, None))
+    scheduler = SchedulerWaitService(orch, clock=lambda: NOW + 30)
+    driver = ResumeTransaction(SimpleNamespace(orch=orch, scheduler=scheduler),
+                               clock=lambda: NOW + 30)
+    observe = admission.observe_admission
+    observations = []
+
+    async def moving_graph(db, ids, *args, **kwargs):
+        view = await observe(db, ids, *args, **kwargs)
+        observations.append((set(ids), kwargs['cached_only']))
+        # Continuous work elsewhere must not spoil this task's snapshot.
+        await db.add_dependency(changed_task, 'source')
+        return view
+
+    monkeypatch.setattr(admission, 'observe_admission', moving_graph)
+    async with scheduler.reader.prepared() if inherited_pass else nullcontext():
+        action = await driver.reserve('c', 1)
+    assert observations[-1] == ({'owner'}, False)
+    if changed_task == 'owner':
+        assert action is None
+        assert (await intent(env))['resume_state'] == 'queued'
+    else:
+        assert action is not None and action.continuation_id == 'c'
+        assert (await intent(env))['resume_state'] == 'reserved'
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_source_events.c.seq).where(
+            wait_source_events.c.source_key == 'message:backlog',
+            wait_source_events.c.dispatched_at.is_(None),
+        ).limit(1)) is not None  # Admission did not need to drain even one event.
+
+
 def test_turn_measurement_counts_all_calls_and_streaming_maxima():
     from src.sessions.transcripts import TranscriptEntry
     from src.wait_runtime.measurements import first_turn_tokens
