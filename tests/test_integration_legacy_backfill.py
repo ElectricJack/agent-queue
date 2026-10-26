@@ -313,8 +313,9 @@ async def test_hand_landed_epics_with_retired_origins_and_mixed_child_refs(
     for child in children:
         await db.add_dependency("dependent", child)
     service = SimpleNamespace(delivery_observer=db._delivery_observer)
-    assert (await observe_admission(db, ["dependent"], service)).allowed == (
-        {"dependent"} if retained else set())
+    # Exact delivery containment supplies legacy stack prerequisites even
+    # before backfill creates their retained completion markers.
+    assert (await observe_admission(db, ["dependent"], service)).allowed == {"dependent"}
     preview = await backfill_legacy_deliveries(db, "p", snapshot=stale_snapshot)
     assert {r["task_id"]: r["delivered_sha"] for r in preview["results"]} == children
     assert preview["proven"] == 4 and preview["recorded"] == 0
