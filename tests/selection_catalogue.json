@@ -18067,7 +18067,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:1d64b19548230311ee4c38cea2940ecd774bd9f842e1db6d7da3855c9de4645b",
+      "digest": "sha256:2dc0b363ca991ea9330c466604a9d228375592db52523498be4dbd970c76e5d3",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -18075,6 +18075,7 @@
       ],
       "markers": [
         "integration",
+        "parametrize",
         "timeout"
       ],
       "summary": "Reviewed stuck-task watch acceptance over an isolated daemon and PostgreSQL, no LLM."
