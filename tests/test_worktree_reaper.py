@@ -324,7 +324,8 @@ async def test_existing_binding_reconciliation_preserves_source_and_owner(
     "startup", "first_claim", "draining", "drain_requested", "changed_generation",
     "second_session",
     "session_holds_task", "foreign_agent", "stopped", "claim_file", "agent_task",
-    "held_sentinel", "on_branch", "unknown_liveness", "failed_preparation", "attached_owner",
+    "held_sentinel", "predecessor", "dirty_predecessor", "on_branch", "unknown_liveness",
+    "failed_preparation", "attached_owner",
 ])
 async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
     tmp_path, base_repo, monkeypatch, case,
@@ -401,6 +402,10 @@ async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
         if case == "held_sentinel":
             mgr.write_sentinel(path, replace(mgr.read_sentinel(path), task_id="tsk-old",
                                              branch="aq/tsk-old"))
+        if case in ("predecessor", "dirty_predecessor"):
+            mgr.write_sentinel(path, replace(mgr.read_sentinel(path), task_id="tsk-old"))
+            if case == "dirty_predecessor":
+                (path / "uncommitted.txt").write_text("preserve predecessor changes\n")
         if case == "on_branch":
             _git(["switch", "-c", "stray"], path)
         if case == "attached_owner":
@@ -445,6 +450,7 @@ async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
             "claim_file": "claim file retained without a task binding",
             "agent_task": "registered task/agent binding disagrees",
             "held_sentinel": "source sentinel disagrees",
+            "dirty_predecessor": "predecessor checkout is dirty or unproved",
             "on_branch": "checkout branch disagrees",
             "unknown_liveness": "process inventory unverifiable",
             "failed_preparation": "retains a failed preparation for task tsk-failed",
@@ -628,6 +634,7 @@ async def test_task_branch_moves_between_pool_slots_only_without_a_live_claim(
             sentinel = mgr.read_sentinel(path)
             assert sentinel.task_id == "tsk-1"
             assert sentinel.branch is None
+            assert await reconcile_slot_bindings(o.db, mgr, "p1") == []
         if case not in ("idle", "claiming", "claim_race"):
             assert _git(["branch", "--show-current"], path) == branch
         assert _git(["rev-parse", "HEAD"], path) == head
