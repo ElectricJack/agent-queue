@@ -29,6 +29,7 @@ from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
 from src.git.manager import ForeignSlotClaim, SlotSourceDisagreement
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
+from src.git.repository_lock import RepositoryLockTimeout, repository_lock_wait_limit
 from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 from src.workspace_disable import CLAIM_FAILURES, disable_fields
@@ -41,6 +42,9 @@ _UNSET = object()
 _PREPARATION_RETRY_DELAYS = (0.05, 0.1)
 # A no-wait caller receives progress after this bounded warm-path allowance.
 _PREPARATION_RESPONSE_SECONDS = 0.5
+# A busy train must not leave a worker waiting minutes for repository exclusion.
+# This limits acquisition only; Git commands and fence checks retain their budgets.
+_CLAIM_REPOSITORY_LOCK_SECONDS = 5.0
 # Admission refusals whose Git inputs moved under the claim; a bounded re-read
 # recomputes selection from the new inputs and refuses again if they keep moving.
 _MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_changed"})
@@ -55,6 +59,8 @@ def _retryable_preparation_error(exc: Exception, *, stage: str | None = None) ->
     """Retry fenced I/O expiry and PostgreSQL transaction conflicts."""
     from src.integration.lock import BranchLockTimeout
 
+    if isinstance(exc, RepositoryLockTimeout):
+        return True
     if isinstance(exc, BranchLockTimeout):
         # A reset that repeatedly exceeds the fence must spend the bounded
         # preparation budget, rather than retaining an invisible retry loop.
@@ -1351,6 +1357,7 @@ class ClaimCommandsMixin:
         # claim, and a successful claim needs no fifth pool checkout.
         timing = current_claim_timing.get()
         async with AsyncExitStack() as stack:
+            stack.enter_context(repository_lock_wait_limit(_CLAIM_REPOSITORY_LOCK_SECONDS))
             if timing is not None:
                 timing.activation_stack = stack
             try:
@@ -1476,7 +1483,10 @@ class ClaimCommandsMixin:
                         raise
                     from src.preparation_failure import describe_preparation_failure
 
-                    failure = describe_preparation_failure(exc, "preparation_retry")
+                    failure = describe_preparation_failure(
+                        exc, "repository_lock" if isinstance(exc, RepositoryLockTimeout)
+                        else "preparation_retry",
+                    )
                     active = await self.db.get_session(session.id)
                     if (active is not None and active.task_id == task.id
                             and active.last_claim_epoch == task.claim_epoch
@@ -1486,6 +1496,11 @@ class ClaimCommandsMixin:
                         # already active checkout or report preparation failed.
                         self._resolve_claim_waiters(session.id, task.claim_epoch, "claimed")
                         return await self._claimed_response(task, task.claim_epoch, active, cap)
+                    if isinstance(exc, RepositoryLockTimeout):
+                        # The owning train/read keeps running. Unwind SQL and
+                        # branch exclusions and report the existing cooldown
+                        # immediately, retaining this preparation for re-entry.
+                        break
                     # Every immediate()/mutation_exclusion transaction has
                     # rolled back before this catch. Keep the claim and ref
                     # reservation: releasing either would strand a delegate
