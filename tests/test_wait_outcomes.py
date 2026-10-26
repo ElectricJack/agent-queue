@@ -140,6 +140,33 @@ async def test_missing_priority_owner_rolls_back_outcome_and_leased_cursor(env):
     assert (await records(env))[0]["outcome"] == "satisfied"
 
 
+async def test_existing_outcome_measurement_preserves_sample_and_commits_wake(env):
+    receipt = await waiting(env)
+    sample = dict(
+        id=f"outcome:{receipt['wait_id']}", project_id="p", wait_id=receipt["wait_id"],
+        condition_kind="task", source_class="task", decision="in_place",
+        waited_seconds=3, hibernated=True, evicted=False, recorded_at=NOW + 3,
+        setup_seconds=7, rebuild_seconds=11,
+    )
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_measurements).values(**sample))
+    service = runtime(env, dispatcher=dispatcher(env))
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+
+    assert await service.listener.tick()
+    assert (await records(env))[0]["outcome"] == "satisfied"
+    measured = await records(env, wait_measurements)
+    assert len(measured) == 1
+    assert {key: measured[0][key] for key in sample} == sample
+    assert len([row for row in await records(env, messages)
+                if row["body_kind"] == "wait_outcome"]) == 1
+    source_events = [row for row in await records(env, wait_source_events)
+                     if row["source_key"] == "task:source"]
+    assert source_events and all(row["dispatched_at"] is not None for row in source_events)
+    assert await service.listener.tick()
+    assert await records(env, wait_measurements) == measured
+
+
 async def test_real_graph_retraction_rolls_back_then_commits_with_outcome(env):
     async def priorities():
         return {row["id"]: row["effective_priority"] for row in await records(env, tasks)}
