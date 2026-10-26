@@ -1368,6 +1368,110 @@ async def test_cleaned_delivered_source_keeps_dependent_admissible(stack):
     assert await stack.service.refresh("child", stack.gitops) == "unchanged"
 
 
+@pytest.mark.parametrize("target_ref", ["main", "aq/epic"])
+async def test_cleaned_legacy_prerequisite_uses_exact_contained_completion(stack, target_ref):
+    git(stack.origin.clone, "push", "origin", f"{stack.first}:{target_ref}")
+    identity = CompletionIdentity("p", "r", "first", "close-first")
+    git(stack.origin.clone, "push", "origin", ":aq/first", ":" + identity.ref)
+
+    view = await observe_stacks(stack.service.observer, "p", task_id="child")
+    assert view.proofs["first"]["checkpoint_sha"] == stack.first
+    assert await view.fresh()
+    assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+    assert await stack.service.current("child")
+    if target_ref == "aq/epic":
+        async with stack.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "epic").values(
+                branch_name="aq/replaced-epic",
+            ))
+        async with stack.db._engine.connect() as conn:
+            assert await view.verified_on(conn) == {}
+    # The proof follows the delivery target, not the deleted task ref.
+    git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:{target_ref}")
+    assert not await view.fresh()
+
+
+async def test_cleaned_legacy_prerequisite_preserves_batch_publication_authority(stack):
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    git(stack.origin.clone, "push", "origin", f"{stack.first}:aq/epic")
+    train, _, _ = lane(stack.world, stack.gitops.git, target=target)
+    service = (await train.lane_for(target)).service
+    observed = await snapshot(stack.world, target)
+    members, requests, dependencies = await train.batches.pending(target, observed)
+    assert [member.task_id for member in members] == ["child"]
+    from src.integration.batches import Batch
+    from src.integration.fixer_runtime import DaemonFixerRuntime
+    from src.integration.lock import PublishWithdrawn
+    from src.models import SessionRecord
+
+    batch = await service.freeze(Batch("legacy-stack", "p", "r", target.target_ref), members,
+                                 requests=requests, snapshot=observed, dependencies=dependencies)
+    identity = CompletionIdentity("p", "r", "first", "close-first")
+    git(stack.origin.clone, "push", "origin", ":aq/first", ":" + identity.ref)
+    assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+    assert await train.batches.eligible(batch, members, snapshot=await snapshot(stack.world, target))
+    assert await service._authorized(batch, members)
+    session = SessionRecord(
+        id="legacy-stack-fixer", project_id="p", profile_id="fixer", harness="codex",
+        provider="fake", name="legacy-stack-fixer", lifecycle="named", work_dir="/repair",
+        epoch="test", instance_token="legacy-stack-instance", started_at=1, state="running",
+    )
+    await stack.db.create_session(session)
+    state = {"status": "active", "session_id": session.id,
+             "instance_token": session.instance_token, "work_dir": session.work_dir,
+             "target_ref": target.target_ref, "starting_sha": stack.child,
+             "members": [{"task_id": member.task_id} for member in members]}
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).values(fixer_state=state))
+    runtime = DaemonFixerRuntime(SimpleNamespace(db=stack.db, git=stack.gitops.git),
+                                lanes=train.lane_for)
+
+    async def publication_authority():
+        current = await stack.db.get_integration_batch(batch.id)
+        async with stack.db.immediate() as conn:
+            return await runtime._check_publication_authority(
+                conn, current, state, session, await train.lane_for(target), train.batches.eligible,
+            )
+
+    assert await publication_authority() == state
+    # Simulate an already committed reopen; the lifecycle API separately
+    # refuses reopening delivered work without its recovery authorization.
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "first").values(status="READY"))
+    assert await stack.service.refresh("child", stack.gitops) == "waiting_prerequisite"
+    assert not await service._authorized(batch, members)
+    with pytest.raises(PublishWithdrawn, match="batch source or policy authority changed"):
+        await publication_authority()
+
+
+@pytest.mark.parametrize("case", ["reopened", "undelivered", "mismatched", "conflicting_marker"])
+async def test_cleaned_prerequisite_requires_current_exact_delivered_source(stack, case):
+    identity = CompletionIdentity("p", "r", "first", "close-first")
+    git(stack.origin.clone, "push", "origin", f"{stack.first}:main", ":aq/first")
+    if case != "conflicting_marker":
+        git(stack.origin.clone, "push", "origin", ":" + identity.ref)
+    if case == "reopened":
+        async with stack.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "first").values(status="READY"))
+    elif case == "undelivered":
+        git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:main")
+    elif case in {"mismatched", "conflicting_marker"}:
+        # The checkpoint still names delivered work, but the immutable close
+        # reports another source. Neither locator can answer that completion.
+        from src.database.tables import task_completion_records
+
+        async with stack.db.immediate() as conn:
+            await conn.execute(update(task_completion_records).where(
+                task_completion_records.c.id == "close-first",
+            ).values(commits=json.dumps([stack.child])))
+    view = await observe_stacks(stack.service.observer, "p", task_id="child")
+    assert "first" not in view.proofs
+    assert await stack.service.refresh("child", stack.gitops) == "waiting_prerequisite"
+    assert not await stack.service.current("child")
+
+
 async def test_live_child_writer_withholds_refresh_without_losing_commits(stack):
     next_head = stack.origin.work("first", "revision")
     await close(stack.db, "first", [next_head], close_id="first-revised", origin=stack.origin)

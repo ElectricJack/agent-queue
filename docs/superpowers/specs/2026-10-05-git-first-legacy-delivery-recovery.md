@@ -16,6 +16,15 @@ current completion generation. No attestation transfers to a later completion.
 This is a read-only compatibility exception; journals, receipts, outbox and old
 runtime projections remain outside train authority.
 
+Stack prerequisite verification also accepts a current passing completion's exact
+final recorded commit when Git proves it contained in the dependent's current
+delivery target or the project default branch. This covers legacy completions
+without retained Git markers after their task branches are retired. A conflicting
+retained marker, a different recorded final source, reopened generation, explicit
+hold or unavailable containment proof still withholds the prerequisite. The
+observation pins and rechecks the branch that supplied containment; deleting a
+task ref alone supplies no proof. Publication authority checks remain unchanged.
+
 A completed epic whose current passing descriptive completion records an exact
 source OID but lacks its retained completion marker may also be excluded by Git
 ancestry or a no-op merge of that exact source into the designated root. The

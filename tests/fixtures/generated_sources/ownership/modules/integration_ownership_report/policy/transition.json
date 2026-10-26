@@ -14,7 +14,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83434,
+    "engine_cap": 83468,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -59,7 +59,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3364,
+      "authorized_owned_delta": 3398,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -283,8 +283,29 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 83434,
-      "measured_owned_total": 158863,
+      "legacy_stack_containment_composition": {
+        "authorized_engine_delta": 34,
+        "authorized_owned_delta": 34,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/integration/stacked_branches.py": 34
+        },
+        "decision_message_id": "msg-638b9b5121704677b422ee767b531238",
+        "dev_source_revision": "383c1e85b925c00366535716c608bb80797f84c8",
+        "measured_engine_lines": 83468,
+        "measured_owned_total": 158897,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83434,
+        "previous_measured_owned_total": 158863,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved containment proof for delivered legacy stack prerequisites after branch cleanup. Preserve every historical grant, baseline and ownership classification; zero remaining headroom and no new storage.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "steady-vault-53",
+        "thread_id": "steady-vault-53-size"
+      },
+      "measured_engine_lines": 83468,
+      "measured_owned_total": 158897,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -843,7 +864,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 158863,
+    "owned_total_cap": 158897,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

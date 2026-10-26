@@ -251,7 +251,12 @@ In stacked mode, completed passing `blocks` prerequisites in the same repository
 can supply sources from siblings, another epic or a root task. They do not wait
 for parent assembly or default-branch delivery. Git's retained completion names
 the immutable final source; deleting or moving its task branch does not change
-that generation. Preparation includes the current parent/default base and every
+that generation. A legacy completion without a retained marker can supply its
+exact recorded final commit when Git proves that commit contained in the child's
+delivery target or project default branch. The observer rechecks that target ref;
+a reopened completion, conflicting source binding or missing containment proof
+still withholds the prerequisite.
+Preparation includes the current parent/default base and every
 required source, ordered by dependency topology then stable task ID. Contained
 heads are deduplicated, fast-forwards are allowed, and divergent inputs use real
 merge commits. Every required source must be an ancestor of the prepared head.
