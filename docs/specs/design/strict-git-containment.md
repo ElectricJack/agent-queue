@@ -116,6 +116,7 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/integration/drain_owners.py` | Receipt-backed owner release | admission; policy_docs |
 | `src/integration/removal_guard.py` | Receipt fallback for hierarchical archive/delete | admission |
 | `src/integration/cleanup.py` | Batch receipt cleanup gate and descendant receipt projection | admission; dispatch; policy_docs |
+| `src/integration/delivery_branches.py` | Epic deletion fence requires each completed child's retained Git witness for its current completion and task version; permits cleanup only, never proves current containment | dispatch; policy_docs; retain audit without delivery authority |
 | `src/integration/release.py` | Terminal batch release proof from receipt ordinals/reservations | dispatch; policy_docs |
 | `src/integration/cutover.py` | Receipt inventory, target retagging writer and trigger controls | cutover |
 | `src/integration/task_deletion.py` | Receipt snapshot for historical deletion audit | policy_docs; retain audit without delivery authority |
