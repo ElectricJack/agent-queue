@@ -30,6 +30,7 @@ POSTGRES_IMAGES = [
     'public.ecr.aws/docker/library/postgres:18',
 ]
 POSTGRES_IMAGES = [f'{image}@{POSTGRES_DIGEST}' for image in POSTGRES_IMAGES]
+POSTGRES_START = Path('.github/scripts/start-postgres.sh')
 
 
 def workflow(name='tests.yml'):
@@ -355,7 +356,6 @@ def test_postgres_uses_pinned_ghcr_with_public_mirror_fallbacks():
     # Public mirrors were also throttled in the staging promotion for PR 1981.
     assert workflow()['env']['POSTGRES_DIGEST'] == POSTGRES_DIGEST
     jobs = workflow()['jobs']
-    starts = []
     for job_name in ('test', 'e2e-cli'):
         job = jobs[job_name]
         assert not job.get('services')  # Implicit service pulls cannot fall back.
@@ -368,19 +368,20 @@ def test_postgres_uses_pinned_ghcr_with_public_mirror_fallbacks():
         assert '--password-stdin' in login['run']
         assert job['steps'].index(login) < job['steps'].index(start)
         assert start['env'] == {'GHCR_OWNER': '${{ github.repository_owner }}'}
-        assert 'ghcr.io/${GHCR_OWNER,,}/agent-queue-postgres:18@$POSTGRES_DIGEST' in start['run']
-        assert 'in "$ghcr_image" "mirror.gcr.io/' in start['run']
-        assert 'mirror.gcr.io/library/postgres:18@$POSTGRES_DIGEST' in start['run']
-        assert 'public.ecr.aws/docker/library/postgres:18@$POSTGRES_DIGEST' in start['run']
+        assert start['run'] == f'bash {POSTGRES_START}'
+        assert job['steps'].index(start) > next(
+            i for i, step in enumerate(job['steps']) if step['name'] == 'Verify exact checkout'
+        )
         assert job['steps'].index(start) < next(
             i for i, step in enumerate(job['steps']) if step['name'] == 'Set up Python'
         )
-        assert {'name': 'PostgreSQL logs on failure', 'if': 'failure()',
-                'run': 'docker logs ci-postgres || true'} in job['steps']
-        assert {'name': 'Remove PostgreSQL', 'if': 'always()',
-                'run': 'docker rm --force --volumes ci-postgres || true'} in job['steps']
-        starts.append(start['run'])
-    assert starts[0] == starts[1]
+        steps = job['steps']
+        logs = next(step for step in steps if step['name'] == 'PostgreSQL logs on failure')
+        assert logs['if'] == 'failure()' and logs['run'] == 'docker logs ci-postgres || true'
+        cleanup = next(step for step in steps if step['name'] == 'Remove PostgreSQL')
+        assert cleanup['if'] == 'always()'
+        assert cleanup['run'] == 'docker rm --force --volumes ci-postgres || true'
+        assert steps.index(cleanup) > steps.index(start)
     for path in WORKFLOWS.glob('*.yml'):
         text = path.read_text()
         assert not re.search(r'(?<![\w./-])postgres:\d', text), path
@@ -399,10 +400,13 @@ def test_postgres_uses_pinned_ghcr_with_public_mirror_fallbacks():
         (1, 0, 0, 0),
         (2, 0, 0, 0),
         (3, 0, 0, 0),
+        (4, 0, 0, 0),
         (5, 0, 0, 0),
+        (6, 0, 0, 0),
         (8, 0, 0, 0),
         (99, 0, 0, 125),
         (0, 125, 0, 125),
+        (3, 125, 0, 125),
         (0, 0, 3, 0),
         (0, 0, 99, 1),
     ],
@@ -415,6 +419,9 @@ def test_postgres_start_recovers_pull_errors_and_preserves_startup_failures(
     start = next(
         step for step in workflow()["jobs"]["test"]["steps"] if step["name"] == "Start PostgreSQL"
     )
+    script = tmp_path / POSTGRES_START
+    script.parent.mkdir(parents=True)
+    script.write_text(POSTGRES_START.read_text())
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker_stub = bin_dir / "docker"
@@ -482,6 +489,10 @@ raise AssertionError(sys.argv)
         assert len(starts) == 1
         assert "--pull=never" in starts[0]
         assert POSTGRES_IMAGES[pull_failures % 3] in starts[0]
+        assert starts[0][starts[0].index('--publish') + 1] == '127.0.0.1:5432:5432'
+        for setting in ('max_connections=300', 'fsync=off', 'synchronous_commit=off',
+                        'full_page_writes=off'):
+            assert setting in starts[0]
         assert calls[: len(pulls)] == pulls
         if run_status:
             assert not probes
