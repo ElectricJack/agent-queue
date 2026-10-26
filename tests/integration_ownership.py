@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2781,
+ 'authorized_owned_delta': 2844,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1137,8 +1137,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82963,
- 'measured_owned_total': 158280,
+ 'measured_engine_lines': 83018,
+ 'measured_owned_total': 158343,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1446,7 +1446,24 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
              'storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': '14ce4d02a',
-   'task_id': 'smart-bridge-86'}}
+   'task_id': 'smart-bridge-86'},
+ 'aborted_batch_branch_retirement_composition': {'authorized_engine_delta': 55,
+   'authorized_owned_delta': 63,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '0f0a16299',
+   'measured_engine_lines': 83018,
+   'measured_owned_total': 158343,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 82963,
+   'previous_measured_owned_total': 158280,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +63 owned / +55 engine lines for branch retirement of '
+             'aborted-batch holds and the advisory-refresh-aware claim test (dev red fix). Preserve '
+             'every historical grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': '24596d693',
+   'task_id': 'crisp-apex-76'}}
 
 
 def integration_table(name: str) -> bool:

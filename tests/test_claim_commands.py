@@ -6723,9 +6723,10 @@ async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
         clone=env.source, url=str(env.remote))), LocalGit(Path(env.remote)), target=target)
     handler.orchestrator.integration_train = train
 
-    # Pool sizing uses completed background evidence; acquire the real Git
-    # observation before asserting agreement with explain and claim admission.
-    await observer.prerequisite_view(PROJECT_ID, task_id="dependent")
+    # A cold sizing read allows preparation while its advisory refresh runs.
+    # Once that refresh finishes, known missing ancestry must withhold demand.
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 1
+    await asyncio.gather(*observer._refreshes.values())
     assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
     explanation = await handler._cmd_explain_task({"task_id": "dependent"})
     [reason] = [item for item in explanation["reasons"]
