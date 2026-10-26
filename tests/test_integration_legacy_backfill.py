@@ -247,6 +247,11 @@ async def test_originless_backfill_retains_provenance_for_dependency_admission(w
     base = git(world.origin.clone, "rev-list", "--max-parents=0", "origin/main")
     git(world.origin.clone, "push", "--force", "origin", f"{base}:main")
     assert not await after.is_fresh("azure-cascade.6")
+    assert after.rejection_reasons("azure-cascade.6") == ({
+        "code": "development_snapshot_changed",
+        "ref": "azure-cascade.6",
+        "detail": f"Stale development target: {MAIN.target_ref}; retry",
+    },)
     assert (await admission()).allowed == set()
 
 
@@ -570,6 +575,12 @@ async def test_deleted_epic_backfill_admits_only_proven_child(world, recorded, m
     base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
     git(origin.clone, "push", "--force", "origin", f"{base}:main")
     assert not await after.is_fresh("dependent")
+    if mode == "development":
+        assert after.rejection_reasons("dependent") == ({
+            "code": "development_snapshot_changed",
+            "ref": "dependent",
+            "detail": f"Stale development target: {MAIN.target_ref}; retry",
+        },)
     view = await db._delivery_observer.prerequisite_view("p", task_ids=["dependent"])
     assert not view.default.satisfied("child")
 
