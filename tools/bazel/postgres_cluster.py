@@ -218,15 +218,7 @@ async def run_postgres_target(
     plan.write_text(json.dumps({
         "root": str(environment.root), "env": environment.child_env(),
         "binaries": {key: str(value) for key, value in vars(binaries).items()},
-        "read_only": list(map(str, environment.runtime.read_only)),
-        "python": str(environment.runtime.python),
-        "bin_dirs": list(map(str, environment.runtime.bin_dirs)),
-        "library_dirs": list(map(str, environment.runtime.library_dirs)),
-        "git_exec_path": str(environment.runtime.git_exec_path) if environment.runtime.git_exec_path
-        else None,
-        "shell": str(environment.runtime.shell) if environment.runtime.shell else None,
-        "env_executable": str(environment.runtime.env_executable)
-        if environment.runtime.env_executable else None,
+        **environment.runtime.to_manifest(),
         "python_paths": list(map(str, python_paths)),
         "command": command, "tcp": tcp, "grace": grace,
     }))
@@ -248,12 +240,7 @@ async def _target(plan: dict) -> int:
     from tools.bazel.test_environment import Runtime
 
     environment = TestEnvironment(
-        Path(plan["root"]), Runtime(Path(plan["python"]), tuple(map(Path, plan["read_only"])),
-                                    tuple(map(Path, plan["bin_dirs"])),
-                                    tuple(map(Path, plan["library_dirs"])),
-                                    Path(plan["git_exec_path"]) if plan["git_exec_path"] else None,
-                                    Path(plan["shell"]) if plan["shell"] else None,
-                                    Path(plan["env_executable"]) if plan["env_executable"] else None),
+        Path(plan["root"]), Runtime.from_manifest(plan),
         plan["env"], (Path(plan["root"]),),
     )
     binaries = PostgresBinaries(**{key: Path(value) for key, value in plan["binaries"].items()})
