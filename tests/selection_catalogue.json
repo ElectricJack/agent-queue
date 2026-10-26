@@ -5909,7 +5909,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:e087908c515c23056028086aefe69981140b4077116c70078710a422bd8c8fcc",
+      "digest": "sha256:529603ba9c698540188eb1a2974ade5d903d01bc568a06b7f7f1663517e6459b",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5924,10 +5924,12 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.git_truth",
         "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.repository_incidents",
+        "src.integration.repository_recovery",
         "src.models",
         "src.prime.sections",
         "src.profiles.capabilities"
@@ -10440,7 +10442,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a3c63dda0647babb731b09d07e93dc29878b57e3efb193037b843a9adf0ff612",
+      "digest": "sha256:28aa9ec120abd074457aaa16efc43825522b916324f7772ffc6835d18f830222",
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
@@ -10469,6 +10471,8 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.epics",
+        "src.integration.fixer_runtime",
+        "src.integration.fixers",
         "src.integration.git_truth",
         "src.integration.github_review_poll",
         "src.integration.gitops",

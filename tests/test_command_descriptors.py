@@ -1791,7 +1791,7 @@ def _unread_inbox_changes():
 
 def _before_unread_inbox_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_batch_authority_catalogue()
     approved = _unread_inbox_changes()["transport_definitions"]["message_inbox"]
     [definition] = [row for row in catalogue["explicit"] if row["name"] == "message_inbox"]
     assert definition == approved["current"]
@@ -1823,7 +1823,7 @@ def _wait_source_redispatch_changes():
 
 
 def _before_wait_source_redispatch_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_batch_authority_catalogue()
     evidence = _wait_source_redispatch_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
@@ -1926,3 +1926,33 @@ def test_task_list_limit_playbooks_only_refresh_command_pins():
         old.pop("compiled_at")
         new.pop("compiled_at")
         assert new == old, path
+
+
+def _batch_authority_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/batch-authority-contract-changes.json").read_text()
+    )
+
+
+def _before_batch_authority_catalogue(catalogue=None):
+    evidence = _batch_authority_changes()
+    if catalogue is None:
+        catalogue = json.loads(render_command_catalogue())
+    assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
+    return catalogue
+
+
+def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
+    evidence = _batch_authority_changes()
+    assert evidence["source_base"] == "90fd25530010c373855fa415af08d9dc8291c6e0"
+    assert evidence["command"] == "integration_rebind_batch_authority"
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    catalogue = _before_unread_inbox_catalogue(json.loads(render_command_catalogue()))
+    rendered = json.dumps(catalogue, indent=2) + "\n"
+    previous = json.dumps(_before_batch_authority_catalogue(catalogue), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+    assert hashlib.sha256(rendered.encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )

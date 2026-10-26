@@ -15950,6 +15950,35 @@
         "type": "object"
       }
     },
+    "integration_rebind_batch_authority": {
+      "name": "integration_rebind_batch_authority",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_reconcile_expired_mutation": {
       "name": "integration_reconcile_expired_mutation",
       "description": "Local operator verifies nonce, fences, stopped authority and actual remote target.",

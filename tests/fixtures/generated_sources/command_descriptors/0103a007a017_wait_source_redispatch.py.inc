@@ -5,7 +5,7 @@ def _wait_source_redispatch_changes():
 
 
 def _before_wait_source_redispatch_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+    catalogue = _before_batch_authority_catalogue()
     evidence = _wait_source_redispatch_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]

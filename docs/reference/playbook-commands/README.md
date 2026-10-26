@@ -108,6 +108,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_promotion_policy_input`](integration_promotion_policy_input.md) | Integration Promotion Policy Input | Read pinned source and outstanding promotion facts for reviewed policy. |
 | [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
+| [`integration_rebind_batch_authority`](integration_rebind_batch_authority.md) | Integration Rebind Batch Authority | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
 | [`integration_reconcile_git_truth`](integration_reconcile_git_truth.md) | Integration Reconcile Git Truth | Daemon-only repair of Git-derived integration projections. |
 | [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
