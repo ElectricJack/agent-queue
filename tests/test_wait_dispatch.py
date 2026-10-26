@@ -520,7 +520,7 @@ async def test_irrelevant_batch_stops_before_subscribed_event(runtime_env, kind)
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
 
 
-async def test_mixed_backlog_batches_preserve_terminal_and_provider_callbacks(runtime_env):
+async def test_mixed_backlog_batches_preserve_retirement_and_provider_callbacks(runtime_env):
     env = runtime_env
     service = runtime(env)
     ordinary = [
@@ -531,7 +531,8 @@ async def test_mixed_backlog_batches_preserve_terminal_and_provider_callbacks(ru
     ]
     terminal = ('task:gone', {'status': 'COMPLETED'})
     provider = ('resource_invalidation:provider:fake', {'identity': 'fake'})
-    sequence = ordinary * 25 + [terminal] + ordinary + [provider] + ordinary
+    aborted = ('batch:aborted', {'lifecycle': 'aborted'})
+    sequence = ordinary * 25 + [terminal] + ordinary + [aborted] + ordinary + [provider] + ordinary
     async with env.db._engine.begin() as conn:
         for n, (key, payload) in enumerate(sequence):
             await record_source_event(conn, source_key=key, generation=0,
@@ -542,7 +543,7 @@ async def test_mixed_backlog_batches_preserve_terminal_and_provider_callbacks(ru
     service.listener._drain_one = AsyncMock(wraps=drain_one)
     assert await service.listener.tick()
     assert [call.args[1]['source_key'] for call in service.listener._dispatch.await_args_list] == [
-        terminal[0], provider[0],
+        terminal[0], aborted[0], provider[0],
     ]
     # Count transactions: prefix planning now runs both before and after the fence.
     # More than one bounded batch, but no per-event transactions for irrelevant traffic.

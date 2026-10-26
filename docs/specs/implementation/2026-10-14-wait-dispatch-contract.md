@@ -12,8 +12,8 @@ even a freshly prepared writer view cannot perform Git I/O there.
 
 The listener batches contiguous unsubscribed known source events, including
 messages, dependency changes, nonterminal task transitions and resource
-invalidations without resource subscriptions. Terminal task events and provider
-invalidations always retain their retirement and recovery callbacks. Unknown
+invalidations without resource subscriptions. Terminal task events, aborted batch
+events and provider invalidations always retain their retirement and recovery callbacks. Unknown
 source types and subscribed events retain individual dispatch. Prefix selection,
 dispatched stamps and the leased cursor commit under the same graph fence;
 batching never skips a relevant event or changes retry ownership.

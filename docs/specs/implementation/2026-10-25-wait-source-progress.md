@@ -57,7 +57,9 @@ events still on retry backoff, under the graph and listener lease fences. Resour
 matching conservatively preserves any pending verified resource subscriber with a
 preceding watermark. Provider invalidations always retain lifecycle dispatch: even
 with zero pending waits they can release held continuations. No source observation
-or owner progress preparation is needed for a retired batch. Registration remains
+or owner progress preparation is needed for a retired batch of observation hints.
+Aborted integration batch events always retain dispatch so their callback cancels
+obsolete CI subscriptions even without a subscriber to the batch source. Registration remains
 serialized by the graph fence. An empty retirement scan must still allow one
 forward/retry attempt before the pass yields.
 

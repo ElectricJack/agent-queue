@@ -273,17 +273,17 @@ class WaitSourceListener:
         Group subscriptions once instead of correlating a subscriber scan with
         each event. Minimum watermarks preserve the exact EXISTS semantics,
         including the conservative cross-project resource subscription check.
-        Task retirement and provider recovery always require dispatch.
+        Task/batch retirement and provider recovery always require dispatch.
         """
         from src.waits.recovery import TERMINAL_TASK_STATUSES
 
         window = []
         for row in rows[:self.batch_size]:
-            key = row["source_key"]
-            if key.startswith("resource_invalidation:provider:"):
+            key, payload = row["source_key"], row["payload"]
+            if key.startswith("resource_invalidation:provider:") or payload.get("lifecycle") == "aborted":
                 break
             if key.startswith("task:"):
-                if row["payload"].get("status") in TERMINAL_TASK_STATUSES:
+                if payload.get("status") in TERMINAL_TASK_STATUSES:
                     break
             elif not key.startswith((
                 "ci_check:", "ci_run:", "message:", "dependency:", "batch:",
