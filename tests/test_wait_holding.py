@@ -115,3 +115,18 @@ async def test_wait_registered_after_notification_reservation_blocks_terminal_de
     async with env.db._engine.begin() as conn:
         await conn.execute(update(wait_records).values(cleared_at=NOW + 1))
     assert await env.db.message_notification_is_pending(message.id)
+
+
+async def test_unread_inbox_holds_delivered_mail_until_acknowledgement(env):
+    delivered = await mail(env.db, "s", kind="session")
+    await env.db.mark_delivered(delivered.id, via="prime")
+    await register(env)
+    pending = await mail(env.db, "s", kind="session")
+    wake = await mail(env.db, "s", kind="session", body_kind="wait_outcome")
+    rows = await env.db.get_pending_messages("session", "s", include_delivered=True, limit=1)
+    assert [row.id for row in rows] == [wake.id]
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(cleared_at=NOW + 1))
+    rows = await env.db.get_pending_messages("session", "s", include_delivered=True)
+    assert {row.id for row in rows} == {delivered.id, pending.id, wake.id}

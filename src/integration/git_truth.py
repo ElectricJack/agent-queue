@@ -115,16 +115,22 @@ _SNAPSHOT_SCOPE: ContextVar[dict | None] = ContextVar("git_snapshot_scope", defa
 
 
 @contextmanager
-def snapshot_scope():
+def snapshot_scope(*, reuse=False):
     """Share one repository acquisition among the tasks dispatched by a tick.
 
     This is an explicit observation boundary, never a time-based freshness cache.
     A publication's follow-up observation must enter a new scope. Callers still
     recheck remote freshness and mutable authority before acting on a proof.
     """
+    if reuse and _SNAPSHOT_SCOPE.get() is not None:
+        yield
+        return
+    from src.integration.repository_recovery import retained_checkout_scope
+
     token = _SNAPSHOT_SCOPE.set({})
     try:
-        yield
+        with retained_checkout_scope():
+            yield
     finally:
         _SNAPSHOT_SCOPE.reset(token)
 
@@ -159,6 +165,19 @@ class GitTruth:
         self.skip_unchanged = skip_unchanged
         self._fetches: dict[tuple[str, str, str, str], _SharedFetch] = {}
 
+    def _scope_key(self, store, project_id, repository_id, repository_url):
+        return (str(store), project_id, repository_id, repository_url,
+                self.contract_version, self.skip_unchanged)
+
+    async def tick_snapshot(self, store: str, **options) -> GitTruthSnapshot | None:
+        """Join a tick's existing acquisition before opening/locking its store again."""
+        scope = _SNAPSHOT_SCOPE.get()
+        key = self._scope_key(store, options["project_id"], options["repository_id"],
+                              options["repository_url"])
+        if scope is None or key not in scope:
+            return None
+        return await self.snapshot(store, **options)
+
     async def snapshot(
         self, store: str, *, project_id: str, repository_id: str,
         repository_url: str, target_ref: str,
@@ -168,8 +187,7 @@ class GitTruth:
         scope = _SNAPSHOT_SCOPE.get()
         if scope is None:
             return await self._shared_snapshot(store, **options)
-        key = (str(store), project_id, repository_id, repository_url,
-               self.contract_version, self.skip_unchanged)
+        key = self._scope_key(store, project_id, repository_id, repository_url)
         shared = scope.setdefault(key, _SharedFetch())
         with selection_stage("snapshot_scope_wait"):
             async with shared.lock:
