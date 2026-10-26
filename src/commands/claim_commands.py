@@ -59,12 +59,10 @@ def _retryable_preparation_error(exc: Exception, *, stage: str | None = None) ->
     """Retry fenced I/O expiry and PostgreSQL transaction conflicts."""
     from src.integration.lock import BranchLockTimeout
 
-    if isinstance(exc, RepositoryLockTimeout):
-        return True
-    if isinstance(exc, BranchLockTimeout):
-        # A reset that repeatedly exceeds the fence must spend the bounded
-        # preparation budget, rather than retaining an invisible retry loop.
-        return stage != "slot_reset"
+    if isinstance(exc, (BranchLockTimeout, RepositoryLockTimeout)):
+        # Repository contention retains preparation; a slot reset that exceeds
+        # its fence must spend the bounded preparation budget.
+        return isinstance(exc, RepositoryLockTimeout) or stage != "slot_reset"
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
