@@ -63,7 +63,7 @@ async def test_source_incident_replay_is_idempotent_but_new_attempt_is_distinct(
     assert replay["id"] == first["id"] == "esc-1"
     assert second["id"] == "esc-2"
     assert len(await db.list_escalations(project_id="p")) == 2
-    assert first["deep_link"] == "/focus/escalations/esc-1"
+    assert first["deep_link"] == "/escalations/esc-1"
     assert (await db.get_escalation(first["id"]))["deep_link"] == first["deep_link"]
     deliveries = await db.list_escalation_deliveries(first["id"])
     assert len(deliveries) == 1 and deliveries[0]["status"] == "pending"
@@ -375,7 +375,7 @@ async def test_doctor_reports_missing_retrying_and_unknown_deliveries_after_five
     findings = await undelivered_escalations(ctx, now=600.0)
     assert {row["escalation_id"] for row in findings} == {"missing", "retry", "unknown"}
     assert {row["delivery_status"] for row in findings} == {"missing", "retry", "unknown"}
-    assert all(row["deep_link"].startswith("/focus/escalations/") for row in findings)
+    assert all(row["deep_link"].startswith("/escalations/") for row in findings)
     assert await undelivered_escalations(ctx, now=600.0, project_ids={"other"}) == []
     check = next(check for check in escalation_checks() if check.id == "escalations.undelivered")
     assert (await check.run(ctx)).severity == Severity.WARN

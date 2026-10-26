@@ -15,7 +15,7 @@ it("reuses the reader and exposes failed operations and separate obligations", (
   render(<MemoryRouter><AskDetail askId="ask-one" /></MemoryRouter>);
   expect(screen.getByLabelText("Review reader")).toHaveTextContent("rev-x");
   expect(screen.getByText(/Revision unavailable/)).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: /Assigned work/ })).toHaveAttribute("href", "/focus/tasks/task-one");
+  expect(screen.getByRole("link", { name: /Assigned work/ })).toHaveAttribute("href", "/tasks/task-one");
   expect(screen.getByText("Follow-up obligations (1)")).toBeInTheDocument();
 });
 it("makes unavailable detail retryable", () => {
