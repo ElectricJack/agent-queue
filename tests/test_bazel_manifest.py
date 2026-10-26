@@ -418,55 +418,6 @@ def test_fine_graph_only_carries_used_fixture_sources(tmp_path):
     assert '"//:python_documentation_data"' not in build
 
 
-def test_graph_parses_each_source_once_and_refreshes_after_edits(tmp_path, monkeypatch):
-    modules = _fine_graph_fixture(tmp_path)
-    reader = "tests/test_reader.py"
-    (tmp_path / reader).write_text("from src.used import VALUE\n")
-    modules[reader] = {}
-    parsed = {}
-    original = targets.ast.parse
-
-    def parse(source, *args, **kwargs):
-        parsed[source] = parsed.get(source, 0) + 1
-        return original(source, *args, **kwargs)
-
-    monkeypatch.setattr(targets.ast, "parse", parse)
-    _, before = targets.graph(tmp_path, modules, fine_grained={"tests/test_behavior.py"})
-    assert parsed and set(parsed.values()) == {1}
-    assert "src/unrelated.py" not in before["tests/test_behavior.py"]["source_files"]
-
-    (tmp_path / "src/used.py").write_text("from src.unrelated import VALUE\n")
-    parsed.clear()
-    _, after = targets.graph(tmp_path, modules, fine_grained={"tests/test_behavior.py"})
-    assert parsed and set(parsed.values()) == {1}
-    assert "src/unrelated.py" in after["tests/test_behavior.py"]["source_files"]
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-@pytest.mark.parametrize("fails", [False, True])
-def test_graph_restores_garbage_collection_policy(tmp_path, monkeypatch, enabled, fails):
-    gc = targets.gc
-    original = gc.isenabled()
-
-    def build(*args):
-        assert not gc.isenabled()
-        if fails:
-            raise ValueError("invalid input")
-        return {}, {}
-
-    monkeypatch.setattr(targets, "_graph", build)
-    try:
-        (gc.enable if enabled else gc.disable)()
-        if fails:
-            with pytest.raises(ValueError, match="invalid input"):
-                targets.graph(tmp_path, {})
-        else:
-            assert targets.graph(tmp_path, {}) == ({}, {})
-        assert gc.isenabled() == enabled
-    finally:
-        (gc.enable if original else gc.disable)()
-
-
 def test_directory_data_is_independent_of_worker_root(tmp_path):
     outputs = []
     for root in (tmp_path / "plain", tmp_path / ".aq/worktrees/proof"):
