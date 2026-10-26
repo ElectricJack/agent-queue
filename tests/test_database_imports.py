@@ -40,7 +40,7 @@ def _run(source: str) -> None:
     "from src.database.queries import TaskQueryMixin",
     "import tests.db_fixtures",
     "import tests.reuse_databases",
-    "from tests.db_fixtures import InitializedDatabases",
+    "from src.database.dsn import redact_dsn",
     "import tests.conftest",
 ])
 def test_leaf_import_does_not_load_application(statement):
@@ -62,11 +62,13 @@ def test_public_database_exports_preserve_identity():
         from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
         from src.database.base import DatabaseBackend
         from src.database.factory import create_database
+        from src.database.dsn import redact_dsn
 
         assert database.Database is PostgreSQLDatabaseAdapter
         assert database.PostgreSQLDatabaseAdapter is PostgreSQLDatabaseAdapter
         assert database.DatabaseBackend is DatabaseBackend
         assert database.create_database is create_database
+        assert database.redact_dsn is redact_dsn
         assert set(database.__all__) <= set(dir(database))
         try:
             database.missing_export
@@ -77,14 +79,10 @@ def test_public_database_exports_preserve_identity():
     """)
 
 
-def test_query_exports_and_reusable_helper_preserve_identity():
+def test_query_exports_preserve_identity():
     _run("""
         import importlib
         import src.database.queries as queries
-        from tests.db_fixtures import InitializedDatabases
-        from tests.reuse_databases import InitializedDatabases as implementation
-
-        assert InitializedDatabases is implementation
         assert set(queries.__all__) <= set(dir(queries))
         for name in queries.__all__:
             exported = getattr(queries, name)

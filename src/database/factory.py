@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.config import is_postgres_url
-from src.database import redact_dsn
+from src.database.dsn import redact_dsn
 
 if TYPE_CHECKING:
     from src.config import AppConfig

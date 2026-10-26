@@ -614,12 +614,3 @@ def lease_dsn(name: str = "test") -> str:
     _LEASES[name] = dsn
     _TAKEN.append(dsn)
     return dsn
-
-
-def __getattr__(name: str):
-    # Compatibility for existing fixture consumers; leases need no adapter.
-    if name == "InitializedDatabases":
-        from tests.reuse_databases import InitializedDatabases
-
-        return InitializedDatabases
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
