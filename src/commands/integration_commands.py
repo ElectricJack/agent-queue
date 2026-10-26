@@ -98,6 +98,33 @@ class IntegrationCommandsMixin:
             return await service.command(current_principal(), action=args.get("action", "status"))
         except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
             return _failure("refused", str(exc))
+
+    async def _cmd_integration_rebind_batch_authority(self, args: dict) -> dict:
+        """An owning supervisor may refresh evidence, never override a withdrawal."""
+        from src.commands.contracts.integration import IntegrationAbortBatchArgs
+        from src.integration.fixers import BatchFixerService
+        from src.integration.lock import PublishWithdrawn
+
+        request = IntegrationAbortBatchArgs.model_validate(args)
+        batch = await self.db.get_integration_batch(request.batch_id)
+        if batch is None:
+            return _failure("refused", "unknown batch")
+        operator, refusal = await integration_operator(self.db, batch["project_id"])
+        if refusal:
+            return _failure("refused", refusal)
+        if not request.dry_run and not request.reason.strip():
+            return _failure("refused", "apply requires a nonblank reason")
+        train = getattr(self.orchestrator, "integration_train", None)
+        service = getattr(getattr(train, "train", train), "repair", None)
+        if not isinstance(service, BatchFixerService):
+            return _failure("refused", "the in-place batch fixer is not active")
+        try:
+            return await service.runtime.rebind_authority(
+                batch, operator_id=operator, reason=request.reason, dry_run=request.dry_run,
+            )
+        except (GitError, ValueError, BranchBusy, StaleFence, PublishWithdrawn) as exc:
+            return _failure("refused", str(exc))
+
     async def _cmd_integration_delegate_publication(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationDelegatePublicationArgs
         from src.integration.publication_delegations import DELEGATION_ERRORS, PublicationDelegations

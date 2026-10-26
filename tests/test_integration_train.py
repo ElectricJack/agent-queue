@@ -179,6 +179,7 @@ def train(targets, batches, lanes, repair=None, **kwargs):
     async def lane_for(target):
         return lanes[target.key]
 
+    kwargs.setdefault("minimum_visit_interval_seconds", 0)
     return IntegrationTrain(targets=targets, batches=batches, lane_for=lane_for,
                             repair=repair or Repair(), clock=lambda: 100.0, **kwargs)
 
@@ -1046,6 +1047,56 @@ async def test_slow_target_never_stalls_another():
     assert not any(row["running"] for row in status.values())
 
 
+@pytest.mark.parametrize("state", ["idle", "testing", "unknown", "red"])
+async def test_lane_minimum_interval_skips_unchanged_inputs_but_wakes_immediately(state):
+    from src.integration.train import TrainVisit
+
+    now = [100.0]
+    runtime = IntegrationTrain(targets=Targets(ROOT), batches=None, lane_for=AsyncMock(),
+                               repair=None, clock=lambda: now[0])
+    runtime.visit = AsyncMock(return_value=TrainVisit(ROOT, state))
+    assert (await runtime.tick())["started"] == ["p/r/refs/heads/main"]
+    await runtime.drain()
+    for now[0] in (101.0, 105.0, 115.0, 129.9):
+        assert (await runtime.tick())["deferred"] == ["p/r/refs/heads/main"]
+    assert runtime.visit.await_count == 1
+    now[0] = 130.0
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    now[0] = 131.0
+    runtime.wake("p", "r")
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    # Explicit requests use the same wake path, without waiting for the timer.
+    now[0] = 132.0
+    assert (await runtime.request_visit(ROOT)).state == state
+    assert runtime.visit.await_count == 4
+
+
+async def test_minimum_interval_is_per_lane_and_changed_target_inputs_bypass_it():
+    from src.integration.train import TrainVisit
+
+    now = [100.0]
+    root = replace(ROOT, kind="promotion", step={"id": "release", "version": 1})
+    targets = Targets(root)
+    runtime = IntegrationTrain(targets=targets, batches=None, lane_for=AsyncMock(),
+                               repair=None, clock=lambda: now[0])
+    runtime.visit = AsyncMock(side_effect=lambda target: TrainVisit(target, "testing"))
+    await runtime.tick()
+    await runtime.drain()
+    now[0] = 101.0
+    epic = TrainTarget("p", "r", "refs/heads/epic", "epic")
+    targets.items.append(epic)
+    result = await runtime.tick()
+    assert result["started"] == ["p/r/refs/heads/epic"]
+    assert result["deferred"] == ["p/r/refs/heads/main"]
+    await runtime.drain()
+    targets.items[0] = replace(root, step={"id": "release", "version": 2})
+    assert (await runtime.tick())["started"] == ["p/r/refs/heads/main"]
+    await runtime.drain()
+    assert runtime.visit.await_count == 3
+
+
 async def test_tick_lanes_share_one_snapshot_even_when_their_arrivals_are_staggered(setup):
     from src.integration.git_truth import GitTruth
 
@@ -1340,7 +1391,8 @@ async def test_a_visit_after_a_rate_limit_resets_the_backoff():
         return lane(Service(), fetch=sometimes)
 
     t = IntegrationTrain(targets=Targets(ROOT), batches=Batches(), lane_for=lane_for,
-                         repair=Repair(), clock=lambda: clock[0])
+                         repair=Repair(), clock=lambda: clock[0],
+                         minimum_visit_interval_seconds=0)
     for now in (100.0, 160.0, 170.0):
         clock[0] = now
         assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
@@ -1369,7 +1421,8 @@ async def test_a_rate_limit_pauses_every_target_of_the_repository_behind_one_pro
         return lane(Service(), fetch=fetch_for(target))
 
     t = IntegrationTrain(targets=Targets(first, second, other), batches=Batches(),
-                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0],
+                         minimum_visit_interval_seconds=0)
     a, b, s = ("/".join(x.key) for x in (first, second, other))
     caplog.set_level(logging.INFO, logger="src.integration.train")
 
@@ -1533,6 +1586,7 @@ async def test_cancelled_shared_fetch_records_waiter_failure_and_retries(setup, 
         for target in waiters:
             await ops.push(repo, target.target_ref, head, base)
         release.set()
+        t.wake("p", "r")
         assert len((await t.tick())["started"]) == len(waiters)
         await t.drain()
         # One cancelled acquisition, then one shared acquisition for the new tick.
@@ -2074,7 +2128,8 @@ async def test_event_during_visit_survives_stale_refusal_backoff():
         return TrainVisit(target, "blocked" if len(calls) == 1 else "idle",
                           detail={"reason": "held"})
 
-    runtime = train(Targets(ROOT), Batches(), {}, event_driven=True)
+    runtime = train(Targets(ROOT), Batches(), {}, event_driven=True,
+                    minimum_visit_interval_seconds=30)
     runtime.clock = lambda: now[0]
     runtime.visit = visit
     runtime.on_wake = notified.set
