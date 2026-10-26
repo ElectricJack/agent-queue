@@ -157,3 +157,27 @@ inconsistent readback retain the original store and unavailable observations.
 Any future applying seam must record durable operation intent and replay evidence
 through CommandHandler; neither a successful unit test nor a timer is a receipt.
 See the [incident procedure](../../guides/retained-git-corruption.md).
+
+### Missing-object origin acquisition
+
+Task `nimble-horizon-50`, supervisor decision
+`msg-a5d78ac44d89465892ad1823287a5083`, permits one bounded additive import
+inside an already authorized origin acquisition. The read-only verifier reports
+typed missing-object evidence only when every diagnostic is either an exact
+`missing <commit|tree|blob|tag> <oid>` line or a well-formed broken-link pair
+whose target type and OID match one of those absences. Standalone or unexplained
+broken links, errors, warnings, corruption, truncated objects and all other
+diagnostics retain unavailable evidence without attempting an import.
+
+Under the existing repository transaction and common retained-store exclusion,
+recheck the evidence, acquire a complete isolated origin store without borrowing
+retained objects, and prove every named object is available with its expected
+type. Import only those OIDs and their reachable closure, with incoming object
+checking, without changing destination refs or FETCH_HEAD. Preserve every local
+and unpublished object, the checkout, saved head and saved branch identity.
+Never replace the store or delete an object. A full clean destination fsck is
+required before lending objects; unavailable upstream objects, transport failure
+or a second integrity failure propagate to the existing workspace hold. There
+is one recovery attempt per acquisition, bounded by the retained integrity
+deadline, with no new workspace retry classification or relaxation of
+`verify_saved_branch`.

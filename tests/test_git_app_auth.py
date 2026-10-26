@@ -32,6 +32,8 @@ from src.git.manager import (
     PullRequestIdentity,
     RemoteRefResult,
     RemoteRefState,
+    RetainedMissingObjects,
+    _missing_retained_objects,
 )
 from src.orchestrator.worktree_manager import WorktreeSlotManager
 from src.metrics.operation_profile import operation_profile
@@ -859,6 +861,91 @@ def _commit_and_publish(work: Path, source: Path, content: str) -> str:
     _git(["commit", "-am", content], work)
     _git(["push", str(source), "main:refs/heads/main"], work)
     return _git(["rev-parse", "HEAD"], work)
+
+
+def _missing_object_case(tmp_path, kind="commit", *, available=True):
+    work, source, _trap, base, tip = _git_push_case(tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/main"], work)
+    destination = tmp_path / "retained"
+    _git(["clone", "--no-hardlinks", str(work), str(destination)], tmp_path)
+    # Preserve an unpublished tip and its objects across recovery.
+    _git(["commit", "--allow-empty", "-m", "unpublished"], destination)
+    oid = _git(["rev-parse", {"commit": base, "tree": f"{base}^{{tree}}",
+                              "blob": f"{base}:file.txt"}[kind]], destination)
+    objects = destination / ".git" / "objects"
+    (objects / oid[:2] / oid[2:]).unlink()
+    if not available:
+        _git(["update-ref", "-d", "refs/heads/main"], source)
+        _git(["reflog", "expire", "--expire=now", "--all"], source)
+        _git(["gc", "--prune=now"], source)
+    return source, destination, oid
+
+
+@pytest.mark.parametrize("kind", ["commit", "tree", "blob"])
+async def test_origin_fetch_recovers_missing_objects_without_losing_local_work(
+    tmp_path, monkeypatch, kind,
+):
+    source, destination, oid = _missing_object_case(tmp_path, kind)
+    monkeypatch.setattr(manager_module, "_RETAINED_VERIFY_RETRY_DELAYS", ())
+    manager = GitManager()
+    recover = AsyncMock(wraps=manager._arecover_missing_retained_objects)
+    monkeypatch.setattr(manager, "_arecover_missing_retained_objects", recover)
+    before_refs = _git(["for-each-ref", "--format=%(refname) %(objectname)"], destination)
+    head = _git(["rev-parse", "HEAD"], destination)
+    objects = _object_store_snapshot(destination / ".git" / "objects")
+    async with manager.arepository_transaction(str(destination)):
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token=None,
+        )
+    recover.assert_awaited_once()
+    assert _git(["cat-file", "-t", oid], destination) == kind
+    assert _git(["rev-parse", "HEAD"], destination) == head
+    assert _git(["for-each-ref", "--format=%(refname) %(objectname)"], destination) == before_refs
+    after = _object_store_snapshot(destination / ".git" / "objects")
+    assert all(after.get(path) == value for path, value in objects.items())
+    assert _git(["fsck", "--full", "--no-dangling"], destination) == ""
+    assert await manager.aretained_store_verified(str(destination / ".git"))
+
+
+async def test_missing_object_absent_from_origin_preserves_store_and_refs(tmp_path, monkeypatch):
+    source, destination, _oid = _missing_object_case(tmp_path, available=False)
+    monkeypatch.setattr(manager_module, "_RETAINED_VERIFY_RETRY_DELAYS", ())
+    manager = GitManager()
+    before = _object_store_snapshot(destination / ".git" / "objects")
+    refs = _git(["for-each-ref", "--format=%(refname) %(objectname)"], destination)
+    with pytest.raises(GitError, match="missing objects are unavailable from origin"):
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token=None,
+        )
+    assert _object_store_snapshot(destination / ".git" / "objects") == before
+    assert _git(["for-each-ref", "--format=%(refname) %(objectname)"], destination) == refs
+    assert not await manager.aretained_store_verified(str(destination / ".git"))
+
+
+@pytest.mark.parametrize("diagnostic", [
+    b"broken link from  commit " + b"a" * 40 + b"\n              to  commit " + b"b" * 40,
+    b"missing commit " + b"b" * 40 + b"\nerror: corrupt object " + b"c" * 40,
+    b"missing blob " + b"b" * 40 + b"\nwarning: truncated object",
+    b"missing commit " + b"b" * 40 + b"\nunknown diagnostic",
+])
+def test_missing_object_classification_rejects_unexplained_or_corrupt_diagnostics(diagnostic):
+    assert _missing_retained_objects(diagnostic.splitlines()) == ()
+
+
+async def test_corrupt_store_never_attempts_missing_object_recovery(tmp_path, monkeypatch):
+    source, destination, oid = _missing_object_case(tmp_path)
+    (destination / ".git" / "objects" / oid[:2] / oid[2:]).write_bytes(b"truncated")
+    monkeypatch.setattr(manager_module, "_RETAINED_VERIFY_RETRY_DELAYS", ())
+    manager = GitManager()
+    transport = AsyncMock(wraps=manager._arun_authenticated_git)
+    monkeypatch.setattr(manager, "_arun_authenticated_git", transport)
+    with pytest.raises(GitError, match="retained Git object integrity") as error:
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token=None,
+        )
+    assert not isinstance(error.value, RetainedMissingObjects)
+    transport.assert_not_awaited()
+    assert (destination / ".git" / "objects" / oid[:2] / oid[2:]).read_bytes() == b"truncated"
 
 
 def _object_store_snapshot(objects: Path) -> dict[str, tuple[int, int]]:
