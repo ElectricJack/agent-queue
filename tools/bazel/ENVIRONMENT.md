@@ -89,6 +89,9 @@ there is no host-network fallback. Unsupported platforms receive an explicit
 instruction to select the legacy backend.
 
 `Runtime.read_only_mappings` is an additive interface for the locked H1 sysroot.
+Runtime manifests retain these mappings, the sysroot, shell and `env` executable
+across the module, PostgreSQL and E2E child boundaries. Module PostgreSQL targets
+also pass their declared Python import paths to H3's E2E environment manifest.
 Each `ReadOnlyMapping(source, target)` source must resolve inside the explicit
 `Runtime.sysroot`, itself inside declared inputs. Targets are restricted to
 `/lib`, `/lib64`, `/usr/lib`, and `/usr/lib64`; duplicates, undeclared sources,

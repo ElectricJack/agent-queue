@@ -451,3 +451,331 @@ async def _pytest_probe(tmp_path, source, *, mode="pure", collect=False, package
         # checkout's fixtures before any installed conftest or admission hooks.
         search_path = [str(path) for path in (repo, *package_roots, packages)]
         script = (f"import sys; sys.path[:0] = {search_path!r}; "
+                  f"import pytest; raise SystemExit(pytest.main({args!r}))")
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", script, cwd=repo, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), 30)
+            return process.returncode, output.decode()
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+
+async def test_pytest_probe_prefers_checkout_over_installed_tests_package(tmp_path):
+    packages = tmp_path / "site-packages"
+    foreign_tests = packages / "tests"
+    foreign_tests.mkdir(parents=True)
+    (foreign_tests / "__init__.py").touch()
+    (foreign_tests / "conftest.py").write_text("raise AssertionError('foreign conftest loaded')\n")
+    expected = str(Path(__file__).resolve().with_name("conftest.py"))
+    source = ("def test_fixture_source():\n"
+              "    from tests import conftest\n"
+              f"    assert conftest.__file__ == {expected!r}\n")
+    status, output = await _pytest_probe(tmp_path, source, package_roots=(packages,))
+    assert status == 0, output
+    assert "1 passed" in output
+
+
+@pytest.mark.parametrize("collect", [False, True])
+async def test_pure_pytest_without_dsn_runs_real_root_fixtures(tmp_path, collect):
+    status, output = await _pytest_probe(
+        tmp_path, "def test_pure():\n    assert 2 + 2 == 4\n", collect=collect,
+    )
+    assert status == 0, output
+    assert ("1 test collected" if collect else "1 passed") in output
+
+
+@pytest.mark.parametrize("source,outcome", [
+    ("def test_pg():\n    from tests.db_fixtures import lease_dsn; lease_dsn()\n", "1 failed"),
+    ("def test_pg():\n    from tests.pg_dsn import ensure_worker_postgres_dsn; "
+     "ensure_worker_postgres_dsn()\n", "1 failed"),
+    ("def test_pg(reuse_database):\n    pass\n", "1 error"),
+])
+async def test_pure_pytest_rejects_accidental_pg_dependency(tmp_path, source, outcome):
+    status, output = await _pytest_probe(tmp_path, source)
+    assert status == 1, output
+    assert "PostgreSQL dependency requested by a pure target" in output, output
+    assert outcome in output and "skipped" not in output
+
+
+async def test_declared_pg_target_requires_dsn_but_collection_does_not(tmp_path):
+    source = "def test_pg():\n    pass\n"
+    status, output = await _pytest_probe(tmp_path, source, mode="postgres")
+    assert status == 4, output
+    assert "POSTGRES_TEST_DSN is not set" in output
+    status, output = await _pytest_probe(tmp_path, source, mode="postgres", collect=True)
+    assert status == 0, output
+    assert "1 test collected" in output
+
+
+async def test_actual_postgres_target_starts_inside_namespace(
+    tmp_path, namespace_runtime, postgres_runtime,
+):
+    from tools.bazel.postgres_cluster import run_postgres_target
+
+    native_runtime, binaries = postgres_runtime
+    native = binaries.postgres.parent.parent
+    repo = Path(__file__).resolve().parents[1]
+    runtime = isolated.Runtime(
+        namespace_runtime.python, (*namespace_runtime.read_only, native, repo),
+        (native / "bin", namespace_runtime.python.parent),
+        library_dirs=native_runtime.library_dirs, shell=namespace_runtime.shell,
+    )
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as environment:
+        result = environment.root / "result.json"
+        script = """
+import json, os, pathlib, socket, subprocess
+assert socket.if_nameindex() == [(1, 'lo')]
+assert os.environ['AQ_TEST_PG_MODE'] == 'postgres'
+assert os.environ['AQ_DB_SCOPE'] == 'test'
+assert not {'AQ_SESSION_ID', 'AQ_API_TOKEN', 'AGENT_QUEUE_DB', 'AQ_DATABASE_URL'} & os.environ.keys()
+dsn = os.environ['POSTGRES_TEST_DSN'].replace('+asyncpg', '')
+value = subprocess.check_output([%r, '-XAt', '-d', dsn, '-c', 'SELECT version()'], text=True)
+assert 'PostgreSQL 18.1' in value
+pathlib.Path(%r).write_text(json.dumps({'dsn': dsn, 'version': value}))
+""" % (str(binaries.psql), str(result))
+        status = await run_postgres_target(
+            environment, binaries, [str(runtime.python), "-I", "-c", script],
+            cwd=environment.root, timeout=30,
+        )
+        assert status == 0
+        assert "PostgreSQL 18.1" in json.loads(result.read_text())["version"]
+        assert not list(environment.root.glob("pg-*"))
+
+
+def test_e2e_worlds_use_factory_without_ambient_identity(tmp_path, runtime, monkeypatch):
+    from scripts.e2e.environment import child_env, world_env
+
+    poison = {
+        "HOME": "/operator/home", "PATH": "/operator/bin", "GH_TOKEN": "secret",
+        "AQ_API_TOKEN": "live-token", "AQ_SESSION_ID": "live-session",
+        "AQ_TASK_ID": "live-task", "CLAUDE_CODE_SESSION_ID": "live-session",
+        "AQ_DB_SCOPE": "worker", "AQ_DATABASE_URL": "refusal-sentinel",
+        "POSTGRES_TEST_DSN": "postgresql://operator/agent_queue",
+        "UNRECOGNIZED_VENDOR_CREDENTIAL": "secret",
+    }
+    for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as target:
+        dsn = f"postgresql://test@/aq_test_target?host={target.root}/pg&port=35432"
+        first = world_env(target.root / "one", environment=target, postgres_dsn=dsn)
+        second = world_env(target.root / "two", environment=target, postgres_dsn=dsn)
+        for name in ("HOME", "TMPDIR", "TMUX_TMPDIR", "AQ_CONFIG_PATH", "AQ_E2E_HOME",
+                     "AQ_E2E_PORT", "AQ_E2E_TMUX_SOCKET", "E2E_DB_NAME", "E2E_DB_URL"):
+            assert first[name] != second[name], name
+        assert first["PATH"] == str(runtime.bin_dirs[0])
+        assert first["POSTGRES_TEST_DSN"] == dsn
+        assert first["E2E_DB_URL"].endswith(f"?host={target.root}/pg&port=35432")
+        for name, value in poison.items():
+            assert first.get(name) != value
+            assert os.environ[name] == value
+        # The smoke runner may introduce local session auth only after this fence.
+        child = child_env({**first, **{"GH_TOKEN": "secret", "AQ_API_TOKEN": "live-token"}})
+        assert "GH_TOKEN" not in child and "AQ_API_TOKEN" not in child
+        assert child["E2E_DB_URL"] == first["E2E_DB_URL"]
+        with pytest.raises(ValueError, match="H3-owned"):
+            world_env(target.root / "missing", environment=target)
+        with pytest.raises(ValueError, match="belong"):
+            world_env(tmp_path / "outside", environment=target, postgres_dsn=dsn)
+
+
+def test_world_smoke_import_and_reset_do_not_reintroduce_parent_environment(tmp_path, monkeypatch):
+    from scripts.e2e.environment import world_env
+    from tests.test_e2e_cli_stateful import World
+
+    monkeypatch.setenv("AQ_API_TOKEN", "operator-token")
+    monkeypatch.setenv("AQ_SESSION_ID", "operator-session")
+    env = world_env(tmp_path / "world")
+    world = World("probe", env)
+    world.swarm = {"enabled": True}
+    observed = []
+
+    def command(name, args):
+        observed.append(world.smoke._cli_env())
+        return {"sessions": [], "projects": []}
+
+    monkeypatch.setattr(world.smoke, "api_checked", command)
+    monkeypatch.setattr(world.smoke, "fake_script", lambda: None)
+    monkeypatch.setattr(world.smoke, "wait_for_restored_readiness", lambda: None)
+    world.reset()
+    assert observed
+    assert all("AQ_API_TOKEN" not in child and "AQ_SESSION_ID" not in child for child in observed)
+    assert os.environ["AQ_API_TOKEN"] == "operator-token"
+
+
+def test_two_concurrent_e2e_children_have_private_state(tmp_path, monkeypatch):
+    import select
+    import subprocess
+
+    from scripts.e2e.environment import world_env
+
+    monkeypatch.setenv("UNRECOGNIZED_VENDOR_CREDENTIAL", "must-not-cross")
+    environments = [world_env(tmp_path / name) for name in ("first", "second")]
+    code = """
+import json, os, pathlib, socket
+assert 'UNRECOGNIZED_VENDOR_CREDENTIAL' not in os.environ
+home = pathlib.Path(os.environ['HOME'])
+assert not (home / 'state').exists()
+(home / 'state').write_text(os.environ['E2E_DB_NAME'])
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', int(os.environ['AQ_E2E_PORT'])))
+    listener.listen()
+    print(json.dumps({'home': str(home), 'state': (home / 'state').read_text()}), flush=True)
+    input()
+"""
+    processes = [subprocess.Popen(
+        [sys.executable, "-c", code], env=env, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ) for env in environments]
+    try:
+        for env, process in zip(environments, processes, strict=True):
+            assert select.select([process.stdout], [], [], 10)[0], "child did not become ready"
+            row = json.loads(process.stdout.readline())
+            assert row == {"home": env["HOME"], "state": env["E2E_DB_NAME"]}
+        for process in processes:
+            _, error = process.communicate("stop\n", timeout=10)
+            assert process.returncode == 0, error
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+
+
+def test_e2e_shell_preserves_explicit_socket_database_urls(tmp_path):
+    import subprocess
+
+    from scripts.e2e.environment import world_env
+
+    env = world_env(tmp_path / "world", postgres_dsn=(
+        "postgresql://test@/aq_test_target?host=/private/socket&port=35432"
+    ))
+    result = subprocess.run(
+        ["bash", "-c", 'source scripts/e2e-common.sh; '
+         'printf "%s\\n%s\\n" "$E2E_ADMIN_DSN" "$E2E_DB_URL"'],
+        cwd=Path(__file__).resolve().parents[1], env=env,
+        capture_output=True, text=True, check=True, timeout=10,
+    )
+    assert result.stdout.splitlines() == [env["E2E_ADMIN_DSN"], env["E2E_DB_URL"]]
+
+
+def test_e2e_reset_protects_test_database_with_unix_socket_dsn(monkeypatch):
+    from scripts.e2e.dbsetup import refuse
+
+    monkeypatch.setenv(
+        "POSTGRES_TEST_DSN", "postgresql://test@/aq_e2e_target?host=/private/socket&port=35432",
+    )
+    assert refuse("aq_e2e_target") == "this is POSTGRES_TEST_DSN's database"
+    assert refuse("aq_e2e_other_world") is None
+
+
+async def test_actual_e2e_shards_use_h3_runtime(tmp_path, namespace_runtime, postgres_runtime):
+    """Run all four scenario shards concurrently, each in its own PG namespace."""
+    from contextlib import ExitStack
+    from tools.bazel.postgres_cluster import run_postgres_target
+
+    _, binaries = postgres_runtime
+    native = binaries.postgres.parent.parent
+    source = Path(__file__).resolve().parents[1]
+    # Declare source inputs without exposing .aq claims, the operator checkout,
+    # credentials, editable installs or the host's configuration directory.
+    repo = tmp_path / "sources"
+    repo.mkdir()
+    for directory in ("src", "tests", "scripts", "tools", "migrations", "packages"):
+        shutil.copytree(source / directory, repo / directory,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "node_modules"))
+    for name in ("pyproject.toml", "alembic.ini"):
+        shutil.copy2(source / name, repo / name)
+    shutil.copytree(source / "docs/history/legacy-train-policies",
+                    repo / "docs/history/legacy-train-policies")
+    packages = Path(pytest.__file__).resolve().parents[1]
+    (namespace_runtime.python.parent / "python3").symlink_to(namespace_runtime.python.name)
+    runtime = isolated.Runtime(
+        namespace_runtime.python,
+        (*namespace_runtime.read_only, native, repo, source / "tools", packages),
+        (native / "bin", namespace_runtime.python.parent),
+        library_dirs=(native / "lib",), git_exec_path=native / "libexec/git-core",
+        shell=native / "bin/bash", env_executable=native / "bin/env",
+    )
+    python_paths = (repo, repo / "packages/aq-client", packages)
+    with ExitStack() as stack:
+        environments = [stack.enter_context(isolated.test_environment(
+            test_tmpdir=tmp_path, runtime=runtime,
+        )) for _ in range(4)]
+        async def shard(environment, selector):
+            result = environment.root / "e2e-result.json"
+            code = f"""
+import json, os, pathlib, sys
+sys.path[:0] = {list(map(str, python_paths))!r}
+import pytest
+assert not {{'AQ_API_TOKEN', 'AQ_SESSION_ID', 'GH_TOKEN'}} & os.environ.keys()
+status = pytest.main(['tests/test_e2e_cli_stateful.py', '-m', 'integration',
+                 '-k', {selector!r}, '-p', 'pytest_asyncio.plugin', '-o', 'addopts=', '-q'])
+pathlib.Path({str(result)!r}).write_text(json.dumps({{'status': status,
+    'dsn': os.environ['POSTGRES_TEST_DSN'], 'home': os.environ['HOME']}}))
+sys.exit(status)
+"""
+            status = await run_postgres_target(
+                environment, binaries, [str(runtime.python), "-I", "-c", code],
+                cwd=repo, timeout=290, python_paths=python_paths, tcp=True,
+            )
+            assert status == 0
+            return json.loads(result.read_text())
+        groups = ('claims', 'cli', 'graphs', 'failover')
+        tasks = [asyncio.create_task(shard(environment, group + '-'))
+                 for environment, group in zip(environments, groups, strict=True)]
+        try:
+            results = await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        assert len({row['dsn'] for row in results}) == 4
+        assert len({row['home'] for row in results}) == 4
+        assert all(row['status'] == 0 for row in results)
+
+
+def test_runtime_manifest_retains_native_abi_and_script_helpers(runtime):
+    from dataclasses import replace
+
+    sysroot = runtime.read_only[0] / "sysroot"
+    (sysroot / "lib64").mkdir(parents=True)
+    runtime = replace(
+        runtime, shell=runtime.python, env_executable=runtime.python,
+        library_dirs=(sysroot / "lib64",), sysroot=sysroot,
+        read_only_mappings=(isolated.ReadOnlyMapping(sysroot / "lib64", Path("/lib64")),),
+    )
+    restored = isolated.Runtime.from_manifest(json.loads(json.dumps(runtime.to_manifest())))
+    assert restored == runtime
+    restored.validate()
+
+
+def test_e2e_fixture_loads_h3_manifest_without_runtime_or_dsn_fallback(tmp_path, runtime, monkeypatch):
+    from dataclasses import asdict
+    from scripts.e2e.environment import world_env
+
+    monkeypatch.setenv('AQ_TEST_PG_MODE', 'postgres')
+    monkeypatch.delenv('AQ_TEST_ENVIRONMENT', raising=False)
+    with pytest.raises(ValueError, match='manifest'):
+        world_env(tmp_path / 'refused')
+    monkeypatch.setenv('POSTGRES_TEST_DSN', 'postgresql://operator/agent_queue')
+    with isolated.test_environment(test_tmpdir=tmp_path, runtime=runtime) as target:
+        manifest = target.root / 'environment.json'
+        dsn = f'postgresql+asyncpg://test@/aq_target_private?host={target.root}/s&port=35432'
+        manifest.write_text(json.dumps({
+            'root': str(target.root), 'runtime': asdict(runtime), 'env': target.child_env(),
+            'python_paths': [], 'socket_alias_root': None, 'postgres_dsn': dsn,
+            'tcp_dsn': 'postgresql+asyncpg://test@127.0.0.1:35432/aq_target_private',
+        }, default=str))
+        monkeypatch.setenv('AQ_TEST_ENVIRONMENT', str(manifest))
+        env = world_env(target.root / 'world')
+        assert env['POSTGRES_TEST_DSN'] == dsn
+        assert env['PATH'] == str(runtime.bin_dirs[0])
+        assert env['AQ_TEST_ENVIRONMENT'] == str(manifest)
+        assert env['E2E_ADMIN_DSN'] == 'postgresql://test@127.0.0.1:35432/postgres'
+        assert 'PYTHONPATH' not in env
+        assert os.environ['POSTGRES_TEST_DSN'] == 'postgresql://operator/agent_queue'

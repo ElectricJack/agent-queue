@@ -96,6 +96,35 @@ class Runtime:
     sysroot: Path | None = None
     read_only_mappings: tuple[ReadOnlyMapping, ...] = ()
 
+    def to_manifest(self) -> dict:
+        """JSON-safe declaration carried across PG and E2E child boundaries."""
+        return {
+            "python": str(self.python),
+            **{name: list(map(str, getattr(self, name)))
+               for name in ("read_only", "bin_dirs", "library_dirs")},
+            **{name: str(getattr(self, name)) if getattr(self, name) else None
+               for name in ("git_exec_path", "shell", "env_executable", "sysroot")},
+            "read_only_mappings": [
+                {"source": str(mapping.source), "target": str(mapping.target)}
+                for mapping in self.read_only_mappings
+            ],
+        }
+
+    @classmethod
+    def from_manifest(cls, fields: Mapping) -> Runtime:
+        """Restore the complete runtime, including optional ABI mappings."""
+        return cls(
+            python=Path(fields["python"]),
+            **{name: tuple(map(Path, fields.get(name, ())))
+               for name in ("read_only", "bin_dirs", "library_dirs")},
+            **{name: Path(fields[name]) if fields.get(name) else None
+               for name in ("git_exec_path", "shell", "env_executable", "sysroot")},
+            read_only_mappings=tuple(
+                ReadOnlyMapping(Path(mapping["source"]), Path(mapping["target"]))
+                for mapping in fields.get("read_only_mappings", ())
+            ),
+        )
+
     def validate(self) -> None:
         if not self.bin_dirs:
             raise IsolationError("a declared toolchain PATH is required")
@@ -257,3 +286,271 @@ def create_test_environment(
             if _within(first, (second,)) or _within(second, (first,)):
                 raise IsolationError("declared input/output roots must not overlap")
     return TestEnvironment(root, runtime, environment.child_env(settings), environment.writable)
+
+
+def _syscall(name: str, *args) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if getattr(libc, name)(*args) == -1:
+        raise OSError(ctypes.get_errno(), f"{name} failed")
+
+
+def _mount(
+    source: str | None, target: Path, kind: str | None, flags: int, data: str | None = None,
+) -> None:
+    _syscall("mount", source.encode() if source else None, os.fsencode(target),
+             kind.encode() if kind else None, ctypes.c_ulong(flags),
+             data.encode() if data else None)
+
+
+def _bind(source: Path, target: Path, *, readonly: bool) -> None:
+    # Nonrecursive bind: nested host mounts are never imported into the target.
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        target.mkdir(exist_ok=True)
+    else:
+        target.touch()
+    _mount(str(source), target, None, 4096)  # MS_BIND
+    _mount(None, target, None, 4096 | 32 | 2 | (1 if readonly else 0))  # REMOUNT,NOSUID,RO
+
+
+def _network_self_test() -> None:
+    """Bring up the sole loopback device; prove local TCP and absent external routes."""
+    if socket.if_nameindex() != [(1, "lo")]:
+        raise IsolationError("network namespace contains an external interface")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+        request = struct.pack("16sH22x", b"lo", 1)  # IFF_UP
+        fcntl.ioctl(control, 0x8914, request)  # SIOCSIFFLAGS
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        with socket.create_connection(listener.getsockname(), timeout=1), listener.accept()[0]:
+            pass
+    with socket.socket() as external:
+        external.settimeout(1)
+        result = external.connect_ex(("192.0.2.1", 443))
+        if result not in {errno.ENETUNREACH, errno.EHOSTUNREACH}:
+            raise IsolationError("external network isolation self-test failed")
+
+
+def _enter_namespaces(config: dict) -> int:
+    """Return child PID in the outer helper, or zero in private PID 1."""
+    uid, gid = os.getuid(), os.getgid()
+    os.unshare(os.CLONE_NEWUSER)
+    Path("/proc/self/setgroups").write_text("deny")
+    Path("/proc/self/uid_map").write_text(f"1000 {uid} 1\n")
+    Path("/proc/self/gid_map").write_text(f"1000 {gid} 1\n")
+    os.unshare(os.CLONE_NEWNS | os.CLONE_NEWNET | os.CLONE_NEWPID | os.CLONE_NEWIPC)
+    _mount(None, Path("/"), None, (1 << 18) | 16384)  # MS_PRIVATE|MS_REC
+    _network_self_test()
+    jail = Path(config["jail"])
+    for source in config["read_only"]:
+        _bind(Path(source), jail / source.lstrip("/"), readonly=True)
+    for source, target in config.get("read_only_mappings", []):
+        _bind(Path(source), jail / target.lstrip("/"), readonly=True)
+    for source in config["writable"]:
+        _bind(Path(source), jail / source.lstrip("/"), readonly=False)
+    for device in ("null", "zero", "random", "urandom"):
+        _bind(Path("/dev") / device, jail / "dev" / device, readonly=False)
+    if config["shell"]:
+        _bind(Path(config["shell"]), jail / "bin" / "sh", readonly=True)
+    if config["env_executable"]:
+        _bind(Path(config["env_executable"]), jail / "usr" / "bin" / "env", readonly=True)
+    # Native PG/git/tmux need an account lookup and private PTYs. Generate these
+    # inputs rather than exposing the host's passwd, NSS, hosts or terminal state.
+    etc = jail / "etc"
+    etc.mkdir()
+    (etc / "passwd").write_text(f"test:x:1000:1000:Test:{config['env']['HOME']}:/bin/false\n")
+    (etc / "group").write_text("test:x:1000:\n")
+    (etc / "nsswitch.conf").write_text("passwd: files\ngroup: files\nhosts: files\n")
+    (etc / "hosts").write_text("127.0.0.1 localhost\n::1 localhost\n")
+    (jail / "dev" / "pts").mkdir()
+    _mount("devpts", jail / "dev" / "pts", "devpts", 2 | 8,
+           "newinstance,ptmxmode=0666,mode=0600")
+    (jail / "dev" / "ptmx").symlink_to("pts/ptmx")
+    (jail / "dev" / "shm").mkdir(mode=0o700)
+    for name, destination in (("fd", "/proc/self/fd"), ("stdin", "/proc/self/fd/0"),
+                              ("stdout", "/proc/self/fd/1"), ("stderr", "/proc/self/fd/2")):
+        (jail / "dev" / name).symlink_to(destination)
+    (jail / "proc").mkdir()
+    (jail / "tmp").mkdir(exist_ok=True, mode=0o700)
+    # Install before fork so termination during setup cannot strand namespace init.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(128 + signal.SIGTERM))
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(128 + signal.SIGINT))
+    child = os.fork()
+    if child:
+        return child
+    # Closing the helper kills PID 1, and the kernel kills *all* its descendants,
+    # including setsid/double-fork daemons. The pipe also closes the fork/prctl race.
+    _syscall("prctl", 1, signal.SIGKILL, 0, 0, 0)  # PR_SET_PDEATHSIG
+    os.close(config["parent_alive_write_fd"])
+    if os.read(config["parent_alive_fd"], 1) != b"1":
+        os._exit(125)
+    os.close(config["parent_alive_fd"])
+    _mount("proc", jail / "proc", "proc", 2 | 4 | 8)  # NOSUID|NODEV|NOEXEC
+    os.chroot(jail)
+    os.chdir(config["cwd"])
+    os.umask(0o077)
+    _syscall("prctl", 38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+    # Mount setup is finished. PID 1 must have the same unprivileged capability
+    # set as its children, including for the daemon's same-user /proc proofs.
+    header = (ctypes.c_uint32 * 2)(0x20080522, 0)  # LINUX_CAPABILITY_VERSION_3
+    capabilities = (ctypes.c_uint32 * 6)()
+    _syscall("capset", ctypes.byref(header), ctypes.byref(capabilities))
+    return 0
+
+
+async def _stop(process: asyncio.subprocess.Process, grace: float) -> None:
+    if process.returncode is None:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=grace)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
+
+
+async def _target(config: dict) -> int:
+    loop = asyncio.get_running_loop()
+    interrupted = loop.create_future()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda s=sig: (
+            interrupted.set_result(s) if not interrupted.done() else None))
+    process = await asyncio.create_subprocess_exec(
+        *config["command"], env=config["env"], close_fds=True,
+    )
+    finished = asyncio.create_task(process.wait())
+    try:
+        done, _ = await asyncio.wait((finished, interrupted), return_when=asyncio.FIRST_COMPLETED)
+        if interrupted in done:
+            sig = interrupted.result()
+            try:
+                process.send_signal(sig)
+            except ProcessLookupError:
+                pass
+            await _stop(process, config["grace"])
+            return 128 + sig
+        return finished.result()
+    finally:
+        finished.cancel()
+        interrupted.cancel()
+
+
+def _helper(config: dict) -> int:
+    read_fd, write_fd = os.pipe()
+    config["parent_alive_fd"] = read_fd
+    config["parent_alive_write_fd"] = write_fd
+    try:
+        child = _enter_namespaces(config)
+    except BaseException:
+        for descriptor in (read_fd, write_fd):
+            with suppress(OSError):
+                os.close(descriptor)
+        raise
+    if child:
+        os.close(read_fd)
+        os.write(write_fd, b"1")
+        os.close(write_fd)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda s, _frame: os.kill(child, s))
+        try:
+            _, status = os.waitpid(child, 0)
+            result = os.waitstatus_to_exitcode(status)
+            return result if result >= 0 else 128 - result
+        except BaseException:
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(child, 0)
+            raise
+    try:
+        result = asyncio.run(_target(config))
+    except BaseException:
+        # Never unwind to outer launcher code from private PID 1.
+        import traceback
+        traceback.print_exc()
+        result = 125
+    os._exit(result if result >= 0 else 128 - result)
+
+
+async def run_isolated(
+    environment: TestEnvironment,
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    timeout: float = 290,
+    grace: float = 2,
+) -> int:
+    """Run one target; return exit status (124 deadline, 125 isolation failure).
+
+    The deadline includes namespace setup and execution, with at most two grace
+    periods reserved for teardown. Caller owns shared-box resource admission.
+    Cancellation terminates and reaps the helper before releasing temporary state.
+    All target output streams directly to the caller; no unbounded capture.
+    """
+    if sys.platform != "linux":
+        raise IsolationError("Linux namespaces required; select the legacy backend explicitly")
+    if (not math.isfinite(timeout) or not math.isfinite(grace)
+            or timeout <= 0 or grace <= 0 or timeout + 2 * grace > 300):
+        raise IsolationError("target setup/execution/cleanup budget must fit 300 seconds")
+    roots = (*environment.runtime.read_only, *environment.writable)
+    if not command or not _within(_absolute(Path(command[0])), roots):
+        raise IsolationError("target executable must be a declared absolute path")
+    if not _within(_absolute(cwd), roots):
+        raise IsolationError("working directory must be declared")
+    # Sibling scratch is never exposed to the target, including the launch plan.
+    with tempfile.TemporaryDirectory(prefix="aq-launch-", dir=environment.root.parent) as temporary:
+        private = Path(temporary)
+        jail = private / "root"
+        jail.mkdir(mode=0o700)
+        config = {
+            "jail": str(jail), "cwd": str(cwd), "command": list(command),
+            "env": environment.child_env(), "grace": grace,
+            "read_only": list(map(str, environment.runtime.read_only)),
+            "writable": list(map(str, environment.writable)),
+            "shell": str(environment.runtime.shell) if environment.runtime.shell else None,
+            "env_executable": str(environment.runtime.env_executable)
+            if environment.runtime.env_executable else None,
+            "read_only_mappings": [[str(m.source), str(m.target)]
+                                   for m in environment.runtime.read_only_mappings],
+        }
+        plan = private / "launch.json"
+        plan.write_text(json.dumps(config), encoding="utf-8")
+        process = await asyncio.create_subprocess_exec(
+            str(environment.runtime.python), "-I", str(Path(__file__).resolve()),
+            "--namespace-init", str(plan), env=environment.child_env(), close_fds=True,
+            start_new_session=True, stdin=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            result = await asyncio.wait_for(process.wait(), timeout=timeout)
+            return result if result >= 0 else 128 - result
+        except TimeoutError:
+            await _stop(process, 2 * grace)
+            return 124
+        except BaseException:
+            await _stop(process, 2 * grace)
+            raise
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--namespace-init", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        config = json.loads(args.namespace_init.read_text(encoding="utf-8"))
+        return _helper(config)
+    except (OSError, IsolationError) as exc:
+        # Do not print env, arguments, configuration contents or credential values.
+        print(f"hermetic isolation unavailable ({type(exc).__name__}); "
+              "target was not admitted; use an isolation-capable Linux runner", file=sys.stderr)
+        return 125
+
+
+if __name__ == "__main__":
+    sys.exit(main())

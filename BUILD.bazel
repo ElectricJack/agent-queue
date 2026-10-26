@@ -11,16 +11,15 @@ filegroup(
     # The inventory builder scans source module names, test ASTs and resource
     # directories; declaring these data inputs also makes stale inventory fail
     # inside Bazel, where undeclared checkout files are deliberately invisible.
-    srcs = sorted({("//packages/aq-ts-client:package.json" if path == "packages/aq-ts-client/package.json" else path): True for path in GENERATOR_INPUTS + glob([
-        "src/**/*.py",
+    srcs = sorted({path: True for path in [
+        path
+        for path in GENERATOR_INPUTS
+        if not path.startswith(("src/", "tests/", "packages/aq-ts-client/"))
+    ] + [
+        "//tools/bazel:python_generator_inputs",
+        "//packages/aq-ts-client:package.json",
+    ] + glob([
         "scripts/*.py",
-        "tests/**/*.py",
-        "tests/selection_*.yaml",
-        "tests/fixtures/generated_sources/**",
-        "tests/fixtures/contracts/command_audit_modules/**",
-        "src/profiles/defaults/**",
-        "src/prompts/**",
-        "src/sessions/default_harnesses/**",
         "docs/reference/playbook-commands/*.md",
     ], exclude = ["**/__pycache__/**", "**/.ruff_cache/**", "**/*.pyc"])}.keys()),
     visibility = ["//tools/bazel:__pkg__"],
@@ -61,6 +60,7 @@ filegroup(
     srcs = [
         "package.json", "package-lock.json", "//packages/aq-ts-client:package.json",
         "//tools/bazel:pnpm-lock.yaml",
-    ] + glob(["tests/fixtures/contracts/**/*.json"]),
+        "//tests:fixtures",
+    ],
     visibility = ["//visibility:public"],
 )
