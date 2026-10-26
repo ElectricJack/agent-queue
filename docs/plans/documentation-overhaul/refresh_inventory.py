@@ -813,6 +813,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Installer script."),
     ("uninstall.sh", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Uninstaller script."),
+    ("src/test_dsn.py", "contributing", "docs/contributing/testing.md", SUPPORTING,
+     "PostgreSQL test DSN diagnostics for the test harness."),
     ("run_tests.sh", "contributing", "docs/contributing/testing.md", SUPPORTING,
      "Test entry script."),
     ("test_suite.bat", "contributing", "docs/contributing/testing.md", SUPPORTING,
