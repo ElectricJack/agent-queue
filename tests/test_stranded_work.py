@@ -227,6 +227,124 @@ async def test_wip_save_of_a_clean_pushed_checkout_is_clean(clone, origin, git):
     assert _git(["rev-parse", "HEAD"], cwd=clone) == sha
 
 
+@pytest.mark.parametrize("state", ["untracked", "unstaged", "staged", "renamed"])
+async def test_wip_save_refuses_oversized_files_before_changing_index(
+    clone, origin, git, monkeypatch, state,
+):
+    monkeypatch.setattr("src.orchestrator.stranded_work.WIP_MAX_FILE_BYTES", 64)
+    _git(["checkout", "-b", "aq/large"], cwd=clone)
+    name = "large é\nfile.bin"
+    if state != "untracked":
+        _commit(clone, name, "small")
+    _git(["push", "origin", "aq/large"], cwd=clone)
+    if state == "renamed":
+        _git(["mv", name, "renamed.bin"], cwd=clone)
+        name = "renamed.bin"
+    pathlib.Path(clone, name).write_bytes(b"x" * 65)
+    if state == "staged":
+        _git(["add", "--", name], cwd=clone)
+    pathlib.Path(clone, "safe.py").write_text("safe work")
+    head = _git(["rev-parse", "HEAD"], cwd=clone)
+    status = _git(["status", "--porcelain=v1", "-z"], cwd=clone)
+    index = _git(["diff", "--cached", "--binary"], cwd=clone)
+
+    result = await save_wip_to_task_branch(git, clone, "aq/large", "hibernate:test")
+
+    assert result.status == "push_failed" and result.commit == head
+    assert repr(name) in result.error and "65 bytes" in result.error
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == head
+    assert _git(["rev-parse", "refs/heads/aq/large"], cwd=origin) == head
+    assert _git(["status", "--porcelain=v1", "-z"], cwd=clone) == status
+    assert _git(["diff", "--cached", "--binary"], cwd=clone) == index
+
+
+@pytest.mark.parametrize("state", ["untracked", "staged", "deleted", "renamed"])
+async def test_wip_save_honors_worker_do_not_commit_declaration(clone, origin, git, state):
+    _git(["checkout", "-b", "aq/excluded"], cwd=clone)
+    name = "generated.json"
+    if state != "untracked":
+        _commit(clone, name)
+    _git(["push", "origin", "aq/excluded"], cwd=clone)
+    pathlib.Path(clone, ".aq").mkdir()
+    # This is per-checkout control state, like claim.json, never repository content.
+    pathlib.Path(clone, ".git/info/exclude").write_text(".aq/\n")
+    pathlib.Path(clone, ".aq/wip-do-not-commit").write_text(
+        "# Keep generated output local\ngenerated.json\n", encoding="utf-8",
+    )
+    if state == "deleted":
+        pathlib.Path(clone, name).unlink()
+    elif state == "renamed":
+        _git(["mv", name, "new-name.json"], cwd=clone)
+    else:
+        pathlib.Path(clone, name).write_text("deliberately uncommitted")
+        if state == "staged":
+            _git(["add", name], cwd=clone)
+    head = _git(["rev-parse", "HEAD"], cwd=clone)
+    status = _git(["status", "--porcelain=v1", "-z"], cwd=clone)
+
+    result = await save_wip_to_task_branch(git, clone, "aq/excluded", "hibernate:test")
+
+    assert result.status == "push_failed"
+    assert "generated.json" in result.error and ".aq/wip-do-not-commit" in result.error
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == head
+    assert _git(["status", "--porcelain=v1", "-z"], cwd=clone) == status
+    assert _git(["rev-parse", "refs/heads/aq/excluded"], cwd=origin) == head
+
+
+async def test_wip_save_accepts_size_boundary_deletion_and_symlink(clone, origin, git, monkeypatch):
+    monkeypatch.setattr("src.orchestrator.stranded_work.WIP_MAX_FILE_BYTES", 64)
+    _git(["checkout", "-b", "aq/safe"], cwd=clone)
+    _commit(clone, "deleted.bin", "x" * 65)
+    pathlib.Path(clone, "deleted.bin").unlink()
+    pathlib.Path(clone, "boundary.bin").write_bytes(b"x" * 64)
+    pathlib.Path(clone, "link").symlink_to("boundary.bin")
+    result = await save_wip_to_task_branch(git, clone, "aq/safe", "hibernate:test")
+    assert result.status == "pushed"
+    assert _git(["status", "--porcelain"], cwd=clone) == ""
+
+
+@pytest.mark.parametrize('declaration', [b'../outside\n', b'/absolute\n', b'\xff'])
+async def test_wip_save_refuses_invalid_declaration_without_committing(clone, git, declaration):
+    _git(['checkout', '-b', 'aq/invalid'], cwd=clone)
+    pathlib.Path(clone, '.aq').mkdir()
+    pathlib.Path(clone, '.git/info/exclude').write_text('.aq/\n')
+    pathlib.Path(clone, '.aq/wip-do-not-commit').write_bytes(declaration)
+    pathlib.Path(clone, 'safe.py').write_text('safe work')
+    head = _git(['rev-parse', 'HEAD'], cwd=clone)
+    result = await save_wip_to_task_branch(git, clone, 'aq/invalid', 'hibernate:test')
+    assert result.status == 'push_failed' and result.error
+    assert _git(['rev-parse', 'HEAD'], cwd=clone) == head
+    assert _git(['status', '--porcelain'], cwd=clone) == '?? safe.py'
+
+
+async def test_wip_directory_declaration_does_not_match_sibling_paths(clone, git):
+    _git(['checkout', '-b', 'aq/directory'], cwd=clone)
+    pathlib.Path(clone, '.aq').mkdir()
+    pathlib.Path(clone, '.git/info/exclude').write_text('.aq/\n')
+    pathlib.Path(clone, '.aq/wip-do-not-commit').write_text('generated/\n')
+    pathlib.Path(clone, 'generated-extra.py').write_text('safe work')
+    assert (await save_wip_to_task_branch(git, clone, 'aq/directory', 'hibernate:test')).status == 'pushed'
+    pathlib.Path(clone, 'generated').mkdir()
+    pathlib.Path(clone, 'generated/data.json').write_text('local data')
+    result = await save_wip_to_task_branch(git, clone, 'aq/directory', 'hibernate:test')
+    assert result.status == 'push_failed' and 'generated/data.json' in result.error
+
+
+async def test_wip_save_refuses_lossy_filename_inspection(clone, git, monkeypatch):
+    from src.orchestrator import stranded_work
+
+    monkeypatch.setattr(stranded_work, 'WIP_MAX_FILE_BYTES', 64)
+    _git(['checkout', '-b', 'aq/filename'], cwd=clone)
+    generated = pathlib.Path(clone, 'generated-\udcff.json')
+    generated.write_bytes(b'x' * 65)
+    head = _git(['rev-parse', 'HEAD'], cwd=clone)
+    result = await save_wip_to_task_branch(git, clone, 'aq/filename', 'hibernate:test')
+    assert result.status == 'push_failed' and 'decoding loss' in result.error
+    assert _git(['rev-parse', 'HEAD'], cwd=clone) == head
+    assert generated.read_bytes() == b'x' * 65
+    assert _git(['diff', '--cached', '--name-only'], cwd=clone) == ''
+
+
 async def test_wip_save_never_forces_a_diverged_task_branch(clone, origin, tmp_path, git):
     _git(["checkout", "-b", "aq/task-split"], cwd=clone)
     _commit(clone, "base.py")

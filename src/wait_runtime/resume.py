@@ -336,7 +336,16 @@ class ResumeTransaction:
             return retry_at
 
     async def requeue(self, args, *, principal, scope, handler):
-        """Supervisor repair of a resolved wait's held resume, fenced by generation."""
+        """Supervisor repair of a held suspension or resume, fenced by generation."""
+        async with self.db._engine.connect() as conn:
+            reason = await conn.scalar(select(continuations.c.hold_reason).where(
+                continuations.c.id == args['continuation_id'],
+                continuations.c.wait_id == args['wait_id'],
+            ))
+        if reason == 'push_failed':
+            return await self.service.lifecycle.hibernate.requeue_push(
+                args, principal=principal, scope=scope,
+            )
         async with self.db._engine.begin() as conn:
             # Join the same fair queue as automatic resume. Acquire before any
             # read or mutation so refusal/cancellation leaves the hold intact.

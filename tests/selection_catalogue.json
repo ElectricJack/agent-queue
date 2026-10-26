@@ -18011,9 +18011,10 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:1ac710e93b1cc076786e9d5f108abcdbc7908898b631f2757ab86d40b0aa1a47",
+      "digest": "sha256:649cb724dd5fb57faf2b85079b2613eb6ab773fe45089f4b4ac399c844db7ee0",
       "imports": [
         "src.git.manager",
+        "src.orchestrator",
         "src.orchestrator.stranded_work",
         "src.orchestrator.workspace"
       ],
