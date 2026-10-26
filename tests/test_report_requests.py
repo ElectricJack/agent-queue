@@ -124,7 +124,7 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert request["state"] == "reserved"
     assert window["due_at"] == BASE + HOUR + 300
     assert request["brief"]["facts"][0]["delivery"] == "unknown"
-    assert request["brief"]["facts"][0]["source_url"].endswith("/focus/tasks/t1")
+    assert request["brief"]["facts"][0]["source_url"].endswith("/tasks/t1")
     assert request["brief"]["counts"] == {"facts": 1, "completed": 1, "active": 0}
     assert window["payload"]["text"] == request["fallback_text"] == (
         "No report this hour: the supervisor update is unavailable."
@@ -164,7 +164,7 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert len(transport.messages) == 1
     assert (await db.get_report_request(request["id"]))["state"] == "submitted"
     assert (await db.get_report_request(request["id"]))["source_links"] == [
-        "https://queue.example.test/focus/tasks/t1"
+        "https://queue.example.test/tasks/t1"
     ]
 
 

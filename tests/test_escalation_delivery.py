@@ -473,7 +473,7 @@ def test_root_post_carries_the_identifying_fields_and_only_configured_mentions()
     assert "Roll forward or hold?" in text
     assert f"<@{MENTION_USER}>" in text and f"<@&{MENTION_ROLE}>" in text
     # §6.1: the post's one link is the incident's focus page, never settings.
-    assert text.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
+    assert text.endswith(f"<{BASE_URL}/escalations/esc-1>")
     assert "/settings/" not in text
     assert "esc-1" in text and "aq-esc:esc-1:root:0" in text
 
@@ -507,7 +507,7 @@ def test_replacement_root_repeats_the_incident_without_repeating_the_ping():
     assert "reposted" in text
     assert "Migration blocked" in text
     assert "Roll forward or hold?" in text
-    assert text.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
+    assert text.endswith(f"<{BASE_URL}/escalations/esc-1>")
     assert "aq-esc:esc-1:root:1" in text
 
 
