@@ -20,6 +20,14 @@ batching never skips a relevant event or changes retry ownership.
 
 ## Recoverable listener failures — 2026-10-25
 
+Deadline commands exceeding the listener lease budget retry locally with the
+same capped exponential backoff as graph contention. They log
+`wait.deadline_timeout` with wait id, deadline type, generation and monotonic
+elapsed seconds, then allow other due deadlines to proceed. Cancellation of an
+individual command also retains its deadline for retry; cancellation of the
+timer task itself propagates for service shutdown. Neither failure marks the
+deadline fired or quarantined, nor restarts the listener TaskGroup.
+
 Outcome measurements are idempotent by measurement id. A duplicate preserves
 the existing sample, including any later resume-cost updates, and does not
 roll back outcome delivery or source-cursor progress.

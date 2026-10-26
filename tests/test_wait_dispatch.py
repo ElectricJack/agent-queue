@@ -35,6 +35,7 @@ from src.waits.conditions import Condition, Scope
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.registry import build_registry
 from src.waits.resource_sources import resource_invalidation
+from src.waits.timers import WaitTimerDriver
 from src.wait_runtime.service import WaitService
 from src.waits.sources import record_source_event
 from tests.test_wait_queries import (
@@ -1133,6 +1134,97 @@ async def test_graph_busy_deadline_retries_with_backoff_without_blocking_later_d
     assert await service.timers.tick() == 1
     assert await service.timers.tick() == 0
     assert not await records(env, messages)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "cancelled"])
+async def test_interrupted_deadline_retries_with_backoff_and_continues_heap(failure, caplog):
+    now = [NOW + 2]
+    blocked = True
+
+    async def command(name, args):
+        assert name == "wait_deadline_fire"
+        if blocked and args["wait_id"] == "slow-wait":
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+            await asyncio.sleep(60)
+        return {"success": True}
+
+    service = SimpleNamespace(listener=SimpleNamespace(lease_seconds=0.001),
+                              command=AsyncMock(side_effect=command),
+                              quarantine_deadline=AsyncMock())
+    driver = WaitTimerDriver(service, clock=lambda: now[0])
+    slow = {"id": "slow", "wait_id": "slow-wait", "deadline_type": "due", "generation": 3}
+    later = {**slow, "id": "later", "wait_id": "later-wait"}
+    driver.heap = [(NOW, "slow", slow), (NOW + 1, "later", later)]
+
+    for attempt, delay in enumerate((1, 2, 4, 8, 16, 30, 30)):
+        assert await driver.tick() == (1 if attempt == 0 else 0)
+        assert driver._retry_deadlines["slow"] == (now[0] + delay, delay)
+        calls = service.command.await_count
+        now[0] += delay - 0.01
+        assert await driver.tick() == 0
+        assert service.command.await_count == calls
+        now[0] += 0.01
+
+    diagnostic = next(record.getMessage() for record in caplog.records
+                      if record.getMessage().startswith(f"wait.deadline_{failure}"))
+    assert "wait_id=slow-wait deadline_type=due generation=3 elapsed_seconds=" in diagnostic
+    service.quarantine_deadline.assert_not_awaited()
+    blocked = False
+    assert await driver.tick() == 1
+    assert not driver.heap and not driver._retry_deadlines
+
+
+async def test_timer_run_survives_deadline_timeout_until_shutdown():
+    later_fired = asyncio.Event()
+
+    async def command(name, args):
+        if args["wait_id"] == "slow-wait":
+            await asyncio.sleep(60)
+        later_fired.set()
+        return {"success": True}
+
+    listener = SimpleNamespace(lease_seconds=0.001, deadlines_changed=asyncio.Event())
+    driver = WaitTimerDriver(SimpleNamespace(listener=listener, command=command),
+                             clock=lambda: NOW + 2)
+    driver.rearm = AsyncMock()
+    driver.heap = [(NOW + n, str(n), {"wait_id": wait_id, "deadline_type": "due", "generation": 1})
+                   for n, wait_id in enumerate(("slow-wait", "later-wait"))]
+    running = asyncio.create_task(driver.run())
+    try:
+        await asyncio.wait_for(later_fired.wait(), 5)
+        assert not running.done()
+        assert "0" in driver._retry_deadlines
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+
+@pytest.mark.parametrize("method", ["tick", "run"])
+async def test_deadline_timer_shutdown_propagates_cancellation(method, caplog):
+    started = asyncio.Event()
+
+    async def command(name, args):
+        started.set()
+        await asyncio.sleep(60)
+
+    listener = SimpleNamespace(lease_seconds=60, deadlines_changed=asyncio.Event())
+    driver = WaitTimerDriver(SimpleNamespace(listener=listener, command=command), clock=lambda: NOW)
+    driver.rearm = AsyncMock()
+    driver.heap = [(NOW, "slow", {"wait_id": "slow-wait", "deadline_type": "due", "generation": 1})]
+    running = asyncio.create_task(getattr(driver, method)())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert not driver._retry_deadlines
+    assert driver.heap
+    assert "wait.deadline_timeout" not in caplog.text
+    assert "wait.deadline_cancelled" not in caplog.text
+    assert not driver._heap_lock.locked()
 
 
 async def test_deadline_graph_lock_contention_retains_retry_after_transaction_rollback(runtime_env):
