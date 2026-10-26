@@ -38,6 +38,13 @@ input/output roots fail admission. Output roots must belong to this target/shard
 never declare the host /tmp, operator home, an entire checkout containing private
 state, or a shared output ancestor. These declarations are trusted build inputs.
 
+The module launcher sets `PYTHONTZPATH` to `runtime/share/zoneinfo` beneath the
+runfiles-resolved native toolchain. The existing native runtime filegroup declares
+that data, and the same subtree verification and read-only mounts used for
+PostgreSQL retain it inside H2. Python configuration validation can resolve IANA
+zones without a host zoneinfo directory or an additional wheel. Coverage includes
+the default report zone, UTC, and the full pinned toolchain's IANA database.
+
 `environment.child_env(settings)` returns an independent environment copy for
 local child launchers. Explicit per-target settings cannot override isolation or
 interpreter startup controls, session identifiers, tokens or database DSNs.

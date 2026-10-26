@@ -123,7 +123,7 @@ def test_module_selection_runs_admitted_without_host_postgres(setup, path):
     assert result.exit_code == 0, result.output
     argv, env = setup.calls[0]
     assert argv[-1] == "//tests:m0__module"
-    assert "--jobs=2" in argv and "--local_test_jobs=2" in argv
+    assert "--jobs=2" in argv and "--local_test_jobs=0" in argv
     assert "--default_test_resources=aq_pg=1" in argv
     assert "--local_resources=aq_pg=2" in argv
     assert "--default_test_resources=memory=1024" in argv
@@ -225,6 +225,29 @@ def test_worker_db_and_memory_limits_remain_bounded(setup, monkeypatch):
     assert invoke(setup, "tests/test_m0.py").exit_code == 2
 
 
+@pytest.mark.parametrize(
+    ("allocated", "requested", "expected"),
+    [(8, None, 2), (8, 100, 2), (8, 1, 1), (1, 100, 1)],
+)
+def test_cold_build_caps_loading_and_execution_within_admission(
+    setup, monkeypatch, allocated, requested, expected
+):
+    monkeypatch.setattr(
+        "src.cli.test_runner._caps", lambda _r: (2, allocated, "not slow", 0.05, 0)
+    )
+    args = [] if requested is None else ["--aq-workers", str(requested)]
+    result = invoke(setup, *args, "tests/test_m0.py")
+    assert result.exit_code == 0, result.output
+    argv = setup.calls[0][0]
+    assert f"--jobs={expected}" in argv
+    assert "--local_test_jobs=0" in argv  # Resource reservations remain active.
+    assert f"--loading_phase_threads={expected}" in argv
+    assert f"--local_resources=cpu={expected}" in argv
+    assert f"--local_resources=aq_pg={expected}" in argv
+    assert f"--local_resources=memory={expected * 1024}" in argv
+    assert f"Bazel jobs {expected}" in result.output
+
+
 @pytest.mark.parametrize("full", [False, True])
 def test_slot_contention_and_full_suite_lock_refuse_without_spawning(setup, full):
     sem = (
@@ -314,3 +337,20 @@ def test_repository_manifest_maps_a_real_module():
     )
     assert plan.targets == ("//tests:test_env_scrub",)
     assert not plan.full_suite
+
+
+def test_shared_postgres_diagnostic_does_not_import_cli():
+    import subprocess
+
+    script = """
+import sys
+from src.test_dsn import _POSTGRES_SETUP, postgres_test_dsn_error
+assert postgres_test_dsn_error({}) == _POSTGRES_SETUP
+assert postgres_test_dsn_error({"POSTGRES_TEST_DSN": "  "}) == _POSTGRES_SETUP
+assert postgres_test_dsn_error({"POSTGRES_TEST_DSN": "postgresql://host/base"}) is None
+assert not any(name == "src.cli" or name.startswith("src.cli.") for name in sys.modules)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr

@@ -14,6 +14,19 @@ filegroup(name = "sources", srcs = [
         "replay.py",
         "sources.py",
     ])
+exports_files([
+        "__init__.py",
+        "context.py",
+        "explain.py",
+        "filing.py",
+        "planner.py",
+        "policy.py",
+        "readiness.py",
+        "replay.py",
+        "sources.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

@@ -10,6 +10,15 @@ filegroup(name = "sources", srcs = [
         "service.py",
         "vault.py",
     ])
+exports_files([
+        "__init__.py",
+        "diff.py",
+        "notifier.py",
+        "service.py",
+        "vault.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

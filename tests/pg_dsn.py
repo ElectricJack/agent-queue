@@ -595,7 +595,7 @@ def ensure_worker_postgres_dsn() -> str | None:
     base = os.environ.get("POSTGRES_TEST_DSN", "").strip()
     if not base:
         if os.environ.get("AQ_REQUIRE_POSTGRES_TESTS") == "1":
-            from src.cli.test_runner import postgres_test_dsn_error
+            from src.test_dsn import postgres_test_dsn_error
 
             raise RuntimeError(postgres_test_dsn_error() or "POSTGRES_TEST_DSN is required")
         _CACHED_DSN = None
