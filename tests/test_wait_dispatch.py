@@ -1338,9 +1338,11 @@ async def test_listener_retries_preparation_if_cursor_advances_during_git(runtim
     assert seen == [source[1]["seq"]]
 
 
-async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runtime_env):
+async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runtime_env, monkeypatch):
     """Cancellation inside a real query must release graph/cursor and retain the event."""
-    from sqlalchemy import func
+    from unittest.mock import Mock
+
+    from sqlalchemy import event as sql_event, func
 
     env = runtime_env
     receipt = await register(env)
@@ -1350,8 +1352,29 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     now = [NOW]
     dispatcher = ObservingDispatcher(env.registry)
     service = runtime(env, clock=lambda: now[0], dispatcher=dispatcher)
-    service.listener.event_budget_seconds = 0.2
     original = service.listener._dispatch
+    event_budget = None
+    expired_budgets = []
+
+    def controlled_timeout(seconds):
+        nonlocal event_budget
+        budget = asyncio.timeout(None)
+        if seconds == service.listener.event_budget_seconds:
+            event_budget = budget
+        return budget
+
+    # Control only the listener's clocks. Database and asyncio cancellation stay real;
+    # ordinary queries cannot consume the event or drain budget under host load.
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.side_effect = controlled_timeout
+    listener_asyncio.get_running_loop.return_value = SimpleNamespace(time=lambda: 0)
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+
+    def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        if "pg_sleep" in statement:
+            assert event_budget is not None
+            expired_budgets.append(event_budget)
+            event_budget.reschedule(asyncio.get_running_loop().time())
 
     async def stall(conn, event):
         if event["seq"] == slow_seq:
@@ -1360,7 +1383,13 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
         return await original(conn, event)
 
     service.listener._dispatch = stall
-    await service.listener.tick()
+    sql_event.listen(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
+    try:
+        assert await service.listener.tick()
+    finally:
+        sql_event.remove(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
+    assert len(expired_budgets) == 1 and expired_budgets[0].expired()
+    assert service.listener._retry_due[slow_seq] == NOW + service.listener.retry_seconds
     assert (await env.db.get_task("owner")).title != "abort"
     assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
         "outcome"] == "satisfied"
@@ -1370,7 +1399,7 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     assert cursor > slow_seq
     service.listener._dispatch = original
     now[0] += service.listener.retry_seconds + 1
-    await service.listener.tick()
+    assert await service.listener.tick()
     source = {r["seq"]: r for r in await records(env, wait_source_events)}
     assert source[slow_seq]["dispatched_at"] is not None
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
