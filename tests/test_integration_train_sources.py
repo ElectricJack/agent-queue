@@ -8769,6 +8769,15 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await db.get_task("epic")).pr_url == url
 
+    # Retain each child's current completion before cleanup can remove the
+    # aggregate ref. Parent containment alone cannot supply those witnesses.
+    from src.integration.truth_reconciler import GitTruthReconciler
+
+    reconciled = await GitTruthReconciler(
+        db, case.world.truth.git, data_dir=tmp_path,
+    ).tick(time.time())
+    assert reconciled["repaired"] >= len(case.children)
+
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])
     forge = TrainCleanupForge([(number, head)])

@@ -10502,7 +10502,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:28aa9ec120abd074457aaa16efc43825522b916324f7772ffc6835d18f830222",
+      "digest": "sha256:14f75ca2d01d6a1f26326ad6496a923523e3bede2857c04d0c061cad2b80b9f1",
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
@@ -10560,6 +10560,7 @@
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
+        "src.integration.truth_reconciler",
         "src.models",
         "src.operator_decisions",
         "src.orchestrator.core",
