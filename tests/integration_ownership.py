@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2781,
+ 'authorized_owned_delta': 2911,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1137,8 +1137,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82963,
- 'measured_owned_total': 158280,
+ 'measured_engine_lines': 83085,
+ 'measured_owned_total': 158410,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1446,7 +1446,63 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
              'storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': '14ce4d02a',
-   'task_id': 'smart-bridge-86'}}
+   'task_id': 'smart-bridge-86'},
+ 'aborted_batch_branch_retirement_composition': {'authorized_engine_delta': 55,
+   'authorized_owned_delta': 63,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '0f0a16299',
+   'measured_engine_lines': 83018,
+   'measured_owned_total': 158343,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 82963,
+   'previous_measured_owned_total': 158280,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +63 owned / +55 engine lines for branch retirement of '
+             'aborted-batch holds and the advisory-refresh-aware claim test (dev red fix). Preserve '
+             'every historical grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': '24596d693',
+   'task_id': 'crisp-apex-76'},
+ 'tick_checkout_minimum_interval_composition': {'authorized_engine_delta': 67,
+ 'authorized_owned_delta': 67,
+ 'authorized_table_delta': 0,
+ 'decision_message_id': 'msg-fe0cc19fc0a340bc8164791fc4d056ba',
+ 'dev_source_revision': '0f0a162997b368a14ed333b6722a16a6b1101e6e',
+ 'measured_engine_lines': 83030,
+ 'measured_owned_total': 158347,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 82963,
+ 'previous_measured_owned_total': 158280,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved tick snapshot join before checkout setup, tick-scoped '
+           'checkout-open reuse and per-lane minimum visit interval. Preserve every historical '
+           'grant and ownership classification; zero remaining headroom and no new storage '
+           'category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'request_message_id': 'msg-118c87f377634a1f8fc8a01cefd0f7f0',
+ 'source_revision': 'a5a528a31d905e0066c8dccf889677a00e8fc51c',
+ 'task_id': 'sharp-stone-41'},
+ 'tick_checkout_branch_retirement_merge_composition': {'authorized_engine_delta': 67,
+ 'authorized_owned_delta': 67,
+ 'authorized_table_delta': 0,
+ 'decision_message_id': 'msg-2c3c609249f14e15bd513ec8dfead06d',
+ 'dev_source_revision': '3ef631d52bc8270394732ee4181196eea016c6b6',
+ 'measured_engine_lines': 83085,
+ 'measured_owned_total': 158410,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83018,
+ 'previous_measured_owned_total': 158343,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Arithmetic composition of the existing sharp-stone-41 +67 owned / +67 engine grant '
+           'with the inherited crisp-apex-76 +63 owned / +55 engine grant on common base '
+           '0f0a16299. Preserves both approvals and every historical grant; zero remaining '
+           'headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': 'c2ce4605f287313ba9dccc62ed8eb3c759012b3c',
+ 'task_id': 'sharp-stone-41'}}
 
 
 def integration_table(name: str) -> bool:

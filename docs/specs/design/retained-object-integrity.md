@@ -85,6 +85,11 @@ before a proof can authorize a state change.
 The service dispatch encloses both train lanes and Git truth reconciliation in
 one scope. Standalone ticks create their own scope; publication follow-ups
 always create a new one. Reader caches and remote freshness fences remain local.
+The reconciler joins an existing or in-flight tick snapshot before opening the
+checkout or starting an observer acquisition. Successful checkout opens are
+coalesced within that scope by Git manager, resolved storage path and origin
+URL, so lane setup does not wait behind a peer's snapshot fetch. A later scope
+revalidates the checkout; integrity checks remain with snapshot acquisition.
 The reconciler opens the train's canonical retained `repository` checkout under
 the same storage binding, rather than creating a separate reconciliation clone.
 Both readers therefore reuse its TTL/fingerprint integrity baseline between
@@ -105,6 +110,12 @@ no transport or foreground maintenance. Changed imports retain fsckObjects and
 the existing baseline-extension checks. Expired or changed integrity baselines,
 recovery journals and pending markers retain full acquisition and recovery.
 A failed remote probe leaves the observation unavailable.
+
+Unchanged lanes have a minimum 30-second interval between visit starts,
+independently of service tick frequency. Readiness events, explicit visit requests
+and changed target configuration bypass this interval. Events received during a
+visit remain pending for its successor. Repository concurrency, rate-limit pauses
+and publication checks still apply; lost events recover through ordinary revisits.
 
 Scheduler and pool sizing read only completed, bounded-age snapshots and start
 one background refresh per repository when needed. Cold or expired snapshots

@@ -61,6 +61,7 @@ BLOCKED_WAIT_SECONDS = 10.0
 BLOCKED_MAX_WAIT_SECONDS = 60.0
 # Events accelerate readiness; an idle lane still revisits Git after a lost event.
 IDLE_REOBSERVATION_SECONDS = 30.0
+MINIMUM_VISIT_INTERVAL_SECONDS = 30.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -494,6 +495,7 @@ class IntegrationTrain:
         visit_timeout_seconds: float = 900.0,
         repository_concurrency: int = REPOSITORY_CONCURRENCY,
         event_driven: bool = False,
+        minimum_visit_interval_seconds: float = MINIMUM_VISIT_INTERVAL_SECONDS,
         waits=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -501,6 +503,8 @@ class IntegrationTrain:
             raise ValueError("visit timeout must be positive")
         if repository_concurrency < 1:
             raise ValueError("repository concurrency must be positive")
+        if minimum_visit_interval_seconds < 0:
+            raise ValueError("minimum visit interval must be nonnegative")
         self.targets, self.batches, self.lane_for = targets, batches, lane_for
         self.repair, self.clock = repair, clock
         # Without a baseline service the train cannot compare the target, so it
@@ -509,6 +513,7 @@ class IntegrationTrain:
         self.visit_timeout_seconds = visit_timeout_seconds
         self.repository_concurrency = repository_concurrency
         self.event_driven = event_driven
+        self.minimum_visit_interval_seconds = minimum_visit_interval_seconds
         self.waits = waits
         self.on_wake: Callable[[], None] | None = None
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
@@ -557,6 +562,9 @@ class IntegrationTrain:
                         and (lane.last.detail or {}).get("reason") != "settling"):
                     continue
                 if (lane.not_before > now
+                        or (not lane.requested and lane.start
+                            and (lane.last is None or lane.last.target == target)
+                            and now < lane.started_at + self.minimum_visit_interval_seconds)
                         or occupied.get(target.repository_id, 0) >= self.repository_concurrency
                         or not self._admit(target.key, now)):
                     deferred.append(label)
