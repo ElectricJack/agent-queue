@@ -932,7 +932,59 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'claim_rejection_delivery_proof_merge_composition': {'decision_message_id': 'msg-611f9fbe1b804e8e9b7f127924b38451',
+HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
+                                         'authorized_engine_delta': 0,
+                                         'authorized_owned_delta': 51,
+                                         'authorized_shared_owned_delta': 51,
+                                         'authorized_table_delta': 0,
+                                         'batch_id': 'train-4eaf63ed79ce2dfa10986376d0d8b816',
+                                         'charged_files': {'src/cli/test_runner.py': 51},
+                                         'decision_message_id': 'msg-bb1e6d92f91045cd8d823269cabfd72c',
+                                         'dev_source_revision': '45d3b878f76f8c9c7bc450959a4bc218c0789a2a',
+                                         'measured_engine_lines': 83434,
+                                         'measured_owned_total': 158915,
+                                         'measured_source_revision': '88e01797dd08d4340b20ffb95d5ad537510b7d07',
+                                         'measured_table_count': 45,
+                                         'operator_decision': '6679052c',
+                                         'previous_measured_engine_lines': 83434,
+                                         'previous_measured_owned_total': 158864,
+                                         'previous_measured_table_count': 45,
+                                         'reason': 'Exact supervisor-approved +51 shared-owned '
+                                                   'lines for the frozen Bazel backend-selection '
+                                                   'command changes on the retained starting head. '
+                                                   'Preserve original baselines, all historical '
+                                                   'grants and ownership classifications, zero '
+                                                   'remaining headroom, the s4_modules expiry and '
+                                                   'no new storage category.',
+                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                         'request_message_id': 'msg-6036da6f47b8430ba57c1a3ffdb683b2',
+                                         'source_revision': 'd8d689ee345e610843884c394a566f2e038797b5',
+                                         'task_id': 'amber-summit-41.4',
+                                         'thread_id': 'batch-fixer-bazel-size-51'},
+ 'claim_rejection_bazel_merge_composition': {'dev_source_revision': '5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b',
+                                             'inherited_decision_message_ids': ['msg-611f9fbe1b804e8e9b7f127924b38451',
+                                                                                'msg-bb1e6d92f91045cd8d823269cabfd72c'],
+                                             'inherited_engine_delta': 0,
+                                             'inherited_owned_delta': 51,
+                                             'measured_engine_lines': 83613,
+                                             'measured_owned_total': 159152,
+                                             'measured_table_count': 45,
+                                             'operator_decision': '6679052c',
+                                             'previous_measured_engine_lines': 83613,
+                                             'previous_measured_owned_total': 159101,
+                                             'previous_measured_table_count': 45,
+                                             'reason': 'Compose the published claim repair cap '
+                                                       '(159101 owned/83613 engine) with the '
+                                                       'existing approved Bazel backend-selection '
+                                                       '+51 shared-owned lines from current dev. '
+                                                       'Preserve every historical decision and '
+                                                       'classification, zero remaining headroom, '
+                                                       'the s4_modules expiry and no new allowance '
+                                                       'or storage category.',
+                                             'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                             'source_revision': 'df2529949412858a6292a42dd66a23e191768f77',
+                                             'task_id': 'solid-torrent-24'},
+ 'claim_rejection_delivery_proof_merge_composition': {'decision_message_id': 'msg-611f9fbe1b804e8e9b7f127924b38451',
                                                       'dev_source_revision': '11c93a21b2240f0e48e94328427201950a4e8d4b',
                                                       'inherited_decision_message_ids': ['msg-353d53ff11c84267b72457c36f4c4a5d'],
                                                       'inherited_engine_delta': 75,
@@ -1231,7 +1283,7 @@ HAND_INTEGRATION_RECONCILIATION = {'claim_rejection_delivery_proof_merge_composi
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3602,
+ 'authorized_owned_delta': 3653,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1436,7 +1488,7 @@ HAND_INTEGRATION_RECONCILIATION = {'claim_rejection_delivery_proof_merge_composi
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83613,
- 'measured_owned_total': 159101,
+ 'measured_owned_total': 159152,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
