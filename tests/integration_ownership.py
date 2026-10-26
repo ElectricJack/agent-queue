@@ -1136,7 +1136,7 @@ HAND_INTEGRATION_RECONCILIATION = {'pool_claim_recheck_diagnostics_composition':
            'zero remaining headroom and no new storage category.',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
- 'authorized_owned_delta': 3597,
+ 'authorized_owned_delta': 3648,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1341,7 +1341,7 @@ HAND_INTEGRATION_RECONCILIATION = {'pool_claim_recheck_diagnostics_composition':
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83633,
- 'measured_owned_total': 159096,
+ 'measured_owned_total': 159147,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1923,7 +1923,33 @@ HAND_INTEGRATION_RECONCILIATION = {'pool_claim_recheck_diagnostics_composition':
  'reason': 'Both historical reductions retire the same Focus helper. The surviving BatchDetail '
            'implementation uses the responsive_dashboard_reduction total of 26 reclaimed lines, '
            'including the 23-line focus_view_retirement_reduction; apply the shared reduction '
-           'once.'}}
+           'once.'},
+ 'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
+ 'authorized_engine_delta': 0,
+ 'authorized_owned_delta': 51,
+ 'authorized_shared_owned_delta': 51,
+ 'authorized_table_delta': 0,
+ 'batch_id': 'train-4eaf63ed79ce2dfa10986376d0d8b816',
+ 'charged_files': {'src/cli/test_runner.py': 51},
+ 'decision_message_id': 'msg-bb1e6d92f91045cd8d823269cabfd72c',
+ 'dev_source_revision': '45d3b878f76f8c9c7bc450959a4bc218c0789a2a',
+ 'measured_engine_lines': 83434,
+ 'measured_owned_total': 158915,
+ 'measured_source_revision': '88e01797dd08d4340b20ffb95d5ad537510b7d07',
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83434,
+ 'previous_measured_owned_total': 158864,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved +51 shared-owned lines for the frozen Bazel '
+           'backend-selection command changes on the retained starting head. Preserve original '
+           'baselines, all historical grants and ownership classifications, zero remaining '
+           'headroom, the s4_modules expiry and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'request_message_id': 'msg-6036da6f47b8430ba57c1a3ffdb683b2',
+ 'source_revision': 'd8d689ee345e610843884c394a566f2e038797b5',
+ 'task_id': 'amber-summit-41.4',
+ 'thread_id': 'batch-fixer-bazel-size-51'}}
 
 
 def integration_table(name: str) -> bool:
