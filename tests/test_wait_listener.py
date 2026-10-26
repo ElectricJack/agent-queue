@@ -1,11 +1,15 @@
-"""Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."""
+"""Dedicated LISTEN connection arguments and service-loop cleanup safety."""
 
+import asyncio
+import errno
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.engine import make_url
 
+import src.git.manager as git_manager
 from src.waits.listener import WaitSourceListener
 
 
@@ -59,8 +63,6 @@ async def test_listener_connect_arguments(monkeypatch, dsn, expected):
 
 
 async def test_inactive_listener_sleeps_even_with_overdue_retry(monkeypatch):
-    import asyncio
-
     listener = WaitSourceListener(SimpleNamespace(orch=SimpleNamespace(db=None)), clock=lambda: 1)
     listener._schedule_retry(1, 0)
     listener.tick = AsyncMock(return_value=False)
@@ -80,3 +82,68 @@ async def test_inactive_listener_sleeps_even_with_overdue_retry(monkeypatch):
     with pytest.raises(StopLive):
         await listener._live(SimpleNamespace(is_closed=lambda: False))
     assert delays == [listener.renewal_seconds]
+
+
+async def test_cancelled_isolated_fetch_cleanup_does_not_restart_listener(
+    tmp_path, monkeypatch, caplog,
+):
+    entered = asyncio.Event()
+    manager = git_manager.GitManager()
+    leaked = set()
+    original_rmtree = git_manager.tempfile.TemporaryDirectory._rmtree
+
+    def failed_rmtree(cls, name, **kwargs):
+        if Path(name).name.startswith("aq-app-fetch-"):
+            leaked.add(name)
+            raise OSError(errno.ENOTEMPTY, "injected refs removal race")
+        original_rmtree(name, **kwargs)
+
+    async def blocked_import(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def drain(_watermark):
+        await manager._afetch_exact_oid_with_app_auth_to_url(
+            str(tmp_path), destination_url=tmp_path.as_uri(), token=None,
+            oid="a" * 40, destination_ref="refs/aq/test/listener-cleanup",
+        )
+
+    async def timers():
+        await asyncio.Event().wait()
+
+    connection = SimpleNamespace(
+        add_listener=AsyncMock(), add_termination_listener=lambda callback: None,
+        is_closed=lambda: False, close=AsyncMock(),
+    )
+    connect = AsyncMock(return_value=connection)
+    service = SimpleNamespace(
+        orch=SimpleNamespace(db=SimpleNamespace(wait_source_watermark=AsyncMock(return_value=0))),
+        processing_enabled=AsyncMock(return_value=True), lease=AsyncMock(return_value=True),
+        timers=SimpleNamespace(run=timers, rearm=AsyncMock()), drain=drain,
+    )
+    listener = WaitSourceListener(service, connect=connect)
+    listener.rearm_retries = AsyncMock()
+    running = None
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "_run_isolated_import_git", blocked_import)
+            patch.setattr(
+                git_manager.tempfile.TemporaryDirectory, "_rmtree", classmethod(failed_rmtree),
+            )
+            running = asyncio.create_task(listener.run())
+            await asyncio.wait_for(entered.wait(), 10)
+            running.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(running), 10)
+            assert leaked
+            assert "temporary directory leaked" in caplog.text
+            assert "wait.listener_restarted" not in caplog.text
+            connect.assert_awaited_once()
+            connection.close.assert_awaited_once()
+    finally:
+        if running is not None:
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+        for path in leaked:
+            original_rmtree(path)

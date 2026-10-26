@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 
 from src.dashboard_paths import escalation_path
+from src.discord.links import format_links
 from src.discord.render_budget import (
     ESCALATION_CLOSED,
     ESCALATION_OPEN,
@@ -117,7 +118,7 @@ def sanitise(text: str, *, limit: int = MAX_FIELD_CHARS) -> str:
     text = _MENTION_TOKEN.sub("", text or "")
     if _TRACEBACK.search(text):
         text = text.split("\n", 1)[0]
-    text = text.replace("`", "").replace("@", "@\u200b")
+    text = format_links(text, lambda part: part.replace("`", "").replace("@", "@\u200b"))
     text = _WHITESPACE.sub(" ", text).strip()
     if len(text) > limit:
         text = cut(text, limit)
