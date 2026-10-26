@@ -117,6 +117,21 @@ types through the durable outbox. Legacy integration events remain undelivered
 in that mode, so enabling promotion policy never reactivates a legacy writer.
 Both the outbox page and its scan boundary apply the same event-type filter.
 
+When a continuous source advances, cancelling its unpublished predecessor retires
+the daemon task as `COMPLETED` with `work_outcome=abandoned` and an obsolete
+marker. This supersession creates no failure generation, recovery notification or
+hold. Retain the observed replacement source and, when its successor is authored,
+record the successor task/request/batch identities and a `supersedes` provenance
+edge. A refused replacement request leaves the predecessor retired. Ordinary
+failed or explicitly aborted intents keep their failure/recovery semantics.
+
+Source-check refusals from a continuous request are recorded durably. A later
+green source observation uses the latest refusal as an additional notification
+generation, so a previously accepted source-ready event cannot consume the only
+retry when CI changes between observation and request. Repeated green visits
+without another refusal still deduplicate, including across daemon restart.
+Other request refusals retain the reviewed policy's operator-attention behavior.
+
 `promote_repair` lets an operator or project supervisor back up and restore a
 stranded daemon-owned promotion task to `IN_PROGRESS` with no worker route.
 This route-reset exception never selects a worker profile; the mandatory-routing

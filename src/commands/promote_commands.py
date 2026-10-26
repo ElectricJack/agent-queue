@@ -49,12 +49,16 @@ from src.integration.promotion_notes import (
 from src.integration.promotion_steps import (
     PROMOTION_CONTEXT,
     PROMOTION_RESULT,
+    PROMOTION_SOURCE_DEFERRED,
     FlowSchema,
     PromotionSourceRefusal,
     check_source_green,
     fail_stranded_promotion_tasks_on,
+    link_superseded_promotions_on,
     promotion_ref,
+    promotion_source_retry_scope,
     promotion_task_defect,
+    supersede_promotion_tasks_on,
 )
 from src.models import TaskStatus
 from src.routing.sources import UNROUTED
@@ -924,6 +928,9 @@ class PromoteCommandsMixin:
                 await BatchStore(self.db).freeze(
                     batch, (member,), trees={member.task_id: tree}, promotion=meta, conn=conn
                 )
+                superseded.extend(await link_superseded_promotions_on(
+                    self.db, conn, batch=batch, member=member, meta=meta,
+                ))
                 from src.integration.promotion_steps import promotion_policy_event
 
                 await promotion_policy_event(conn, project_id=project.id, step_id=step["id"],
@@ -948,7 +955,17 @@ class PromoteCommandsMixin:
                     "pr_url": pr_url,
                     **({"superseded_task_ids": superseded} if superseded else {}),
                 }, project.id, repository.id, target_ref)
-        except (PromotionRefusal, NotesRefusal, PromotionSourceRefusal) as exc:
+        except PromotionSourceRefusal as exc:
+            # The source-ready event may already be accepted. Persist another
+            # generation only for CI refusal, after the request transaction rolls
+            # back; the train waits for exact green before notifying policy again.
+            if step["type"] == "continuous" and not (hotfix or backmerge):
+                await self.db.log_event(PROMOTION_SOURCE_DEFERRED, project_id=project.id,
+                    payload=promotion_source_retry_scope(repository.id, step, source))
+            return {
+                "success": False, "outcome": exc.outcome, "error": str(exc),
+            }
+        except (PromotionRefusal, NotesRefusal) as exc:
             return {"success": False, "outcome": exc.outcome, "error": str(exc),
                     **({"migration_admission": exc.migration_admission}
                        if hasattr(exc, "migration_admission") else {})}
@@ -1148,15 +1165,34 @@ class PromoteCommandsMixin:
                     raise PromotionRefusal(
                         "promotion_publish_started", "Target already contains the source."
                     )
+                successor_source = None
+                if (meta["step"]["type"] == "continuous"
+                        and meta.get("kind", "promotion") == "promotion"):
+                    observed_source = await ops.remote(
+                        repo, "refs/heads/" + meta["step"]["source"],
+                    )
+                    if is_valid_git_oid(observed_source) and observed_source != meta["source_sha"]:
+                        await _fetch_commit(ops, repo, observed_source)
+                        if await ops.is_ancestor(repo, meta["source_sha"], observed_source):
+                            successor_source = observed_source
                 await _check_pull(client, repo.binding, meta, allow_closed=True)
                 await client.close_pull_request(number=meta["pr_number"])
                 now = time.time()
                 await execute_batch_mutation(conn, update(integration_batches).where(
                     integration_batches.c.id == row["id"]).values(
                     intent="aborted", lifecycle="aborted", cleanup_state="pending",
-                    human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
+                    human_abort_reason=(f"Superseded by continuous source {successor_source}; "
+                                        f"cancelled by {_requester_identity(principal)}"
+                                        if successor_source else
+                                        f"Cancelled by {_requester_identity(principal)}"),
                     updated_at=now))
-                await fail_stranded_promotion_tasks_on(self.db, conn, now=now, batch_id=row["id"])
+                if successor_source:
+                    await supersede_promotion_tasks_on(self.db, conn, batch_id=row["id"],
+                        source=successor_source, actor=_requester_identity(principal), now=now)
+                else:
+                    await fail_stranded_promotion_tasks_on(
+                        self.db, conn, now=now, batch_id=row["id"],
+                    )
             return self._woken({
                 "success": True, "outcome": "cancelled", "project_id": project.id,
                 "request_id": request.request_id, "batch_id": row["id"], "pr_url": meta["pr_url"],

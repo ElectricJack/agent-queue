@@ -8,14 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.models import CommandResult
 from src.commands.contracts.registry import CommandRegistration, ContractRegistry
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-from src.database.tables import projects
+from src.database.tables import projects, task_completion_records, task_dependencies
 from src.integration.git_truth import GitTruth
 from src.integration.promotion_notes import draft_notes
 from src.integration.promotion_steps import (
@@ -357,7 +357,10 @@ async def test_routes_bind_stored_types_and_disabled_activations(promote_env):
     assert await resolve_integration_route(e.db, 'promotion.source_settled', {'project_id': 'p', 'step_id': 'staging'}) is None
 
 
-async def test_continuous_policy_cancels_and_re_requests_only_new_heads(promote_env):
+@pytest.mark.parametrize('replacement_pending', [False, True])
+async def test_continuous_policy_cancels_and_re_requests_only_new_heads(
+    promote_env, replacement_pending,
+):
     e = promote_env
     e.github = ChainGitHub(e)
     e.github.runs[e.source] = 'success'
@@ -374,13 +377,58 @@ async def test_continuous_policy_cancels_and_re_requests_only_new_heads(promote_
     assert sum(name == 'promote_request' for name, _ in policy.calls) == 1
     newer = commit(e.repo.store, {'next.txt': 'next head\n'}, base=e.source)
     git(e.repo.store, 'push', 'origin', f'{newer}:dev')
-    e.github.runs[newer] = 'success'
+    e.github.runs[newer] = 'pending' if replacement_pending else 'success'
     await policy.run('advance-source')
+    retired = await e.db.get_task(first['task_id'])
+    assert retired.status.value == 'COMPLETED'
+    assert await e.db.get_task_meta(first['task_id'], 'work_outcome') == 'abandoned'
+    assert await e.db.get_task_meta(first['task_id'], 'obsolete') is not None
+    assert await e.db.get_task_meta(first['task_id'], 'supervisor_recovery_failure_at') is None
+    assert await e.db.queue_task_recovery_notifications() == 0
+    assert await e.db.get_task_meta(first['task_id'], 'supervisor_recovery_incident') is None
+    assert e.github.by_number[first['promotion']['pr_number']]['state'] == 'closed'
+    if replacement_pending:
+        assert policy.results[-2][1]['outcome'] == 'promotion_source_pending'
+        assert len((await e.handler._cmd_promote_list({'project_id': 'p'}))['promotions']) == 1
+        e.github.runs[newer] = 'success'
+        await policy.run('advance-source')
     second = await latest(e, 'release')
     assert second['batch_id'] != first['batch_id']
     assert second['promotion']['source_sha'] == newer
     assert (await e.store.get(first['batch_id'])).intent == 'aborted'
-    assert [name for name, _ in policy.calls][-2:] == ['promote_cancel', 'promote_request']
+    if not replacement_pending:
+        assert [name for name, _ in policy.calls][-2:] == ['promote_cancel', 'promote_request']
+    old = (await e.handler._cmd_promote_list({'project_id': 'p'}))['promotions'][1]
+    assert old['result']['disposition'] == 'superseded'
+    assert old['result']['successor_task_id'] == second['task_id']
+    assert old['result']['successor_request_id'] == second['promotion']['request_id']
+    assert old['result']['successor_batch_id'] == second['batch_id']
+    async with e.db._engine.connect() as conn:
+        edge = (await conn.execute(select(task_dependencies).where(
+            task_dependencies.c.task_id == second['task_id'],
+        ))).mappings().one()
+        completion = (await conn.execute(select(task_completion_records).where(
+            task_completion_records.c.task_id == first['task_id'],
+        ))).mappings().one()
+    assert edge['depends_on_task_id'] == first['task_id'] and edge['dep_type'] == 'supersedes'
+    assert completion['outcome'] == 'pass' and completion['work_outcome'] == 'abandoned'
+    assert json.loads(completion['notes']) == old['result']
+    # Cleanup and policy replay must preserve retirement and its successor.
+    await e.store.set_intent(first['batch_id'], 'aborted', reason='reconcile supersession')
+    await policy.run('advance-source')
+    assert await e.db.queue_task_recovery_notifications() == 0
+    assert (await e.db.get_task(first['task_id'])).status.value == 'COMPLETED'
+    # Further advancement preserves the first successor and extends the chain.
+    third_source = commit(e.repo.store, {'third.txt': 'another head\n'}, base=newer)
+    git(e.repo.store, 'push', 'origin', f'{third_source}:dev')
+    e.github.runs[third_source] = 'success'
+    await policy.run('advance-source')
+    third = await latest(e, 'release')
+    old_result = await e.db.get_task_meta(first['task_id'], 'promotion_result')
+    second_result = await e.db.get_task_meta(second['task_id'], 'promotion_result')
+    assert old_result['successor_task_id'] == second['task_id']
+    assert second_result['successor_task_id'] == third['task_id']
+    assert await e.db.queue_task_recovery_notifications() == 0
 
 
 @pytest.mark.parametrize('kind', ['promotion', 'backmerge'])

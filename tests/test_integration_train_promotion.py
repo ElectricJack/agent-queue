@@ -100,8 +100,9 @@ async def test_one_step_release_pr_checks_approval_publish_and_annotated_tag(pro
     assert evidence and all(row["sha"] == e.source for row in evidence)
 
 
+@pytest.mark.parametrize("request_refused", [False, True])
 async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_settlement(
-    production_push, monkeypatch,
+    production_push, monkeypatch, request_refused,
 ):
     e = production_push
     step = FlowSchema.validate([{
@@ -133,8 +134,14 @@ async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_sett
     activations[0]["active_artifact_sha256"] = continuous.ref.artifact_sha256
     e.handler._cmd_integration_promotion_publish = (
         IntegrationCommandsMixin._cmd_integration_promotion_publish.__get__(e.handler))
+    request_refusal_pending = request_refused
 
     async def accept(event_type, payload, event_id):
+        nonlocal request_refusal_pending
+        if request_refusal_pending and event_type == "promotion.source_settled":
+            # CI changes after observation and before request admission.
+            e.github.runs[e.source] = "pending"
+            request_refusal_pending = False
         route = await resolve_integration_route(e.db, event_type, payload)
         assert route is not None
         outcome = await continuous.engine.dispatch_event(
@@ -198,13 +205,31 @@ async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_sett
     [event] = await notifications()
     assert event["delivered_at"] is not None and event["attempts"] == 1
     requested = [result for command, result in continuous.results if command == "promote_request"]
-    assert len(requested) == 1 and requested[0]["outcome"] == "requested", continuous.results
-    assert requested[0]["promotion"]["source_sha"] == e.source
+    if request_refused:
+        assert len(requested) == 1
+        assert requested[0]["outcome"] == "promotion_source_pending"
+        assert e.github.created == 0
+        await service.stop()
+        train, service = make_train()
+        await tick()
+        assert len(await notifications()) == 1
+        e.github.runs[e.source] = "success"
+        await tick()
+        await tick()
+        events = await notifications()
+        assert len(events) == 2 and len({row["id"] for row in events}) == 2
+        assert all(row["delivered_at"] is not None for row in events)
+        requested = [result for command, result in continuous.results if command == "promote_request"]
+        assert [result["outcome"] for result in requested] == ["promotion_source_pending", "requested"]
+    else:
+        assert len(requested) == 1 and requested[0]["outcome"] == "requested", continuous.results
+    assert requested[-1]["promotion"]["source_sha"] == e.source
+    notification_count = len(await notifications())
     await tick()
     assert git(e.ops.git.remote_path, "rev-parse", "main") == e.source
     assert ("main", e.base) in e.exact_pushes
     await tick()
-    assert len(await notifications()) == 1
+    assert len(await notifications()) == notification_count
     assert e.github.created == 1
     assert all(run.lifecycle is RunLifecycle.COMPLETED
                for run in continuous.runs.snapshots.values()), continuous.runs.snapshots
