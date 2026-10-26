@@ -18,6 +18,17 @@ PostgreSQL deadlocks (`40P01`) and serialization failures (`40001`) during a
 source attempt follow the same rollback, leased cursor CAS and retry backoff as
 an expired work budget. Reobserve the source on retry and keep unrelated events
 moving without restarting the listener. Other database errors still propagate.
+An event-local dispatch exception follows that same durable retry/quarantine path;
+it must not restart the listener and replay the forward head indefinitely. Lease
+loss, cancellation and graph contention retain their existing fences.
+For a hibernate wait whose continuation is held (including `push_failed`), return
+a per-wait `owner_held` dispatch disposition with the continuation's existing
+hold/escalation identity and a retry deadline. Preserve the pending wait, hold,
+claim and checkout; neither source satisfaction nor a resume is authorized by
+that disposition. Other subscribers to the event still dispatch. A not-yet-persisted
+hibernation intent similarly requests a bounded retry. Both ordinary sources and
+resource invalidations retain an undispatched source until every receipt permits
+retirement, and persist the retry deadline so a new leader respects it.
 Retained undispatched events older than the listener safety cadence share alternating
 turns with forward work once their observation backoff expires. Preserve the next
 turn across drain passes, including timeouts, so a continuous forward backlog cannot

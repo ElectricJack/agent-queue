@@ -78,7 +78,7 @@ class _DrainTiming:
 
 
 class ListenerUnavailable(RuntimeError):
-    """A downstream lifecycle owner is absent; leave the cursor unchanged."""
+    """A downstream lifecycle owner is absent; retain the source for retry."""
 
 
 class LeaseLost(RuntimeError):
@@ -211,6 +211,7 @@ class WaitSourceListener:
             await lifecycle.resume.recovery_event(conn, event, project_id=project_id)
         if event["source_key"].startswith("resource_invalidation:"):
             after = ""
+            retry_after = 0
             while candidates := await resource_invalidation_candidates(
                 conn, event, after_id=after, limit=self.batch_size,
             ):
@@ -224,8 +225,9 @@ class WaitSourceListener:
                 ):
                     # Dispatcher repeats owner/source locks and fresh observation;
                     # bridge evidence is a candidate, never a committed outcome.
-                    await self._commit(dispatcher, conn, row, event, evidence=evidence)
-            return 0
+                    result = await self._commit(dispatcher, conn, row, event, evidence=evidence)
+                    retry_after = max(retry_after, result.get("retry_after", 0))
+            return retry_after
         rows = (await conn.execute(select(wait_records).where(
             wait_records.c.outcome == "pending",
             wait_records.c.verification_state == "verified",
@@ -490,14 +492,13 @@ class WaitSourceListener:
                     result = await self._drain_one(
                         watermark, retry_pending and retries < self.retry_batch_size, attempt, recovery,
                         admission_ready=admission_ready)
-            except WaitError as exc:
-                if exc.code != "wait.graph_busy":
+            except Exception as exc:
+                if isinstance(exc, LeaseLost) or not attempt:
                     raise
-                # The attempt transaction has rolled back. Preserve the cursor
-                # and let the live loop retry without cancelling sibling tasks.
-                self._graph_busy = True
-                return count
-            except (DBAPIError, TimeoutError) as exc:
+                if isinstance(exc, WaitError) and exc.code == "wait.graph_busy":
+                    # Contention never authorizes cursor advancement.
+                    self._graph_busy = True
+                    return count
                 if isinstance(exc, DBAPIError):
                     sqlstate = getattr(exc.orig, "sqlstate", None)
                     if sqlstate not in {"40P01", "40001"}:
@@ -506,11 +507,12 @@ class WaitSourceListener:
                     logger.warning("wait.source_transaction_conflict seq=%s source_key=%s "
                                    "sqlstate=%s", event.get("seq"), event.get("source_key"),
                                    sqlstate)
-                elif not budget.expired():
-                    raise
-                # _drain_one has exited its transaction: a PostgreSQL conflict
-                # aborts the whole attempt just as the work budget does. Retain
-                # its source for fresh observation while later events proceed.
+                elif not (isinstance(exc, TimeoutError) and budget.expired()):
+                    logger.exception("wait.source_dispatch_failed seq=%s source_key=%s",
+                                     attempt["event"]["seq"], attempt["event"]["source_key"])
+                # _drain_one has exited its transaction and all its outcomes
+                # rolled back. Retain the failed source for fresh observation
+                # under the lease while later events proceed.
                 if not await self._defer(attempt):
                     return count
                 retries += bool(attempt["retry"])
@@ -739,7 +741,9 @@ class WaitSourceListener:
                         # Only a completed observation breaks the timeout streak.
                         await conn.execute(update(wait_source_events).where(
                             wait_source_events.c.seq.in_(processed),
-                        ).values(dispatch_failures=0, quarantined_at=None, dispatch_retry_at=None))
+                        ).values(dispatch_failures=0, quarantined_at=None,
+                                 dispatch_retry_at=(self.clock() + retry_after
+                                                    if retry_after else None)))
                     if stamped:
                         await conn.execute(update(wait_source_events).where(
                             wait_source_events.c.seq.in_(stamped),

@@ -447,13 +447,13 @@ async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_
             raise RuntimeError('second event failed')
 
     service.listener._dispatch = dispatch
-    with pytest.raises(RuntimeError, match='second event failed'):
-        await service.listener.tick()
+    assert await service.listener.tick()
     cursor = (await records(env, wait_listener_cursors))[0]
-    assert cursor['last_seq'] == expected[0]
+    assert cursor['last_seq'] == expected[-1]
     rows = sorted(await records(env, wait_source_events), key=lambda row: row['seq'])
     assert rows[0]['dispatched_at'] is not None
-    assert all(row['dispatched_at'] is None for row in rows[1:])
+    assert rows[1]['dispatched_at'] is None and rows[1]['dispatch_failures'] == 1
+    assert rows[2]['dispatched_at'] is not None
     await service.lease(release=True)
     restarted = runtime(env)
 
@@ -462,7 +462,10 @@ async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_
 
     restarted.listener._dispatch = replay
     assert await restarted.listener.tick()
-    assert seen == [expected[0], expected[1], expected[1], expected[2]]
+    assert seen == expected  # Restart respects the persisted retry deadline.
+    restarted.listener.clock = lambda: NOW + 31
+    assert await restarted.listener.tick()
+    assert seen == expected + [expected[1]]
     assert (await records(env, wait_listener_cursors))[0]['last_seq'] == expected[-1]
 
 
@@ -507,16 +510,18 @@ async def test_irrelevant_batch_stops_before_subscribed_event(runtime_env, kind)
             revision=str(len(await records(env, wait_source_events))), outcome_ref=key, payload={})
     source = sorted(await records(env, wait_source_events), key=lambda event: event["seq"])
     service = runtime(env)
-    # No dispatcher: the subscribed middle event must fail, retaining its cursor,
-    # while the irrelevant prefix is already committed and the suffix untouched.
-    with pytest.raises(ListenerUnavailable):
-        await service.listener.tick()
-    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == source[0]["seq"]
+    # A missing dispatcher retains the subscribed source for retry while the
+    # irrelevant prefix and suffix can still retire.
+    assert await service.listener.tick()
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == source[-1]["seq"]
     dispatched = sorted(await records(env, wait_source_events), key=lambda event: event["seq"])
     assert dispatched[0]["dispatched_at"] is not None
-    assert all(event["dispatched_at"] is None for event in dispatched[1:])
+    assert dispatched[1]["dispatched_at"] is None
+    assert dispatched[1]["dispatch_failures"] == 1
+    assert dispatched[2]["dispatched_at"] is not None
     dispatcher = SimpleNamespace(commit=AsyncMock(return_value={"success": True}))
     service.orch.wait_dispatcher = dispatcher
+    service.listener.clock = lambda: NOW + 31
     assert await service.listener.tick()
     assert dispatcher.commit.await_count == 1
     assert dispatcher.commit.await_args.args[2]["seq"] == source[1]["seq"]
@@ -721,6 +726,36 @@ async def test_resource_retry_retirement_preserves_pending_resource_subscriber(r
     assert (await records(env, wait_source_events))[0]["dispatched_at"] is None
 
 
+async def test_resource_invalidation_persists_longest_subscriber_retry(runtime_env):
+    from src.waits.listener import WaitSourceListener
+
+    env = runtime_env
+    state = {"state": "unsatisfied", "revision": "1"}
+    registry = build_registry(resource_reader=AsyncMock(
+        side_effect=lambda conn, cond: resource_snapshot(cond, **state)))
+    for identity in ("one", "two"):
+        await register(env, {"kind": "resource", "blocker": "slot", "identity": identity,
+                             "source_revision": "1"}, registry=registry,
+                       scope=Scope("p", "scheduler", identity, principal="service"),
+                       idempotency_key=identity)
+    state.update(state="satisfied", revision="2")
+    seq = await env.db.wait_source_commit(**resource_invalidation(
+        producer="pool", identity="producer", revision="1", outcome_ref="hint", payload={}))
+    commit = AsyncMock(side_effect=lambda conn, row, event, **kwargs: {
+        "success": True, "committed": False,
+        "retry_after": 45 if row["owner_id"] == "one" else 30,
+    })
+    service = runtime(env, registry=registry, dispatcher=SimpleNamespace(commit=commit))
+    assert await service.listener.tick()
+    source = next(row for row in await records(env, wait_source_events) if row["seq"] == seq)
+    assert source["dispatched_at"] is None and source["dispatch_retry_at"] == NOW + 45
+    assert commit.await_count == 2
+    await service.listener.lease(release=True)
+    service.listener = WaitSourceListener(service, clock=lambda: NOW)
+    assert await service.listener.tick()
+    assert commit.await_count == 2
+
+
 @pytest.mark.parametrize("subscriber", [
     "pending", "satisfied", "cancelled", "unverified", "watermarked", "other_generation",
 ])
@@ -842,13 +877,14 @@ async def test_listener_replays_down_time_and_rolls_back_cursor_with_dispatch(ru
     dispatcher = ObservingDispatcher(env.registry)
     dispatcher.fail = True
     first = runtime(env, dispatcher=dispatcher)
-    with pytest.raises(RuntimeError, match="dispatch abort"):
-        await first.tick()
+    assert await first.tick()
     assert (await records(env))[0]["outcome"] == "pending"
-    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+    retained = (await records(env, wait_source_events))[0]
+    assert retained["dispatch_failures"] == 1 and retained["dispatched_at"] is None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == retained["seq"]
     await first.lease(release=True)
     dispatcher.fail = False
-    restarted = runtime(env, dispatcher=dispatcher)
+    restarted = runtime(env, dispatcher=dispatcher, clock=lambda: NOW + 31)
     assert await restarted.tick()
     assert (await records(env))[0]["id"] == receipt["wait_id"]
     assert (await records(env))[0]["outcome"] == "satisfied"
@@ -864,9 +900,10 @@ async def test_listener_missing_dispatcher_retains_matching_event(runtime_env):
     await register(env)
     await env.db.transition_task("source", TaskStatus.COMPLETED)
     service = runtime(env)
-    with pytest.raises(ListenerUnavailable):
-        await service.tick()
-    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+    assert await service.tick()
+    source = (await records(env, wait_source_events))[0]
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == source["seq"]
+    assert source["dispatched_at"] is None and source["dispatch_failures"] == 1
     assert (await records(env))[0]["outcome"] == "pending"
 
 
@@ -1804,7 +1841,10 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
 
 
-async def test_budget_quarantine_survives_restart_and_does_not_block_later_sources(runtime_env):
+@pytest.mark.parametrize("failure_kind", ["budget", "unavailable", "exception", "timeout"])
+async def test_dispatch_quarantine_survives_restart_and_does_not_block_later_sources(
+    runtime_env, failure_kind,
+):
     from sqlalchemy import func
     from src.waits.listener import WaitSourceListener
 
@@ -1827,6 +1867,12 @@ async def test_budget_quarantine_survives_restart_and_does_not_block_later_sourc
         if event["seq"] == slow:
             calls.append(slow)
             await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+            if failure_kind == "unavailable":
+                raise ListenerUnavailable("held owner refuses dispatch")
+            if failure_kind == "exception":
+                raise ValueError("invalid source-specific state")
+            if failure_kind == "timeout":
+                raise TimeoutError("source observation timed out")
             await conn.execute(select(func.pg_sleep(60)))
         return await original(conn, event)
 

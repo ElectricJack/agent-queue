@@ -227,6 +227,8 @@ async def test_skipped_ci_event_retries_unchanged_success_without_blocking_curso
     assert (await rows(world))[0]["outcome"] == "pending"
     outbox = {event["seq"]: event for event in await rows(world, wait_source_events)}
     assert outbox[success["seq"]]["dispatched_at"] is None
+    retry_at = outbox[success["seq"]]["dispatch_retry_at"]
+    assert retry_at == case.now[0] + 300
     assert outbox[later]["dispatched_at"] is not None
     cursor = (await rows(world, wait_listener_cursors))[0]["last_seq"]
     if previously_dispatched:
@@ -245,8 +247,9 @@ async def test_skipped_ci_event_retries_unchanged_success_without_blocking_curso
     if restart:
         case.now[0] += case.service.listener.lease_seconds + 1
         case.service.listener = WaitSourceListener(case.service, clock=lambda: case.now[0])
-    else:
-        case.now[0] += 301
+        await case.service.listener.tick()
+        assert (await rows(world))[0]["outcome"] == "pending"
+    case.now[0] = retry_at + 1
     await case.service.listener.tick()
     assert (await rows(world))[0]["outcome"] == "satisfied"
     outbox = {event["seq"]: event for event in await rows(world, wait_source_events)}
@@ -289,11 +292,12 @@ async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_stat
     # the progress cadence and must not immediately repeat those provider reads.
     await case.service.listener.tick()
     observe.assert_not_awaited()
-    assert all(row["outcome"] == "pending" for row in await rows(world))
     case.now[0] += case.service.listener.safety_seconds - 1
     await case.service.listener.tick()
-    assert observe.await_count == 0  # unchanged hints retain the CI polling interval
-    case.now[0] += 2  # Cross the cadence deadline; only one source gets this turn.
+    observe.assert_not_awaited()
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    # Cross the same deadline once; recovery now gets one bounded source read.
+    case.now[0] += 2
     await case.service.listener.tick()
     assert observe.await_count == 1
     assert all(row["outcome"] == "pending" for row in await rows(world))

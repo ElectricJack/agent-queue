@@ -353,6 +353,9 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
             and not request.has_recorded_source):
         reason = "missing_source_provenance"
     async with db.immediate() as conn:
+        # Batch sealing takes this same fence. Recheck incoming ownership in
+        # the write transaction even if inventory observed an unowned epic.
+        await db.lock_hierarchy_project(conn, project_id)
         wait_id = "delivery-watchdog-" + _digest(key, 24)
         if previous is not None and previous["id"] != wait_id:
             await _settle_on(db, conn, previous, now=now, outcome="superseded by a newer "
@@ -409,6 +412,14 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
         redrive = inputs.get("redrive")
         if redrive:
             state, reason = _takeover_progress(await _task_status_on(conn, redrive["task_id"]))
+        from src.database.queries.integration_train_queries import open_target_batches
+
+        incoming = await conn.scalar(select(open_target_batches(
+            project_id, repository_id,
+            "refs/heads/" + entry["branch"].removeprefix("refs/heads/"),
+        ).exists()))
+        if incoming:
+            state, reason = "progressing", "batch_queued"
         status = request.task_status if request is not None else None
         if await _held_on(conn, project_id, task_id, status):
             state, reason = "held", "manual_hold"
@@ -461,7 +472,13 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
     from src.integration.delivery_truth import load_delivery_requests
 
     if observe is None:
+        from functools import partial
+
         from src.integration.delivery_branches import observe_completed_branches as observe
+
+        # Recovery files work against the current epic tip, which can advance
+        # after its descriptive completion record was written.
+        observe = partial(observe, max_age=0.0)
     async with db._engine.connect() as conn:
         targets = [dict(row) for row in (await conn.execute(
             select(projects.c.id, projects.c.status,
