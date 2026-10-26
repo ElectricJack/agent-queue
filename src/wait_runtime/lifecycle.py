@@ -298,7 +298,8 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
-            if intent['facts'].get('workspace_retry', {}).get('due_at', 0) > self.clock():
+            if max(intent['facts'].get(key, {}).get('due_at', 0)
+                   for key in ('workspace_retry', 'workspace_capacity')) > self.clock():
                 continue
             key = (intent["id"], intent["suspension_generation"])
             pending = self._resume_tasks.get(key)
@@ -368,6 +369,7 @@ class WaitLifecycle:
                           f"for {int(age)} seconds after wait {row['wait_id']} resolved. "
                           f"Continuation {row['id']}, generation {row['suspension_generation']}, "
                           f"state {row['resume_state']}, hold {row['hold_reason']}. "
+                          f"Workspace capacity: {row['facts'].get('workspace_capacity', {})}. "
                           "Automatic retries remain subject to existing holds and admission. "
                           "Inspect provider, "
                           "workspace and fresh-session acknowledgement; preserve the outcome "
