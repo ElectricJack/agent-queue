@@ -895,13 +895,15 @@ class WaitSourceListener:
             self.changed.clear()
             if connection.is_closed():
                 raise ConnectionError("wait listener disconnected")
-            await self.tick()
+            active = await self.tick()
             if connection.is_closed():
                 raise ConnectionError("wait listener disconnected")
+            delay = self.renewal_seconds if not active else (
+                self.graph_wait_seconds if self._graph_busy
+                else min(self.safety_seconds, self._retry_delay())
+            )
             try:
-                await asyncio.wait_for(self.changed.wait(),
-                                       self.graph_wait_seconds if self._graph_busy
-                                       else min(self.safety_seconds, self._retry_delay()))
+                await asyncio.wait_for(self.changed.wait(), delay)
             except TimeoutError:
                 pass
 
