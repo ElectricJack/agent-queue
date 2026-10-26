@@ -7,9 +7,10 @@ import json
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.queries.wait_queries import verify_owner
@@ -30,6 +31,49 @@ _OBSERVATION_ONLY_PREFIXES = (
     "ci_check:", "resource_invalidation:pool:", "resource_invalidation:config:",
     "resource_invalidation:workspace:",
 )
+
+
+class _DrainTiming:
+    """Measure fenced work through transaction completion, including failed attempts."""
+
+    def __init__(self, watermark):
+        self.watermark = watermark
+        self.event = {}
+        self.started = None
+        self.seconds = dict.fromkeys((
+            "lease", "prefix_retirement", "admission_recheck", "dispatch", "outcome_writes",
+        ), 0.0)
+
+    @asynccontextmanager
+    async def transaction(self, engine):
+        try:
+            async with engine.begin() as conn:
+                yield conn
+        finally:
+            self.report()
+
+    @contextmanager
+    def step(self, name):
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            self.seconds[name] += time.monotonic() - started
+
+    def report(self):
+        if self.started is None:
+            return
+        held = time.monotonic() - self.started
+        if held >= 1:
+            logger.warning(
+                "wait.source_lock_slow source_seq=%s source_key=%s watermark=%s held_seconds=%.3f "
+                "lease_seconds=%.3f prefix_retirement_seconds=%.3f "
+                "admission_recheck_seconds=%.3f dispatch_seconds=%.3f "
+                "outcome_writes_seconds=%.3f transaction_end_seconds=%.3f",
+                self.event.get("seq"), self.event.get("source_key"), self.watermark,
+                held, *self.seconds.values(),
+                max(0, held - sum(self.seconds.values())),
+            )
 
 
 class ListenerUnavailable(RuntimeError):
@@ -212,24 +256,54 @@ class WaitSourceListener:
             ),
         ).exists()
 
-    async def _unobserved_prefix(self, conn, position, watermark):
-        """Retire only an irrelevant observation prefix, under the graph fence.
+    async def _unobserved_prefix(self, conn, rows):
+        """Plan unlocked, then recheck only the planned event window under the fence.
 
-        Task retirement and provider recovery still run without subscriptions.
+        Group subscriptions once instead of correlating a subscriber scan with
+        each event. Minimum watermarks preserve the exact EXISTS semantics,
+        including the conservative cross-project resource subscription check.
+        Task retirement and provider recovery always require dispatch.
         """
-        rows = (await conn.execute(select(
-            wait_source_events.c.seq, wait_source_events.c.source_key,
-            wait_source_events.c.dispatched_at,
-            self._hint_subscription().label("subscribed"),
-        ).where(
-            wait_source_events.c.seq > position, wait_source_events.c.seq <= watermark,
-        ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings()
+        window = []
+        for row in rows[:self.batch_size]:
+            if not row["source_key"].startswith(_OBSERVATION_ONLY_PREFIXES):
+                break
+            window.append(row)
+        if not window:
+            return []
+        keys = sorted({(row["source_key"], row["source_generation"]) for row in window
+                       if not (row["source_key"].startswith("ci_check:")
+                               and row["dispatched_at"] is not None)})
+        watermarks = {}
+        if keys:
+            subscriptions = await conn.execute(select(
+                wait_records.c.source_key, wait_records.c.source_generation,
+                func.min(wait_records.c.source_watermark_seq),
+            ).where(
+                wait_records.c.outcome == "pending",
+                wait_records.c.verification_state == "verified",
+                tuple_(wait_records.c.source_key, wait_records.c.source_generation).in_(keys),
+            ).group_by(wait_records.c.source_key, wait_records.c.source_generation))
+            watermarks = {(key, generation): seq for key, generation, seq in subscriptions}
+        resource_watermark = None
+        if any(row["source_key"].startswith("resource_invalidation:") for row in window):
+            resource_watermark = await conn.scalar(select(
+                func.min(wait_records.c.source_watermark_seq),
+            ).where(
+                wait_records.c.outcome == "pending",
+                wait_records.c.verification_state == "verified",
+                wait_records.c.condition_kind == "resource",
+            ))
         prefix = []
-        for row in rows:
+        for row in window:
             if row["source_key"].startswith("ci_check:") and row["dispatched_at"] is not None:
                 prefix.append(row["seq"])
                 continue
-            if row["subscribed"] or not row["source_key"].startswith(_OBSERVATION_ONLY_PREFIXES):
+            subscribed = watermarks.get((row["source_key"], row["source_generation"]))
+            if subscribed is not None and subscribed < row["seq"]:
+                break
+            if (row["source_key"].startswith("resource_invalidation:")
+                    and resource_watermark is not None and resource_watermark < row["seq"]):
                 break
             prefix.append(row["seq"])
         return prefix
@@ -391,6 +465,9 @@ class WaitSourceListener:
                 return count
             if result.get("raced"):
                 continue
+            if result.get("needs_preparation"):
+                self.changed.set()
+                return count
             if result.get("needs_admission"):
                 # _drain_one has released its transaction and graph fence.
                 # Fleet preparation is needed only for a real resource observer,
@@ -419,7 +496,8 @@ class WaitSourceListener:
                 raise LeaseLost("wait source lease lost between batches")
 
     async def _drain_one(self, watermark, retry_pending, attempt, recovery, *, admission_ready=False):
-        async with self.db._engine.begin() as conn:
+        timing = _DrainTiming(watermark)
+        async with timing.transaction(self.db._engine) as conn:
             from src.waits.loops import prepare_progress
 
             position = await conn.scalar(select(wait_listener_cursors.c.last_seq).where(
@@ -435,6 +513,8 @@ class WaitSourceListener:
                 wait_source_events.c.seq > (position or 0),
                 wait_source_events.c.seq <= watermark,
             ).order_by(wait_source_events.c.seq).limit(self.batch_size))).mappings().all()
+            prefix = await self._unobserved_prefix(conn, rows)
+            prefix_rows = rows[:len(prefix)]
             if rows:
                 candidate = rows[0]
                 key = self._coalesce_key(candidate)
@@ -466,7 +546,7 @@ class WaitSourceListener:
             forward_seq = candidate["seq"] if candidate else position
             observations = None
             progress_delay = 0
-            if (candidate and candidate["source_key"].startswith("ci_check:")
+            if (not prefix and candidate and candidate["source_key"].startswith("ci_check:")
                     and (retry or candidate["dispatched_at"] is None)):
                 # CI hints have no per-event lifecycle effect. Reobserve the newest
                 # committed hint even across unrelated events and retained retries.
@@ -482,7 +562,7 @@ class WaitSourceListener:
                 ).order_by(wait_source_events.c.seq)))
                 if candidate["seq"] not in coalesced:
                     coalesced.append(candidate["seq"])
-            if candidate:
+            if candidate and not prefix:
                 attempt.update(position=position, event=dict(candidate), retry=bool(retry),
                                forward_seq=forward_seq, seqs=coalesced or [candidate["seq"]])
                 if candidate["source_key"].startswith("resource_invalidation:"):
@@ -522,9 +602,18 @@ class WaitSourceListener:
                         "ci_check:", "ci_run:", "pull_request:",
                     )):
                         observations = await prepare(conn, owners)
+            if prefix:
+                # A retirement attempt owns only this bounded forward window.
+                # It needs no owner progress or remote observation preparation.
+                attempt.update(position=position, event=dict(candidate), retry=False,
+                               forward_seq=prefix[-1], seqs=prefix)
+            elif candidate is None:
+                self._graph_busy = False
+                return None
             # Scheduler reconciliation can hold the graph fence longer than
             # one renewal interval. Yield without locking the lease row so
             # renewal stays live; the durable cursor remains replayable.
+            timing.event = candidate
             try:
                 await lock_graph(conn, queued=True, timeout=self.graph_wait_seconds)
             except WaitError as exc:
@@ -532,8 +621,10 @@ class WaitSourceListener:
                     raise
                 self._graph_busy = True
                 return None
+            timing.started = time.monotonic()
             self._graph_busy = False
-            cursor = await self.locked_lease(conn)
+            with timing.step("lease"):
+                cursor = await self.locked_lease(conn)
             # Another drain may have advanced while Git was observed. Do
             # not dispatch a different event with the wrong progress heads.
             if cursor["last_seq"] != position:
@@ -542,27 +633,34 @@ class WaitSourceListener:
             # in bounded batches. Renewal cadence never defines lock scope.
             async with asyncio.timeout(self.lease_seconds):
                 retry_after = 0
-                processed = [] if retry else await self._unobserved_prefix(
-                    conn, cursor["last_seq"], watermark)
+                with timing.step("prefix_retirement"):
+                    processed = [] if retry else await self._unobserved_prefix(conn, prefix_rows)
                 advance_seq = processed[-1] if processed else forward_seq
                 if not processed:
                     if candidate is None:
                         return None
                     event = candidate
-                    if not admission_ready and event["source_key"].startswith((
-                        "resource_invalidation:", "resource:",
-                    )) and await conn.scalar(select(wait_records.c.id).where(
-                        wait_records.c.outcome == "pending",
-                        wait_records.c.verification_state == "verified",
-                        wait_records.c.condition_kind == "resource",
-                        wait_records.c.source_watermark_seq < event["seq"],
-                    ).limit(1)):
-                        # Recheck under GRAPH_LOCK, including subscriptions that
-                        # committed while this attempt waited for the fence.
-                        return {"needs_admission": True}
+                    with timing.step("admission_recheck"):
+                        if not admission_ready and event["source_key"].startswith((
+                            "resource_invalidation:", "resource:",
+                        )) and await conn.scalar(select(wait_records.c.id).where(
+                            wait_records.c.outcome == "pending",
+                            wait_records.c.verification_state == "verified",
+                            wait_records.c.condition_kind == "resource",
+                            wait_records.c.source_watermark_seq < event["seq"],
+                        ).limit(1)):
+                            # Recheck under GRAPH_LOCK, including subscriptions that
+                            # committed while this attempt waited for the fence.
+                            return {"needs_admission": True}
+                    if prefix:
+                        # A subscriber invalidated the entire retirement plan.
+                        # Keep the cursor replayable and prepare its observation
+                        # on the next tick, outside the graph fence.
+                        return {"needs_preparation": True}
                     kwargs = {"observations": observations} if observations is not None else {}
-                    retry_after = progress_delay or await self._dispatch(
-                        conn, dict(event), **kwargs) or 0
+                    with timing.step("dispatch"):
+                        retry_after = progress_delay or await self._dispatch(
+                            conn, dict(event), **kwargs) or 0
                     processed = coalesced or [event["seq"]]
                 if cursor["lease_expires_at"] <= self.clock():
                     raise LeaseLost("wait source lease expired during dispatch")
@@ -572,15 +670,16 @@ class WaitSourceListener:
                     # newest event as durable observation ownership.
                     stamped = [seq for seq in processed if seq != candidate["seq"]
                                and candidate["source_key"].startswith("ci_check:")]
-                if stamped:
-                    await conn.execute(update(wait_source_events).where(
-                        wait_source_events.c.seq.in_(stamped),
-                    ).values(dispatched_at=self.clock()))
-                await conn.execute(update(wait_listener_cursors).where(
-                    wait_listener_cursors.c.listener_key == "source",
-                    wait_listener_cursors.c.lease_owner == self.owner,
-                ).values(last_seq=max(cursor["last_seq"], advance_seq),
-                         updated_at=self.clock()))
+                with timing.step("outcome_writes"):
+                    if stamped:
+                        await conn.execute(update(wait_source_events).where(
+                            wait_source_events.c.seq.in_(stamped),
+                        ).values(dispatched_at=self.clock()))
+                    await conn.execute(update(wait_listener_cursors).where(
+                        wait_listener_cursors.c.listener_key == "source",
+                        wait_listener_cursors.c.lease_owner == self.owner,
+                    ).values(last_seq=max(cursor["last_seq"], advance_seq),
+                             updated_at=self.clock()))
         if observations and not retry_after and candidate["source_key"].startswith("ci_check:"):
             if all(getattr(item.observation, "state", None) == "unsatisfied"
                    for item in observations.values()):
