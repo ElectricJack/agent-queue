@@ -1483,6 +1483,40 @@ async def test_missing_git_observer_warns_offline_frontier_reader(active_git_wor
     assert "proceed to Git preparation without receipt fallback" in caplog.text
 
 
+async def test_scheduler_frontier_returns_while_its_store_refresh_is_blocked(active_git_world):
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    db, _origin, observer = active_git_world
+    await db.create_task(Task(
+        id="dependent", project_id="p", title="dependent", description="",
+        repo_id="r", branch_name="aq/dependent", status=TaskStatus.READY,
+    ))
+    async with db._engine.begin() as conn:
+        await db.set_parent("dependent", "epic", conn=conn, integration_authorized=True)
+    await db.add_dependency("dependent", "done")
+    entered, release = asyncio.Event(), asyncio.Event()
+    store = observer._store
+
+    async def blocked(target):
+        entered.set()
+        await release.wait()
+        return await store(target)
+
+    observer._store = blocked
+    try:
+        modes = await hierarchy_frontier_modes(db, project_ids={"p"}, background=True)
+        assert not modes["p"].delivered_prerequisite_ids
+        assert not modes["p"].stackable_prerequisite_ids
+        await entered.wait()
+        assert observer._refreshes and not release.is_set()
+        modes = await hierarchy_frontier_modes(db, project_ids={"p"}, background=True)
+        assert not modes["p"].delivered_prerequisite_ids
+        assert not modes["p"].stackable_prerequisite_ids
+    finally:
+        release.set()
+        await asyncio.gather(*observer._refreshes.values())
+
+
 # --- Shared store observations -------------------------------------------------
 #
 # Concurrent guarded callers of one repository store share a bounded flight. A
@@ -1636,6 +1670,59 @@ async def test_required_later_observation_fetches_and_readers_alone_reuse_age(sh
     # Only a read-only max_age caller may reuse a completed observation.
     assert (await observer.snapshot(target, max_age=30)).target_oid == oid(2)
     assert fetches.count == 2
+
+
+@pytest.mark.parametrize("join_existing", [False, True])
+async def test_advisory_reads_use_completed_snapshot_without_waiting_for_refresh(
+    shared_store, join_existing,
+):
+    from src.integration.delivery_observer import _BACKGROUND_READ
+
+    fetches, make = shared_store
+    observer = make()
+    target = _target()
+    peer = None
+    if join_existing:
+        peer = asyncio.create_task(make().snapshot(target))
+        await fetches.started[1].wait()
+    token = _BACKGROUND_READ.set(True)
+    try:
+        cold = await observer._snapshot(target, max_age=30)
+        assert cold.error == "snapshot_unavailable"
+        await fetches.started[1].wait()
+        refresh = next(iter(observer._refreshes.values()))
+        for _ in range(3):
+            assert (await observer._snapshot(target, max_age=30)).error == "snapshot_unavailable"
+        assert list(observer._refreshes.values()) == [refresh]
+        fetches.release(1)
+        await refresh
+        if peer:
+            await peer
+        completed = await observer._snapshot(target, max_age=30)
+        assert completed.target_oid == oid(1)
+        # Expired evidence is unknown while a single new producer runs.
+        observer._recent = {target: (time.monotonic() - 31, snapshot)
+                            for target, (_, snapshot) in observer._recent.items()}
+        observer._refresh_after.clear()
+        assert (await observer._snapshot(target, max_age=30)).error == "snapshot_unavailable"
+        await fetches.started[2].wait()
+        refresh = next(iter(observer._refreshes.values()))
+        # Bounded-age evidence can still be read during an overdue refresh.
+        observer._recent[target] = (time.monotonic() - 3, completed)
+        warm = await observer._snapshot(target, max_age=30)
+        assert warm.target_oid == oid(1)
+        assert not refresh.done()
+    finally:
+        _BACKGROUND_READ.reset(token)
+        fetches.release(2)
+        if observer._refreshes:
+            await asyncio.gather(*observer._refreshes.values())
+    # Guarded readers still demand a fetch begun after their own arrival.
+    strict = asyncio.create_task(observer.snapshot(target))
+    await fetches.started[3].wait()
+    assert not strict.done()
+    fetches.release(3)
+    assert (await strict).target_oid == oid(3)
 
 
 async def test_one_observation_covers_other_refs_of_the_same_repository(shared_store):

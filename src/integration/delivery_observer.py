@@ -18,7 +18,7 @@ import time
 import weakref
 from collections.abc import Iterable, Mapping
 from contextlib import nullcontext
-from contextvars import Context
+from contextvars import Context, ContextVar
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -48,6 +48,7 @@ from src.integration.delivery_truth import (
 )
 
 logger = logging.getLogger(__name__)
+_BACKGROUND_READ: ContextVar[bool] = ContextVar("background_git_read", default=False)
 
 
 async def source_bases_on(conn, task_ids, repository_id):
@@ -469,7 +470,7 @@ def prerequisite_observer(db):
 async def hierarchy_frontier_modes(
     db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
     views=None, stack_views=None,
-    max_age=None, conn=None, task_ids=None,
+    max_age=None, conn=None, task_ids=None, background=False,
 ):
     """Share revalidated Git prerequisites across scheduler, pool and claim reads.
 
@@ -529,6 +530,7 @@ async def hierarchy_frontier_modes(
             continue
         timeout = (FRONTIER_DISPLAY_TIMEOUT_SECONDS if cached_only
                    else FRONTIER_MODE_TIMEOUT_SECONDS)
+        token = _BACKGROUND_READ.set(background)
         try:
             modes[project.id] = await asyncio.wait_for(_project_frontier_mode(
                 db, observer, project, mode, task_id=task_id, cached_only=cached_only,
@@ -546,6 +548,8 @@ async def hierarchy_frontier_modes(
                 project.id, f" task {task_id}" if task_id else "", timeout,
             )
             modes[project.id] = mode
+        finally:
+            _BACKGROUND_READ.reset(token)
     return modes
 
 
@@ -684,9 +688,10 @@ def _for_target(snapshot: DeliverySnapshot, target: DeliveryTarget) -> DeliveryS
 class DeliveryObserver:
     """Fetch and evaluate delivery truth for arbitrary tasks, outside transactions.
 
-    Each repository gets an observer clone beside, never inside, the
-    publisher's retained checkout. The reduced observer fetches once per
-    repository and shares its refs across targets. A read-only surface may reuse
+    Readers normally get an observer clone beside the publisher's retained
+    checkout. The train's reconciler shares its retained repository so that
+    both reuse one acquisition and integrity baseline. The reduced observer
+    fetches once per repository and shares its refs across targets. A read-only surface may reuse
     a snapshot within :data:`READ_MAX_AGE`. Reduced diagnostics consume only
     existing OID-bound proofs; guarded task writers still fetch and recheck inputs.
     """
@@ -699,7 +704,7 @@ class DeliveryObserver:
     #: additionally validates its exact remote heads before proving delivery.
     READ_MAX_AGE = 30.0
 
-    def __init__(self, db, *, git, data_dir, truth=None) -> None:
+    def __init__(self, db, *, git, data_dir, truth=None, store_name="observer") -> None:
         self.db = db
         self.git = git
         self.truth = truth
@@ -708,8 +713,11 @@ class DeliveryObserver:
                                       containers=truth is not None)
         self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
+        self._store_name = store_name
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
         self._stack_ref_cache: dict = {}
+        self._refreshes: dict[tuple, asyncio.Task] = {}
+        self._refresh_after: dict[tuple, float] = {}
         self._delivery_refresh_ids: set[str] = set()
         self._delivery_refresh_task: asyncio.Task | None = None
 
@@ -772,20 +780,16 @@ class DeliveryObserver:
 
     def store_path(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()[:20]
-        return self.data_dir / digest / "observer"
+        return self.data_dir / digest / self._store_name
 
     async def _store(self, target: DeliveryTarget) -> Path:
-        from src.integration.repository_recovery import harden_retained_repository
+        from src.integration.repository_recovery import open_retained_checkout
 
         from src.projects.storage_binding import repository_path
 
         path = await repository_path(self.db, target.repository_id,
                                      self.store_path(target.repository_id))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not (path / ".git").exists():
-            await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
-        await harden_retained_repository(self.git, path)
-        return path
+        return await open_retained_checkout(self.git, path, target.repository_url)
 
     async def _snapshot(
         self, target: DeliveryTarget, max_age: float = 0.0, *, cached_only: bool = False,
@@ -800,10 +804,37 @@ class DeliveryObserver:
         path = await repository_path(self.db, target.repository_id,
                                      self.store_path(target.repository_id))
         recent = self._recent.get(target)
+        if _BACKGROUND_READ.get() and not cached_only:
+            # Sizing is advisory. It consumes only completed observations and
+            # never joins a slow acquisition; a claim still observes afresh.
+            key = target.project_id, target.repository_id, target.repository_url
+            age = time.monotonic() - recent[0] if recent else float("inf")
+            if (age > max_age
+                    and time.monotonic() >= self._refresh_after.get(key, 0)
+                    and (key not in self._refreshes or self._refreshes[key].done())):
+                self._refreshes[key] = asyncio.create_task(
+                    self._refresh_snapshot(target, path, key),
+                    name=f"git-advisory-refresh:{target.repository_id}",
+                )
+            if (recent is not None and max_age > 0 and age <= max_age
+                    and recent[1].error in {None, "target_ref_missing"}):
+                return replace(recent[1], _cache={}, _identities={}, _freshness={})
+            return self._unavailable(target, path, "snapshot_unavailable")
         if (max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age
             and (recent[1].error is None or cached_only)
             and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
+        if self.truth is not None and not cached_only:
+            try:
+                shared = await within_git_read_budget(partial(
+                    self.truth.tick_snapshot, str(path), project_id=target.project_id,
+                    repository_id=target.repository_id, repository_url=target.repository_url,
+                    target_ref=target.target_ref,
+                ))
+            except Exception as exc:
+                return self._unavailable(target, path, f"observer_error: {type(exc).__name__}")
+            if shared is not None:
+                return replace(shared.observation, git=self.git)
         observe = (partial(self._shared_observation, max_age=max_age)
                    if max_age > 0 else self._shared_observation)
         if cached_only or (shared := await within_git_read_budget(
@@ -824,6 +855,26 @@ class DeliveryObserver:
             # A joiner's own ref, outside the targets its first caller covered.
             self._recent[target] = (stamp, own)
         return own
+
+    async def _refresh_snapshot(self, target, path, key):
+        from src.integration.git_truth import snapshot_scope
+
+        try:
+            # A background refresh has its own observation boundary. It may
+            # join an active store producer, which retains the completed view.
+            with snapshot_scope():
+                snapshot, stamp, flight = await self._shared_observation(
+                    target, path, max_age=self.READ_MAX_AGE,
+                )
+            if (snapshot.error in {None, "target_ref_missing"} and not snapshot.acquisition_error
+                    and self not in flight.recorded):
+                flight.recorded.add(self)
+                self._remember(target, replace(snapshot, git=self.git), stamp)
+        except Exception:
+            logger.exception("advisory Git refresh failed for %s", target.repository_id)
+        finally:
+            self._refresh_after[key] = time.monotonic() + 2.0
+            self._refreshes.pop(key, None)
 
     async def _shared_observation(
         self, target: DeliveryTarget, path: Path, *, max_age: float = 0.0,
