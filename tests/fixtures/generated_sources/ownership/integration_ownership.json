@@ -2022,6 +2022,23 @@
     "src/workspace_spec_watcher.py::WorkspaceSpecWatcher": "Generic dependency; integration-specific definitions in this file are charged independently."
   },
   "hand_integration_reconciliation": {
+    "aborted_batch_branch_retirement_composition": {
+      "authorized_engine_delta": 55,
+      "authorized_owned_delta": 63,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "0f0a16299",
+      "measured_engine_lines": 83018,
+      "measured_owned_total": 158343,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82963,
+      "previous_measured_owned_total": 158280,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +63 owned / +55 engine lines for branch retirement of aborted-batch holds and the advisory-refresh-aware claim test (dev red fix). Preserve every historical grant; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "24596d693",
+      "task_id": "crisp-apex-76"
+    },
     "admission_diagnostics_composition": {
       "authorized_engine_delta": 107,
       "authorized_owned_delta": 107,
@@ -2046,7 +2063,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2848,
+    "authorized_owned_delta": 2911,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2211,8 +2228,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83030,
-    "measured_owned_total": 158347,
+    "measured_engine_lines": 83085,
+    "measured_owned_total": 158410,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -2328,6 +2345,24 @@
       "source_revision": "e6882fa3e35febcc85f51d38c6d336969244d126",
       "supervisor_grant_reference": "noble-beacon-61 reopen feedback, 2026-10-25 21:16Z",
       "task_id": "noble-beacon-61"
+    },
+    "tick_checkout_branch_retirement_merge_composition": {
+      "authorized_engine_delta": 67,
+      "authorized_owned_delta": 67,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-2c3c609249f14e15bd513ec8dfead06d",
+      "dev_source_revision": "3ef631d52bc8270394732ee4181196eea016c6b6",
+      "measured_engine_lines": 83085,
+      "measured_owned_total": 158410,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83018,
+      "previous_measured_owned_total": 158343,
+      "previous_measured_table_count": 45,
+      "reason": "Arithmetic composition of the existing sharp-stone-41 +67 owned / +67 engine grant with the inherited crisp-apex-76 +63 owned / +55 engine grant on common base 0f0a16299. Preserves both approvals and every historical grant; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "c2ce4605f287313ba9dccc62ed8eb3c759012b3c",
+      "task_id": "sharp-stone-41"
     },
     "tick_checkout_minimum_interval_composition": {
       "authorized_engine_delta": 67,
