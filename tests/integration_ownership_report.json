@@ -2820,7 +2820,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3731,
+    "authorized_owned_delta": 3744,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -3174,8 +3174,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83703,
-    "measured_owned_total": 159230,
+    "measured_engine_lines": 83723,
+    "measured_owned_total": 159243,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -3705,6 +3705,29 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "source_revision": "wait-listener-coalesce epic",
       "task_id": "fresh-ridge-78"
+    },
+    "wait_listener_deadlock_restart_composition": {
+      "authorized_engine_delta": 20,
+      "authorized_owned_delta": 13,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/check_reconciliation.py": 2,
+        "src/integration/checks.py": 18,
+        "src/waits/watchers/ci.py": -7
+      },
+      "dev_source_revision": "5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b",
+      "measured_engine_lines": 83633,
+      "measured_owned_total": 159117,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83613,
+      "previous_measured_owned_total": 159104,
+      "previous_measured_table_count": 45,
+      "pull_request": 2091,
+      "reason": "Exact supervisor-approved +13 owned/+20 engine lines for hand-landing PR 2091 (wait listener restart on PostgreSQL deadlock in CIWatcher.lock_source). Preserve every historical grant, original baseline and ownership classification, zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "8ebd8b2174552fe250dcfa40170e1b8faf356b1b",
+      "task_id": "keen-stone-97"
     },
     "wait_listener_fence_inherited_composition": {
       "authorized_engine_delta": 0,
@@ -17025,7 +17048,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83703,
+    "engine_cap": 83723,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -17070,7 +17093,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3731,
+      "authorized_owned_delta": 3744,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -17424,8 +17447,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 83703,
-      "measured_owned_total": 159230,
+      "measured_engine_lines": 83723,
+      "measured_owned_total": 159243,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -17956,6 +17979,29 @@
         "source_revision": "wait-listener-coalesce epic",
         "task_id": "fresh-ridge-78"
       },
+      "wait_listener_deadlock_restart_composition": {
+        "authorized_engine_delta": 20,
+        "authorized_owned_delta": 13,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/integration/check_reconciliation.py": 2,
+          "src/integration/checks.py": 18,
+          "src/waits/watchers/ci.py": -7
+        },
+        "dev_source_revision": "5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b",
+        "measured_engine_lines": 83633,
+        "measured_owned_total": 159117,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83613,
+        "previous_measured_owned_total": 159104,
+        "previous_measured_table_count": 45,
+        "pull_request": 2091,
+        "reason": "Exact supervisor-approved +13 owned/+20 engine lines for hand-landing PR 2091 (wait listener restart on PostgreSQL deadlock in CIWatcher.lock_source). Preserve every historical grant, original baseline and ownership classification, zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "8ebd8b2174552fe250dcfa40170e1b8faf356b1b",
+        "task_id": "keen-stone-97"
+      },
       "wait_listener_fence_inherited_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 3,
@@ -18034,7 +18080,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159230,
+    "owned_total_cap": 159243,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

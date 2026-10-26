@@ -932,7 +932,33 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'promotion_supersession_ci_retry_composition': {'task_id': 'amber-dune-40',
+HAND_INTEGRATION_RECONCILIATION = {'wait_listener_deadlock_restart_composition': {'authorized_engine_delta': 20,
+                                                'authorized_owned_delta': 13,
+                                                'authorized_table_delta': 0,
+                                                'charged_files': {'src/integration/check_reconciliation.py': 2,
+                                                                  'src/integration/checks.py': 18,
+                                                                  'src/waits/watchers/ci.py': -7},
+                                                'dev_source_revision': '5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b',
+                                                'measured_engine_lines': 83633,
+                                                'measured_owned_total': 159117,
+                                                'measured_table_count': 45,
+                                                'operator_decision': '6679052c',
+                                                'previous_measured_engine_lines': 83613,
+                                                'previous_measured_owned_total': 159104,
+                                                'previous_measured_table_count': 45,
+                                                'pull_request': 2091,
+                                                'reason': 'Exact supervisor-approved +13 owned/+20 '
+                                                          'engine lines for hand-landing PR 2091 '
+                                                          '(wait listener restart on PostgreSQL '
+                                                          'deadlock in CIWatcher.lock_source). '
+                                                          'Preserve every historical grant, '
+                                                          'original baseline and ownership '
+                                                          'classification, zero remaining headroom '
+                                                          'and no new storage category.',
+                                                'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                'source_revision': '8ebd8b2174552fe250dcfa40170e1b8faf356b1b',
+                                                'task_id': 'keen-stone-97'},
+ 'promotion_supersession_ci_retry_composition': {'task_id': 'amber-dune-40',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'operator_decision': '6679052c',
  'supervisor_decision_message_id': 'msg-e6fe502dacef455f9192db4531060465',
@@ -1019,7 +1045,7 @@ HAND_INTEGRATION_RECONCILIATION = {'promotion_supersession_ci_retry_composition'
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3731,
+ 'authorized_owned_delta': 3744,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1590,8 +1616,8 @@ HAND_INTEGRATION_RECONCILIATION = {'promotion_supersession_ci_retry_composition'
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83703,
- 'measured_owned_total': 159230,
+ 'measured_engine_lines': 83723,
+ 'measured_owned_total': 159243,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
