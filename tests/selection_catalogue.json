@@ -20212,7 +20212,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:95458a619edbeb0a294fc0606ce3b05611b9243ef2b00f52b63233a4ce142105",
+      "digest": "sha256:4c7dbec78fb2c57e335644b5fa230630e409f230c5f7237512f8270fe2069b33",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20233,7 +20233,8 @@
         "src.waits.loops",
         "src.waits.registry",
         "src.waits.resource_sources",
-        "src.waits.sources"
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"
