@@ -1174,6 +1174,10 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
 
     original_dispatch = service.listener._dispatch
     if driver == "scheduler":
+        # Process the faulted project before the healthy project so a later
+        # timeout cannot replace the one whose SQL cancellation we must verify.
+        monkeypatch.setattr(scheduler, "_rotated", lambda projects: sorted(
+            projects, key=lambda project: project.id))
         async def observe(conn, task_id, **kwargs):
             await stall(conn)
 
@@ -1194,14 +1198,14 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
         service.listener.lease_seconds = 1
         tick = service.listener.tick
 
-    fault_budget = None
+    driver_budget = fault_budget = None
 
     def controlled_timeout(seconds):
-        nonlocal fault_budget
+        nonlocal driver_budget
         budget = asyncio.timeout(None)
         if seconds == (service.listener.lease_seconds if driver == "listener"
                        else scheduler.SCHEDULER_SYNC_TIMEOUT):
-            fault_budget = budget
+            driver_budget = budget
         return budget
 
     # Arm the real timeout only once the rollback target reaches its SQL stall.
@@ -1215,7 +1219,11 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
     monkeypatch.setattr(scheduler, "asyncio", scheduler_asyncio)
 
     def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        nonlocal fault_budget
         if interruption == "timeout" and "pg_sleep" in statement:
+            # Retain the budget that cancels this query even if another project
+            # subsequently opens a healthy scheduler timeout.
+            fault_budget = driver_budget
             assert fault_budget is not None
             fault_budget.reschedule(asyncio.get_running_loop().time())
 
