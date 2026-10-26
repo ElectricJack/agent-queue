@@ -150,14 +150,16 @@ python scripts/bazel/generate_targets.py --check
 python tools/bazel/generator_inputs.py --write
 ```
 
-Use clean tracked repository inputs for reproduction. An ignored generated
-`packages/aq-ts-client/src/index.ts` can enter literal-path discovery; the worker
-saved six ignored package artifacts with SHA-256 receipts before reproduction.
-The analyzer excludes local Codex hooks, pytest failure-cache files and the AQ
-worktree sentinel, alongside existing Git, AQ and environment controls. Exact
-comparison found only those runtime files in the worker graph, with no changes
-to test obligations; the existing control-file regression covers literal and
-composed reads. Actual worker metadata remains intact. Use AQ admission
+Discovery snapshots the Git index, so ignored generated artifacts and untracked
+files do not enter analyzer inputs, generated outputs, collection fingerprints,
+or test discovery. Source archives use an explicit tracked-path inventory at
+`.aq/bazel-source-files.json`. Stage new sources before collecting. The
+regression compares full rendered outputs with ignored TypeScript artifacts,
+untracked Python/data files and an untracked BUILD boundary present. Runtime
+control files remain excluded, and actual worker metadata remains intact.
+Pytest's automatic imports and conftest loading retain their normal behavior;
+the collection traversal filter is not an execution-isolation layer.
+Use AQ admission
 for focused and area tests, and pinned Bazel 8.3.1 for read-only queries. `scripts/bazel/slice_d_llm_perf.py` audits explicit support/fixture inputs
 and compares retained obligations with a pre-migration manifest. Its optional
 `--bazel` flag checks manifest/query agreement without running Bazel tests.

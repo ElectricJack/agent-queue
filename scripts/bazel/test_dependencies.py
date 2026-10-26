@@ -12,13 +12,9 @@ import re
 import textwrap
 from pathlib import Path
 
-from scripts.bazel.dependency_paths import repository_data
+from scripts.bazel.dependency_paths import repository_data, repository_files
 
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
-_SKIP = {
-    "__pycache__", ".git", ".aq", "node_modules", ".venv",
-    ".codex", ".pytest_cache", ".aq-worktree.json",
-}
 _DATA_ROOTS = {"src", "tests", "docs", "scripts", "tools", "dashboard", "packages",
                "migrations", "vault"}
 
@@ -142,11 +138,11 @@ class DependencyAnalyzer:
 
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
+        self.repository_files = repository_files(self.root)
         self.files = sorted(
-            p.relative_to(self.root).as_posix()
-            for folder in ("src", "tests", "scripts", "tools", "packages", "migrations")
-            for p in (self.root / folder).rglob("*.py")
-            if not any(part in _SKIP for part in p.relative_to(self.root).parts)
+            path for path in self.repository_files
+            if path.split("/", 1)[0] in {"src", "tests", "scripts", "tools", "packages", "migrations"}
+            and path.endswith(".py")
         )
         self.known = {_module(path): path for path in self.files}
         self.migration_sources = {path for path in self.files if path.startswith("migrations/")}
@@ -164,7 +160,7 @@ class DependencyAnalyzer:
         declarations = self.root / "scripts/bazel/test_dependency_inputs.json"
         self.declarations = (
             json.loads(declarations.read_text(encoding="utf-8"))
-            if declarations.is_file() else {}
+            if "scripts/bazel/test_dependency_inputs.json" in self.repository_files else {}
         )
 
     def tree(self, path: str) -> ast.Module:
@@ -219,7 +215,7 @@ class DependencyAnalyzer:
             found = set()
             if candidate.is_relative_to(self.root):
                 relative = candidate.relative_to(self.root)
-                if not any(part in _SKIP for part in relative.parts) and candidate.is_file():
+                if relative.as_posix() in self.repository_files:
                     found.add(relative.as_posix())
             self.data_paths[value] = found
         return self.data_paths[value]
@@ -442,7 +438,7 @@ class DependencyAnalyzer:
                     elif leaf == "spec_from_file_location":
                         argument = node.args[1] if len(node.args) > 1 else None
                         literal = _literal(argument)
-                        if literal and (self.root / literal).is_file():
+                        if literal and literal in self.repository_files:
                             imports.add(literal)
                         else:
                             reasons.add(f"{path}: unresolved file import")
@@ -509,6 +505,7 @@ class DependencyAnalyzer:
         data.update(repository_data(
             self.root, path, nodes,
             context=aliases_from if aliases_from is not None else self.tree(path),
+            source_files=self.repository_files,
         ))
         self.scans[key] = imports, names, fixture_names, reasons, data, docs
         return self.scans[key]
@@ -549,6 +546,8 @@ class DependencyAnalyzer:
         if test_path.is_absolute():
             test_path = test_path.relative_to(self.root)
         path = test_path.as_posix()
+        if path not in self.repository_files:
+            raise ValueError(f"test module is not a repository source input: {path}")
         reached, reasons, data = set(), set(), set()
         docs = False
         # Audited inputs which Python syntax alone cannot express, such as code
@@ -565,7 +564,7 @@ class DependencyAnalyzer:
                 p.relative_to(self.root).as_posix()
                 for p in self.root.glob(pattern)
                 if p.is_file() and p.name not in {"BUILD", "BUILD.bazel"}
-                and not any(part in _SKIP for part in p.relative_to(self.root).parts)
+                and p.relative_to(self.root).as_posix() in self.repository_files
             }
             if not matches:
                 raise ValueError(f"{path}: declared data matches no files: {pattern}")
@@ -573,10 +572,10 @@ class DependencyAnalyzer:
         scopes = []
         for directory in reversed(test_path.parent.parents):
             candidate = (directory / "conftest.py").as_posix()
-            if (self.root / candidate).is_file():
+            if candidate in self.repository_files:
                 scopes.append(candidate)
         candidate = (test_path.parent / "conftest.py").as_posix()
-        if (self.root / candidate).is_file():
+        if candidate in self.repository_files:
             scopes.append(candidate)
         scopes.append(path)
         plugins = []

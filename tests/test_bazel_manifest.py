@@ -9,6 +9,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -400,6 +401,89 @@ def _render_graph(root, modules, fine_grained):
         "schema_version": 1, "libraries": libraries, "modules": entries, "collection": {"nodes": []},
         "suites": {}, "aliases": {},
     })
+
+
+def test_tracked_inputs_ignore_local_artifacts_and_survive_archive(tmp_path):
+    modules = _fine_graph_fixture(tmp_path)
+    tracked = {
+        ".gitignore": "packages/aq-ts-client/src/index.ts\ntests/test_ignored.py\n",
+        "packages/aq-ts-client/src/tracked.ts": "export const value = 1;\n",
+        "tools/lookup/data.json": "{}\n",
+        "scripts/bazel/test_dependency_inputs.json": json.dumps({
+            "tests/test_behavior.py": {"data": ["packages/aq-ts-client/src/*.ts"]},
+        }),
+    }
+    for relative, content in tracked.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    (tmp_path / "tests/test_behavior.py").write_text(
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
+        "def test_behavior(selected):\n"
+        "    assert selected == 1\n"
+        "    (ROOT / 'tools' / 'lookup' / 'data.json').read_text()\n"
+        "    list((ROOT / 'packages' / 'aq-ts-client' / 'src').glob('*.ts'))\n"
+        "    open('packages/aq-ts-client/src/index.ts')\n"
+    )
+    subprocess.check_call(["git", "init", "-q", str(tmp_path)])
+    subprocess.check_call(["git", "add", "."], cwd=tmp_path)
+    baseline = _render_graph(tmp_path, modules, set(modules))
+    graph = targets.graph(tmp_path, modules, fine_grained=set(modules))
+    fingerprints = targets.collection_inputs(tmp_path)
+    inventory = targets.load_inventory(ROOT)
+    baseline_sources = inventory.Collector(tmp_path).source_files
+    def collect():
+        script = (
+            "import json, sys; from pathlib import Path; "
+            "sys.path.insert(0, sys.argv[1]); "
+            "import pytest; from scripts.bazel.inventory import Collector; "
+            "root = Path(sys.argv[2]); plugin = Collector(root); "
+            "code = pytest.main([str(root / 'tests'), '--collect-only', '-q', "
+            "'-o', 'addopts=', '--confcutdir', str(root)], plugins=[plugin]); "
+            "print('COLLECTION_JSON=' + json.dumps(plugin.document, sort_keys=True)); "
+            "raise SystemExit(code)"
+        )
+        output = subprocess.check_output(
+            [sys.executable, "-c", script, str(ROOT), str(tmp_path)], cwd=tmp_path,
+            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}, text=True,
+        )
+        return json.loads(next(line.removeprefix("COLLECTION_JSON=") for line in output.splitlines()
+                               if line.startswith("COLLECTION_JSON=")))
+
+    collected = collect()
+    assert [node["nodeid"] for node in collected["nodes"]] == [
+        "tests/test_behavior.py::test_behavior",
+    ]
+    assert "packages/aq-ts-client/src/tracked.ts" in graph[1]["tests/test_behavior.py"]["data_files"]
+    for relative in (
+        "packages/aq-ts-client/src/index.ts", "src/local.py", "tests/test_local.py",
+        "tests/test_ignored.py", "tests/local/test_new.py", "tools/lookup/BUILD.bazel",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("raise RuntimeError('local artifact must not be read')\n")
+    assert _render_graph(tmp_path, modules, set(modules)) == baseline
+    assert targets.graph(tmp_path, modules, fine_grained=set(modules)) == graph
+    assert targets.collection_inputs(tmp_path) == fingerprints
+    plugin = inventory.Collector(tmp_path)
+    assert plugin.source_files == baseline_sources
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/test_local.py", None) is True
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/test_ignored.py", None) is True
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/local", None) is True
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/test_behavior.py", None) is None
+    assert collect() == collected
+    assert targets.file_label("tools/lookup/data.json", {}, tmp_path) == "//:tools/lookup/data.json"
+    # Fresh invocations observe index changes; no process-global snapshot cache.
+    subprocess.check_call(["git", "add", "src/local.py"], cwd=tmp_path)
+    assert "src/local.py" in targets.source_files(tmp_path)
+    subprocess.check_call(["git", "rm", "--cached", "-q", "src/local.py"], cwd=tmp_path)
+    shutil.rmtree(tmp_path / ".git")
+    snapshot = tmp_path / ".aq/bazel-source-files.json"
+    snapshot.parent.mkdir()
+    snapshot.write_text(json.dumps({"schema_version": 1, "files": sorted(baseline_sources)}))
+    assert _render_graph(tmp_path, modules, set(modules)) == baseline
+    assert targets.collection_inputs(tmp_path) == fingerprints
+    assert inventory.Collector(tmp_path).source_files == baseline_sources
 
 
 def test_fine_graph_only_carries_used_fixture_sources(tmp_path):

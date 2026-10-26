@@ -3,7 +3,9 @@
 `scripts/bazel/generate_targets.py` owns the generated `src/**/BUILD.bazel`,
 `tests/BUILD.bazel`, `test_suites.json`, and marked sections in the root,
 `tools/bazel`, and `checks` BUILD files. The other sections belong to their
-respective generators. Refresh after changing tests or fixtures:
+respective generators. The `swift-meadow-43` path-filter fix is merged: directory
+data exclusions are relative to the checkout, so generation and verification also
+work in `.aq` worktrees. Refresh after changing tests or fixtures:
 
 ```bash
 python scripts/generate-selection-catalogue.py
@@ -18,6 +20,15 @@ catalogue identity, workflow commands, markers, and the installed reference
 `pytest-split` version used for the eight duration-balanced default groups.
 Node references are indices into one collection table. A module's parametrized
 IDs are emitted once in its shared Bazel obligation file.
+
+Discovery snapshots `git ls-files --cached` at the repository root. Ignored and
+untracked files do not change analyzer inputs, generated output, collection
+fingerprints, or test discovery. Stage new source files before collecting. A
+source archive must carry `.aq/bazel-source-files.json` with
+`{"schema_version": 1, "files": ["relative/path", "..."]}`, populated from the
+source checkout's tracked paths. The archive uses that explicit inventory.
+Pytest's Python imports and automatic conftest loading still follow pytest's
+normal rules; run collection in a trusted checkout.
 
 ## Per-area dependency migration
 
@@ -60,7 +71,7 @@ the fixtures that use them. Production package exports retain their identities.
 The real analyzer from `stark-orbit-64`, merged from dev `0d13d9185`, resolves
 `tests/test_knowledge_inventory.py` to 92 application files, five test/support
 files and four other Python files, with no conservative fallback. The original
-foundation retained 1,218 application files for every knowledge module. The
+foundation retained 1,219 application files for every knowledge module. The
 repository regression in `tests/test_bazel_test_dependencies.py` verifies that the
 leaf keeps its actual inventory source and root conftest while excluding the
 PostgreSQL adapter, job queries and plugins.
@@ -71,7 +82,9 @@ still reaches playbooks, integration and plugins and conservatively retains all
 1,221 current application files. Unmigrated legacy areas also retain broad
 package declarations. Query evidence must distinguish resolved leaf targets,
 conservative targets and legacy targets; this does not make global selection precise
-or establish an execution-time improvement. See the measured queries and validation
+or establish an execution-time improvement. Literal directory data inputs also
+retain broad resources in the resolved leaf targets. The initial query counts
+were invalidated by the `.aq`-path generation bug; see the correction and validation
 in [the bootstrap assessment](../../docs/reports/2026-10-26-bazel-database-bootstrap.md).
 
 On the shared host, run execution through `aq test --aq-backend bazel`. It clamps

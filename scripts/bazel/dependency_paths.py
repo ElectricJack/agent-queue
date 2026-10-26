@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import subprocess
 from pathlib import Path
 
 _SKIP = {
@@ -10,9 +12,58 @@ _SKIP = {
     ".codex", ".pytest_cache", ".aq-worktree.json",
 }
 
+SOURCE_INVENTORY = ".aq/bazel-source-files.json"
+
+
+def repository_files(root: Path) -> frozenset[str]:
+    """Snapshot tracked inputs, or an archive's explicit source inventory.
+
+    Only a Git marker at this root is considered: temporary fixtures must not
+    inherit the enclosing checkout's index. Archives may supply
+    ``.aq/bazel-source-files.json`` as ``{"schema_version": 1, "files": [...]}``.
+    Small non-Git fixtures retain filtered filesystem discovery.
+    """
+    root = root.resolve()
+    paths = None
+    if (root / ".git").exists():
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=root,
+            capture_output=True, text=True, check=False,
+        )
+        if top.returncode == 0 and Path(top.stdout.strip()).resolve() == root:
+            tracked = subprocess.run(
+                ["git", "ls-files", "--cached", "-z"], cwd=root,
+                capture_output=True, check=False,
+            )
+            if tracked.returncode:
+                raise ValueError("cannot read tracked Bazel source inventory")
+            paths = tracked.stdout.decode("utf-8").split("\0")[:-1]
+    inventory = root / SOURCE_INVENTORY
+    if paths is None and inventory.is_file():
+        document = json.loads(inventory.read_text(encoding="utf-8"))
+        if (not isinstance(document, dict) or document.get("schema_version") != 1
+                or not isinstance(document.get("files"), list)):
+            raise ValueError("invalid Bazel archive source inventory")
+        paths = document["files"]
+        if any(not isinstance(path, str) or not path or Path(path).is_absolute()
+               or ".." in Path(path).parts or Path(path).as_posix() != path for path in paths):
+            raise ValueError("invalid path in Bazel archive source inventory")
+    if paths is None:
+        if (root / "scripts/bazel/generate_targets.py").is_file():
+            raise ValueError(f"Bazel source archive requires {SOURCE_INVENTORY}")
+        paths = (path.relative_to(root).as_posix() for path in root.rglob("*"))
+    return frozenset(
+        path for path in paths
+        if not any(part in _SKIP for part in Path(path).parts)
+        and (root / path).is_file() and (root / path).resolve().is_relative_to(root)
+        and not path.startswith("dashboard/dist/")
+        and not path.endswith((".pyc", ".tsbuildinfo"))
+    )
+
 
 def repository_data(
     root: Path, path: str, nodes: list[ast.AST], *, context: ast.AST | None = None,
+    source_files: frozenset[str] | None = None,
 ) -> set[str]:
     """Resolve literal Path expressions without executing repository code.
 
@@ -22,6 +73,7 @@ def repository_data(
     unselected expressions never contribute inputs.
     """
     root = root.resolve()
+    source_files = repository_files(root) if source_files is None else source_files
     walked = [node for top in nodes for node in ast.walk(top)]
     explicit_reads = set()
     for node in walked:
@@ -164,7 +216,8 @@ def repository_data(
         relative = candidate.relative_to(root)
         if relative.as_posix() == path and not explicit:
             return
-        if (not any(part in _SKIP for part in relative.parts)
+        if (relative.as_posix() in source_files
+                and not any(part in _SKIP for part in relative.parts)
                 and candidate.name not in {"BUILD", "BUILD.bazel"}
                 and not relative.as_posix().startswith("dashboard/dist/")
                 and not candidate.name.endswith((".pyc", ".tsbuildinfo"))):
