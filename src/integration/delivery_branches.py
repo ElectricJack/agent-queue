@@ -46,6 +46,7 @@ from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.tables import (
     archived_tasks,
     branch_retirements,
+    events,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -59,7 +60,6 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_completion_records,
-    task_delivery_receipts,
     task_metadata,
     tasks,
 )
@@ -464,6 +464,7 @@ async def unrecorded_epic_children(conn, *, repository_id=None, ref=None) -> dic
     and its generation in Git. This is a deletion fence, never delivery proof.
     """
     from src.integration.delivery_truth import load_delivery_requests
+    from src.integration.truth_retention import delivery_identity_key
 
     children = []
     for parent_table in (tasks, archived_tasks):
@@ -492,35 +493,30 @@ async def unrecorded_epic_children(conn, *, repository_id=None, ref=None) -> dic
             target_ref="refs/heads/" + rows[0].default_branch.removeprefix("refs/heads/"),
             conn=conn, reduced=True,
         )
-        receipts = (await conn.execute(select(task_delivery_receipts).where(
-            task_delivery_receipts.c.source_task_id.in_(requests),
-            task_delivery_receipts.c.repository_id == repository_id,
+        retained = (await conn.execute(select(events).where(
+            events.c.event_type == "integration.git_truth_reconciled",
+            events.c.task_id.in_(requests),
+            events.c.project_id.in_({request.project_id for request in requests.values()}),
         ))).mappings().all()
-        by_task = {}
-        for receipt in receipts:
-            by_task.setdefault(receipt["source_task_id"], []).append(receipt)
+        by_task = {row.id: [] for row in rows}
+        for event in retained:
+            try:
+                payload = json.loads(event["payload"] or "null")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                by_task[event["task_id"]].append((payload.get("receipt"), payload.get("source_oid")))
         for row in rows:
             request = requests.get(row.id)
             if request and (request.lifecycle_disposition or (
                 not request.branch_name and not request.has_recorded_source
             )):
                 continue
-            recorded = False
-            for receipt in by_task.get(row.id, ()) if request is not None else ():
-                witness = (receipt["resolution_evidence"] or {}).get("git_truth", {})
-                identity = witness.get("request", {})
-                if (receipt["source_task_id"] == row.id
-                        and str(witness.get("ref", "")).startswith("refs/aq/provenance/delivery/")
-                        and witness.get("source_oid") == receipt["reviewed_head_sha"]
-                        and identity.get("reported_source") == request.reported_source
-                        and identity.get("claim_epoch") == request.claim_epoch
-                        and identity.get("completion_id") == request.completion_id
-                        and identity.get("task_version") == request.task_version
-                        and identity.get("project_id") == request.project_id
-                        and identity.get("repository_id") == repository_id
-                        and identity.get("task_id") == row.id):
-                    recorded = True
-                    break
+            recorded = request is not None and any(
+                isinstance(source, str) and source and request.reported_source in {None, source}
+                and domain == "git-truth:" + delivery_identity_key(request, source)
+                for domain, source in by_task.get(row.id, ())
+            )
             if not recorded:
                 held.setdefault(branch_of(row.branch_name),
                                 f"child {row.id} has no retained completion witness")
