@@ -250,9 +250,29 @@ class GitTruthReconciler:
         ]).encode()).hexdigest()
         domain = "git-truth:" + key
         async with self.db._engine.connect() as conn:
-            receipt = await conn.scalar(select(t.task_delivery_receipts.c.id).where(
+            recorded = (await conn.execute(select(
+                t.task_delivery_receipts.c.id,
+                exists().where(
+                    t.task_branch_origins.c.task_id == task_id,
+                    t.task_branch_origins.c.repository_id == request.repository_id,
+                    t.task_branch_origins.c.retired_at.is_(None),
+                ) | exists().where(
+                    t.task_integration_checkpoints.c.task_id == task_id,
+                    t.task_integration_checkpoints.c.repository_id == request.repository_id,
+                ) | exists().where(
+                    t.integration_branch_owners.c.owner_id == task_id,
+                    t.integration_branch_owners.c.repository_id == request.repository_id,
+                    t.integration_branch_owners.c.handoff_state != "released",
+                ),
+            ).where(
                 t.task_delivery_receipts.c.domain_key == domain,
-            ))
+            ))).first()
+        receipt = recorded[0] if recorded else None
+        # This exact historical witness already exists and there is nothing to
+        # mutate. A later projection is revisited next pass; receipts never
+        # replace Git proof, freshness or writer checks for actual repairs.
+        if recorded and not recorded[1]:
+            return False
         witness = None if receipt else await retain_delivery(snapshot, evidence)
         if not await view.fresh():
             return False

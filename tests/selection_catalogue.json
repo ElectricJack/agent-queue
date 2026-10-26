@@ -7347,13 +7347,15 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:607511aae8482a348b027c23ff7b5f321b5c56bdfdd3f1a298e8eab7f0304037",
+      "digest": "sha256:2c02ea5ff9c7faed25017b279f93e263681921b221192c8912b351cd9dd96e1a",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.asks.operations",
+        "src.commands",
         "src.commands.fidelity_review_commands",
         "src.commands.principal",
+        "src.commands.task_changes",
         "src.database.queries",
         "src.database.queries.claim_queries",
         "src.database.queries.ingest_batch_queries",
@@ -9480,13 +9482,15 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:5b7d90fd06efcaa6d66e11db54802d0277c6b4081fc8867341f0f6dea4ead678",
+      "digest": "sha256:612ad0df026e3c3f926bf473e54f05cc707109e02a6d4daacd17a15391975c9a",
       "imports": [
         "src.config",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
         "src.git.manager",
+        "src.integration",
+        "src.integration.admission",
         "src.integration.branch_retirement",
         "src.integration.delivery_branches",
         "src.integration.legacy_backfill",
@@ -10632,13 +10636,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:deec543aa9f72f2d679e017c87cff80c896f0db29fcef8ed860ee845034ae0a1",
+      "digest": "sha256:4addaa8dcb6795ee0a74ae35839e563e6ecf2de4922e7119eda8cb7949cb2a42",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -10653,7 +10658,8 @@
         "src.sessions.obsolete"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Git witnesses survive squashes/GC; projection repair is bounded and fenced."
     },
@@ -11528,15 +11534,13 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:11b331aca559fe2dbdd52b865ff87fdcab96f5db2899ad4b874462e5430c5dd1",
+      "digest": "sha256:3002e89c352367f91e14cc8c0d97aaa6f5a0a170d6d5aec964a7cf5d510ffe5c",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
         "src.records.models"
       ],
-      "markers": [
-        "usefixtures"
-      ],
+      "markers": [],
       "summary": "Task filing and Save finding stay atomic, guarded and replayable."
     },
     "tests/test_known_tools.py": {
@@ -20215,7 +20219,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:95458a619edbeb0a294fc0606ce3b05611b9243ef2b00f52b63233a4ce142105",
+      "digest": "sha256:ea48167444a746e0165f4d347bdb51d5789123941d0833fbfdb5c97065a96ed2",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20236,10 +20240,12 @@
         "src.waits.loops",
         "src.waits.registry",
         "src.waits.resource_sources",
-        "src.waits.sources"
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Authoritative source transitions write unconditional, transactional wait events."
     },
