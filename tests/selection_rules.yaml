@@ -163,6 +163,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/fixtures/integration/**"], areas: ["integration-promotion"] }
   - { paths: ["tests/fixtures/integration/failure-groups.json"], areas: ["integration-trains"] }
   - { paths: ["tests/fixtures/integration_replay/**"], areas: ["integration-trains"] }
+  - { paths: ["tests/fixtures/git_truth_repair_before_bright_torrent.py.txt"], areas: ["integration-trains"] }
   - { paths: ["tests/fixtures/contracts/**"], areas: ["ci-sentinel", "playbook-engine", "provider-failover", "shipped-playbooks"] }
   - { paths: ["tests/fixtures/fake_gh/**"], areas: ["projects", "github"] }
   - { paths: ["tests/fixtures/formulas/**"], areas: ["formulas", "intelligence-classes", "e2e-kit"] }

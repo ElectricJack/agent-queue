@@ -932,8 +932,69 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3035,
+HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
+ 'authorized_owned_delta': 16,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/legacy_backfill.py': 16},
+ 'decision_message_id': 'msg-9b501b0a8c2f4c258c07a43cb924a8da',
+ 'dev_source_revision': '7bff0f25e71c4502b9f8cd9266fb047f0f6cc3fc',
+ 'measured_engine_lines': 83434,
+ 'measured_owned_total': 158864,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83418,
+ 'previous_measured_owned_total': 158848,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved +16 owned/engine lines for authoritative deleted-parent '
+           'selection and default-target reproof of retained child completions, including retired '
+           'origins. Compose on current dev; preserve all historical grants, original baselines '
+           'and ownership classifications, zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'task_id': 'stark-rapids-81'},
+ 'deleted_epic_child_recovery_composition': {'task_id': 'stark-rapids-81',
+ 'decision_message_id': 'msg-18a65dbb43bf4491ae77cc71bfd931a8',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'dev_source_revision': '389f345d17ce86fd52f4e4e7aace9fcd35c0a7eb',
+ 'previous_measured_engine_lines': 83221,
+ 'previous_measured_owned_total': 158609,
+ 'previous_measured_table_count': 45,
+ 'authorized_engine_delta': 103,
+ 'authorized_owned_delta': 103,
+ 'authorized_table_delta': 0,
+ 'measured_engine_lines': 83324,
+ 'measured_owned_total': 158712,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/integration/delivery_branches.py': 76,
+                   'src/integration/delivery_truth.py': 1,
+                   'src/integration/legacy_backfill.py': 26},
+ 'reason': 'Exact supervisor pre-approved delta on current dev for strict final-source recovery of '
+           'deleted-epic children and a generation-fenced retained-witness deletion hold. Preserve '
+           'all historical grants, baselines and ownership classifications; zero remaining '
+           'headroom and no new storage category.'},
+ 'reconciliation_noop_composition': {'authorized_engine_delta': 20,
+ 'authorized_owned_delta': 20,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/repository_recovery.py': 0,
+                   'src/integration/truth_reconciler.py': 20},
+ 'decision_message_id': 'msg-8aa9311e7afa474193d720e4a9cab95b',
+ 'dev_source_revision': 'ea0cb2e29710cd1b243a19e4f1292e22a3d5f980',
+ 'measured_engine_lines': 83183,
+ 'measured_owned_total': 158571,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83163,
+ 'previous_measured_owned_total': 158551,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved receipt/projection no-op probe and restored incremental '
+           'acquisition after a recovered incident journal. Remeasured on merged dev under the '
+           'same decision. Preserve all mutation freshness, identity, writer and '
+           'retained-integrity gates, every historical grant and ownership classification; '
+           'zero remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'task_id': 'bright-torrent-86'},
+ 'authority': 'size-cap-delegation-2026-10-23',
+ 'authorized_owned_delta': 3339,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1164,8 +1225,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83163,
- 'measured_owned_total': 158534,
+ 'measured_engine_lines': 83434,
+ 'measured_owned_total': 158838,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1623,7 +1684,94 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
  'reason': 'Exact supervisor-approved composition of the unchanged retained-fixer authority '
            'delta with current dev. Preserve every historical grant, prior merge measurement, '
            'original baseline and ownership classification, with zero remaining headroom and no '
-           'new storage category.'}}
+           'new storage category.'},
+ 'wait_listener_ci_check_coalesce_composition': {'authorized_engine_delta': 0,
+   'authorized_owned_delta': 17,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '4e1ce7c75',
+   'measured_engine_lines': 83163,
+   'measured_owned_total': 158551,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 83163,
+   'previous_measured_owned_total': 158534,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +17 owned lines for coalescing in-progress ci_check '
+             're-observation and a short graph-lock hold in the wait listener. Preserve every '
+             'historical grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'wait-listener-coalesce epic',
+   'task_id': 'fresh-ridge-78'},
+ 'originless_backfill_provenance_composition': {'authorized_engine_delta': 38,
+   'authorized_owned_delta': 38,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '638bbd2f0',
+   'measured_engine_lines': 83221,
+   'measured_owned_total': 158609,
+   'measured_table_count': 45,
+   'operator_decision': 'global-supervisor-2026-10-25',
+   'previous_measured_engine_lines': 83183,
+   'previous_measured_owned_total': 158571,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +38 owned/+38 engine lines for retaining git-proven '
+             'provenance on originless legacy completions in the backfill. Preserve every historical '
+             'grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'legacy-backfill epic',
+   'task_id': 'fair-quest-48'},
+ 'missing_target_abort_composition': {'authorized_engine_delta': 59,
+   'authorized_owned_delta': 59,
+   'authorized_table_delta': 0,
+   'charged_files': {'src/integration/batches.py': 4,
+                     'src/integration/fixers.py': 26,
+                     'src/integration/train_controls.py': 15,
+                     'src/integration/train_sources.py': 14},
+   'dev_source_revision': '21109c4eb',
+   'measured_engine_lines': 83383,
+   'measured_owned_total': 158771,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 83324,
+   'previous_measured_owned_total': 158712,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact task-preapproved missing-target abort and epic-refresh retirement delta on '
+             'merged dev. Preserve historical baselines, grants and ownership classifications; zero '
+             'remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': '39242c4c5',
+   'task_id': 'grand-falcon-16'},
+ 'git_truth_phase_profile_composition': {'authorized_engine_delta': 35,
+   'authorized_owned_delta': 77,
+   'authorized_table_delta': 0,
+   'dev_source_revision': 'c51bb0ea8',
+   'measured_engine_lines': 83418,
+   'measured_owned_total': 158848,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 83383,
+   'previous_measured_owned_total': 158771,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact task-preapproved reconcile_git_truth per-phase timing instrumentation '
+             '(sound-meadow-89) plus sibling-slot branch release (bright-beacon-87, no size change). '
+             'Preserve every historical grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'ebb6a75bb',
+   'task_id': 'sound-meadow-89'},
+ 'responsive_dashboard_reduction': {'current_charged_files': {'dashboard/src/pages/BatchDetail.tsx': 33},
+ 'measured_engine_lines': 82649,
+ 'measured_owned_total': 157899,
+ 'measured_table_count': 45,
+ 'previous_charged_files': {'dashboard/src/pages/focus/FocusBatch.tsx': 36,
+                            'dashboard/src/pages/focus/focusFormat.ts': 23},
+ 'previous_measured_owned_total': 157925,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2028',
+ 'reason': 'Retire Focus UI and simplify its surviving batch helpers in the main dashboard. '
+           'Lower the exact cap by 26 removed owned lines; preserve historical grants, fixed '
+           'baselines, integration ownership, equality assertions and zero remaining '
+           'headroom. No cap growth or new storage category.',
+ 'reclaimed_owned_lines': 26,
+ 'source_revision': 'db4c9af789df269ba20ddcaa30143ccc7137cd5c',
+ 'task_id': 'grand-ember-55'}}
 
 
 def integration_table(name: str) -> bool:

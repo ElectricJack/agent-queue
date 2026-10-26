@@ -6,7 +6,7 @@ import { useProjects } from "./api/hooks";
 import { useShellPreferences } from "./shell/useShellPreferences";
 import { loadRecords, loadWorkspaceGraph } from "./routeChunks";
 import RecordsRedirect from "./pages/records/RecordsRedirect";
-import { isFocusPath } from "./pages/focus/routes";
+import LegacyFocusRedirect from "./shell/LegacyFocusRedirect";
 import { isCompactViewport } from "./hooks/useCompactViewport";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
@@ -44,18 +44,10 @@ const WaitingOn = lazy(() => import("./pages/WaitingOn"));
 const PlanPage = lazy(() => import("./pages/PlanPage"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
-const FocusShell = lazy(() => import("./pages/focus/FocusShell"));
-const FocusHome = lazy(() => import("./pages/focus/FocusHome"));
-const FocusTask = lazy(() => import("./pages/focus/FocusTask"));
-const FocusSession = lazy(() => import("./pages/focus/FocusSession"));
-const FocusReport = lazy(() => import("./pages/focus/FocusReport"));
-const FocusAsk = lazy(() => import("./pages/focus/FocusAsk"));
-const FocusReview = lazy(() => import("./pages/focus/FocusReview"));
-const FocusEscalation = lazy(() => import("./pages/focus/FocusEscalation"));
-const FocusInbox = lazy(() => import("./pages/focus/FocusInbox"));
-const FocusBatch = lazy(() => import("./pages/focus/FocusBatch"));
-const FocusConversation = lazy(() => import("./pages/focus/FocusConversation"));
-const FocusConversationList = lazy(() => import("./pages/focus/FocusConversationList"));
+const AskPage = lazy(() => import("./pages/AskPage"));
+const EscalationPage = lazy(() => import("./pages/EscalationPage"));
+const InboxPage = lazy(() => import("./pages/InboxPage"));
+const BatchDetail = lazy(() => import("./pages/BatchDetail"));
 
 /** Index redirects must retain the shared URL-backed task filters. */
 function WorkspaceIndexRedirect() {
@@ -67,7 +59,6 @@ function WorkspaceIndexRedirect() {
 /** Tracks project scope and clears task panes when switching projects. */
 function ProjectScopePaneSync() {
   const location = useLocation();
-  const focus = isFocusPath(location.pathname);
   const { projectId, tab } = projectNavigation(location.pathname);
   const restoreTaskId = (location.state as { restoreTaskPane?: { taskId?: string } } | null)?.restoreTaskPane?.taskId;
   const restoredLocation = useRef<string | null>(null);
@@ -76,11 +67,9 @@ function ProjectScopePaneSync() {
   const { update: updatePreferences } = useShellPreferences();
   // The last project is the user's roaming preference on the daemon.
   useEffect(() => {
-    if (projectId && !focus) void updatePreferences((current) => ({ ...current, last_project_id: projectId }));
-  }, [projectId, focus, updatePreferences]);
+    if (projectId) void updatePreferences((current) => ({ ...current, last_project_id: projectId }));
+  }, [projectId, updatePreferences]);
   useEffect(() => {
-    // Focus routes neither restore nor write the roaming pane (mobile dashboard §4.2).
-    if (focus) return;
     if (previousProject.current !== projectId || tab === "tasks-knowledge") {
       previousProject.current = projectId;
       if (pane.state.kind === "open" && pane.state.view === "task-detail") pane.close();
@@ -91,7 +80,7 @@ function ProjectScopePaneSync() {
       restoredLocation.current = location.key;
       pane.open("task-detail", { taskId: restoreTaskId });
     }
-  }, [focus, projectId, tab, pane, restoreTaskId, location.key]);
+  }, [projectId, tab, pane, restoreTaskId, location.key]);
   return null;
 }
 
@@ -170,35 +159,23 @@ function RouteFallback() {
 }
 
 export default function App() {
-  const location = useLocation();
-  // Decided once, at first render: a page that loads on a focus route or on a
-  // compact viewport never gets the desktop's roaming pane popped over it.
-  const [suppressRestore] = useState(() => isFocusPath(location.pathname) || isCompactViewport());
+  // A compact first view starts with the page visible, even if a desktop left a pane open.
+  const [suppressRestore] = useState(isCompactViewport);
   return (
     <ShellPaneProvider suppressRestore={suppressRestore}>
       <ProjectScopePaneSync />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="plans/:taskId" element={<PlanPage />} />
-          {/* Focus routes sit outside the three-column shell (mobile dashboard §4.1). */}
-          <Route path="focus" element={<FocusShell />}>
-            <Route index element={<FocusHome />} />
-            <Route path="tasks/:taskId" element={<FocusTask />} />
-            <Route path="sessions/:sessionId" element={<FocusSession />} />
-            <Route path="reports/:reportId" element={<FocusReport />} />
-            <Route path="asks/:askId" element={<FocusAsk />} />
-            <Route path="reviews/:reviewId" element={<FocusReview />} />
-            <Route path="escalations/:escalationId" element={<FocusEscalation />} />
-            <Route path="inbox" element={<FocusInbox />} />
-            <Route path="batches/:batchId" element={<FocusBatch />} />
-            <Route path="conversations" element={<FocusConversationList />} />
-            <Route path="conversations/:conversationId" element={<FocusConversation />} />
-            <Route path="*" element={<Navigate to="/focus" replace />} />
-          </Route>
+          <Route path="focus/*" element={<LegacyFocusRedirect />} />
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="conversations" element={<GlobalChat />} />
+            <Route path="inbox" element={<InboxPage />} />
+            <Route path="asks/:askId" element={<AskPage />} />
+            <Route path="escalations/:escalationId" element={<EscalationPage />} />
+            <Route path="batches/:batchId" element={<BatchDetail />} />
             <Route path="waiting" element={<WaitingOn />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="host-shell" element={<HostShell />} />
