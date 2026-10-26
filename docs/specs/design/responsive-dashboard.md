@@ -66,3 +66,10 @@ retirement (+63 / +55), and checkout reuse (+67 / +67) grants with the same
 26-line dashboard reduction. The exact ceiling is 158,508 owned lines and
 83,163 engine lines, with 45 tables and zero remaining headroom. Every prior
 grant and merge measurement remains intact.
+
+The following dev refresh retains its approved wait-listener coalescing grant
+(+17 owned lines), reconciliation no-op grant (+20 owned/engine lines), and
+originless backfill provenance grant (+38 owned/engine lines). Composing these
+with the unchanged dashboard reduction gives 158,583 owned lines and 83,221
+engine lines, with 45 tables and zero remaining headroom. The three grants and
+all earlier historical measurements remain verbatim.
