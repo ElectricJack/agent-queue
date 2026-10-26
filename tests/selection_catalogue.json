@@ -6783,10 +6783,11 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:8f19a6bb5f4bcf6285413368abaa7e18e9622ca3880d9f3e2b3bf90cddb5f3a0",
+      "digest": "sha256:b005fadb92441b3413c300433a10e393bb36489e51efb5c954ec273cda467e7e",
       "imports": [
         "src.database",
         "src.database.engine",
+        "src.metrics.operation_profile",
         "src.metrics.perf"
       ],
       "markers": [
@@ -7619,7 +7620,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:50ee475ea282a6d11a5c5edfc80952c8f510fdc621c92ccb72d69eceb96f532d",
+      "digest": "sha256:71ad48995a804f32f2464630ab912db53675f1301b11f7420d02cc81cb870ab0",
       "imports": [
         "src.config",
         "src.git.askpass_broker",
@@ -7629,6 +7630,7 @@
         "src.git.manager",
         "src.integration.service",
         "src.logging_config",
+        "src.metrics.operation_profile",
         "src.orchestrator.worktree_manager"
       ],
       "markers": [
@@ -10633,7 +10635,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4addaa8dcb6795ee0a74ae35839e563e6ecf2de4922e7119eda8cb7949cb2a42",
+      "digest": "sha256:1bf385097c6663d4173b86624dc10de153e3da727eb71fe7d9e52741ee642d2c",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -10650,6 +10652,8 @@
         "src.integration.train",
         "src.integration.truth_reconciler",
         "src.integration.truth_retention",
+        "src.logging_config",
+        "src.metrics.operation_profile",
         "src.models",
         "src.orchestrator.worktree_manager",
         "src.sessions.obsolete"
@@ -12109,13 +12113,14 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:455665410406fc660bfff251c683d7491340cac9197018de8cdf044d456d53e5",
+      "digest": "sha256:6cee76941c2cfe26ba2f2bf2be6c8f5e724716d0e54d4778ef39621433f3c386",
       "imports": [
         "src.config",
         "src.logging_config",
         "src.metrics",
         "src.metrics.histogram",
         "src.metrics.loop_watchdog",
+        "src.metrics.operation_profile",
         "src.metrics.perf",
         "src.metrics.sampler"
       ],
@@ -20295,11 +20300,12 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:abdd8c48ba8420502e6b1593bda94dd70a3f7ab775f957962f5a1d86cfb00cc3",
+      "digest": "sha256:232c9598c1d2284c5e621bc546d3f7b4f6c7618db45980c07c87f6bd1902e6bf",
       "imports": [
         "src.database",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.metrics.operation_profile",
         "src.models",
         "src.waits",
         "src.waits.conditions",
