@@ -10502,7 +10502,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:14f75ca2d01d6a1f26326ad6496a923523e3bede2857c04d0c061cad2b80b9f1",
+      "digest": "sha256:20c3a39f11588431b3e8bac8f88511d543809761c78773bdb360a4ebde8b3ff5",
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
@@ -10528,6 +10528,7 @@
         "src.integration.child_delivery",
         "src.integration.ci",
         "src.integration.cleanup",
+        "src.integration.delivery_branches",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.epics",
