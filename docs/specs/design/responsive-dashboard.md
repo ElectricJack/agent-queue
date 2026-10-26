@@ -53,3 +53,9 @@ owned/engine lines) and terminal hibernation hold grant (+25 shared owned
 lines). Composed with this dashboard's unchanged 26-line reduction, the exact
 ceiling is 158,051 owned lines and 82,776 engine lines, with 45 tables and zero
 remaining headroom. All historical composition records remain unchanged.
+
+The subsequent dev merge retains the approved tick snapshot sharing grant
+(+116 owned lines, including +101 engine lines). With the same dashboard
+reduction, the exact ceiling is 158,167 owned lines and 82,877 engine lines,
+with 45 tables and zero remaining headroom. The grant's original measurements
+and decision evidence remain unchanged.
