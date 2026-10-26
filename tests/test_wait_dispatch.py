@@ -387,6 +387,48 @@ async def test_observation_retries_are_bounded_and_keep_monotonic_cursor(runtime
                for event in await records(runtime_env, wait_source_events))
 
 
+async def test_aged_retry_respects_backoff_and_shares_turns_across_drains(runtime_env):
+    env = runtime_env
+    now = [NOW]
+    service = runtime(env, clock=lambda: now[0])
+    listener = service.listener
+    listener.drain_budget_seconds = 0
+    retained = await env.db.wait_source_commit(source_key="test:retry-fairness", generation=0,
+        revision="1", outcome_ref="retry", payload={})
+    seen = []
+
+    async def unavailable(conn, event):
+        seen.append(event["seq"])
+        return 120 if event["seq"] == retained else 0
+
+    listener._dispatch = unavailable
+    await listener.tick()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).where(
+            wait_source_events.c.seq == retained,
+        ).values(committed_at=NOW))
+    later = [await env.db.wait_source_commit(source_key=f"test:forward:{n}", generation=0,
+        revision="1", outcome_ref="forward", payload={}) for n in range(3)]
+    # It is old enough for a fair turn, but its observation backoff still applies.
+    now[0] += 61
+    await listener.tick()
+    assert seen == [retained, later[0]]
+    # Due retries run without waiting for the forward queue to empty.
+    now[0] += 61
+    await listener.tick()
+    assert seen == [retained, later[0], retained]
+    # Even with backoff expired again, give forward work the next turn.
+    now[0] += 121
+    await listener.tick()
+    assert seen == [retained, later[0], retained, later[1]]
+    await listener.tick()
+    assert seen == [retained, later[0], retained, later[1], retained]
+    sources = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert sources[retained]["dispatched_at"] is None
+    assert sources[later[2]]["dispatched_at"] is None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == later[1]
+
+
 async def test_event_failure_preserves_committed_prefix_and_replays_only_failed_event(runtime_env):
     env = runtime_env
     for n in range(3):
@@ -2003,6 +2045,54 @@ async def test_ci_progress_stream_keeps_only_latest_retry_and_terminal_bypasses_
         "outcome"] == "satisfied"
     assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events)
                if r["source_key"] == key)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_aged_ci_retry_self_heals_while_forward_backlog_remains(
+    runtime_env, monkeypatch, restart,
+):
+    env = runtime_env
+    now = [NOW]
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, now=now)
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="initial",
+        outcome_ref="hint", payload={"conclusion": "pending"})
+    await service.listener.tick()
+    now[0] += 1
+    retained = await env.db.wait_source_commit(source_key=key, generation=0, revision="progress",
+        outcome_ref="hint", payload={"conclusion": "pending"})
+    await service.listener.tick()
+    assert reader.await_count == 1
+    assert next(r for r in await records(env, wait_source_events)
+                if r["seq"] == retained)["dispatched_at"] is None
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).where(
+            wait_source_events.c.seq == retained,
+        ).values(committed_at=NOW))
+    if restart:
+        await service.lease(release=True)
+        lock_source = service.orch.wait_ci_lock_source
+        service = runtime(env, registry=service.registry, clock=lambda: now[0])
+        service.orch.wait_dispatcher = service._dispatcher
+        service.orch.wait_ci_lock_source = lock_source
+    # Every pass has forward work and room for exactly one source attempt.
+    # Repeated forward-first passes used to starve this retained CI hint forever.
+    service.listener.drain_budget_seconds = 0
+    now[0] += 121
+    state["value"] = "satisfied"
+    later = await env.db.wait_source_commit(source_key="test:later", generation=0,
+        revision="1", outcome_ref="later", payload={})
+    cursor = (await records(env, wait_listener_cursors))[0]["last_seq"]
+    await service.listener.tick()
+    assert reader.await_count == 2
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    sources = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert sources[retained]["dispatched_at"] is not None
+    assert sources[later]["dispatched_at"] is None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
+    await service.listener.tick()
+    assert next(r for r in await records(env, wait_source_events)
+                if r["seq"] == later)["dispatched_at"] is not None
 
 
 @pytest.mark.parametrize("change", ["repository", "check_cache", "condition", "owner", "subscription"])

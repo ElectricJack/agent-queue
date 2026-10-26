@@ -1018,7 +1018,7 @@ HAND_INTEGRATION_RECONCILIATION = {'queued_continuation_demand_composition': {'a
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3371,
+ 'authorized_owned_delta': 3345,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1223,7 +1223,7 @@ HAND_INTEGRATION_RECONCILIATION = {'queued_continuation_demand_composition': {'a
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83434,
- 'measured_owned_total': 158870,
+ 'measured_owned_total': 158844,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1753,7 +1753,22 @@ HAND_INTEGRATION_RECONCILIATION = {'queued_continuation_demand_composition': {'a
              'Preserve every historical grant; zero remaining headroom and no new storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': 'ebb6a75bb',
-   'task_id': 'sound-meadow-89'}}
+   'task_id': 'sound-meadow-89'},
+ 'responsive_dashboard_reduction': {'current_charged_files': {'dashboard/src/pages/BatchDetail.tsx': 33},
+ 'measured_engine_lines': 82649,
+ 'measured_owned_total': 157899,
+ 'measured_table_count': 45,
+ 'previous_charged_files': {'dashboard/src/pages/focus/FocusBatch.tsx': 36,
+                            'dashboard/src/pages/focus/focusFormat.ts': 23},
+ 'previous_measured_owned_total': 157925,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2028',
+ 'reason': 'Retire Focus UI and simplify its surviving batch helpers in the main dashboard. '
+           'Lower the exact cap by 26 removed owned lines; preserve historical grants, fixed '
+           'baselines, integration ownership, equality assertions and zero remaining '
+           'headroom. No cap growth or new storage category.',
+ 'reclaimed_owned_lines': 26,
+ 'source_revision': 'db4c9af789df269ba20ddcaa30143ccc7137cd5c',
+ 'task_id': 'grand-ember-55'}}
 
 
 def integration_table(name: str) -> bool:
