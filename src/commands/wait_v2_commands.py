@@ -569,7 +569,7 @@ class WaitV2CommandsMixin:
         try:
             return await self._wait_v2_command("wait_source_redispatch", args)
         except TimeoutError:
-            return refusal("wait.unavailable", "source re-dispatch exceeded its work budget")
+            return refusal("wait.unavailable", "source re-dispatch timed out before dispatch")
         except (LeaseLost, ListenerUnavailable) as exc:
             return refusal("wait.unavailable", str(exc))
 
