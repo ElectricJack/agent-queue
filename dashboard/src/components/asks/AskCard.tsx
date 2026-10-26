@@ -1,10 +1,9 @@
 import { Link } from "react-router-dom";
 import type { Ask } from "../../api/asks";
-import { focusAskHref } from "../../pages/focus/routes";
 
 export function AskCard({ ask }: { ask: Ask }) {
   return <article className="rounded-lg border border-gray-800 p-3">
-    <Link className="block min-h-11 py-2 font-medium text-indigo-200 hover:underline" to={focusAskHref(ask.id)}>
+    <Link className="block min-h-11 py-2 font-medium text-indigo-200 hover:underline" to={`/asks/${encodeURIComponent(ask.id)}`}>
       {ask.context.title || ask.id}
     </Link>
     <p className="text-sm text-gray-300">{ask.context.why}</p>
