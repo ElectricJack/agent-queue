@@ -636,6 +636,24 @@ activity with poke discounting (our own nudges must not look like agent progress
 **Streaming API:** `GET /api/sessions/{id}/stream` (SSE) replays transcript history then
 tails it, falling back to peek diffs for transcript-less harnesses.
 
+### Stopped claim ownership
+
+A stopped session's claim phase is retained only while its task exists, is
+nonterminal (neither COMPLETED nor FAILED), and has not been assigned to another
+agent or advanced to another claim epoch. Legacy missing session epochs do not
+prove displacement. An unassigned nonterminal task, including a PAUSED task,
+may still retain its recovery checkout. Live and sleeping executions continue
+to protect their checkout independently of task status.
+
+Session stop writes clear obsolete claim phases and their timestamps. The
+session reconciler also repairs existing stopped rows and rows whose tasks
+became terminal or were reassigned after the session stopped. Repair changes
+only claim phase fields; it preserves task/session history, task state, agent
+and workspace locks, claim files, job pins and integration attachments. The
+workspace ownership predicate rejects stale stopped claims even before repair.
+The capacity stall sweep names stopped sessions that still retain a slot and
+provides the guarded task-stop control for supervisor inspection and cleanup.
+
 ### 4.6 Hooks
 
 Hook **wiring** is owned here (which events, when installed, suppression rules); payload

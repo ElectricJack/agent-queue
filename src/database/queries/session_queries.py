@@ -682,6 +682,10 @@ class SessionQueryMixin:
         result = await conn.execute(update(sessions).where(
             sessions.c.id == session_id,
         ).values(**fields))
+        if requested == "stopped":
+            from src.workspace_ownership import clear_stale_stopped_claim_phases
+
+            await clear_stale_stopped_claim_phases(conn, session_id=session_id)
         if reassigned and new_task_id:
             await self._start_task_session_attempt(conn, session_id, started_at=time.time())
         # Only the currently open association may learn mutable runtime

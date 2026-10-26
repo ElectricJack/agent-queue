@@ -25,8 +25,33 @@ LIVE_STATES = ("starting", "running", "draining", "sleeping")
 ATTACHED_STATES = ("attached", "handoff_pending")
 
 
+def session_has_retained_task():
+    """A stopped claim is recovery evidence only for its current unfinished task."""
+    return exists(select(tasks.c.id).where(
+        tasks.c.id == sessions.c.task_id,
+        tasks.c.status.not_in(("COMPLETED", "FAILED")),
+        or_(tasks.c.assigned_agent_id.is_(None),
+            tasks.c.assigned_agent_id == sessions.c.agent_id),
+        or_(sessions.c.last_claim_epoch.is_(None),
+            tasks.c.claim_epoch == sessions.c.last_claim_epoch),
+    )).correlate(sessions)
+
+
+async def clear_stale_stopped_claim_phases(conn, *, session_id=None):
+    """Repair historical phases without releasing any independent ownership fence."""
+    stmt = update(sessions).where(
+        sessions.c.state == "stopped",
+        sessions.c.claim_phase.is_not(None),
+        ~session_has_retained_task(),
+    )
+    if session_id is not None:
+        stmt = stmt.where(sessions.c.id == session_id)
+    result = await conn.execute(stmt.values(claim_phase=None, claim_phase_at=None))
+    return result.rowcount
+
+
 def session_retains_workspace():
-    """A released one-shot cooldown is history, not a hibernating owner."""
+    """Live writers and current recovery claims retain their checkout."""
     released_cooldown = and_(
         sessions.c.lifecycle == "task",
         sessions.c.state == "sleeping",
@@ -38,7 +63,10 @@ def session_retains_workspace():
     )
     return or_(
         and_(sessions.c.state.in_(LIVE_STATES), ~func.coalesce(released_cooldown, False)),
-        and_(sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None)),
+        and_(
+            sessions.c.task_id.is_not(None), sessions.c.claim_phase.is_not(None),
+            or_(sessions.c.state != "stopped", session_has_retained_task()),
+        ),
     )
 
 
@@ -520,12 +548,17 @@ async def workspace_capacity_holds(db, project_id):
                 .one()
             )
             blockers = await ownership_blockers(conn, row)
+            stopped_holder = next((
+                blocker for blocker in blockers
+                if blocker["kind"] == "session" and blocker["state"] == "stopped"
+            ), None)
             session = (
                 (
                     await conn.execute(
                         select(sessions.c.id, sessions.c.state)
                         .where(
-                            sessions.c.agent_id == ws.locked_by_agent_id,
+                            sessions.c.id == stopped_holder["session_id"]
+                            if stopped_holder else sessions.c.agent_id == ws.locked_by_agent_id,
                             sessions.c.work_dir == ws.workspace_path,
                         )
                         .order_by(sessions.c.started_at.desc())
@@ -553,10 +586,16 @@ async def workspace_capacity_holds(db, project_id):
                     "session": dict(session) if session else None,
                     "reason": "hibernated_checkout"
                     if status in {"HIBERNATED", "RESUME_PENDING"}
+                    else "stopped_session_retains_slot"
+                    if stopped_holder
                     else "stopped_agent_lock"
                     if session and session["state"] == "stopped" and not ws.locked_by_task_id
                     else "retained_ownership",
                     "blockers": blockers,
+                    **({"control": {
+                        "command": "stop_task",
+                        "params": {"task_id": stopped_holder["task_id"]},
+                    }} if stopped_holder else {}),
                 }
             )
     return findings

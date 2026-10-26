@@ -548,6 +548,16 @@ Use `aq project rebind-workspace --workspace-id SLOT --task-id TASK
 active claim. The command checks assignment, epoch, path and claim-marker identity
 and preserves the marker and workspace enablement.
 
+Stopped claim history for a COMPLETED, FAILED, deleted or reassigned task does
+not protect a slot. Stop writes and the session reconciler clear its obsolete
+claim phase and timestamp without releasing locks, markers or integration
+attachments. A stopped claim on a current nonterminal task, including a PAUSED
+task, remains recovery evidence. The stall sweep identifies this hold as
+`stopped_session_retains_slot` and includes a `stop_task` supervisor control.
+Use `aq task stop TASK` for guarded cleanup; inspect PAUSED task recovery intent
+before invoking it. Live writers retain their checkout even after a terminal
+task status change.
+
 Placement candidates are `(project, workspace_kind)` pairs. The ordinary kind
 is `project-repo`. A profile declaring another writable, lockable worktree or
 exclusive-clone repository kind uses that kind; an auto-attached vault does

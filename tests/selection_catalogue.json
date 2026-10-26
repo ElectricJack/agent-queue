@@ -20863,7 +20863,7 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:e60f0be35a266a39419f3ff9cc642f96d1c7436b837903d45d88774d91c847b6",
+      "digest": "sha256:4504772ce734676bdc271e20f9b5eb5b7d3531e71b713eca74612f8ac460fd0a",
       "imports": [
         "src.claim_file",
         "src.commands.handler",
@@ -20878,6 +20878,7 @@
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
         "src.sessions.proctable",
+        "src.sessions.reconciler",
         "src.workspace_ownership",
         "src.workspace_registration"
       ],
