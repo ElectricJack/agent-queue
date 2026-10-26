@@ -84,6 +84,15 @@ already has the frozen default head as an ancestor, a resolved merge included,
 can be settled by the supervisor control below, which never tests or publishes
 the merge.
 
+Abort also accepts a confirmed missing target ref. Preview reports
+`target_missing: true` and a null target SHA. Apply requires a nonblank reason,
+rechecks remote absence and the exact batch and candidate identities, and retains
+the promoted lifecycle refusal and all history. An unavailable Git observation
+does not prove absence. On a train visit, an open epic refresh whose target is
+confirmed missing is aborted with that reason before further repair work. Abort
+notifies its retained batch fixer to stop editing and pushing, requests that exact
+session instance stop, and preserves its checkout and frozen inputs.
+
 `aq integration settle-batch BATCH_ID` previews recovery of an ordinary batch
 already delivered to its target. Apply requires the previewed target SHA and a
 nonblank reason. It is an operator/project-supervisor control and performs no
