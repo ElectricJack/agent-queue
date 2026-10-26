@@ -2803,7 +2803,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2555,
+    "authorized_owned_delta": 2671,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2982,8 +2982,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82776,
-    "measured_owned_total": 158054,
+    "measured_engine_lines": 82877,
+    "measured_owned_total": 158170,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -3099,6 +3099,35 @@
       "source_revision": "e6882fa3e35febcc85f51d38c6d336969244d126",
       "supervisor_grant_reference": "noble-beacon-61 reopen feedback, 2026-10-25 21:16Z",
       "task_id": "noble-beacon-61"
+    },
+    "tick_snapshot_sharing_composition": {
+      "authorized_engine_delta": 101,
+      "authorized_owned_delta": 116,
+      "authorized_shared_owned_delta": 15,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/git/manager.py::GitManager.als_remote_snapshot_refs": 15,
+        "src/integration/delivery_truth.py": 1,
+        "src/integration/git_truth.py": 58,
+        "src/integration/repository_recovery.py": 29,
+        "src/integration/train.py": 6,
+        "src/integration/train_sources.py": 2,
+        "src/integration/truth_reconciler.py": 5
+      },
+      "decision_message_id": "msg-f4efa032bcda45afa490a6e9a7f10e17",
+      "dev_source_revision": "ddf8b118329f8cd301981c516bbb79e1e8cfa44f",
+      "measured_engine_lines": 82877,
+      "measured_owned_total": 158193,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "prerequisite_revision": "fe04588c6b4aac2fbc7afacc7d9746fb95682e83",
+      "previous_measured_engine_lines": 82776,
+      "previous_measured_owned_total": 158077,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved tick-scoped repository snapshot sharing, integrity-gated no-change remote-ref probe and per-visit diagnostics, including the fresh-journey-57 prerequisite merge. Preserve historical baselines, grants and ownership classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "request_message_id": "msg-d838754c89fc435b99e77211e8914a9d",
+      "task_id": "sound-impact-32"
     },
     "wait_admission_reobservation_composition": {
       "authorized_engine_delta": 0,
@@ -12883,6 +12912,9 @@
       ],
       "reason": "Integration import, registered surface, schema, policy or adapter."
     },
+    "src/git/manager.py::GitManager.als_remote_snapshot_refs": {
+      "reason": "Integration snapshot acquisition inventories every retained branch, tag and provenance namespace before skipping transport."
+    },
     "src/git/manager.py::GitManager.aprepare_child_branch": {
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     },
@@ -16507,7 +16539,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 82776,
+    "engine_cap": 82877,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -16535,7 +16567,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 2555,
+      "authorized_owned_delta": 2671,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16714,8 +16746,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 82776,
-      "measured_owned_total": 158054,
+      "measured_engine_lines": 82877,
+      "measured_owned_total": 158170,
       "measured_table_count": 45,
       "operator_decision": "6679052c",
       "original_owned_total_cap": 155499,
@@ -16831,6 +16863,35 @@
         "source_revision": "e6882fa3e35febcc85f51d38c6d336969244d126",
         "supervisor_grant_reference": "noble-beacon-61 reopen feedback, 2026-10-25 21:16Z",
         "task_id": "noble-beacon-61"
+      },
+      "tick_snapshot_sharing_composition": {
+        "authorized_engine_delta": 101,
+        "authorized_owned_delta": 116,
+        "authorized_shared_owned_delta": 15,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/git/manager.py::GitManager.als_remote_snapshot_refs": 15,
+          "src/integration/delivery_truth.py": 1,
+          "src/integration/git_truth.py": 58,
+          "src/integration/repository_recovery.py": 29,
+          "src/integration/train.py": 6,
+          "src/integration/train_sources.py": 2,
+          "src/integration/truth_reconciler.py": 5
+        },
+        "decision_message_id": "msg-f4efa032bcda45afa490a6e9a7f10e17",
+        "dev_source_revision": "ddf8b118329f8cd301981c516bbb79e1e8cfa44f",
+        "measured_engine_lines": 82877,
+        "measured_owned_total": 158193,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "prerequisite_revision": "fe04588c6b4aac2fbc7afacc7d9746fb95682e83",
+        "previous_measured_engine_lines": 82776,
+        "previous_measured_owned_total": 158077,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved tick-scoped repository snapshot sharing, integrity-gated no-change remote-ref probe and per-visit diagnostics, including the fresh-journey-57 prerequisite merge. Preserve historical baselines, grants and ownership classifications; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "request_message_id": "msg-d838754c89fc435b99e77211e8914a9d",
+        "task_id": "sound-impact-32"
       },
       "wait_admission_reobservation_composition": {
         "authorized_engine_delta": 0,
@@ -16980,7 +17041,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 158054,
+    "owned_total_cap": 158170,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
