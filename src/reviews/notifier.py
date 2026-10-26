@@ -6,6 +6,8 @@ import asyncio
 import logging
 from typing import Any
 
+from src.dashboard_paths import review_path
+from src.discord.render_budget import link_line
 from src.escalations.transport import (
     TransportAmbiguous,
     TransportRejected,
@@ -158,10 +160,7 @@ class ReviewNotifier:
         link = await self._links.resolve() if self._links is not None else DashboardLink(
             url=self.base_url
         )
-        if link.url:
-            lines.append(f"{link.url}/reviews/{review['id']}")
-        else:
-            lines.append(link.unavailable_notice)
+        lines.append(link_line(link.url, review_path(review["id"]), notice=link.unavailable_notice))
         # The link is the last line, so a long changes note is what gets cut.
         return bound_content("\n".join(lines))
 
