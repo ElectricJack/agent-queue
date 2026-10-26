@@ -20,11 +20,13 @@ def test_wait_source_redispatch_only_adds_scoped_recovery_command():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    assert hashlib.sha256(
-        (json.dumps(_before_task_list_limit_catalogue(json.loads(render_command_catalogue())),
-                    indent=2) + "\n").encode()
-    ).hexdigest() == (
-        evidence["cli_catalogue_sha256"]
-    )
-    previous = json.dumps(_before_task_list_limit_catalogue(), indent=2) + "\n"
+    catalogue = _before_task_list_limit_catalogue(_before_unread_inbox_catalogue())
+    rendered = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    previous = json.dumps(
+        _before_task_list_limit_catalogue(
+            _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
+        ),
+        indent=2,
+    ) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
