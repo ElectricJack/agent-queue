@@ -24,7 +24,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 2781,
+    "authorized_owned_delta": 2844,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -189,8 +189,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 82963,
-    "measured_owned_total": 158280,
+    "measured_engine_lines": 83018,
+    "measured_owned_total": 158343,
     "measured_table_count": 45,
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
@@ -288,6 +288,27 @@
     "source_revision": "f564f9e2e76e5a9cf76a9690d26f1d550fb3bbc0",
     "supervisor_decision_message_id": "msg-2077aa41ec2c4f8685869fa59596627b",
     "task_id": "smart-nexus-83",
+    "terminal_batch_retirement_composition": {
+      "authorized_engine_delta": 55,
+      "authorized_owned_delta": 63,
+      "authorized_shared_owned_delta": 8,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-d23998c87b324b28a5fb9c463cb20c46",
+      "dev_source_revision": "0f0a162997b368a14ed333b6722a16a6b1101e6e",
+      "measured_engine_lines": 83018,
+      "measured_owned_total": 158343,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82963,
+      "previous_measured_owned_total": 158280,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2047",
+      "reason": "Exact supervisor-approved terminal batch retirement ownership and backlog reporting amendment. Preserve all historical grants, original baselines and ownership classifications, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "24596d693ffef3bb7f0c2f3ca0c63611eae2660c",
+      "task_id": "crisp-apex-76",
+      "thread_id": "crisp-apex-76-ci-size-epoch2"
+    },
     "terminal_hibernation_holds_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 25,
