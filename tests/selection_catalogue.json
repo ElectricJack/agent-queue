@@ -9482,7 +9482,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:612ad0df026e3c3f926bf473e54f05cc707109e02a6d4daacd17a15391975c9a",
+      "digest": "sha256:df6cc949048879b658168e6ee422b8232cdd1d0556d848ffad3b77193a1f1b8e",
       "imports": [
         "src.config",
         "src.database.tables",
@@ -9497,6 +9497,7 @@
         "src.integration.provenance",
         "src.integration.status",
         "src.integration.train_sources",
+        "src.integration.truth_reconciler",
         "src.models"
       ],
       "markers": [
