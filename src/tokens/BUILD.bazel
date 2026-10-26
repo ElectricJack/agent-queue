@@ -7,6 +7,12 @@ filegroup(name = "sources", srcs = [
         "__init__.py",
         "budget.py",
     ])
+exports_files([
+        "__init__.py",
+        "budget.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
