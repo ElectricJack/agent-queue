@@ -787,6 +787,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      SUPPORTING, "Alembic configuration."),
 
     # ------------------------------------------------- contributor tooling
+    ("src/test_dsn.py", "contributing", "docs/contributing/testing.md", PRODUCTION,
+     "Shared PostgreSQL test DSN admission and setup guidance."),
     ("tests/**", "contributing", "docs/contributing/testing.md", TEST,
      "Test module or fixture."),
     ("scripts/e2e/**", "contributing", "docs/contributing/testing.md", SUPPORTING,

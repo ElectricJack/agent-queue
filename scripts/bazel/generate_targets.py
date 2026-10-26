@@ -57,17 +57,27 @@ def select_areas(modules: dict, areas: list[str]) -> set[str]:
     return selected
 
 
-def file_label(path: str, libraries: dict, root: Path = ROOT) -> str:
-    package = max(
-        (p for p in libraries if path.startswith(p + "/")), key=len, default=""
-    )
-    for directory in Path(path).parents:
-        if directory == Path("."):
-            break
-        if any((root / directory / name).is_file() for name in ("BUILD", "BUILD.bazel")):
-            if len(directory.as_posix()) > len(package):
-                package = directory.as_posix()
-            break
+def file_label(
+    path: str, libraries: dict, root: Path = ROOT,
+    package_cache: dict[Path, str] | None = None,
+) -> str:
+    # Siblings share a Bazel package. Keep this cache local to one render so
+    # adding/removing BUILD files between generations still changes ownership.
+    package_cache = {} if package_cache is None else package_cache
+    parent = Path(path).parent
+    if parent not in package_cache:
+        package = max(
+            (p for p in libraries if path.startswith(p + "/")), key=len, default=""
+        )
+        for directory in Path(path).parents:
+            if directory == Path("."):
+                break
+            if any((root / directory / name).is_file() for name in ("BUILD", "BUILD.bazel")):
+                if len(directory.as_posix()) > len(package):
+                    package = directory.as_posix()
+                break
+        package_cache[parent] = package
+    package = package_cache[parent]
     if package:
         return f"//{package}:" + path.removeprefix(package + "/")
     return "//:" + path
@@ -510,7 +520,8 @@ def render(root: Path, manifest: dict) -> dict[str, str]:
         for info in manifest["modules"].values() if info.get("fine_grained")
         for path in info["source_files"] + info["other_sources"] + info["data_files"]
     }
-    file_labels = {path: file_label(path, libraries, root) for path in fine_inputs}
+    package_cache = {}
+    file_labels = {path: file_label(path, libraries, root, package_cache) for path in fine_inputs}
     for package, info in libraries.items():
         own = [p.removeprefix(package + "/") for p in info["files"]]
         children = [p for p in libraries if p != package and p.startswith(package + "/")]
