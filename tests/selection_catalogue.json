@@ -5260,13 +5260,15 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:fb352d2eda1a59d8bf44c0bbd2f0fe74bbc38002f384e722620f2ffb04cde801",
+      "digest": "sha256:c5aa418ec1140f40bf101be6497fd575b8bba605a15dc171ff23fba7ef36e294",
       "imports": [
         "src.conversations.render",
         "src.delivery.message"
       ],
-      "markers": [],
-      "summary": "Explicit replies are bounded, mention-free and link-filtered."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit replies are bounded, mention-free and preserve links."
     },
     "tests/test_conversation_wiring.py": {
       "areas": [
@@ -5397,7 +5399,7 @@
         "messaging-adapters"
       ],
       "default_arm": true,
-      "digest": "sha256:9e95940c2d115da12282aa361dd9315b852c940d29032eebd89373e61e0ea5d4",
+      "digest": "sha256:c71ee1ca9963e84562bc96231db835a5aae2b5b6f3b5e19d0967d71c6a1e1119",
       "imports": [
         "src.dashboard_paths",
         "src.digest",
@@ -5409,7 +5411,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "One link resolver, one path scheme, one link per post (spec §6.1, §6.2)."
+      "summary": "One link resolver, one path scheme, clickable dashboard links (spec §6.1, §6.2)."
     },
     "tests/test_dashboard_perf_kit.py": {
       "areas": [
