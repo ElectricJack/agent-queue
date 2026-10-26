@@ -11,11 +11,29 @@ filegroup(name = "sources", srcs = [
         "claude_usage.py",
         "inflight.py",
         "intent.py",
+        "login_probe.py",
         "probe.py",
         "reroute.py",
         "reroute_args.py",
         "snapshot.py",
         "spill.py",
+    ])
+exports_files([
+        "__init__.py",
+        "allocation.py",
+        "availability.py",
+        "availability_service.py",
+        "claude_usage.py",
+        "inflight.py",
+        "intent.py",
+        "login_probe.py",
+        "probe.py",
+        "reroute.py",
+        "reroute_args.py",
+        "snapshot.py",
+        "spill.py",
+    ])
+filegroup(name = "resources", srcs = [
     ])
 py_library(
     name = "library",
@@ -27,6 +45,7 @@ py_library(
         "claude_usage.py",
         "inflight.py",
         "intent.py",
+        "login_probe.py",
         "probe.py",
         "reroute.py",
         "reroute_args.py",

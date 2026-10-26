@@ -6,6 +6,11 @@ filegroup(name = "generator_inputs", srcs = glob(["**"], exclude = ["**/__pycach
 filegroup(name = "sources", srcs = [
         "__init__.py",
     ])
+exports_files([
+        "__init__.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

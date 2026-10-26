@@ -2,12 +2,22 @@
 startup --output_user_root=~/.cache/aq/bazel/v1
 common --enable_bzlmod
 common --lockfile_mode=error
+# Loading/analysis has its own pool, independent of execution --jobs.
+common --loading_phase_threads=2
 build --symlink_prefix=/
 build --incompatible_strict_action_env
 build --@aspect_rules_js//js:use_hermetic_launcher
 build --action_env=PATH=
 build --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 build --jobs=1
+build --local_resources=cpu=2
+build --local_resources=memory=2048
+build --local_resources=aq_pg=1
+test --default_test_resources=cpu=1
+test --default_test_resources=memory=1024
+test --default_test_resources=aq_pg=1
+# A positive value bypasses resource reservations; --jobs still bounds total work.
+test --local_test_jobs=0
 build --@rules_python//python/config_settings:bootstrap_impl=script
 test --test_output=errors
 # H2 tests declare no-sandbox and create their own mandatory namespaces. Other

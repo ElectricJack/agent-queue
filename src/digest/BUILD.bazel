@@ -13,6 +13,18 @@ filegroup(name = "sources", srcs = [
         "schedule.py",
         "supervisor.py",
     ])
+exports_files([
+        "__init__.py",
+        "aggregate.py",
+        "dispatch.py",
+        "eligibility.py",
+        "facts.py",
+        "render.py",
+        "schedule.py",
+        "supervisor.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

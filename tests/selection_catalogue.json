@@ -108,7 +108,8 @@
     "bazel-toolchains": {
       "description": "Pinned toolchain, dependency lock and Linux ABI integrity boundaries.",
       "modules": [
-        "tests/test_bazel_manifest.py"
+        "tests/test_bazel_manifest.py",
+        "tests/test_bazel_test_dependencies.py"
       ]
     },
     "capabilities": {
@@ -3395,6 +3396,16 @@
         "parametrize"
       ],
       "summary": "H5 contracts: real pytest lifecycles with synthetic time, never timing benchmarks."
+    },
+    "tests/test_bazel_test_dependencies.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:cad60e4e27d2421bde11d37843c9a85b8ab3cdab735e117c25ee449d9acd7aa6",
+      "imports": [],
+      "markers": [],
+      "summary": "Per-test Bazel dependency discovery preserves runtime inputs without global fanout."
     },
     "tests/test_blocked_state.py": {
       "areas": [

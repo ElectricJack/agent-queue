@@ -15,6 +15,20 @@ filegroup(name = "sources", srcs = [
         "queries.py",
         "schedule.py",
     ])
+exports_files([
+        "__init__.py",
+        "authoring.py",
+        "delivery.py",
+        "fallback.py",
+        "git.py",
+        "hourly.py",
+        "morning.py",
+        "morning_due.py",
+        "queries.py",
+        "schedule.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
