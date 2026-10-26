@@ -87,10 +87,28 @@
         "tests/test_worker_git_scope.py"
       ]
     },
+    "bazel-environment": {
+      "description": "Credential-free child environments, namespace isolation and bounded process cleanup.",
+      "modules": [
+        "tests/test_bazel_environment.py"
+      ]
+    },
     "bazel-metrics": {
       "description": "Verification obligation inventory and exact-identity delivery metric accounting.",
       "modules": [
         "tests/test_bazel_metrics.py"
+      ]
+    },
+    "bazel-runtime": {
+      "description": "Bazel pytest node sharding, phase budgets, target lifecycle deadlines and flake evidence.",
+      "modules": [
+        "tests/test_bazel_runtime.py"
+      ]
+    },
+    "bazel-toolchains": {
+      "description": "Pinned toolchain, dependency lock and Linux ABI integrity boundaries.",
+      "modules": [
+        "tests/test_bazel_manifest.py"
       ]
     },
     "capabilities": {
@@ -3311,6 +3329,30 @@
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
     },
+    "tests/test_bazel_environment.py": {
+      "areas": [
+        "bazel-environment"
+      ],
+      "default_arm": true,
+      "digest": "sha256:64ebc1c762b1d5c134bd7cd62868d9939ee437c3b8c36fec1b1cefac321149b7",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "H2 environment boundary and real Linux namespace/process acceptance."
+    },
+    "tests/test_bazel_manifest.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2669f7605d8f5cbe70f349cfb090cbef8746aa7950d5e34ab0a9ed298fdd9e47",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "H1 lock/ABI boundaries and opt-in, admitted clean-root toolchain verification."
+    },
     "tests/test_bazel_metrics.py": {
       "areas": [
         "bazel-metrics"
@@ -3322,6 +3364,18 @@
         "parametrize"
       ],
       "summary": "Inventory boundary and delivery-accounting regressions on synthetic evidence."
+    },
+    "tests/test_bazel_runtime.py": {
+      "areas": [
+        "bazel-runtime"
+      ],
+      "default_arm": true,
+      "digest": "sha256:e3dfaddbcb6c4a999374fda4c137996c0097646478d87e6491a6f144e9758ac0",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "H5 contracts: real pytest lifecycles with synthetic time, never timing benchmarks."
     },
     "tests/test_blocked_state.py": {
       "areas": [
@@ -6660,7 +6714,7 @@
         "e2e-kit"
       ],
       "default_arm": true,
-      "digest": "sha256:0ea17f5934ba1e8bd23b0f200b3364aebd3ffe22ab1e2b09f5523fe6a65c3e46",
+      "digest": "sha256:58088c079810a73cbe46f0cb2bc440c0fcb1aa3321534344e946fc672c31a3b6",
       "imports": [
         "src.api",
         "src.api.dependencies",
@@ -6668,8 +6722,7 @@
         "src.api.health_monitor"
       ],
       "markers": [
-        "parametrize",
-        "skipif"
+        "parametrize"
       ],
       "summary": "The e2e kit must not call a daemon healthy when it cannot use its schema."
     },
@@ -7294,13 +7347,15 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:607511aae8482a348b027c23ff7b5f321b5c56bdfdd3f1a298e8eab7f0304037",
+      "digest": "sha256:2c02ea5ff9c7faed25017b279f93e263681921b221192c8912b351cd9dd96e1a",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.asks.operations",
+        "src.commands",
         "src.commands.fidelity_review_commands",
         "src.commands.principal",
+        "src.commands.task_changes",
         "src.database.queries",
         "src.database.queries.claim_queries",
         "src.database.queries.ingest_batch_queries",
@@ -9425,13 +9480,15 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:5b7d90fd06efcaa6d66e11db54802d0277c6b4081fc8867341f0f6dea4ead678",
+      "digest": "sha256:612ad0df026e3c3f926bf473e54f05cc707109e02a6d4daacd17a15391975c9a",
       "imports": [
         "src.config",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
         "src.git.manager",
+        "src.integration",
+        "src.integration.admission",
         "src.integration.branch_retirement",
         "src.integration.delivery_branches",
         "src.integration.legacy_backfill",
@@ -10576,13 +10633,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:deec543aa9f72f2d679e017c87cff80c896f0db29fcef8ed860ee845034ae0a1",
+      "digest": "sha256:4addaa8dcb6795ee0a74ae35839e563e6ecf2de4922e7119eda8cb7949cb2a42",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -10597,7 +10655,8 @@
         "src.sessions.obsolete"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Git witnesses survive squashes/GC; projection repair is bounded and fenced."
     },
@@ -11472,15 +11531,13 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:11b331aca559fe2dbdd52b865ff87fdcab96f5db2899ad4b874462e5430c5dd1",
+      "digest": "sha256:3002e89c352367f91e14cc8c0d97aaa6f5a0a170d6d5aec964a7cf5d510ffe5c",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
         "src.records.models"
       ],
-      "markers": [
-        "usefixtures"
-      ],
+      "markers": [],
       "summary": "Task filing and Save finding stay atomic, guarded and replayable."
     },
     "tests/test_known_tools.py": {
@@ -20159,7 +20216,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:95458a619edbeb0a294fc0606ce3b05611b9243ef2b00f52b63233a4ce142105",
+      "digest": "sha256:ea48167444a746e0165f4d347bdb51d5789123941d0833fbfdb5c97065a96ed2",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20180,10 +20237,12 @@
         "src.waits.loops",
         "src.waits.registry",
         "src.waits.resource_sources",
-        "src.waits.sources"
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Authoritative source transitions write unconditional, transactional wait events."
     },

@@ -20,6 +20,7 @@ import asyncio
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 
 #: Databases that must never be touched by the kit, whatever is passed in.
 #: ``agent_queue`` is the developer's real daemon.
@@ -53,7 +54,7 @@ def refuse(db_name: str) -> str | None:
     # Whatever POSTGRES_TEST_DSN currently names, and its worker databases.
     test_dsn = os.environ.get("POSTGRES_TEST_DSN", "")
     if test_dsn:
-        base = test_dsn.rpartition("/")[2].partition("?")[0]
+        base = urlsplit(test_dsn).path.removeprefix("/")
         if base and db_name == base:
             return "this is POSTGRES_TEST_DSN's database"
     return None
