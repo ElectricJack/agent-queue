@@ -491,14 +491,15 @@ async def test_irrelevant_batch_rolls_back_on_expired_lease_and_replays(runtime_
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
 
 
-async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
+@pytest.mark.parametrize('kind', ['ci_check', 'message', 'dependency', 'task', 'job', 'batch'])
+async def test_irrelevant_batch_stops_before_subscribed_event(runtime_env, kind):
     env = runtime_env
     receipt = await register(env)
     async with env.db._engine.begin() as conn:
         await conn.execute(update(wait_records).where(
             wait_records.c.id == receipt["wait_id"],
-        ).values(source_key="ci_check:repo:sha:unit", source_generation=0))
-    for key in ("ci_check:other:sha:unit", "ci_check:repo:sha:unit", "ci_check:other:sha:unit"):
+        ).values(source_key=f"{kind}:subscribed", source_generation=0))
+    for key in (f"{kind}:other", f"{kind}:subscribed", f"{kind}:other"):
         await env.db.wait_source_commit(source_key=key, generation=0,
             revision=str(len(await records(env, wait_source_events))), outcome_ref=key, payload={})
     source = sorted(await records(env, wait_source_events), key=lambda event: event["seq"])
@@ -517,6 +518,39 @@ async def test_irrelevant_batch_stops_before_subscribed_ci_event(runtime_env):
     assert dispatcher.commit.await_count == 1
     assert dispatcher.commit.await_args.args[2]["seq"] == source[1]["seq"]
     assert all(event["dispatched_at"] is not None for event in await records(env, wait_source_events))
+
+
+async def test_mixed_backlog_batches_preserve_terminal_and_provider_callbacks(runtime_env):
+    env = runtime_env
+    service = runtime(env)
+    ordinary = [
+        ('message:mail', {}), ('dependency:a:b:blocks', {}),
+        ('task:changing', {'status': 'IN_PROGRESS'}), ('ci_run:repo:head', {}),
+        ('batch:batch', {}), ('job:job', {}), ('playbook_condition:run:wait', {}),
+        ('resource_invalidation:workspace:ws', {}), ('resource_invalidation:config:cfg', {}),
+    ]
+    terminal = ('task:gone', {'status': 'COMPLETED'})
+    provider = ('resource_invalidation:provider:fake', {'identity': 'fake'})
+    sequence = ordinary * 25 + [terminal] + ordinary + [provider] + ordinary
+    async with env.db._engine.begin() as conn:
+        for n, (key, payload) in enumerate(sequence):
+            await record_source_event(conn, source_key=key, generation=0,
+                revision=str(n), outcome_ref=f'event:{n}', payload=payload, occurred_at=NOW)
+    dispatch = service.listener._dispatch
+    service.listener._dispatch = AsyncMock(wraps=dispatch)
+    drain_one = service.listener._drain_one
+    service.listener._drain_one = AsyncMock(wraps=drain_one)
+    assert await service.listener.tick()
+    assert [call.args[1]['source_key'] for call in service.listener._dispatch.await_args_list] == [
+        terminal[0], provider[0],
+    ]
+    # Count transactions: prefix planning now runs both before and after the fence.
+    # More than one bounded batch, but no per-event transactions for irrelevant traffic.
+    assert 1 < service.listener._drain_one.await_count < 10
+    source = await records(env, wait_source_events)
+    assert len(source) == len(sequence) and all(event['dispatched_at'] is not None for event in source)
+    assert (await records(env, wait_listener_cursors))[0]['last_seq'] == max(
+        event['seq'] for event in source)
 
 
 async def test_unused_ci_retries_retire_in_batches_during_backoff_without_observation(
@@ -2373,14 +2407,15 @@ async def test_large_prefix_graph_hold_below_one_second(
 
 
 @pytest.mark.parametrize("subscribed_index", [0, 1])
-async def test_forward_prefix_rechecks_new_ci_subscriber_before_advancing(
-    runtime_env, monkeypatch, subscribed_index,
+@pytest.mark.parametrize("kind", ["ci_check", "message", "dependency", "task", "job", "batch"])
+async def test_forward_prefix_rechecks_new_subscriber_before_advancing(
+    runtime_env, monkeypatch, subscribed_index, kind,
 ):
     from src.waits import listener as listener_module
 
     env = runtime_env
     receipt = await register(env)
-    seqs = [await env.db.wait_source_commit(source_key=f"ci_check:unused:{n}", generation=0,
+    seqs = [await env.db.wait_source_commit(source_key=f"{kind}:unused:{n}", generation=0,
                 revision="1", outcome_ref="hint", payload={}) for n in range(3)]
     listener = runtime(env).listener
     assert await listener.service.lease()
@@ -2391,7 +2426,7 @@ async def test_forward_prefix_rechecks_new_ci_subscriber_before_advancing(
             await original_lock(other)
             await other.execute(update(wait_records).where(
                 wait_records.c.id == receipt["wait_id"],
-            ).values(source_key=f"ci_check:unused:{subscribed_index}", source_generation=0))
+            ).values(source_key=f"{kind}:unused:{subscribed_index}", source_generation=0))
         await original_lock(conn, **kwargs)
 
     monkeypatch.setattr(listener_module, "lock_graph", subscribe_before_lock)
