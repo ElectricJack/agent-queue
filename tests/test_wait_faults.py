@@ -1136,10 +1136,14 @@ async def test_continuation_incident_binds_runtime_hold_and_replay(hibernation_e
     assert len(await records(env, escalations)) == 1
 
 
-@pytest.mark.parametrize("driver", ["scheduler", "listener"])
+@pytest.mark.parametrize("driver,scheduler_rotation", [
+    pytest.param("scheduler", 0, id="scheduler-last"),
+    pytest.param("scheduler", 1, id="scheduler-first"),
+    pytest.param("listener", 0, id="listener"),
+])
 @pytest.mark.parametrize("interruption", ["timeout", "cancel"])
 async def test_interrupted_wait_transaction_retries_and_resolves_message(
-    env, monkeypatch, driver, interruption,
+    env, monkeypatch, driver, scheduler_rotation, interruption,
 ):
     from unittest.mock import Mock
 
@@ -1147,6 +1151,8 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
 
     from src.wait_runtime import scheduler
 
+    # The healthy fixture project must also be exercised after the faulted one.
+    monkeypatch.setattr(scheduler, "_rotation", scheduler_rotation)
     service = service_for(env, [NOW + 1])
     service.orch.config.wait_policy.scheduler_waits_enabled = True
     await env.db.transition_task("source", TaskStatus.READY)
@@ -1194,14 +1200,15 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
         service.listener.lease_seconds = 1
         tick = service.listener.tick
 
+    current_budget = None
     fault_budget = None
 
     def controlled_timeout(seconds):
-        nonlocal fault_budget
+        nonlocal current_budget
         budget = asyncio.timeout(None)
         if seconds == (service.listener.lease_seconds if driver == "listener"
                        else scheduler.SCHEDULER_SYNC_TIMEOUT):
-            fault_budget = budget
+            current_budget = budget
         return budget
 
     # Arm the real timeout only once the rollback target reaches its SQL stall.
@@ -1215,7 +1222,10 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
     monkeypatch.setattr(scheduler, "asyncio", scheduler_asyncio)
 
     def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        nonlocal fault_budget
         if interruption == "timeout" and "pg_sleep" in statement:
+            # A later healthy project's timeout must not replace this evidence.
+            fault_budget = current_budget
             assert fault_budget is not None
             fault_budget.reschedule(asyncio.get_running_loop().time())
 
