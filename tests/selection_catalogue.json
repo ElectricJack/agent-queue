@@ -10629,13 +10629,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:deec543aa9f72f2d679e017c87cff80c896f0db29fcef8ed860ee845034ae0a1",
+      "digest": "sha256:4addaa8dcb6795ee0a74ae35839e563e6ecf2de4922e7119eda8cb7949cb2a42",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -10650,7 +10651,8 @@
         "src.sessions.obsolete"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Git witnesses survive squashes/GC; projection repair is bounded and fenced."
     },
@@ -20212,7 +20214,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:95458a619edbeb0a294fc0606ce3b05611b9243ef2b00f52b63233a4ce142105",
+      "digest": "sha256:4c7dbec78fb2c57e335644b5fa230630e409f230c5f7237512f8270fe2069b33",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20233,7 +20235,8 @@
         "src.waits.loops",
         "src.waits.registry",
         "src.waits.resource_sources",
-        "src.waits.sources"
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"

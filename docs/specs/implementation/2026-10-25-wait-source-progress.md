@@ -9,13 +9,33 @@ and lease loss never authorize this advance. Retry passes are bounded and back o
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
 
-Contiguous CI observations of the same source and generation may reobserve once at
-the newest sequence. Contiguous pool/config/workspace invalidations with the same
-producer and project scope may also reobserve once. Current canonical predicates,
-owner fences and subscription watermarks still decide outcomes. Provider transitions
-and other event kinds remain individual because they carry lifecycle effects. Every
-coalesced row is stamped only with the successful transaction; deferred rows remain
-undispatched. A bounded prefix stops at unrelated lifecycle events.
+CI observations of the same source and generation reobserve once at the newest
+sequence through the captured committed watermark. This includes hints interleaved
+with other sources and retained retries behind the cursor. Superseded hints are
+retired together; if observation must retry, only the newest hint remains pending.
+The forward cursor advances only through the consumed contiguous prefix: coalescing
+must never skip unrelated sources between the selected hints. Already dispatched CI
+hints have no remaining lifecycle effects and may retire without another observation.
+Contiguous pool/config/workspace invalidations with the same producer and project
+scope may also reobserve once. Provider transitions and other event kinds remain
+individual because they carry lifecycle effects.
+
+After an authenticated CI observation reports an unfinished run, further explicit
+progress hints for that source share the listener's safety cadence. Keep only the
+latest pending hint and continue draining unrelated sources. Terminal hints bypass
+this progress cadence immediately and always require fresh observation. The cadence
+is process-local; restart may reobserve immediately. Event payloads choose scheduling
+only and never authorize a wait outcome.
+
+The listener prepares authenticated CI/run/PR observations before acquiring the
+graph fence. Under the fence the dispatcher locks and revalidates current owner,
+claim, subscription, exact condition/source generation, repository binding and CI
+cache rows before applying the prepared verdict. Changed bindings or a subscription
+registered during preparation require a new unlocked observation; the locked apply
+must never fall back to remote I/O. Database-backed predicates and resource admission
+remain fresh transaction-local reads. Lease loss, cancellation and failed apply roll
+back all outcomes and cursor changes. A deferred newest CI hint retains durable
+retry ownership; superseding a hint does not prove satisfaction.
 
 CI events have no lifecycle effects without a pending verified subscriber of the
 same source/generation whose watermark precedes the event. Pool, config and workspace

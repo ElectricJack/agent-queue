@@ -1906,3 +1906,185 @@ async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(runti
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
     assert not [r for r in await records(env, audit_events)
                 if r["event_type"] == "wait.source_redispatched"]
+
+
+async def ci_listener(env, monkeypatch, *, now=None):
+    from src.waits.graph import graph_locked
+    from src.waits.watchers.ci import CheckWatcher
+    from tests.test_wait_queries import SHA, ci_snapshot, seed_batch, seed_repo
+
+    await seed_repo(env)
+    await seed_batch(env)
+    state = {"value": "unsatisfied"}
+    reader = AsyncMock(side_effect=lambda conn, cond: ci_snapshot(cond, state=state["value"]))
+    registry = build_registry(ci_reader=reader)
+    receipt = await register(env, {"kind": "ci_check", "repository_id": "repo", "head_sha": SHA,
+                                   "check_name": "tests"}, registry=registry)
+    service = runtime(env, registry=registry, clock=lambda: now[0] if now else NOW)
+    service.orch.wait_dispatcher = service._dispatcher
+    watcher = CheckWatcher(env.db, None, None, checks=None, repository=None)
+    service.orch.wait_ci_lock_source = watcher.lock_source
+    reader.reset_mock()
+
+    async def observe(conn, cond):
+        assert not graph_locked(conn), "CI observation must precede GRAPH_LOCK"
+        # Another transaction can acquire the fence while the remote read runs.
+        from src.waits.graph import lock_graph
+        async with env.db._engine.begin() as other:
+            await lock_graph(other, queued=True, timeout=0.1)
+        return ci_snapshot(cond, state=state["value"])
+
+    reader.side_effect = observe
+    return service, receipt, reader, state, f"ci_check:repo:{SHA}:tests"
+
+
+@pytest.mark.parametrize("interleaved", [False, True])
+async def test_ci_progress_coalesces_once_unlocked_and_terminal_resolves(
+    runtime_env, monkeypatch, interleaved,
+):
+    env = runtime_env
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch)
+    dispatched = []
+    original = service.listener._dispatch
+
+    async def dispatch(conn, event, **kwargs):
+        dispatched.append(event["source_key"])
+        return await original(conn, event, **kwargs)
+
+    monkeypatch.setattr(service.listener, "_dispatch", dispatch)
+    for n in range(12):
+        await env.db.wait_source_commit(source_key=key, generation=0, revision=str(n),
+            outcome_ref="hint", payload={"conclusion": "pending"})
+        if interleaved:
+            await env.db.wait_source_commit(source_key=f"test:other:{n}", generation=0,
+                revision="1", outcome_ref="other", payload={})
+    assert await service.listener.tick()
+    assert reader.await_count == 1
+    assert dispatched.count(key) == 1
+    assert len(dispatched) == (13 if interleaved else 1)
+    assert (await records(env))[0]["outcome"] == "pending"
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    assert await service.listener.tick()
+    wait = next(r for r in await records(env) if r["id"] == receipt["wait_id"])
+    assert wait["outcome"] == "satisfied" and wait["result_ref"] == "ci:result"
+    assert reader.await_count == 2
+
+
+async def test_ci_progress_stream_keeps_only_latest_retry_and_terminal_bypasses_backoff(
+    runtime_env, monkeypatch,
+):
+    env = runtime_env
+    now = [NOW]
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, now=now)
+    for n in range(6):
+        await env.db.wait_source_commit(source_key=key, generation=0, revision=str(n),
+            outcome_ref="hint", payload={"conclusion": "pending"})
+        other = await env.db.wait_source_commit(source_key=f"test:other:{n}", generation=0,
+            revision="1", outcome_ref="other", payload={})
+        assert await service.listener.tick()
+        sources = await records(env, wait_source_events)
+        assert next(r for r in sources if r["seq"] == other)["dispatched_at"] is not None
+        pending = [r for r in sources if r["dispatched_at"] is None]
+        assert len(pending) == (0 if n == 0 else 1)
+    assert reader.await_count == 1
+    # A terminal hint bypasses progress throttling and supersedes its retained hint.
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "failure"})
+    await service.listener.tick()
+    assert reader.await_count == 2
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events)
+               if r["source_key"] == key)
+
+
+@pytest.mark.parametrize("change", ["repository", "check_cache", "condition", "owner", "subscription"])
+async def test_ci_preparation_race_never_applies_stale_observation(runtime_env, monkeypatch, change):
+    from src.database.tables import repos
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    now = [NOW]
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, now=now)
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    if change == "subscription":
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(outcome="cancelled"))
+    original_lock = listener_module.lock_graph
+    changed = False
+
+    async def mutate_before_apply(conn, **kwargs):
+        nonlocal changed
+        if not changed:
+            changed = True
+            async with env.db._engine.begin() as other:
+                await original_lock(other)
+                if change == "repository":
+                    await other.execute(update(repos).values(url="https://example/new-binding"))
+                elif change == "check_cache":
+                    checks = ExactChecks(env.db, AsyncMock(required=REQUIRED,
+                        observe=AsyncMock(return_value=[row("unit", "success", observed_at=10)])),
+                        clock=lambda: 10)
+                    await checks.refresh(head())
+                elif change == "condition":
+                    saved = (await records(env))[0]
+                    cond = {**saved["condition"], "required_check_set": "changed"}
+                    await other.execute(update(wait_records).values(condition=cond))
+                elif change == "subscription":
+                    await other.execute(update(wait_records).values(outcome="pending"))
+                else:
+                    await other.execute(update(tasks).where(tasks.c.id == "owner").values(
+                        claim_epoch=2))
+        await original_lock(conn, **kwargs)
+
+    monkeypatch.setattr(listener_module, "lock_graph", mutate_before_apply)
+    await service.listener.tick()
+    assert reader.await_count == (0 if change == "subscription" else 1)
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "pending"
+    if change in {"repository", "check_cache", "subscription"}:
+        now[0] += 2
+        await service.listener.tick()
+        assert reader.await_count == (1 if change == "subscription" else 2)
+        assert (await records(env))[0]["outcome"] == "satisfied"
+
+
+async def test_ci_failed_observation_keeps_latest_retry_and_drains_unrelated_source(
+    runtime_env, monkeypatch,
+):
+    from src.waits.conditions import WaitError
+
+    env = runtime_env
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch)
+    observe = reader.side_effect
+
+    async def unavailable(conn, cond):
+        await observe(conn, cond)
+        raise WaitError("wait.unavailable", "provider temporarily unavailable", retry_after=30)
+
+    reader.side_effect = unavailable
+    for n in range(8):
+        latest = await env.db.wait_source_commit(source_key=key, generation=0, revision=str(n),
+            outcome_ref="hint", payload={"conclusion": "pending"})
+        other = await env.db.wait_source_commit(source_key=f"test:unrelated:{n}", generation=0,
+            revision="1", outcome_ref="other", payload={})
+    await service.listener.tick()
+    assert reader.await_count == 1
+    sources = await records(env, wait_source_events)
+    assert [r["seq"] for r in sources if r["dispatched_at"] is None] == [latest]
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == other
+    # A fresh terminal event remains eligible during the old observation backoff.
+    reader.side_effect = observe
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "cancelled"})
+    await service.listener.tick()
+    assert reader.await_count == 2
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
