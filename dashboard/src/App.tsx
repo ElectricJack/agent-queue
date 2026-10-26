@@ -98,7 +98,7 @@ function LegacyRedirect({ to }: { to: RedirectTarget }) {
   const location = useLocation();
   const params = useParams();
   const destination = typeof to === "function" ? to(params) : to;
-  return <Navigate to={withPreservedSearch(destination, location.search)} replace />;
+  return <Navigate to={withPreservedSearch(destination, location.search) + location.hash} replace />;
 }
 
 function encodePlaybookParam(params: Readonly<Params<string>>): string {
@@ -172,6 +172,7 @@ export default function App() {
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="conversations" element={<GlobalChat />} />
+            <Route path="conversations/:conversationId" element={<LegacyRedirect to={(params) => `/conversations?conversation=${encodeURIComponent(params.conversationId ?? "")}`} />} />
             <Route path="inbox" element={<InboxPage />} />
             <Route path="asks/:askId" element={<AskPage />} />
             <Route path="escalations/:escalationId" element={<EscalationPage />} />

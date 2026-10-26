@@ -177,6 +177,7 @@ export async function run(t) {
   await t.page.waitForFunction((selector) => document.querySelector(selector)?.textContent === "connected", { timeout: 15_000 }, PHONE_STATUS);
   await t.page.waitForFunction((selector) => [...document.querySelectorAll(`${selector} .xterm-rows span`)]
     .some((s) => s.textContent?.includes("ansi-red")), { timeout: 15_000 }, PHONE_HOST);
+  await t.page.$eval(PHONE_HOST, el => el.scrollIntoView({ block: "start" }));
   const phoneViewer = t.stub.terminalViewers.filter((r) => r.sessionId === SESSION).pop();
   const phoneQuery = new URL(phoneViewer.url, "http://stub.invalid").searchParams;
   // xterm takes input directly, with the host shell's focus control.
@@ -206,7 +207,13 @@ export async function run(t) {
   await poll(() => stable(phoneViewer), (size) => Math.abs(size.cols - initial.cols) <= 1, 5_000,
     `rotating back left ${JSON.stringify(initial.cols)} columns`);
 
-  const covered = Math.round(vp.height * 0.4);
+  await t.page.$eval(PHONE_HOST, el => el.scrollIntoView({ block: "start" }));
+  const terminal = await rect(t.page, PHONE_HOST);
+  // A short terminal can fit above a keyboard covering 40% of the viewport.
+  // Cover its lower rows too, so this always exercises the keyboard resize.
+  const covered = Math.round(Math.max(
+    vp.height * 0.4, vp.height - terminal.top - terminal.height * 0.6,
+  ));
   await setKeyboard(t.page, covered);
   const typing = await poll(() => reported(phoneViewer), (size) => size.rows < initial.rows, 5_000,
     "the on-screen keyboard did not take rows from the agent terminal");
