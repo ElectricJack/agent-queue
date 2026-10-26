@@ -447,15 +447,21 @@ class AdmissionSnapshot:
             fresh = all([await view.fresh() for view in self.hierarchy_views.values()])
             if not fresh and (task_id is None or not await self.matches(task_id=task_id)):
                 return False
-            if any([(await v.currentness()).state == "changed" for v in self.stack_views.values()]):
-                return False
-        return all(
-            [
-                snapshot.error is not None or await snapshot.is_fresh()
-                for snapshot in self.snapshots
-                if required is None or required.intersection(self.snapshot_tasks[id(snapshot)])
-            ]
-        )
+            for pid, view in self.stack_views.items():
+                if (await view.currentness()).state == "changed":
+                    return self.record_change(
+                        "admission_stack_snapshot_changed",
+                        f"Stack project {pid} snapshot currentness changed; retry", task_id,
+                    )
+        for snapshot in self.snapshots:
+            if required is not None and not required.intersection(self.snapshot_tasks[id(snapshot)]):
+                continue
+            if snapshot.error is None and not await snapshot.is_fresh():
+                return self.record_change(
+                    "development_snapshot_changed",
+                    f"Stale development target: {snapshot.observation.target_ref}; retry", task_id,
+                )
+        return True
 
     async def matches(self, *, conn=None, lock=False, task_id=None):
         """Fence graph/generation/config under the mutation's transaction.
@@ -776,17 +782,13 @@ class AdmissionView:
     async def matches(self, *, conn=None, lock=False, task_id=None):
         return await self._snapshot.matches(conn=conn, lock=lock, task_id=task_id)
 
-    def revalidation_reasons(self, task_id):
-        """Current guard failures, including those observed after publication.
-
-        ``reasons`` is the immutable selection decision. Activation can discover
-        newer input movement; do not lose that evidence by reading the frozen
-        selection reasons again.
-        """
+    def rejection_reasons(self, task_id):
+        """Return current guard diagnostics without changing the selected decision."""
         reasons = list(self._snapshot.reasons.get(task_id, ()))
         if self.pr is not None:
-            reasons.extend(r for r in self.pr.reasons.get(task_id, ()) if r not in reasons)
-        return [dict(reason) for reason in reasons]
+            reasons.extend(reason for reason in self.pr.reasons.get(task_id, ())
+                           if reason not in reasons)
+        return _freeze(reasons)
 
     async def counts(self, project_id, **policy):
         """Project the same eligible IDs into compatible pool demand."""

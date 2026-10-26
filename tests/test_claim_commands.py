@@ -8477,10 +8477,14 @@ async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
     assert result["result"] == "prepare_failed", result
     assert "admission_recheck" in result["reason"], result
     assert result["refusal_count"] == 1 and result["retry_after"] > 0
-    code = "admission_policy_changed" if movement == "pr" else (
-        "admission_workspace_changed" if movement == "checkout" else "pr_admission_snapshot_changed"
-    )
-    assert code in result["reason"]
+    code = {
+        "remote": "pr_admission_snapshot_changed",
+        "pr": "admission_policy_changed",
+        "checkout": "pr_admission_workspace_missing_source",
+    }[movement]
+    assert code in result["reason"], result
+    failure = await db.get_task_meta("dependent", "prepare_failure")
+    assert code in failure["reason"]
     assert manager.reset_slot_for_task.await_count == 1
     assert await db.get_task_meta("dependent", "claim_prepare_backoff_until") > time.time()
     dependent = await db.get_task("dependent")
@@ -9136,3 +9140,140 @@ async def test_managed_admission_rejection_preserves_or_releases_owner_proof(
     assert (work_dir / ".aq" / "claim.json").exists() is (not detach)
     owner = await ownership.get_owner(fence.target)
     assert owner["handoff_state"] == ("reserved" if detach else "attached")
+
+
+@pytest.mark.parametrize("mismatch", ["predecessor", "foreign-workspace"])
+async def test_stable_admission_with_disagreeing_slot_sentinel(
+    handler, db, tmp_path, mismatch,
+):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from src.git.manager import GitManager
+    from src.models import WorkspaceKind
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+    from src.orchestrator.workspace_binding_audit import _source_disagreement
+    from tests.test_worktree_manager import _create_base_repo
+
+    base_path = _create_base_repo(tmp_path)
+    await db.update_project(
+        PROJECT_ID, repo_url=str(tmp_path / "origin.git"),
+        hierarchical_integration_mode="development",
+    )
+    base = Workspace(id="base", project_id=PROJECT_ID, workspace_path=str(base_path),
+                     source_type=RepoSourceType.CLONE, kind_id="project-repo")
+    await db.create_workspace(base)
+    transport = GitManager()
+    handler.orchestrator.git = transport
+    manager = WorktreeSlotManager(
+        db=db, git=transport, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    )
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    slot = await manager.create_slot(base, WorkspaceKind(
+        id="project-repo", project_id="__system__", is_git_repo=True, mode="worktree",
+    ), 0)
+    path = Path(slot.workspace_path)
+    await mktask(db, "finished", status=TaskStatus.COMPLETED)
+    sentinel = replace(manager.read_sentinel(path), task_id="finished")
+    if mismatch == "foreign-workspace":
+        sentinel = replace(sentinel, workspace_id="another-workspace")
+    manager.write_sentinel(path, sentinel)
+    assert await _source_disagreement(manager, slot, None, None, "HEAD") == (
+        "source sentinel disagrees with the active binding; source preserved"
+    )
+    sid, _ = await pool_session(db, tmp_path)
+    await db.delete_workspace("ws-agent-1")
+    await db.update_session(sid, work_dir=str(path))
+    await db.update_workspace(slot.id, locked_by_agent_id="agent-1")
+    await mktask(db, "incoming", profile_id="worker")
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    if mismatch == "predecessor":
+        assert result["result"] == "claimed", result
+        assert manager.read_sentinel(path).task_id == "incoming"
+        assert await db.get_task_meta("incoming", "claim_prepare_backoff_attempts") is None
+    else:
+        assert result["result"] == "drain_requested", result
+        assert "mismatched sentinel" in result["reason"]
+        assert manager.read_sentinel(path) == sentinel
+        assert not (await db.get_workspace(slot.id)).enabled
+
+
+async def test_unexplained_admission_recheck_has_named_diagnostic(
+    handler, db, tmp_path, monkeypatch,
+):
+    from src.integration.admission import AdmissionView
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "incoming", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    monkeypatch.setattr(AdmissionView, "is_fresh", AsyncMock(return_value=False))
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "prepare_failed", result
+    assert "admission_recheck_unexplained" in result["reason"]
+    assert "incoming claim epoch 1" in result["reason"]
+    assert "admission_recheck_unexplained" in (
+        await db.get_task_meta("incoming", "prepare_failure")
+    )["reason"]
+
+
+@pytest.mark.parametrize("guard", ["policy", "pr-freshness"])
+async def test_recheck_diagnostics_survive_published_admission_view(
+    db, pull_request_admission, guard,
+):
+    from src.integration.admission import observe_admission
+
+    env = pull_request_admission
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    view = await observe_admission(db, ["dependent"], env.service)
+    assert view.allowed == {"dependent"} and not view.reasons
+    if guard == "policy":
+        await db.update_project(
+            PROJECT_ID, hierarchical_integration_policy={"prerequisite_branches": "stacked"},
+        )
+        assert not await view.matches(task_id="dependent")
+        code = "admission_policy_changed"
+    else:
+        env.pull["state"] = "closed"
+        assert not await view.is_fresh("dependent")
+        code = "pr_admission_identity_changed"
+
+    # Diagnostics from a later guard do not rewrite the selected decision.
+    assert view.allowed == {"dependent"} and not view.reasons
+    reasons = view.rejection_reasons("dependent")
+    assert len(reasons) == 1 and reasons[0]["code"] == code
+    assert reasons[0]["ref"] == "dependent"
+    with pytest.raises(TypeError):
+        reasons[0]["detail"] = "altered"
+
+
+async def test_activation_lock_refusal_keeps_original_guard_diagnostics(
+    handler, db, tmp_path, monkeypatch,
+):
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "incoming", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    activate = db.activate_claim
+
+    async def contend_during_activation(*args, **kwargs):
+        async with db.immediate() as conn:
+            await conn.execute(select(projects.c.id).where(
+                projects.c.id == PROJECT_ID,
+            ).with_for_update())
+            return await activate(*args, **kwargs)
+
+    monkeypatch.setattr(db, "activate_claim", contend_during_activation)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    # The project lock has gone by the command's diagnostic read. A fresh
+    # comparison must not erase the refusal observed under activation locks.
+    assert result["result"] == "prepare_failed", result
+    assert "admission_lock_unavailable" in result["reason"]
+    assert "55P03" in result["reason"]
+    assert "admission_lock_unavailable" in (
+        await db.get_task_meta("incoming", "prepare_failure")
+    )["reason"]
