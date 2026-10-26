@@ -954,7 +954,7 @@ HAND_INTEGRATION_RECONCILIATION = {'reconciliation_noop_composition': {'authoriz
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3072,
+ 'authorized_owned_delta': 3110,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1158,8 +1158,8 @@ HAND_INTEGRATION_RECONCILIATION = {'reconciliation_noop_composition': {'authoriz
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83183,
- 'measured_owned_total': 158571,
+ 'measured_engine_lines': 83221,
+ 'measured_owned_total': 158609,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1634,7 +1634,24 @@ HAND_INTEGRATION_RECONCILIATION = {'reconciliation_noop_composition': {'authoriz
              'historical grant; zero remaining headroom and no new storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': 'wait-listener-coalesce epic',
-   'task_id': 'fresh-ridge-78'}}
+   'task_id': 'fresh-ridge-78'},
+ 'originless_backfill_provenance_composition': {'authorized_engine_delta': 38,
+   'authorized_owned_delta': 38,
+   'authorized_table_delta': 0,
+   'dev_source_revision': '638bbd2f0',
+   'measured_engine_lines': 83221,
+   'measured_owned_total': 158609,
+   'measured_table_count': 45,
+   'operator_decision': 'global-supervisor-2026-10-25',
+   'previous_measured_engine_lines': 83183,
+   'previous_measured_owned_total': 158571,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +38 owned/+38 engine lines for retaining git-proven '
+             'provenance on originless legacy completions in the backfill. Preserve every historical '
+             'grant; zero remaining headroom and no new storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': 'legacy-backfill epic',
+   'task_id': 'fair-quest-48'}}
 
 
 def integration_table(name: str) -> bool:
