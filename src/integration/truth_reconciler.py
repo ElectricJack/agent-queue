@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 
 from sqlalchemy import delete, exists, select, union, update
@@ -24,7 +25,10 @@ from src.integration.delivery_truth import DeliveryState
 from src.integration.git_truth import GitTruth, snapshot_scope
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.truth_retention import retain_delivery, retain_objects
+from src.logging_config import CorrelationContext
+from src.metrics.operation_profile import operation_profile
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +75,32 @@ class GitTruthReconciler:
             ]
             ordered = stages[self._stage:] + stages[:self._stage]
             self._stage = (self._stage + 1) % len(stages)
-            for name, callback in ordered:
-                try:
-                    async with asyncio.timeout(60):
-                        counts[name] = await callback()
-                except Exception:
-                    logger.exception("Git truth %s pass remains retryable", name)
+            timing, started = {}, time.perf_counter()
+            try:
+                for name, callback in ordered:
+                    phase_started, outcome = time.perf_counter(), "completed"
+                    selection = SelectionMetrics()
+                    with operation_profile() as profile, selection_metrics_scope(selection):
+                        try:
+                            async with asyncio.timeout(60):
+                                counts[name] = await callback()
+                        except asyncio.CancelledError:
+                            outcome = "cancelled"
+                            raise
+                        except Exception as exc:
+                            outcome = "timeout" if isinstance(exc, TimeoutError) else "error"
+                            logger.exception("Git truth %s pass remains retryable", name)
+                        finally:
+                            timing[name] = {
+                                "elapsed_seconds": time.perf_counter() - phase_started,
+                                "outcome": outcome, **profile.as_dict(),
+                                "selection": selection.as_dict(),
+                            }
+            finally:
+                with CorrelationContext(git_truth_timing={
+                    "elapsed_seconds": time.perf_counter() - started, "phases": timing,
+                }):
+                    logger.info("git truth reconciliation timing")
             return counts
 
     async def _repairs(self, now):

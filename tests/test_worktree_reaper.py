@@ -382,7 +382,8 @@ async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
             else "running", claims=1 if draining else 0,
             claim_phase="claiming" if case == "first_claim" else None,
             last_claim_epoch=1 if draining else None, started_at=1,
-            failed_preparation={"reason": "refused"} if case == "failed_preparation" else None,
+            failed_preparation={"reason": "refused", "task_id": "tsk-failed"}
+            if case == "failed_preparation" else None,
         ))
         if case == "second_session":
             await o.db.create_session(SessionRecord(
@@ -446,7 +447,7 @@ async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
             "held_sentinel": "source sentinel disagrees",
             "on_branch": "checkout branch disagrees",
             "unknown_liveness": "process inventory unverifiable",
-            "failed_preparation": "retains a failed preparation",
+            "failed_preparation": "retains a failed preparation for task tsk-failed",
             "attached_owner": "a taskless pool reservation cannot hold the retained owner",
         }.get(case)
         if expected_detail is None:
@@ -489,6 +490,153 @@ async def test_taskless_pool_reservation_is_proved_without_a_task_binding(
                     integration_branch_owners.c.fence_token,
                 ))).one()
             assert tuple(owner) == ("attached", 2)
+    finally:
+        await o.db.close()
+
+
+@pytest.mark.parametrize("case", [
+    "idle", "claiming", "claim_race", "active", "preparing", "failed_preparation",
+    "claim_file", "agent_task", "task_lock", "dirty", "process", "sentinel",
+    "session_locked", "workspace_locked", "git_locked", "owner", "pin",
+])
+async def test_task_branch_moves_between_pool_slots_only_without_a_live_claim(
+    tmp_path, base_repo, monkeypatch, case,
+):
+    from sqlalchemy import select
+    from sqlalchemy.exc import DBAPIError
+    from types import SimpleNamespace
+
+    from src.claim_file import write_claim_file
+    from src.database.tables import (
+        integration_branch_owners, job_workspace_pins, jobs, sessions, workspaces,
+    )
+    from src.git.manager import GitError
+    from src.models import SessionRecord
+
+    o = await _orch(tmp_path)
+    try:
+        await _seed(o, base_repo)
+        mgr = o._worktree_slots()
+        holder, path = await _make_slot(o, base_repo)
+        branch = _git(["branch", "--show-current"], path)
+        # Retried work is committed locally but has not yet been published.
+        (path / "progress.txt").write_text("preserve predecessor work\n")
+        _git(["add", "progress.txt"], path)
+        _git(["commit", "-m", "predecessor progress"], path)
+        head = _git(["rev-parse", "HEAD"], path)
+        async with o.db.immediate() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == holder.id).values(
+                locked_by_task_id=None,
+            ))
+        await o.db.update_agent("tsk-1-a", current_task_id=None)
+        holder = await o.db.get_workspace(holder.id)
+        base = await o.db.get_workspace("ws-base")
+        kind = await o.db.get_workspace_kind(SYSTEM_KIND_SCOPE, "project-repo")
+        target = await mgr.create_slot(base, kind, 1)
+        await o.db.create_session(SessionRecord(
+            id="idle-pool", project_id="p1", agent_id="tsk-1-a", profile_id="p",
+            harness="codex", provider="fake", name="idle-pool", lifecycle="pool",
+            work_dir=str(path), epoch="e", instance_token="idle-token", started_at=1,
+            state="running", desired_state="running",
+            task_id="tsk-1" if case in ("active", "preparing") else None,
+            claim_phase=case if case in ("claiming", "active", "preparing") else None,
+            failed_preparation={"task_id": "tsk-1"} if case == "failed_preparation" else None,
+        ))
+        if case == "claim_file":
+            write_claim_file(str(path), {"task_id": "tsk-1", "claim_epoch": 1,
+                                        "session_id": "idle-pool"})
+        elif case == "agent_task":
+            await o.db.update_agent("tsk-1-a", current_task_id="tsk-1")
+        elif case == "task_lock":
+            await o.db.update_workspace(holder.id, locked_by_task_id="tsk-1")
+        elif case == "dirty":
+            (path / "uncommitted.txt").write_text("preserve this too\n")
+        elif case == "git_locked":
+            _git(["worktree", "lock", str(path)], base_repo)
+        elif case == "owner":
+            async with o.db.immediate() as conn:
+                await conn.execute(integration_branch_owners.insert().values(
+                    id="owner", repository_id="p1", ref=f"refs/heads/{branch}",
+                    owner_id="tsk-1", owner_role="worker", fence_token=1,
+                    handoff_state="attached", session_id="idle-pool", workspace_id=holder.id,
+                    created_at=1, updated_at=1,
+                ))
+        elif case == "pin":
+            async with o.db.immediate() as conn:
+                await conn.execute(jobs.insert().values(
+                    id="retained-job", project_id="p1", task_id="tsk-1", owner_kind="task",
+                    owner_id="tsk-1", submitter_session_id="idle-pool", claim_epoch=1,
+                    idempotency_key="k", request_hash="h", preset="test", preset_version=1,
+                    argv=[], contract={}, workspace_id=holder.id,
+                    workspace_generation=holder.generation, input_mode="live", job_class="shared",
+                    weight=1, priority_band=2, state="running", submitted_at=1, queue_deadline=2,
+                    run_timeout=60, runner_nonce="n",
+                ))
+                await conn.execute(job_workspace_pins.insert().values(
+                    job_id="retained-job", workspace_id=holder.id, generation=holder.generation,
+                    created_at=1,
+                ))
+        elif case == "sentinel":
+            sentinel = mgr.read_sentinel(path)
+            sentinel.workspace_id = "foreign"
+            mgr.write_sentinel(path, sentinel)
+        monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=case == "process"))
+        before = (_git(["status", "--porcelain"], path),
+                  (path / ".aq-worktree.json").read_bytes())
+        original_run = mgr.git._arun_unlocked
+        raced = False
+
+        async def run(args, *positional, **kwargs):
+            nonlocal raced
+            if case == "claim_race" and args == ["switch", "--detach"]:
+                # A sibling selecting work cannot bind a task between the
+                # idle proof and Git detachment. Assert exclusion with NOWAIT.
+                async with o.db._engine.begin() as other:
+                    with pytest.raises(DBAPIError):
+                        await other.execute(select(sessions.c.id).where(
+                            sessions.c.id == "idle-pool",
+                        ).with_for_update(nowait=True))
+                raced = True
+            return await original_run(args, *positional, **kwargs)
+
+        monkeypatch.setattr(mgr.git, "_arun_unlocked", run)
+        task = await o.db.get_task("tsk-1")
+        if case in ("session_locked", "workspace_locked"):
+            table = sessions if case == "session_locked" else workspaces
+            identity = "idle-pool" if case == "session_locked" else holder.id
+            async with o.db._engine.begin() as other:
+                await other.execute(select(table).where(table.c.id == identity).with_for_update())
+                with pytest.raises(DBAPIError):
+                    await mgr.reset_slot_for_task(target, task, kind=kind)
+        elif case not in ("idle", "claiming", "claim_race"):
+            with pytest.raises(GitError):
+                await mgr.reset_slot_for_task(target, task, kind=kind)
+        else:
+            assert await mgr.reset_slot_for_task(target, task, kind=kind) == branch
+            assert _git(["branch", "--show-current"], target.workspace_path) == branch
+            assert _git(["branch", "--show-current"], path) == ""
+            assert _git(["rev-parse", "HEAD"], target.workspace_path) == head
+            assert (Path(target.workspace_path) / "progress.txt").read_text() == (
+                "preserve predecessor work\n"
+            )
+            assert raced == (case == "claim_race")
+            # The branch may advance before the idle pool selects its next task.
+            _git(["commit", "--allow-empty", "-m", "destination progress"], target.workspace_path)
+            await mgr.ensure_slot_checkout(
+                holder, SimpleNamespace(id="tsk-next", project_id="p1"),
+            )
+            sentinel = mgr.read_sentinel(path)
+            assert sentinel.task_id == "tsk-1"
+            assert sentinel.branch is None
+        if case not in ("idle", "claiming", "claim_race"):
+            assert _git(["branch", "--show-current"], path) == branch
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert before[0] == _git(["status", "--porcelain"], path)
+        if case not in ("idle", "claiming", "claim_race"):
+            assert before[1] == (path / ".aq-worktree.json").read_bytes()
+        fresh = await o.db.get_workspace(holder.id)
+        assert fresh.locked_by_agent_id == holder.locked_by_agent_id
+        assert fresh.generation == holder.generation
     finally:
         await o.db.close()
 
