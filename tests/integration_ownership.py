@@ -1784,7 +1784,25 @@ HAND_INTEGRATION_RECONCILIATION = {'pool_claim_epoch_churn_composition': {'task_
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'source_revision': '3c4ccef55c93e3b400a35485e4ebd70ad016931a',
  'task_id': 'solid-forge-85',
- 'thread_id': 'solid-forge-85-ci-size'}}
+ 'thread_id': 'solid-forge-85-ci-size'},
+ 'focus_view_retirement_reduction': {'measured_engine_delta': 0,
+ 'measured_owned_delta': -23,
+ 'measured_owned_total': 157902,
+ 'measured_table_delta': 0,
+ 'previous_measured_owned_total': 157925,
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2029',
+ 'reason': 'Retire Focus-specific batch display helpers; retain the moved BatchPage ownership. '
+           'Lower the exact cap by the measured reduction, preserving historical grants, '
+           'baselines and classifications with zero reusable headroom.',
+ 'removed_owned_files': {'dashboard/src/pages/focus/focusFormat.ts': 23},
+ 'source_revision': '1ed3e1fe7d2d271f2d03b1081eb110f09b0e0187',
+ 'task_id': 'azure-delta-20'},
+ 'dashboard_retirement_overlap': {'applied_owned_reduction': 26,
+ 'overlapping_owned_reduction': 23,
+ 'reason': 'Both historical reductions retire the same Focus helper. The surviving BatchDetail '
+           'implementation uses the responsive_dashboard_reduction total of 26 reclaimed lines, '
+           'including the 23-line focus_view_retirement_reduction; apply the shared reduction '
+           'once.'}}
 
 
 def integration_table(name: str) -> bool:
