@@ -73,3 +73,10 @@ originless backfill provenance grant (+38 owned/engine lines). Composing these
 with the unchanged dashboard reduction gives 158,583 owned lines and 83,221
 engine lines, with 45 tables and zero remaining headroom. The three grants and
 all earlier historical measurements remain verbatim.
+
+The next dev merge preserves the approved deleted-epic child recovery (+103
+owned/engine), missing-target abort (+59 owned/engine), and Git truth phase
+profiling (+77 owned / +35 engine) grants. With the unchanged 26-line dashboard
+reduction, the exact ceiling is 158,822 owned lines and 83,418 engine lines,
+with 45 tables and zero remaining headroom. All historical grant fields remain
+unchanged.
