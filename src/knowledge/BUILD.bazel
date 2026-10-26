@@ -38,6 +38,43 @@ filegroup(name = "sources", srcs = [
         "sharing.py",
         "task_creation.py",
     ])
+exports_files([
+        "__init__.py",
+        "authority.py",
+        "benchmark.py",
+        "budget.py",
+        "capture.py",
+        "context.py",
+        "delivery.py",
+        "deprecation.py",
+        "extraction.py",
+        "extraction_diagnostics.py",
+        "extraction_schema.py",
+        "extraction_store.py",
+        "generation_port.py",
+        "imports/__init__.py",
+        "imports/apply.py",
+        "imports/compatibility.py",
+        "imports/dry_run.py",
+        "imports/inventory.py",
+        "imports/legacy_memory.py",
+        "imports/manifest.py",
+        "index_receipts.py",
+        "legacy.py",
+        "memory_port.py",
+        "models.py",
+        "proposals.py",
+        "protection_schema.py",
+        "providers.py",
+        "redaction.py",
+        "registration.py",
+        "search.py",
+        "service.py",
+        "sharing.py",
+        "task_creation.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

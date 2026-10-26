@@ -11,6 +11,16 @@ filegroup(name = "sources", srcs = [
         "port.py",
         "types.py",
     ])
+exports_files([
+        "__init__.py",
+        "base.py",
+        "factory.py",
+        "null_adapter.py",
+        "port.py",
+        "types.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [

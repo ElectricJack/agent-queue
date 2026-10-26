@@ -9,6 +9,14 @@ filegroup(name = "sources", srcs = [
         "events.py",
         "render.py",
     ])
+exports_files([
+        "__init__.py",
+        "builder.py",
+        "events.py",
+        "render.py",
+    ])
+filegroup(name = "resources", srcs = [
+    ])
 py_library(
     name = "library",
     srcs = [
