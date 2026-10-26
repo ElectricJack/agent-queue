@@ -496,14 +496,15 @@ async def test_mixed_backlog_batches_preserve_terminal_and_provider_callbacks(ru
                 revision=str(n), outcome_ref=f'event:{n}', payload=payload, occurred_at=NOW)
     dispatch = service.listener._dispatch
     service.listener._dispatch = AsyncMock(wraps=dispatch)
-    prefix = service.listener._unobserved_prefix
-    service.listener._unobserved_prefix = AsyncMock(wraps=prefix)
+    drain_one = service.listener._drain_one
+    service.listener._drain_one = AsyncMock(wraps=drain_one)
     assert await service.listener.tick()
     assert [call.args[1]['source_key'] for call in service.listener._dispatch.await_args_list] == [
         terminal[0], provider[0],
     ]
+    # Count transactions: prefix planning now runs both before and after the fence.
     # More than one bounded batch, but no per-event transactions for irrelevant traffic.
-    assert service.listener._unobserved_prefix.await_count < 10
+    assert 1 < service.listener._drain_one.await_count < 10
     source = await records(env, wait_source_events)
     assert len(source) == len(sequence) and all(event['dispatched_at'] is not None for event in source)
     assert (await records(env, wait_listener_cursors))[0]['last_seq'] == max(
