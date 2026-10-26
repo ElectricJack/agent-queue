@@ -1,0 +1,22 @@
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/bazel:dashboard.bzl", "aq_dashboard")
+
+npm_link_all_packages(name = "node_modules")
+
+filegroup(
+    name = "sources",
+    # Tailwind scans the whole dashboard, including scenario and layout sources
+    # outside the TypeScript project. Keep that discovery closure in the action.
+    srcs = glob(["**"], exclude = ["node_modules/**", "dist/**", "**/*.tsbuildinfo"]),
+    visibility = ["//visibility:public"],
+)
+
+# These mirror the existing npm scripts. Vitest types/config remain typechecked,
+# but the workflow has no required Vitest execution obligation.
+[aq_dashboard(
+    name = name,
+    kind = name,
+    srcs = [":sources", "//:dashboard_inputs"],
+    deps = [":node_modules", "//packages/aq-ts-client:node_modules"],
+    visibility = ["//visibility:public"],
+) for name in ["typecheck", "build"]]

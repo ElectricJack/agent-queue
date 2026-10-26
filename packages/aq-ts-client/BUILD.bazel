@@ -1,0 +1,16 @@
+load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//tools/bazel:dashboard.bzl", "aq_dashboard")
+
+exports_files(["package.json"], visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+# npm_translate_lock links this first-party package into dashboard/node_modules.
+# Its generated source is a B2 artifact, never ignored checkout output.
+aq_dashboard(
+    name = "pkg",
+    kind = "package",
+    srcs = ["package.json"],
+    generated = "//tools/bazel:typescript",
+    visibility = ["//visibility:public"],
+)

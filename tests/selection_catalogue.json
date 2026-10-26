@@ -168,6 +168,7 @@
     "cli-test-runner": {
       "description": "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, signal forwarding and the no-tests-collected exit.",
       "modules": [
+        "tests/test_bazel_cli.py",
         "tests/test_cli_test_runner.py",
         "tests/test_resource_semaphore.py"
       ]
@@ -3328,6 +3329,23 @@
         "parametrize"
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
+    "tests/test_bazel_cli.py": {
+      "areas": [
+        "cli-test-runner"
+      ],
+      "default_arm": true,
+      "digest": "sha256:44115f6bc7de42464a8bdcc794f8e48fb45baac07b69801ff3dba5c39561c99e",
+      "imports": [
+        "src.cli.app",
+        "src.cli.test_runner",
+        "src.resources.box_lock",
+        "src.resources.semaphore"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bazel CLI selections and real shared admission/cancellation boundaries."
     },
     "tests/test_bazel_environment.py": {
       "areas": [
