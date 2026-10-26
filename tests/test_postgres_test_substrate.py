@@ -448,3 +448,43 @@ async def test_pool_dispose_drops_its_clones_together(monkeypatch):
 
 async def _async_value(value):
     return value
+
+
+async def test_template_clone_and_reset_preserve_unix_socket_endpoint(monkeypatch):
+    """Every database replacement must keep host/port query parameters."""
+    base = "postgresql+asyncpg://test@/target?host=%2Ftmp%2Fprivate&port=12345"
+    connected, migrated, executed = [], [], []
+
+    class Connection:
+        async def fetchval(self, *_args):
+            return False
+
+        async def execute(self, statement, *_args):
+            executed.append(statement)
+
+        async def close(self):
+            pass
+
+    async def connect(dsn):
+        connected.append(dsn)
+        return Connection()
+
+    async def migrate(dsn):
+        migrated.append(dsn)
+
+    monkeypatch.setattr(db_fixtures, "_connect_admin", connect)
+    monkeypatch.setattr(db_fixtures, "_migrate", migrate)
+    monkeypatch.setattr(db_fixtures, "_TEMPLATE_READY", None)
+    monkeypatch.setattr(db_fixtures, "template_name", lambda: "aq_tmpl_socket")
+    clone = await db_fixtures.clone_database(base, "socket_clone")
+    async with db_fixtures._reset_connection(clone):
+        pass
+    assert clone == pg_dsn._replace_database(base, "socket_clone")
+    assert migrated == [pg_dsn._replace_database(base, "aq_tmpl_socket_building")]
+    assert connected == [
+        pg_dsn._replace_database(base, "postgres"),
+        pg_dsn._replace_database(base, "postgres"),
+        base, clone, pg_dsn._replace_database(base, "postgres"),
+    ]
+    assert 'ALTER DATABASE "socket_clone" ALLOW_CONNECTIONS false' in executed
+    assert 'ALTER DATABASE "socket_clone" ALLOW_CONNECTIONS true' in executed

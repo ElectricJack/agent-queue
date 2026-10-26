@@ -101,10 +101,13 @@ def test_comments_paginates_and_renders_untrusted_markup_literally():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bounded_worker", [False, True])
-async def test_prime_previews_complete_newest_comments_from_one_page(bounded_worker):
+@pytest.mark.parametrize("body_repeats,shown", [(10, 20), (1600, 4)])
+async def test_prime_keeps_complete_newest_prefix_with_history_limits(
+    bounded_worker, body_repeats, shown,
+):
     comments = [{"id": f"c-{i}", "author_kind": "agent", "author_id": f"worker-{i}",
         "created_at": 1788100000 + i,
-        "body": f"finding-{i} " + "é" * 1600 + f"\n\nend-{i}\n"}
+        "body": f"finding-{i} " + "é" * body_repeats + f"\n\nend-{i}\n"}
         for i in range(207, 0, -1)]
 
     async def list_comments(task_id, *, limit, offset, project_id):
@@ -125,8 +128,7 @@ async def test_prime_previews_complete_newest_comments_from_one_page(bounded_wor
     assert "Keep this note" in section.body
     history = section.body[section.body.index("**Task comments (newest first):**"):]
     assert len(history.encode("utf-8")) <= 16 * 1024
-    shown = history.count("agent:worker-")
-    assert 0 < shown < 20  # Multibyte bodies reach the byte cap before the count cap.
+    assert history.count("agent:worker-") == shown
     assert f"Showing {shown} of 207 comments." in history
     assert f"{207 - shown} older comments omitted" in history
     assert "`aq task comments t-1`" in history
@@ -182,7 +184,7 @@ async def test_prime_preview_and_full_comment_retrieval_after_database_reopen(tm
         history = next(section.body for section in doc.sections if section.key == "task_context")
         assert len(history.encode("utf-8")) <= 16 * 1024
         shown = history.count("agent:worker-1 ·")
-        assert 0 < shown < len(comments)
+        assert shown == 3
         assert f"Showing {shown} of 7 comments." in history
         assert f"{7 - shown} older comments omitted" in history
         assert "`aq task comments t`" in history

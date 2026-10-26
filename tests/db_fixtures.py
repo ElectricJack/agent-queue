@@ -26,16 +26,19 @@ import os
 import re
 import uuid
 import warnings
+from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 
 from src.database.schema_key import schema_key_slug
 from src.database import Database
 from tests.pg_dsn import (
+    _replace_database,
     _run_id,
     drop_databases,
     ensure_worker_postgres_dsn,
     hold_owner_lock,
     owned_name,
+    require_postgres_dependency,
 )
 
 #: Advisory-lock key guarding template construction across xdist workers.
@@ -59,11 +62,6 @@ def template_name() -> str:
     return f"aq_tmpl_{schema_key_slug()}"
 
 
-def _split(dsn: str) -> tuple[str, str]:
-    prefix, _, dbname = dsn.rpartition("/")
-    return prefix, dbname
-
-
 def _admin_dsn(dsn: str) -> str:
     """asyncpg wants the plain scheme, not SQLAlchemy's ``+asyncpg`` suffix."""
     return dsn.replace("postgresql+asyncpg://", "postgresql://")
@@ -72,6 +70,7 @@ def _admin_dsn(dsn: str) -> str:
 async def _connect_admin(base_dsn: str):
     import asyncpg
 
+    require_postgres_dependency()
     return await asyncpg.connect(_admin_dsn(base_dsn))
 
 
@@ -93,6 +92,7 @@ async def ensure_template(base_dsn: str) -> str:
     reliable (that statement fails while any session is attached to the source).
     """
     global _TEMPLATE_READY
+    require_postgres_dependency()
     name = template_name()
     if _TEMPLATE_READY == name:
         return name
@@ -102,8 +102,7 @@ async def ensure_template(base_dsn: str) -> str:
     # other worker's clone.  Check first, lock only to build.
     # Advisory locks are database-scoped. Every worker must coordinate through
     # the same maintenance database, even though its test DSN is worker-local.
-    prefix, _ = _split(base_dsn)
-    maintenance_dsn = f"{prefix}/postgres"
+    maintenance_dsn = _replace_database(base_dsn, "postgres")
     conn = await _connect_admin(maintenance_dsn)
     try:
         if await _database_exists(conn, name):
@@ -123,7 +122,7 @@ async def ensure_template(base_dsn: str) -> str:
             await conn.execute(f'CREATE DATABASE "{building}"')
             # Hold the lock until publication: releasing it during migration
             # lets another worker drop the database we are still building.
-            await _migrate(f"{prefix}/{building}")
+            await _migrate(_replace_database(base_dsn, building))
             await conn.execute(f'ALTER DATABASE "{name}_building" RENAME TO "{name}"')
             await conn.execute(
                 "UPDATE pg_database SET datistemplate = true WHERE datname = $1", name
@@ -157,7 +156,6 @@ async def clone_database(base_dsn: str, name: str) -> str:
     reason this substrate can stand in for the SQLite template cache.
     """
     template = await ensure_template(base_dsn)
-    prefix, _ = _split(base_dsn)
     import asyncpg
 
     conn = await _connect_admin(base_dsn)
@@ -176,7 +174,7 @@ async def clone_database(base_dsn: str, name: str) -> str:
             ) from exc
     finally:
         await conn.close()
-    return f"{prefix}/{name}"
+    return _replace_database(base_dsn, name)
 
 
 async def drop_database(base_dsn: str, name: str) -> None:
@@ -313,12 +311,12 @@ def _refuse_row_reset(reason: str) -> None:
 @asynccontextmanager
 async def _reset_connection(dsn: str):
     """Keep one reset connection while refusing competing lease writers."""
-    prefix, database = _split(dsn)
+    database = urlsplit(dsn).path.lstrip("/")
     quoted_database = '"' + database.replace('"', '""') + '"'
     conn = await _connect_admin(dsn)
     try:
         # PostgreSQL refuses ALLOW_CONNECTIONS false for the current database.
-        control = await _connect_admin(f"{prefix}/postgres")
+        control = await _connect_admin(_replace_database(dsn, "postgres"))
         try:
             await control.execute(f"ALTER DATABASE {quoted_database} ALLOW_CONNECTIONS false")
             await conn.execute(_END_TEST_SESSIONS)
@@ -616,10 +614,13 @@ def lease_dsn(name: str = "test") -> str:
     the same database, so tests that reopen a path to check persistence keep
     working; different names get different databases.
     """
+    require_postgres_dependency()
     if name in _LEASES:
         return _LEASES[name]
     if not _FREE:
         raise RuntimeError(
+            "PostgreSQL lease unavailable: declare a PostgreSQL target with a disposable "
+            "POSTGRES_TEST_DSN; if already provisioned, "
             f"this test asked for more distinct databases than the pool holds "
             f"({len(_TAKEN)} already leased). Raise AQ_TEST_DB_POOL_SIZE."
         )
