@@ -514,11 +514,23 @@ class AdmissionSnapshot:
         current = await _inputs(self.db, self.candidate_ids, conn)
         if self.policy_inputs:
             policy, _ = await _frontier_inputs(conn, self.candidate_ids)
-            if policy != self.policy_inputs:
+            before_policy = self.policy_inputs
+            if task_id is not None:
+                # Initial selection fences every candidate; activation only
+                # depends on the selected candidate's route/parent identity.
+                # Other candidates may be rerouted while this claim prepares.
+                before_policy = (
+                    tuple(row for row in before_policy[0] if row[0] == task_id),
+                    *before_policy[1:],
+                )
+                policy = (
+                    tuple(row for row in policy[0] if row[0] == task_id), *policy[1:],
+                )
+            if policy != before_policy:
                 groups = ("candidate routing/parent", "project/repository policy", "edges",
                           "sources", "completions", "metadata")
                 changed = ", ".join(name for name, before, after in zip(
-                    groups, self.policy_inputs, policy, strict=True) if before != after)
+                    groups, before_policy, policy, strict=True) if before != after)
                 return self.record_change(
                     "admission_policy_changed", f"Admission frontier inputs changed: {changed}; retry",
                     task_id,
@@ -706,12 +718,15 @@ async def _observe_sources(
 async def _frontier_inputs(conn, ids):
     """Fence routing, hierarchy policy and graph without fencing our own take.
 
-    READY -> IN_PROGRESS and branch preparation are expected mutations. Route,
-    parent, edges, policy and completion generation are not.
+    READY -> IN_PROGRESS, branch preparation and route evidence refreshes are
+    expected mutations. Route identity, parent, edges, policy and completion
+    generation are not. Keep candidate tuples addressable by task ID so a
+    selected claim need not fence other candidates' routing changes.
     """
     rows = (await conn.execute(select(
         tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id, tasks.c.profile_id,
-        tasks.c.route_source, tasks.c.intelligence_class, tasks.c.route,
+        tasks.c.route_source, tasks.c.intelligence_class,
+        tasks.c.route["provider"].as_string(),
         tasks.c.repo_id, tasks.c.integration_mode,
     ).where(tasks.c.id.in_(ids)))).all()
     pids = {r.project_id for r in rows}
@@ -737,9 +752,10 @@ async def _frontier_inputs(conn, ids):
     completions, markers = [(await conn.execute(select(table).where(
         table.c.task_id.in_({row.id for row in sources})))).all() if sources else []
         for table in (task_completion_records, task_metadata)]
-    fingerprint = tuple(tuple(sorted(repr(tuple(row)) for row in group))
-                        for group in (rows, policies, [tuple(e.items()) for e in edges],
-                                      sources, completions, markers))
+    fingerprint = (tuple(tuple(row) for row in sorted(rows, key=lambda row: row.id)),) + tuple(
+        tuple(sorted(repr(tuple(row)) for row in group))
+        for group in (policies, [tuple(e.items()) for e in edges], sources, completions, markers)
+    )
     return fingerprint, required
 
 
