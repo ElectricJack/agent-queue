@@ -90,11 +90,27 @@ class WaitTimerDriver:
         while self.heap and self.heap[0][0] <= self.clock():
             _, deadline_id, row = self.heap[0]
             try:
-                async with asyncio.timeout(self.service.listener.lease_seconds):
-                    result = await self.service.command("wait_deadline_fire", {
-                        "wait_id": row["wait_id"], "deadline_type": row["deadline_type"],
-                        "generation": row["generation"],
-                    })
+                started = time.monotonic()
+                try:
+                    async with asyncio.timeout(self.service.listener.lease_seconds):
+                        result = await self.service.command("wait_deadline_fire", {
+                            "wait_id": row["wait_id"], "deadline_type": row["deadline_type"],
+                            "generation": row["generation"],
+                        })
+                except (TimeoutError, asyncio.CancelledError) as exc:
+                    # A command may be cancelled independently; only a cancellation
+                    # requested on this timer task belongs to listener shutdown.
+                    if isinstance(exc, asyncio.CancelledError) and asyncio.current_task().cancelling():
+                        raise
+                    event = ("wait.deadline_timeout" if isinstance(exc, TimeoutError)
+                             else "wait.deadline_cancelled")
+                    logger.warning(
+                        "%s id=%s wait_id=%s deadline_type=%s generation=%s elapsed_seconds=%.3f",
+                        event, deadline_id, row["wait_id"], row["deadline_type"],
+                        row["generation"], time.monotonic() - started,
+                    )
+                    self._retry_deadline(deadline_id, row, event)
+                    continue
                 result = _deadline_refusal(result)
                 code = result.get("error_code")
                 if not result.get("success") and code != "wait.deadline_stale":

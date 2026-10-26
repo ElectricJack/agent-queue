@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 
 from src.dashboard_paths import inbox_path
+from src.discord.links import format_links
 from src.digest.eligibility import Eligibility
 from src.digest.facts import (
     KIND_COMPLETED,
@@ -28,7 +29,7 @@ from src.digest.facts import (
     KIND_STARTED,
     DigestWindow,
 )
-from src.discord.render_budget import DIGEST, GLYPH_DIGEST, compose, link_line
+from src.discord.render_budget import DIGEST, GLYPH_DIGEST, compose, cut, link_line
 
 #: Hard ceiling for the rendered message (§3.2's digest row).
 MAX_CHARS = DIGEST.chars
@@ -64,14 +65,13 @@ def sanitise(text: str) -> str:
         # A pasted traceback is never a useful highlight; keep the first line.
         text = text.split("\n", 1)[0]
     text = _WHITESPACE.sub(" ", text).strip()
-    text = text.replace("`", "")
-    return text.replace("@", "@\u200b")
+    return format_links(text, lambda part: part.replace("`", "").replace("@", "@\u200b"))
 
 
 def _elide(text: str, limit: int = MAX_HIGHLIGHT_CHARS) -> str:
     if len(text) <= limit:
         return text
-    return text[: max(0, limit - 1)].rstrip() + "…"
+    return cut(text, limit)
 
 
 def _window_label(window: DigestWindow) -> str:
