@@ -6,8 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from asyncpg.exceptions import DeadlockDetectedError, SerializationError, UniqueViolationError
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import messages, tasks, wait_source_events
 from src.integration.checks import ExactChecks
@@ -35,6 +37,7 @@ from src.waits.conditions import Condition, Scope
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.registry import build_registry
 from src.waits.resource_sources import resource_invalidation
+from src.waits.timers import WaitTimerDriver
 from src.wait_runtime.service import WaitService
 from src.waits.sources import record_source_event
 from tests.test_wait_queries import (
@@ -1200,6 +1203,97 @@ async def test_structured_permanent_deadline_effect_is_quarantined_immediately(
     assert code in notice["body"]
 
 
+@pytest.mark.parametrize("failure", ["timeout", "cancelled"])
+async def test_interrupted_deadline_retries_with_backoff_and_continues_heap(failure, caplog):
+    now = [NOW + 2]
+    blocked = True
+
+    async def command(name, args):
+        assert name == "wait_deadline_fire"
+        if blocked and args["wait_id"] == "slow-wait":
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+            await asyncio.sleep(60)
+        return {"success": True}
+
+    service = SimpleNamespace(listener=SimpleNamespace(lease_seconds=0.001),
+                              command=AsyncMock(side_effect=command),
+                              quarantine_deadline=AsyncMock())
+    driver = WaitTimerDriver(service, clock=lambda: now[0])
+    slow = {"id": "slow", "wait_id": "slow-wait", "deadline_type": "due", "generation": 3}
+    later = {**slow, "id": "later", "wait_id": "later-wait"}
+    driver.heap = [(NOW, "slow", slow), (NOW + 1, "later", later)]
+
+    for attempt, delay in enumerate((1, 2, 4, 8, 16, 30, 30)):
+        assert await driver.tick() == (1 if attempt == 0 else 0)
+        assert driver._retry_deadlines["slow"] == (now[0] + delay, delay)
+        calls = service.command.await_count
+        now[0] += delay - 0.01
+        assert await driver.tick() == 0
+        assert service.command.await_count == calls
+        now[0] += 0.01
+
+    diagnostic = next(record.getMessage() for record in caplog.records
+                      if record.getMessage().startswith(f"wait.deadline_{failure}"))
+    assert "wait_id=slow-wait deadline_type=due generation=3 elapsed_seconds=" in diagnostic
+    service.quarantine_deadline.assert_not_awaited()
+    blocked = False
+    assert await driver.tick() == 1
+    assert not driver.heap and not driver._retry_deadlines
+
+
+async def test_timer_run_survives_deadline_timeout_until_shutdown():
+    later_fired = asyncio.Event()
+
+    async def command(name, args):
+        if args["wait_id"] == "slow-wait":
+            await asyncio.sleep(60)
+        later_fired.set()
+        return {"success": True}
+
+    listener = SimpleNamespace(lease_seconds=0.001, deadlines_changed=asyncio.Event())
+    driver = WaitTimerDriver(SimpleNamespace(listener=listener, command=command),
+                             clock=lambda: NOW + 2)
+    driver.rearm = AsyncMock()
+    driver.heap = [(NOW + n, str(n), {"wait_id": wait_id, "deadline_type": "due", "generation": 1})
+                   for n, wait_id in enumerate(("slow-wait", "later-wait"))]
+    running = asyncio.create_task(driver.run())
+    try:
+        await asyncio.wait_for(later_fired.wait(), 5)
+        assert not running.done()
+        assert "0" in driver._retry_deadlines
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+
+@pytest.mark.parametrize("method", ["tick", "run"])
+async def test_deadline_timer_shutdown_propagates_cancellation(method, caplog):
+    started = asyncio.Event()
+
+    async def command(name, args):
+        started.set()
+        await asyncio.sleep(60)
+
+    listener = SimpleNamespace(lease_seconds=60, deadlines_changed=asyncio.Event())
+    driver = WaitTimerDriver(SimpleNamespace(listener=listener, command=command), clock=lambda: NOW)
+    driver.rearm = AsyncMock()
+    driver.heap = [(NOW, "slow", {"wait_id": "slow-wait", "deadline_type": "due", "generation": 1})]
+    running = asyncio.create_task(getattr(driver, method)())
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+    finally:
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert not driver._retry_deadlines
+    assert driver.heap
+    assert "wait.deadline_timeout" not in caplog.text
+    assert "wait.deadline_cancelled" not in caplog.text
+    assert not driver._heap_lock.locked()
+
+
 async def test_deadline_graph_lock_contention_retains_retry_after_transaction_rollback(runtime_env):
     from sqlalchemy import func
     from src.waits.graph import GRAPH_LOCK
@@ -2212,6 +2306,86 @@ async def ci_listener(env, monkeypatch, *, now=None):
 
     reader.side_effect = observe
     return service, receipt, reader, state, f"ci_check:repo:{SHA}:tests"
+
+
+@pytest.mark.parametrize("conflict", [DeadlockDetectedError, SerializationError])
+async def test_ci_source_conflict_rolls_back_and_reobserves_without_restart(
+    runtime_env, monkeypatch, caplog, conflict,
+):
+    env = runtime_env
+    now = [NOW]
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, now=now)
+    state["value"] = "satisfied"
+    seq = await env.db.wait_source_commit(source_key=key, generation=0, revision="conflict",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    later = await env.db.wait_source_commit(source_key="test:later", generation=0,
+        revision="1", outcome_ref="later", payload={})
+    lock_source = service.orch.wait_ci_lock_source
+    attempts = 0
+
+    async def conflict_once(conn, cond):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+            raise DBAPIError("source fence", {}, conflict("retry transaction"), False)
+        await lock_source(conn, cond)
+
+    service.orch.wait_ci_lock_source = conflict_once
+    drained = asyncio.Event()
+    original_drain = service.drain
+
+    async def drain(watermark):
+        result = await original_drain(watermark)
+        drained.set()
+        return result
+
+    service.drain = drain
+    connect = AsyncMock(side_effect=service.listener._connect)
+    service.listener.connect = connect
+    background = asyncio.create_task(service.listener.run())
+    try:
+        await asyncio.wait_for(drained.wait(), 15)
+        assert (await env.db.get_task("owner")).title != "abort"
+        wait = next(r for r in await records(env) if r["id"] == receipt["wait_id"])
+        assert wait["outcome"] == "pending" and wait["source_watermark_seq"] < seq
+        sources = {r["seq"]: r for r in await records(env, wait_source_events)}
+        assert sources[seq]["dispatched_at"] is None
+        assert sources[later]["dispatched_at"] is not None
+        assert service.listener._retry_due[seq] == NOW + service.listener.retry_seconds
+        cursor = (await records(env, wait_listener_cursors))[0]["last_seq"]
+        assert cursor >= later
+        assert reader.await_count == attempts == 1
+        drained.clear()
+        now[0] += service.listener.retry_seconds + 1
+        service.listener.changed.set()
+        await asyncio.wait_for(drained.wait(), 15)
+        assert reader.await_count == attempts == 2
+        assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+            "outcome"] == "satisfied"
+        assert next(r for r in await records(env, wait_source_events) if r["seq"] == seq)[
+            "dispatched_at"] is not None
+        assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
+        assert connect.await_count == 1
+        assert conflict.sqlstate in caplog.text
+        assert "wait.source_dispatch_deferred" in caplog.text
+        assert "wait.listener_restarted" not in caplog.text
+    finally:
+        background.cancel()
+        await asyncio.gather(background, return_exceptions=True)
+
+
+async def test_nontransient_source_database_error_propagates(runtime_env, monkeypatch):
+    service, _, _, state, key = await ci_listener(runtime_env, monkeypatch)
+    state["value"] = "satisfied"
+    await runtime_env.db.wait_source_commit(source_key=key, generation=0, revision="bad",
+        outcome_ref="hint", payload={})
+    service.orch.wait_ci_lock_source = AsyncMock(side_effect=DBAPIError(
+        "source fence", {}, UniqueViolationError("not retryable"), False))
+    with pytest.raises(DBAPIError):
+        await service.listener.tick()
+    assert (await records(runtime_env, wait_listener_cursors))[0]["last_seq"] == 0
+    assert not service.listener._retry_due
 
 
 @pytest.mark.parametrize("interleaved", [False, True])
