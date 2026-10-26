@@ -2063,7 +2063,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3153,
+    "authorized_owned_delta": 3392,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2082,6 +2082,28 @@
       "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
       "task_id": "wise-crest-14",
       "thread_id": "wise-crest-14-ci-size"
+    },
+    "deleted_epic_child_recovery_composition": {
+      "authorized_engine_delta": 103,
+      "authorized_owned_delta": 103,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/delivery_branches.py": 76,
+        "src/integration/delivery_truth.py": 1,
+        "src/integration/legacy_backfill.py": 26
+      },
+      "decision_message_id": "msg-18a65dbb43bf4491ae77cc71bfd931a8",
+      "dev_source_revision": "389f345d17ce86fd52f4e4e7aace9fcd35c0a7eb",
+      "measured_engine_lines": 83324,
+      "measured_owned_total": 158712,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83221,
+      "previous_measured_owned_total": 158609,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor pre-approved delta on current dev for strict final-source recovery of deleted-epic children and a generation-fenced retained-witness deletion hold. Preserve all historical grants, baselines and ownership classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "stark-rapids-81"
     },
     "expires_at": "s4_modules",
     "fresh_continuation_sentinel_composition": {
@@ -2107,6 +2129,23 @@
       "source_revision": "490a0b1d82633cf41a071af421726fd9842c9d78",
       "task_id": "wise-cascade-80",
       "thread_id": "wise-cascade-80-ci-size"
+    },
+    "git_truth_phase_profile_composition": {
+      "authorized_engine_delta": 35,
+      "authorized_owned_delta": 77,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "c51bb0ea8",
+      "measured_engine_lines": 83418,
+      "measured_owned_total": 158848,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83383,
+      "previous_measured_owned_total": 158771,
+      "previous_measured_table_count": 45,
+      "reason": "Exact task-preapproved reconcile_git_truth per-phase timing instrumentation (sound-meadow-89) plus sibling-slot branch release (bright-beacon-87, no size change). Preserve every historical grant; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "ebb6a75bb",
+      "task_id": "sound-meadow-89"
     },
     "held_ingestion_composition": {
       "authorized_engine_delta": 0,
@@ -2246,9 +2285,32 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83241,
-    "measured_owned_total": 158652,
+    "measured_engine_lines": 83438,
+    "measured_owned_total": 158891,
     "measured_table_count": 45,
+    "missing_target_abort_composition": {
+      "authorized_engine_delta": 59,
+      "authorized_owned_delta": 59,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/batches.py": 4,
+        "src/integration/fixers.py": 26,
+        "src/integration/train_controls.py": 15,
+        "src/integration/train_sources.py": 14
+      },
+      "dev_source_revision": "21109c4eb",
+      "measured_engine_lines": 83383,
+      "measured_owned_total": 158771,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83324,
+      "previous_measured_owned_total": 158712,
+      "previous_measured_table_count": 45,
+      "reason": "Exact task-preapproved missing-target abort and epic-refresh retirement delta on merged dev. Preserve historical baselines, grants and ownership classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "39242c4c5",
+      "task_id": "grand-falcon-16"
+    },
     "operator_decision": "6679052c",
     "original_owned_total_cap": 155499,
     "originless_backfill_provenance_composition": {
@@ -18860,10 +18922,10 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": true,
-      "line": 758,
+      "line": 762,
       "owner": "BatchStore.set_intent",
-      "owner_fingerprint": "4bd64ebb54cb1f4b56149f7a1a189f60c6a7df66d3d3f3b3a1432ece6810cb82",
-      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
+      "owner_fingerprint": "925e801cb2f53a61e077ea2e1c41ba45d6df7250fb56c9bcacfb10ff3d6b8923",
+      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Re-reviewed for grand-falcon-16: abort atomically queues the fixer stop notification; the event remains ordinary audit, without ref replay or duplicated delivery lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
       "call": "log_event",
