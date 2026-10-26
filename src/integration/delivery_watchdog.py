@@ -421,6 +421,14 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
         if ownership is not None and state != "unknown":
             state = "slow" if age >= threshold.stuck_after_seconds else "progressing"
             reason = "train_owned"
+        from src.database.queries.integration_train_queries import open_target_batches
+
+        incoming = await conn.scalar(select(open_target_batches(
+            project_id, repository_id,
+            "refs/heads/" + entry["branch"].removeprefix("refs/heads/"),
+        ).exists()))
+        if incoming:
+            state, reason = "progressing", "batch_queued"
         task_status = request.task_status if request is not None else None
         if await _held_on(conn, project_id, task_id, task_status):
             state, reason = "held", "manual_hold"
@@ -477,7 +485,13 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
     status = IntegrationStatusService(db, delivery=observer, train=train, cached_only=True)
 
     if observe is None:
+        from functools import partial
+
         from src.integration.delivery_branches import observe_completed_branches as observe
+
+        # Recovery files work against the current epic tip, which can advance
+        # after its descriptive completion record was written.
+        observe = partial(observe, max_age=0.0)
     async with db._engine.connect() as conn:
         targets = [dict(row) for row in (await conn.execute(
             select(projects.c.id, projects.c.status,
