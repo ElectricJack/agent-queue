@@ -80,3 +80,11 @@ profiling (+77 owned / +35 engine) grants. With the unchanged 26-line dashboard
 reduction, the exact ceiling is 158,822 owned lines and 83,418 engine lines,
 with 45 tables and zero remaining headroom. All historical grant fields remain
 unchanged.
+
+The next dev refresh retains the approved deleted-epic retained-selection grant
+(+16 owned/engine lines). With the same dashboard reduction, the exact ceiling
+is 158,838 owned lines and 83,434 engine lines, with 45 tables and zero remaining
+headroom. Historical grant fields remain unchanged. CI repair also aligns the
+bounded CI-retry regression with pending-source backoff and inventories the
+existing cleanup-only child-witness reader; cleanup replay retains child
+witnesses before deleting their collection target.

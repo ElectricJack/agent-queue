@@ -281,6 +281,9 @@ async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_stat
     case.service.registry.observe = observe
     case.service.listener.retry_batch_size = 1
     await case.service.listener.tick()
+    assert observe.await_count == 0  # pending hints share the source observation backoff
+    case.now[0] += 61
+    await case.service.listener.tick()
     assert observe.await_count == 1
     assert all(row["outcome"] == "pending" for row in await rows(world))
     await case.service.listener.tick()
