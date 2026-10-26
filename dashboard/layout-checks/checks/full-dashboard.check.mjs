@@ -33,22 +33,23 @@ export async function run(t) {
     assert.ok(await t.page.$('[aria-label="Agent flock"]'), "missing agent navigation");
     await t.page.click('a[href="/inbox"]');
   } else await t.page.goto(t.url("/inbox"), { waitUntil: "networkidle0" });
-  await waitForText(t.page, "Requests");
+  await waitForText(t.page, "Needs you");
   await expectLayout(t, { primary: [...menu, 'nav[aria-label="Request views"] button'] });
 
-  await t.page.goto(t.url(`/sessions/${SESSION}?started=${STARTED}`), { waitUntil: "networkidle0" });
+  // Transcript SSE stays open, so readiness comes from the rendered page.
+  await t.page.goto(t.url(`/sessions/${SESSION}?started=${STARTED}`), { waitUntil: "domcontentloaded" });
   await t.page.waitForSelector("[data-interactive-terminal]");
   await expectLayout(t, { primary: [...menu, 'main button'] });
   await t.shot("session");
   t.stub.override("POST /api/system/session-show", body => body.session_id === SESSION
     ? { session: { ...SESSIONS[SESSION], started_at: STARTED + 50 } } : showSession(body));
-  await t.page.reload({ waitUntil: "networkidle0" });
+  await t.page.reload({ waitUntil: "domcontentloaded" });
   await waitForText(t.page, "This session restarted");
   assert.equal(await t.page.$("[data-interactive-terminal]"), null);
   await t.page.click('button::-p-text(Watch the new process)');
   await t.page.waitForSelector("[data-interactive-terminal]");
   assert.ok(t.page.url().includes(`started=${STARTED + 50}`));
-  await t.page.goto(t.url(`/sessions/${ENDED_SESSION}`), { waitUntil: "networkidle0" });
+  await t.page.goto(t.url(`/sessions/${ENDED_SESSION}`), { waitUntil: "domcontentloaded" });
   await waitForText(t.page, "Task closed: pass");
   assert.ok(await t.page.$(`a[href="/sessions/${SESSION}"]`));
   await expectLayout(t);

@@ -33,9 +33,7 @@ vi.mock("./api/hooks", () => ({
   useDeleteProject: () => ({ mutateAsync: actions.remove, isPending: false }),
   useTask: (id: string) => ({ data: { id, title: `Task ${id}` }, isError: false, refetch: vi.fn() }),
 }));
-vi.mock("./api/asks", () => ({
-  useAsks: () => ({ data: { items: [], count: 0, source_health: "healthy", snapshot_at: 0 } }),
-}));
+vi.mock("./api/asks", () => ({ useAsks: () => ({ data: { items: [], count: 0, source_health: "healthy", snapshot_at: 0 } }) }));
 vi.mock("./api/reviews", () => ({
   useWaitingReviewCount: () => 0,
   useReviews: () => ({ data: { reviews: [] } }),
@@ -81,13 +79,13 @@ vi.mock("./pages/PlanPage", () => ({ default: function PlanStub() { return <h1>P
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
 vi.mock("./pages/reports/MorningReportPage", () => ({ default: () => <h1>Morning report read page</h1> }));
 vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
-vi.mock("./pages/TaskDetail", () => ({ default: () => <h1>Task detail</h1> }));
-vi.mock("./pages/SessionDetail", () => ({ default: () => <h1>Session detail</h1> }));
-vi.mock("./pages/AskPage", () => ({ default: () => <h1>Request detail</h1> }));
-vi.mock("./pages/InboxPage", () => ({ default: () => <h1>Requests</h1> }));
-vi.mock("./pages/EscalationPage", () => ({ default: () => <h1>Escalation detail</h1> }));
-vi.mock("./pages/BatchPage", () => ({ default: () => <h1>Batch detail</h1> }));
-vi.mock("./pages/reviews/ReviewPage", () => ({ default: () => <h1>Review detail</h1> }));
+vi.mock("./pages/TaskDetail", () => ({ default: () => <h1>Task page</h1> }));
+vi.mock("./pages/SessionDetail", () => ({ default: () => <h1>Session page</h1> }));
+vi.mock("./pages/AskPage", () => ({ default: () => <h1>Ask page</h1> }));
+vi.mock("./pages/EscalationPage", () => ({ default: () => <h1>Escalation page</h1> }));
+vi.mock("./pages/BatchDetail", () => ({ default: () => <h1>Batch page</h1> }));
+vi.mock("./pages/InboxPage", () => ({ default: () => <h1>Needs you</h1> }));
+vi.mock("./pages/reviews/ReviewPage", () => ({ default: () => <h1>Review page</h1> }));
 
 function WorkspaceProbe({ title }: { title: string }) {
   const { projectId } = useParams();
@@ -108,8 +106,6 @@ function PaneProbe() {
     <button onClick={pane.close}>Close task pane</button>
     <button onClick={() => pane.open("contextual-settings", { subject: "project", subjectId: "p1" })}>Open settings pane</button></>;
 }
-
-
 
 function Location() {
   const location = useLocation();
@@ -526,27 +522,30 @@ describe("Roaming shell preferences", () => {
   });
 });
 
-describe("retired Focus links", () => {
+describe("posted Focus link compatibility", () => {
   it.each([
-    ["/focus", "/projects/p1/graph"],
-    ["/focus/", "/projects/p1/graph"],
-    ["/focus/tasks/parent.1?tab=graph#details", "/tasks/parent.1?tab=graph#details"],
-    ["/focus/tasks/a%2Fb%20c", "/tasks/a%2Fb%20c"],
-    ["/focus/sessions/s1?started=123", "/sessions/s1?started=123"],
-    ["/focus/reports/r1", "/reports/r1"],
-    ["/focus/asks/a1", "/asks/a1"],
-    ["/focus/reviews/r1", "/reviews/r1"],
-    ["/focus/escalations/e1", "/escalations/e1"],
-    ["/focus/batches/b1", "/batches/b1"],
-    ["/focus/inbox", "/inbox"],
-    ["/focus/conversations", "/conversations"],
-    ["/focus/conversations/c%2F1?other=kept#reply", "/conversations?other=kept&conversation=c%2F1#reply"],
-    ["/focus?project=p2&q=needle", "/projects/p2/tasks-knowledge?q=needle"],
-    ["/focus/unknown", "/projects/p1/graph"],
-    ["/conversations/c%2F1", "/conversations?conversation=c%2F1"],
-  ])("%s opens the shared shell at %s", async (before, after) => {
-    renderApp(before);
-    await waitFor(() => expect(screen.getByLabelText("Current location").textContent).toBe(after));
+    ["/focus", "/projects/p1/graph", "Command Center graph"],
+    ["/focus/", "/projects/p1/graph", "Command Center graph"],
+    ["/focus/tasks/a%2Fb%20c", "/tasks/a%2Fb%20c", "Task page"],
+    ["/focus/inbox/", "/inbox", "Needs you"],
+    ["/focus/conversations/", "/conversations", "Former Home chat"],
+    ["/conversations/c%2F1#reply", "/conversations?conversation=c%2F1#reply", "Former Home chat"],
+    ["/focus/tasks/a%2Fb?tab=explain#why", "/tasks/a%2Fb?tab=explain#why", "Task page"],
+    ["/focus/sessions/s1?started=123", "/sessions/s1?started=123", "Session page"],
+    ["/focus/reports/r1", "/reports/r1", "Morning report read page"],
+    ["/focus/asks/a1", "/asks/a1", "Ask page"],
+    ["/focus/reviews/r1?revision=2#goal", "/reviews/r1?revision=2#goal", "Review page"],
+    ["/focus/escalations/e1", "/escalations/e1", "Escalation page"],
+    ["/focus/batches/b1", "/batches/b1", "Batch page"],
+    ["/focus/inbox", "/inbox", "Needs you"],
+    ["/focus/conversations", "/conversations", "Former Home chat"],
+    ["/focus/conversations/c%2F1?before=10#reply", "/conversations?before=10&conversation=c%2F1#reply", "Former Home chat"],
+    ["/focus?project=p2&q=needle", "/projects/p2/tasks-knowledge?q=needle&kind=task", "Tasks & Knowledge"],
+    ["/focus/nope", "/projects/p1/graph", "Command Center graph"],
+  ])("%s opens the main dashboard", async (oldPath, destination, heading) => {
+    renderApp(oldPath);
+    await screen.findByRole("heading", { name: heading });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent(destination);
     expect(screen.getByText("Global flock sidebar")).toBeInTheDocument();
     expect(screen.queryByText("Focus view")).not.toBeInTheDocument();
   });

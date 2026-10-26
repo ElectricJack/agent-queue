@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   PlayIcon,
   StopIcon,
@@ -26,53 +26,55 @@ export default function SessionDetail() {
   const location = useLocation();
   const query = new URLSearchParams(location.search);
   const attemptId = query.get("attempt");
+  const started = Number(query.get("started") || NaN);
+  const pinned = Number.isFinite(started) ? started : null;
   return attemptId !== null ? (
     <AttemptSessionDetail key={`${sessionId}:${attemptId}:${query.get("taskId")}`} sessionId={sessionId} attemptId={attemptId} taskId={query.get("taskId") ?? ""} />
-  ) : <CurrentSessionDetail key={`${sessionId}:${query.get("started")}`} sessionId={sessionId} />;
+  ) : <CurrentSessionDetail key={`${sessionId}:${pinned}`} sessionId={sessionId} pinned={pinned} />;
 }
 
-function CurrentSessionDetail({ sessionId }: { sessionId: string }) {
+function CurrentSessionDetail({ sessionId, pinned }: { sessionId: string; pinned: number | null }) {
   const query = useSession(sessionId);
   const session = query.data;
-  const [params, setParams] = useSearchParams();
-  const requested = Number(params.get("started") || NaN);
-  const [watched, setWatched] = useState<number | null>(Number.isFinite(requested) ? requested : null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [watched, setWatched] = useState(pinned);
   useEffect(() => {
     if (watched === null && session?.started_at != null) setWatched(session.started_at);
   }, [watched, session?.started_at]);
-  if (query.isLoading) return <div className="p-3" role="status">Loading session…</div>;
-  if (query.isError || !session) return <div className="p-3" role="alert">
-    <p>{query.error?.message ?? "Session not found"}</p>
-    <button data-primary-control onClick={() => void query.refetch()}>Retry</button>
+  if (query.isLoading) return <div className="p-6 text-gray-400">Loading…</div>;
+  if (query.isError) return <div role="alert" className="p-4">
+    <p>Could not load session. {query.error?.message}</p>
+    <button onClick={() => void query.refetch()}>Retry session</button>
   </div>;
-  if (watched !== null && session.started_at != null && watched !== session.started_at) {
-    return <section className="space-y-3 p-3">
-      <p>This session restarted at {new Date(session.started_at * 1000).toLocaleString()}.
+  if (!session) return <div className="p-6 text-gray-400">Session not found</div>;
+  if (watched !== null && session.started_at != null && session.started_at !== watched) {
+    return <section className="dashboard-page space-y-3 p-4">
+      <p role="status">This session restarted at {new Date(session.started_at * 1000).toLocaleString()}.
         You were watching the process started at {new Date(watched * 1000).toLocaleString()}.</p>
-      <button data-primary-control className="rounded border border-gray-700 px-3" onClick={() => {
-        const next = new URLSearchParams(params);
-        next.set("started", String(session.started_at));
-        setParams(next, { replace: true });
+      <button type="button" data-primary-control className="rounded border border-gray-700 px-3 py-2" onClick={() => {
+        const params = new URLSearchParams(location.search);
+        params.set("started", String(session.started_at));
+        navigate({ pathname: location.pathname, search: `?${params}`, hash: location.hash }, { replace: true, state: location.state });
       }}>Watch the new process</button>
     </section>;
   }
-  return <SessionDetailContent session={session} interactive={session.state === "running" || session.state === "draining"} />;
+  return <SessionDetailContent session={session} interactive={!query.isError && (session.state === "running" || session.state === "draining")} />;
 }
 
-/** A stopped worker retains its transcript and offers its agent's current session. */
-function SessionNotRunning({ session }: { session: SessionSummary }) {
+/** Only an inactive session needs the roster to offer an explicit current-session link. */
+function InactiveSession({ session }: { session: SessionSummary }) {
   const { data: flock = [] } = useAgentFlock();
-  const current = session.agent_id && flock.find(agent => agent.id === session.agent_id && agent.session_id
+  const current = flock.find((agent) => agent.id === session.agent_id && agent.session_id
     && agent.session_id !== session.id && ["running", "draining"].includes(agent.session_state ?? ""));
-  return <div className="space-y-2 text-sm">
+  return <section className="space-y-2 text-sm text-gray-400">
     <p>{session.state === "starting" ? "This session is starting; its terminal appears once it runs."
       : session.state === "sleeping" ? `Session asleep${session.sleep_reason ? ` (${session.sleep_reason})` : ""}.`
-      : `Session ended${session.ended_at ? ` at ${new Date(session.ended_at * 1000).toLocaleString()}` : ""} (${session.state ?? "unknown state"}).`}</p>
+        : `Session ended (${session.state ?? "unknown state"})${session.ended_at ? ` at ${new Date(session.ended_at * 1000).toLocaleString()}` : ""}.`}</p>
     {session.end_reason && <p className="whitespace-pre-wrap">{session.end_reason}</p>}
-    {current && <Link data-primary-control className="inline-flex items-center text-indigo-300"
+    {current && <Link data-primary-control className="inline-flex items-center rounded border border-gray-700 px-3 py-2 text-indigo-300"
       to={`/sessions/${encodeURIComponent(current.session_id!)}`}>Watch {current.name}'s current session</Link>}
-    {!current && session.state !== "starting" && <p>No current session for this agent.</p>}
-  </div>;
+  </section>;
 }
 
 function AttemptSessionDetail({ sessionId, attemptId, taskId }: { sessionId: string; attemptId: string; taskId: string }) {
@@ -133,7 +135,7 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
 
   const from = (location.state as { from?: string } | null)?.from ?? (attempt ? `/tasks/${encodeURIComponent(attempt.task_id)}` : workspaceHref(session.project_id, "sessions"));
   return (
-    <div className="h-full overflow-y-auto p-3 md:p-6 space-y-4 [overflow-wrap:anywhere]">
+    <div className="dashboard-page h-full overflow-y-auto p-3 sm:p-6 space-y-4">
       <SessionBackLink from={from} toTask={!!attempt} />
       <header className="space-y-1">
         <p className="text-xs uppercase tracking-wider text-gray-500">Session</p>
@@ -171,14 +173,99 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
         )}
       </header>
 
-      {!attempt && !running && <SessionNotRunning session={session} />}
+      {!attempt && !running && <InactiveSession session={session} />}
 
+
+      <section className="overflow-hidden rounded-lg border border-gray-800 bg-gray-950">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 px-3 py-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-sm font-semibold text-gray-300">
+              {showingPane ? "Pane view" : "Transcript stream"}
+              {!showingPane && <span className="ml-2 text-xs text-gray-500">({status})</span>}
+            </h2>
+            <div role="tablist" aria-label="Session views" className="inline-flex rounded border border-gray-800 text-xs">
+              <button role="tab" aria-selected={!showingPane}
+                onClick={() => setViewMode("transcript")}
+                className={
+                  "px-2 py-0.5 " +
+                  (!showingPane
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-300 hover:bg-gray-900")
+                }
+              >
+                Transcript
+              </button>
+              {paneAvailable && (
+                <button role="tab" aria-selected={showingPane}
+                  onClick={() => { setViewMode("pane"); setPaneRequest((value) => value + 1); }}
+                  className={
+                    "px-2 py-0.5 " +
+                    (showingPane
+                      ? "bg-indigo-600 text-white"
+                      : "text-gray-300 hover:bg-gray-900")
+                  }
+                >
+                  Pane
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex min-w-0 items-center gap-2">
+            {!showingPane && (
+              <>
+                <button
+                  onClick={() => setStreamOn((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
+                >
+                  {streamOn ? <StopIcon className="h-3 w-3" /> : <PlayIcon className="h-3 w-3" />}
+                  {streamOn ? "Pause" : "Resume"}
+                </button>
+                <button
+                  onClick={clear}
+                  className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
+                >
+                  <ArrowPathIcon className="h-3 w-3" />
+                  Clear
+                </button>
+              </>
+            )}
+            {interactive && <button
+              onClick={() => kill.mutate({ session_id: sessionId })}
+              className="inline-flex items-center gap-1 rounded border border-red-900 px-2 py-1 text-xs text-red-400 hover:bg-red-950"
+            >
+              Kill
+            </button>}
+          </div>
+        </div>
+        {!showingPane && error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
+        {showingPane ? (
+          <div className="h-[60vh] min-h-80">
+            <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name}
+              focusRequest={focusSelection || paneRequest ? `${location.key}:${paneRequest}` : null} />
+          </div>
+        ) : (
+          <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">
+            {entries.length === 0 ? (
+              <p className="text-gray-500">{unavailable || (attempt && !interactive ? "No transcript output recorded for this attempt." : "Waiting for output…")}</p>
+            ) : (
+              entries.map((e) => (
+                <div key={e._idx} className="mb-2 whitespace-pre-wrap">
+                  <span className="mr-2 text-gray-600">
+                    {e.source === "peek" ? "[peek]" : `[${e.type ?? "?"}]`}
+                  </span>
+                  <span className="text-gray-200">{e.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </section>
       {interactive && <section className="grid gap-4 md:grid-cols-2">
         <div className="rounded border border-gray-800 bg-gray-950 p-3">
           <h2 className="mb-2 text-sm font-semibold text-gray-300">Attach</h2>
           {attach.data ? (
-            <div className="flex items-center gap-2">
-              <code className="min-w-0 flex-1 overflow-x-auto rounded bg-black/40 px-2 py-1 font-mono text-xs">
+            <div className="flex min-w-0 items-center gap-2">
+              <code data-allow-overflow-x className="min-w-0 flex-1 overflow-x-auto rounded bg-black/40 px-2 py-1 font-mono text-xs">
                 {attach.data.attach_command}
               </code>
               <button
@@ -231,90 +318,6 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
         </div>
       </section>}
 
-      <section className="overflow-hidden rounded-lg border border-gray-800 bg-gray-950">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 px-3 py-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <h2 className="text-sm font-semibold text-gray-300">
-              {showingPane ? "Pane view" : "Transcript stream"}
-              {!showingPane && <span className="ml-2 text-xs text-gray-500">({status})</span>}
-            </h2>
-            <div role="tablist" aria-label="Session views" className="inline-flex rounded border border-gray-800 text-xs">
-              <button role="tab" aria-selected={!showingPane}
-                onClick={() => setViewMode("transcript")}
-                className={
-                  "px-2 py-0.5 " +
-                  (!showingPane
-                    ? "bg-indigo-600 text-white"
-                    : "text-gray-300 hover:bg-gray-900")
-                }
-              >
-                Transcript
-              </button>
-              {paneAvailable && (
-                <button role="tab" aria-selected={showingPane}
-                  onClick={() => { setViewMode("pane"); setPaneRequest((value) => value + 1); }}
-                  className={
-                    "px-2 py-0.5 " +
-                    (showingPane
-                      ? "bg-indigo-600 text-white"
-                      : "text-gray-300 hover:bg-gray-900")
-                  }
-                >
-                  Pane
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {!showingPane && (
-              <>
-                <button
-                  onClick={() => setStreamOn((v) => !v)}
-                  className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
-                >
-                  {streamOn ? <StopIcon className="h-3 w-3" /> : <PlayIcon className="h-3 w-3" />}
-                  {streamOn ? "Pause" : "Resume"}
-                </button>
-                <button
-                  onClick={clear}
-                  className="inline-flex items-center gap-1 rounded border border-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-900"
-                >
-                  <ArrowPathIcon className="h-3 w-3" />
-                  Clear
-                </button>
-              </>
-            )}
-            {interactive && <button
-              onClick={() => kill.mutate({ session_id: sessionId })}
-              className="inline-flex items-center gap-1 rounded border border-red-900 px-2 py-1 text-xs text-red-400 hover:bg-red-950"
-            >
-              Kill
-            </button>}
-          </div>
-        </div>
-        {!showingPane && error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
-        {showingPane ? (
-          <div className="h-[60vh] min-h-80">
-            <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name}
-              focusRequest={focusSelection || paneRequest ? `${location.key}:${paneRequest}` : null} />
-          </div>
-        ) : (
-          <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">
-            {entries.length === 0 ? (
-              <p className="text-gray-500">{unavailable || (attempt && !interactive ? "No transcript output recorded for this attempt." : "Waiting for output…")}</p>
-            ) : (
-              entries.map((e) => (
-                <div key={e._idx} className="mb-2 whitespace-pre-wrap">
-                  <span className="mr-2 text-gray-600">
-                    {e.source === "peek" ? "[peek]" : `[${e.type ?? "?"}]`}
-                  </span>
-                  <span className="text-gray-200">{e.text}</span>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </section>
     </div>
   );
 }

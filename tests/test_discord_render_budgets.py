@@ -369,7 +369,7 @@ def test_a_chat_reply_over_budget_becomes_two_posts_with_an_ellipsis_and_the_lin
     posts = split_posts("word " * 2000, CHAT_REPLY, link=link)
     assert len(posts) == CHAT_REPLY.posts == 2
     assert all(len(post) <= CHAT_REPLY.chars for post in posts)
-    assert posts[-1].endswith(f"{ELLIPSIS} <{ORIGIN}/conversations/conv-1>")
+    assert posts[-1].endswith(f"{ELLIPSIS} <{ORIGIN}/conversations?conversation=conv-1>")
 
 
 @pytest.mark.parametrize("reply", ["x" * 5000, "short " * 300 + "x" * 2500])

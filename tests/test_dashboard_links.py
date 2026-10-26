@@ -62,7 +62,7 @@ def test_the_scheme_table_names_every_object_the_design_spec_lists():
 
 
 @pytest.mark.parametrize(
-    ("name", "oid", "expected_path", "expected_route"),
+    ("name", "oid", "expected_path", "expected_desktop"),
     [
         ("task", "t-1", "/tasks/t-1", "/tasks/{id}"),
         ("session", "s-1", "/sessions/s-1", "/sessions/{id}"),
@@ -71,13 +71,13 @@ def test_the_scheme_table_names_every_object_the_design_spec_lists():
         ("escalation", "esc-1", "/escalations/esc-1", "/escalations/{id}"),
         ("batch", "b-1", "/batches/b-1", "/batches/{id}"),
         ("inbox", "", "/inbox", "/inbox"),
-        ("conversation", "c-1", "/conversations/c-1", "/conversations/{id}"),
+        ("conversation", "c-1", "/conversations?conversation=c-1", "/conversations?conversation={id}"),
     ],
 )
-def test_each_object_opens_its_full_dashboard_page(name, oid, expected_path, expected_route):
+def test_each_object_opens_its_canonical_page(name, oid, expected_path, expected_desktop):
     target = SCHEME[name]
     assert target.path(oid) == expected_path
-    assert target.route == expected_route
+    assert target.desktop == expected_desktop
 
 
 def test_the_table_cannot_claim_a_route_exists_when_it_does_not():
@@ -92,7 +92,7 @@ def test_ids_are_quoted_so_a_path_cannot_escape_its_segment():
     assert escalation_path("esc/1?x=2") == "/escalations/esc%2F1%3Fx%3D2"
     assert review_path("rev 1") == "/reviews/rev%201"
     assert session_path("../reports") == "/sessions/..%2Freports"
-    assert conversation_path("c/1") == "/conversations/c%2F1"
+    assert conversation_path("c/1") == "/conversations?conversation=c%2F1"
     assert batch_path("b/1") == "/batches/b%2F1"
 
 

@@ -12,9 +12,12 @@ three phones plus an Android 412×915): the phone attaches like the desktop and
 asks for history and its size back, the screen fills its host, rotation and the
 on-screen keyboard resize tmux, a touch drag scrolls the scrollback with
 momentum, typing goes over the attach, and its colours match the desktop
-terminal's. `full-dashboard` covers canonical task, inbox, session, report and
-conversation pages at 390px and desktop, including process restart acknowledgement
-and conversation replies. `human-asks` covers discussion and prepared decisions.
+terminal's. `session-detail` also covers a refused attach: the same terminal
+shows the refusal and keeps input disabled.
+
+`full-dashboard` checks task, inbox, session, report and conversation pages at
+390px and desktop, including legacy links, process restart acknowledgement and
+conversation replies. `human-asks` checks discussion and prepared decisions.
 
 The `terminal-parity` check runs at the same four sizes and opens the **host
 shell page** and the phone's agent terminal in turn, because they are the same
@@ -28,7 +31,7 @@ screenshots are the side-by-side evidence in
 
 `check:terminal-parity` runs Playwright against the same isolated production
 bundle at iPhone 14, iPhone SE and Android Pixel 7 viewports. It compares the
-host shell with the session page, flock agent, pool instance, full session's
+host shell with the canonical session, flock agent, pool instance, session's
 Pane tab and session-peek drawer. It verifies raw keyboard input, rotation,
 visualViewport keyboard coverage, fitted PTY rows/columns and touch scrolling
 back through all 300 fixture history lines. It writes a JSON report and exact
@@ -58,7 +61,7 @@ npm -w dashboard run check:layout -- --only graph-theme,graph-cards
 
 ```bash
 npm -w dashboard run build
-npm -w dashboard run check:layout [-- --only full-dashboard --profiles phone-390]
+npm -w dashboard run check:layout [-- --only task-detail --profiles phone-390]
 npm -w dashboard run check:layout:selftest
 ```
 

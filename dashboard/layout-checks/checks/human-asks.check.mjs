@@ -73,5 +73,15 @@ export async function run(t) {
   await t.page.waitForFunction(() => !document.querySelector('section[aria-label="Decision preview"]'));
   assert.equal(t.stub.requests.filter(r => r.path === "/api/review/ask-decide").length, 1);
   assert.equal(t.stub.requests.filter(r => r.path === "/api/review/ask-reply").length, 1);
+  // The same shell also serves the inbox and non-review quick decisions.
+  ask.source_kind = "escalation";
+  ask.context.title = "Choose the next step " + "long-identifier".repeat(20);
+  await t.page.goto(t.url("/inbox"), { waitUntil: "networkidle0" });
+  await t.page.waitForSelector(`a[href="/asks/${ask.id}"]`);
+  await expectLayout(t);
+  await t.page.click(`a[href="/asks/${ask.id}"]`);
+  await t.page.waitForSelector(discuss);
+  await expectLayout(t, { primary: [approve] });
+  await t.shot("quick-ask");
   assert.ok(await t.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "narrow viewport overflow");
 }

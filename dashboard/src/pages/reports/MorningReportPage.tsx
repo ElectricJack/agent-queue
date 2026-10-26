@@ -35,7 +35,7 @@ export function MorningReportContent({ reportId, taskHref }: { reportId: string;
   const warnings = Array.isArray(coverage?.warnings) ? coverage.warnings as string[] : [];
   const window = coverage?.window as { omitted_interval?: { since: number; until: number } | null } | undefined;
   const date = (seconds: number) => new Date(seconds * 1000).toISOString();
-  return <article className="mx-auto max-w-4xl space-y-6 p-4 sm:p-6 text-gray-100">
+  return <article className="dashboard-page mx-auto h-full overflow-y-auto max-w-4xl space-y-6 p-4 sm:p-6 text-gray-100">
     <header>
       <h1 className="text-2xl font-semibold">Morning report · {row.local_date}</h1>
       <p className="text-sm text-gray-400">{row.timezone} · {row.state}{row.reason ? ` · ${row.reason}` : ""}</p>

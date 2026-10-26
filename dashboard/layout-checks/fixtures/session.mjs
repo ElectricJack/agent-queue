@@ -1,4 +1,4 @@
-// Canonical session detail fixtures.
+// Live and ended sessions for the canonical session page and shared terminal.
 import { NOW, POOL_SESSION, PROJECT, SESSION, TASK_IDS } from "./base.mjs";
 
 export const STARTED = NOW - 1_200;
@@ -33,6 +33,6 @@ export function showSession(body) {
 }
 
 export const routes = {
-  "POST /api/system/session-show": showSession,
   "POST /api/system/session-attach": () => ({ attach_command: "tmux attach -t " + "worker".repeat(40) }),
+  "POST /api/system/session-show": showSession,
 };

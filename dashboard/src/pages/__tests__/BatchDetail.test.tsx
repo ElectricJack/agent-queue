@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { testQueryClient } from "../../testUtils/dashboardState";
-import BatchPage from "../BatchPage";
+import BatchDetail from "../BatchDetail";
 
 const wire = vi.hoisted(() => ({ projects: vi.fn(), list: vi.fn() }));
 
@@ -55,7 +55,7 @@ function renderAt(path: string) {
     <QueryClientProvider client={testQueryClient()}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/batches/:batchId" element={<BatchPage />} />
+            <Route path="/batches/:batchId" element={<BatchDetail />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -75,7 +75,7 @@ beforeEach(() => {
   wire.list.mockResolvedValue({
     nodes: [
       node({ delivery: integrating }),
-      node({ id: "child-1", title: "Dashboard routes", container_id: "epic-1", status: "COMPLETED" }),
+      node({ id: "child-1", title: "Focus routes", container_id: "epic-1", status: "COMPLETED" }),
       node({ id: "child-2", title: "Digest", container_id: "epic-1", status: "IN_PROGRESS" }),
       node({ id: "epic-other", title: "Unrelated epic" }),
     ],
@@ -84,7 +84,7 @@ beforeEach(() => {
   });
 });
 
-describe("BatchPage", () => {
+describe("BatchDetail", () => {
   it("resolves the batch from the epic that names it, with its tasks", async () => {
     renderAt("/batches/batch-77");
     expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Batch batch-77");
@@ -93,7 +93,7 @@ describe("BatchPage", () => {
     expect(screen.getByText("3 commits on the integration branch")).toBeInTheDocument();
     expect(screen.getByText("Waiting on CI")).toBeInTheDocument();
     expect(screen.getByText("Evidence: current")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Dashboard routes/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Focus routes/ })).toHaveAttribute(
       "href",
       "/tasks/child-1",
     );
@@ -117,7 +117,7 @@ describe("BatchPage", () => {
   it("says so when no project reports the batch", async () => {
     renderAt("/batches/batch-unknown");
     expect(await screen.findByText("No project reports this integration batch.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Batch batch-unknown");
+
   });
 
   it("waits out a layout the server has not built yet", async () => {

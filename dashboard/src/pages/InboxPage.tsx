@@ -1,7 +1,8 @@
 import { AskInbox } from "../components/asks/AskInbox";
 
 export default function InboxPage() {
-  return <div className="h-full overflow-y-auto [overflow-wrap:anywhere]">
-    <h1 className="px-3 pt-3 text-xl font-semibold">Requests</h1><AskInbox />
+  return <div className="dashboard-page h-full overflow-y-auto p-3 sm:p-6">
+    <h1 className="text-xl font-semibold">Needs you</h1>
+    <AskInbox />
   </div>;
 }

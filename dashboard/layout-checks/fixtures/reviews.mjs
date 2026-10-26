@@ -47,6 +47,7 @@ function ask(body) {
 
 export const routes = {
   "POST /api/review/ask-show": ask,
+  "POST /api/review/ask-list": () => ({ success: true, items: [], count: 0, snapshot_at: 1, source_health: "healthy" }),
   "GET /api/reviews/pull-requests/summary": () => pullRequests,
   "POST /api/review/show": review,
 };

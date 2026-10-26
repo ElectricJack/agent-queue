@@ -6,6 +6,7 @@ import { useProjects } from "./api/hooks";
 import { useShellPreferences } from "./shell/useShellPreferences";
 import { loadRecords, loadWorkspaceGraph } from "./routeChunks";
 import RecordsRedirect from "./pages/records/RecordsRedirect";
+import LegacyFocusRedirect from "./shell/LegacyFocusRedirect";
 import { isCompactViewport } from "./hooks/useCompactViewport";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
@@ -44,27 +45,9 @@ const PlanPage = lazy(() => import("./pages/PlanPage"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 const AskPage = lazy(() => import("./pages/AskPage"));
-const InboxPage = lazy(() => import("./pages/InboxPage"));
 const EscalationPage = lazy(() => import("./pages/EscalationPage"));
-const BatchPage = lazy(() => import("./pages/BatchPage"));
-
-/** Old Discord links keep their object, filters, process pin and fragment. */
-function FocusRedirect() {
-  const { pathname, search, hash } = useLocation();
-  const suffix = pathname.slice("/focus".length).replace(/\/$/, "");
-  const params = new URLSearchParams(search);
-  let destination = "/command-center";
-  if (/^\/(tasks|sessions|reports|asks|reviews|escalations|batches)\/[^/]+\/?$/.test(suffix) || suffix === "/inbox") {
-    destination = suffix;
-  } else if (suffix === "/conversations" || suffix.startsWith("/conversations/")) {
-    destination = "/conversations";
-    if (suffix.startsWith("/conversations/")) params.set("conversation", decodeURIComponent(suffix.slice("/conversations/".length)));
-  } else if (params.get("project")) {
-    destination = workspaceHref(params.get("project")!, "tasks-knowledge");
-    params.delete("project");
-  }
-  return <Navigate replace to={destination + (params.size ? `?${params}` : "") + hash} />;
-}
+const InboxPage = lazy(() => import("./pages/InboxPage"));
+const BatchDetail = lazy(() => import("./pages/BatchDetail"));
 
 /** Index redirects must retain the shared URL-backed task filters. */
 function WorkspaceIndexRedirect() {
@@ -176,6 +159,7 @@ function RouteFallback() {
 }
 
 export default function App() {
+  // A compact first view starts with the page visible, even if a desktop left a pane open.
   const [suppressRestore] = useState(isCompactViewport);
   return (
     <ShellPaneProvider suppressRestore={suppressRestore}>
@@ -183,7 +167,7 @@ export default function App() {
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="plans/:taskId" element={<PlanPage />} />
-          <Route path="focus/*" element={<FocusRedirect />} />
+          <Route path="focus/*" element={<LegacyFocusRedirect />} />
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
@@ -192,7 +176,7 @@ export default function App() {
             <Route path="inbox" element={<InboxPage />} />
             <Route path="asks/:askId" element={<AskPage />} />
             <Route path="escalations/:escalationId" element={<EscalationPage />} />
-            <Route path="batches/:batchId" element={<BatchPage />} />
+            <Route path="batches/:batchId" element={<BatchDetail />} />
             <Route path="waiting" element={<WaitingOn />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="host-shell" element={<HostShell />} />

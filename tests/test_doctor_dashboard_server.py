@@ -452,12 +452,12 @@ def _shell_probe(monkeypatch, answer=(200, "")):
         seen.append(origin)
         return answer
 
-    monkeypatch.setattr(checks, "_dashboard_shell_probe", probe)
+    monkeypatch.setattr(checks, "_shell_probe", probe)
     return seen
 
 
 def _no_probe(monkeypatch, why: str) -> None:
-    monkeypatch.setattr(checks, "_dashboard_shell_probe", lambda origin: pytest.fail(why))
+    monkeypatch.setattr(checks, "_shell_probe", lambda origin: pytest.fail(why))
 
 
 def test_public_url_unset_warns_with_the_tailscale_serve_recipe(monkeypatch):
@@ -604,19 +604,19 @@ def shell_server():
         server.server_close()
 
 
-def test_dashboard_shell_probe_against_a_real_server(shell_server):
+def test_shell_probe_against_a_real_server(shell_server):
     origin, routes = shell_server
 
-    assert checks._dashboard_shell_probe(origin, timeout=5)[1] == "GET / answered 404"
+    assert checks._shell_probe(origin, timeout=5)[1] == "GET / answered 404"
     routes["/"] = (200, "application/json")
-    assert "HTML shell" in checks._dashboard_shell_probe(origin, timeout=5)[1]
+    assert "HTML shell" in checks._shell_probe(origin, timeout=5)[1]
     routes["/"] = (200, "text/html; charset=utf-8")
-    assert checks._dashboard_shell_probe(origin, timeout=5) == (200, "")
+    assert checks._shell_probe(origin, timeout=5) == (200, "")
 
 
-def test_dashboard_shell_probe_tells_a_closed_port_apart():
+def test_shell_probe_tells_a_closed_port_apart():
     port = unused_port()
-    status, why = checks._dashboard_shell_probe(f"http://127.0.0.1:{port}", timeout=5)
+    status, why = checks._shell_probe(f"http://127.0.0.1:{port}", timeout=5)
 
     assert status == 0
     assert why == f"127.0.0.1:{port} is not listening (connection refused)"

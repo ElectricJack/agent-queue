@@ -15,7 +15,7 @@ export function AskDetail({ askId }: { askId: string }) {
     action.action === "decide" || action.action === "prepare_decision"
       ? { ...action, enabled: false, disabled_reason: "Refresh request context before deciding" } : action) } : query.data;
   const ask = data.ask;
-  return <article className="space-y-3 p-3">
+  return <article className="dashboard-page h-full space-y-3 overflow-y-auto p-3 sm:p-6">
     {query.isError && <p role="alert">Request refresh failed. Your draft is preserved.
       <button className="min-h-11 px-3" onClick={() => void query.refetch()}>Retry</button></p>}
     <header><h1 className="text-xl font-semibold">{ask.context.title}</h1>

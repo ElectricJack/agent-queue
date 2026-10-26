@@ -492,7 +492,7 @@ def _reason(error: BaseException) -> str:
     return str(error) or type(error).__name__
 
 
-def _dashboard_shell_probe(origin: str, timeout: float = _PROBE_SECONDS) -> tuple[int, str]:
+def _shell_probe(origin: str, timeout: float = _PROBE_SECONDS) -> tuple[int, str]:
     """``(status, why)`` for ``GET <origin>/``; blocking.
 
     ``why`` is empty when the dashboard shell answered (200, HTML).  A
@@ -587,7 +587,7 @@ async def _check_public_url(ctx: DoctorContext) -> CheckResult:
                 data=data,
             )
 
-    status, failure = await asyncio.to_thread(_dashboard_shell_probe, origin)
+    status, failure = await asyncio.to_thread(_shell_probe, origin)
     data["shell_status"] = status
     if failure:
         detail = f"dashboard.server.public_url {origin}: {failure}"

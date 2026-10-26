@@ -35,6 +35,7 @@ export default function TaskSessions({ taskId, onOpenSession, fromTaskPane = fal
                   <Link
                     to={`/sessions/${encodeURIComponent(attempt.session_id)}?attempt=${encodeURIComponent(attempt.id)}&taskId=${encodeURIComponent(taskId)}`}
                     state={{ from, taskPane: fromTaskPane ? { taskId } : undefined, terminalFocus: true }}
+                    // Close the host pane when opening a session attempt.
                     onClick={onOpenSession}
                     title={name} className="min-w-0 truncate text-sm font-medium text-indigo-400 hover:underline"
                   >{name}</Link>

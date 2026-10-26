@@ -249,10 +249,9 @@
 .pb-safe { padding-bottom: var(--safe-bottom); }
 .px-safe { padding-left: var(--safe-left); padding-right: var(--safe-right); }
 
-/* Shared controls remain usable at phone widths. */
+/* Primary controls remain usable when the shell collapses on phones. */
 @media (max-width: 767.98px) {
-  [data-primary-control],
-  :where(.app-viewport, [role="dialog"]) :where(button, select, summary, input:not([type="checkbox"]):not([type="radio"]), textarea) {
+  [data-primary-control] {
     min-height: 44px;
     min-width: 44px;
   }
@@ -264,4 +263,21 @@
     min-height: 44px;
     min-width: 44px;
   }
+}
+
+/* Detail pages contain untrusted prose, URLs and long task/session identifiers. */
+.dashboard-page {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dashboard-page :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select) {
+  min-width: 0;
+  max-width: 100%;
+}
+@media (max-width: 767.98px) {
+  .dashboard-page :where(button, select, summary, textarea, input:not([type="checkbox"]):not([type="radio"])),
+  [aria-label="Navigation"] :where(button, a) {
+    min-height: 44px;
+  }
+  .dashboard-page button { min-width: 44px; }
 }

@@ -1,7 +1,7 @@
-"""Canonical full-dashboard paths for posted links, at every viewport width.
+"""Canonical paths for posted links into the responsive dashboard.
 
-Previously posted /focus/* links remain client-side redirects. Route builders
-quote object identifiers so they cannot escape their path segment.
+The origin is selected by ``src.remote_links``. Old ``/focus/*`` links are
+redirected by the client; new posts always use the main dashboard routes.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def escalation_path(escalation_id: str) -> str:
 
 
 def conversation_path(conversation_id: str) -> str:
-    return f"/conversations/{quote(conversation_id, safe='')}"
+    return f"/conversations?conversation={quote(conversation_id, safe='')}"
 
 
 def batch_path(batch_id: str) -> str:
@@ -54,7 +54,7 @@ class LinkTarget:
 
     name: str
     path: Callable[[str], str]
-    route: str
+    desktop: str
     status: str
 
 
@@ -68,6 +68,6 @@ SCHEME: dict[str, LinkTarget] = {
         LinkTarget("escalation", escalation_path, "/escalations/{id}", "live"),
         LinkTarget("batch", batch_path, "/batches/{id}", "live"),
         LinkTarget("inbox", lambda _id="": inbox_path(), "/inbox", "live"),
-        LinkTarget("conversation", conversation_path, "/conversations/{id}", "live"),
+        LinkTarget("conversation", conversation_path, "/conversations?conversation={id}", "live"),
     )
 }

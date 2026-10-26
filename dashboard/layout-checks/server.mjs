@@ -142,13 +142,13 @@ export async function startStubServer({ distDir, fixtures }) {
     const url = new URL(req.url, "http://stub.invalid");
     const body = await readBody(req);
     requests.push({ method: req.method, path: url.pathname, body });
+    if (/^\/api\/sessions\/[^/]+\/stream$/.test(url.pathname)) {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+      res.write(`data: ${JSON.stringify({ source: "transcript", uuid: "fixture-transcript", type: "assistant", text: "Saved session transcript", ts: 100 })}\n\n`);
+      return;
+    }
     const pane = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pane$/);
     if (pane) return openPane(decodeURIComponent(pane[1]), res);
-    // SessionDetail reads transcripts alongside the terminal. End this fixture
-    // stream immediately with 204 (EventSource must not reconnect).
-    if (/^\/api\/sessions\/[^/]+\/stream$/.test(url.pathname)) {
-      res.writeHead(204); return res.end();
-    }
     const access = url.pathname.match(/^\/ws\/terminal\/([^/]+)$/);
     if (access && req.method === "GET") {
       // The access probe a browser makes after a refused upgrade (WebSocket's

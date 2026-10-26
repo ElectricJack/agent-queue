@@ -10,8 +10,8 @@ import {
   FolderPlusIcon,
   PlusIcon,
   DocumentTextIcon,
-  InboxIcon,
   ChatBubbleLeftRightIcon,
+  InboxIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import AgentFlock from "./AgentFlock";
@@ -187,10 +187,11 @@ export default function LeftRail({ variant = "column", onClose }: { variant?: "c
           </NavLink>
           <NavLink to="/inbox" data-listnav="1" data-primary-control className={({ isActive }) => linkClass(isActive)}>
             <InboxIcon className="h-4 w-4" />
-            <span>Requests</span>
+            <span>Needs you</span>
           </NavLink>
           <NavLink to="/conversations" data-listnav="1" data-primary-control className={({ isActive }) => linkClass(isActive)}>
-            <ChatBubbleLeftRightIcon className="h-4 w-4" /><span>Conversations</span>
+            <ChatBubbleLeftRightIcon className="h-4 w-4" />
+            <span>Conversations</span>
           </NavLink>
         </div>
         <AgentFlock />
