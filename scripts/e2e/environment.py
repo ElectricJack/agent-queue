@@ -98,15 +98,7 @@ def world_env(
             raise ValueError("hermetic E2E requires its H3 environment manifest")
         declaration = json.loads(Path(manifest).read_text())
         fields = declaration["runtime"]
-        runtime = Runtime(
-            python=Path(fields["python"]),
-            read_only=tuple(map(Path, fields["read_only"])),
-            bin_dirs=tuple(map(Path, fields["bin_dirs"])),
-            library_dirs=tuple(map(Path, fields["library_dirs"])),
-            git_exec_path=Path(fields["git_exec_path"]) if fields["git_exec_path"] else None,
-            shell=Path(fields["shell"]) if fields["shell"] else None,
-            env_executable=Path(fields["env_executable"]) if fields["env_executable"] else None,
-        )
+        runtime = Runtime.from_manifest(fields)
         root = Path(declaration["root"])
         environment = TestEnvironment(root, runtime, declaration["env"], (root,))
         python_paths = (*map(Path, declaration["python_paths"]), *python_paths)
