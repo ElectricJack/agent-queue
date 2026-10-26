@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3630,
+ 'authorized_owned_delta': 3646,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1137,8 +1137,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83497,
- 'measured_owned_total': 159129,
+ 'measured_engine_lines': 83513,
+ 'measured_owned_total': 159145,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1801,7 +1801,27 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
                                                    'category.',
                                          'referenced_decision': 'size-cap-delegation-2026-10-23',
                                          'source_revision': 'ebb6a75bb',
-                                         'task_id': 'sound-meadow-89'}}
+                                         'task_id': 'sound-meadow-89'},
+ 'deleted_epic_retained_selection_composition': {'authorized_engine_delta': 16,
+ 'authorized_owned_delta': 16,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/legacy_backfill.py': 16},
+ 'decision_message_id': 'msg-9b501b0a8c2f4c258c07a43cb924a8da',
+ 'dev_source_revision': '7bff0f25e71c4502b9f8cd9266fb047f0f6cc3fc',
+ 'measured_engine_lines': 83434,
+ 'measured_owned_total': 158864,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83418,
+ 'previous_measured_owned_total': 158848,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved +16 owned/engine lines for authoritative '
+           'deleted-parent selection and default-target reproof of retained child '
+           'completions, including retired origins. Compose on current dev; preserve all '
+           'historical grants, original baselines and ownership classifications, zero '
+           'remaining headroom and no new storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'task_id': 'stark-rapids-81'}}
 
 
 def integration_table(name: str) -> bool:

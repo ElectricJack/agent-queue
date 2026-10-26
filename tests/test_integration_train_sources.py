@@ -8774,8 +8774,10 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     # Retain each child's current completion witness before deleting the epic ref.
     # Git containment alone does not release this deletion fence.
     async with db._engine.connect() as conn:
-        assert "child" in await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref)
-    await GitTruthReconciler(db, train.lane_for.git, data_dir=tmp_path).tick(time.time())
+        hold = await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref)
+        assert "child" in hold
+        assert "has no retained completion witness" in hold
+    await GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path).tick(case.now[0])
     async with db._engine.connect() as conn:
         assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
 
