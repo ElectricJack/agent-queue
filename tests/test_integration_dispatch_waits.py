@@ -281,6 +281,12 @@ async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_stat
     case.service.registry.observe = observe
     case.service.listener.retry_batch_size = 1
     await case.service.listener.tick()
+    observe.assert_not_awaited()
+    assert all(row["outcome"] == "pending" for row in await rows(world))
+    # Fresh pending observations share the listener's progress cadence, including
+    # recovery of an older daemon's dispatched hints. Wait until they are due.
+    case.now[0] += case.service.listener.safety_seconds + 1
+    await case.service.listener.tick()
     assert observe.await_count == 1
     assert all(row["outcome"] == "pending" for row in await rows(world))
     await case.service.listener.tick()
