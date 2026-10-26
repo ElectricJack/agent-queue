@@ -59,7 +59,34 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3616,
+      "authorized_owned_delta": 3667,
+      "bazel_backend_selection_composition": {
+        "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 51,
+        "authorized_shared_owned_delta": 51,
+        "authorized_table_delta": 0,
+        "batch_id": "train-4eaf63ed79ce2dfa10986376d0d8b816",
+        "charged_files": {
+          "src/cli/test_runner.py": 51
+        },
+        "decision_message_id": "msg-bb1e6d92f91045cd8d823269cabfd72c",
+        "dev_source_revision": "45d3b878f76f8c9c7bc450959a4bc218c0789a2a",
+        "measured_engine_lines": 83434,
+        "measured_owned_total": 158915,
+        "measured_source_revision": "88e01797dd08d4340b20ffb95d5ad537510b7d07",
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83434,
+        "previous_measured_owned_total": 158864,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +51 shared-owned lines for the frozen Bazel backend-selection command changes on the retained starting head. Preserve original baselines, all historical grants and ownership classifications, zero remaining headroom, the s4_modules expiry and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "request_message_id": "msg-6036da6f47b8430ba57c1a3ffdb683b2",
+        "source_revision": "d8d689ee345e610843884c394a566f2e038797b5",
+        "task_id": "amber-summit-41.4",
+        "thread_id": "batch-fixer-bazel-size-51"
+      },
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -394,6 +421,25 @@
         "supervisor_grant_reference": "comment-1b7fad96f62c49979956ff5fb09df8e3",
         "task_id": "sharp-grove-84"
       },
+      "delivery_watchdog_epoch23_merge_composition": {
+        "authorized_engine_delta": 61,
+        "authorized_owned_delta": 62,
+        "authorized_shared_owned_delta": 1,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b",
+        "measured_engine_lines": 83674,
+        "measured_owned_total": 159166,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83613,
+        "previous_measured_owned_total": 159104,
+        "previous_measured_table_count": 45,
+        "reason": "Carry the unchanged approved watchdog ownership delta onto current dev. Preserve both implementations, every historical grant, baseline and ownership classification; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "92b56b120a20e48bf0b9d4cdc06e6624d9a2e788",
+        "supervisor_grant_reference": "comment-1b7fad96f62c49979956ff5fb09df8e3",
+        "task_id": "sharp-grove-84"
+      },
       "delivery_watchdog_ownership_composition": {
         "authorized_engine_delta": 63,
         "authorized_owned_delta": 64,
@@ -652,7 +698,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 83674,
-      "measured_owned_total": 159115,
+      "measured_owned_total": 159166,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -1234,7 +1280,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159115,
+    "owned_total_cap": 159166,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

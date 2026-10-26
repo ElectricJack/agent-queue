@@ -2,10 +2,9 @@
 
 Discord posts are read on a phone, in a channel that also carries a swarm's
 noise, so the spec fixes a size for every kind of message and fixes the voice:
-a leading glyph from a fixed set, plain prose, and **exactly one** link, last,
-bare and wrapped in ``<>`` so Discord renders no preview card
-(``2026-10-03-discord-as-a-chat-extension-of-the-supervisor.md`` §3.1).  §3.2
-then gives each post its line and character budget.
+a leading glyph from a fixed set, plain prose, and a dashboard hyperlink last.
+Authored HTTP(S) links are preserved too; the 2026-10-26 link correction
+supersedes the original one-link restriction. §3.2 gives each post its budget.
 
 The budgets are data here so a producer cannot opt out: it builds the body
 lines it wants and calls :func:`compose`, which cuts them to the row's budget
@@ -34,6 +33,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from src.dashboard_paths import dashboard_href
+from src.discord.links import LINK_PATTERN, hyperlink, links_in, reserve_links
 
 #: Every cut ends with exactly one of these.
 ELLIPSIS = "…"
@@ -131,6 +131,13 @@ def cut(text: str, limit: int) -> str:
         return ""
     if len(text) <= limit:
         return text
+    links = links_in(text)
+    if links:
+        tail = "\n".join(reserve_links(links, room=limit))
+        prose = LINK_PATTERN.sub("", text)
+        room = limit - len(tail) - 1
+        prefix = cut(prose, room) if room > 0 else ""
+        return "\n".join(part for part in (prefix, tail) if part)
     return text[: limit - 1].rstrip() + ELLIPSIS
 
 
@@ -154,7 +161,7 @@ def first_line(text: str) -> str:
 
 
 def link_line(base_url: str, path: str = "", *, notice: str = "") -> str:
-    """The post's one link line: a bare URL in ``<>``, or why there is none.
+    """An explicit dashboard hyperlink, or a visible explanation of its absence.
 
     ``base_url`` is the origin :mod:`src.remote_links` resolved and ``path`` one
     of :mod:`src.dashboard_paths`' §6.1 paths; this is the only place a posted
@@ -164,11 +171,9 @@ def link_line(base_url: str, path: str = "", *, notice: str = "") -> str:
     """
     base = (base_url or "").strip().rstrip("/")
     if not base:
-        return (notice or "").strip()
-    url = dashboard_href(base, path) if path else base
-    if any(char.isspace() for char in url) or ">" in url or "<" in url:
         return notice.strip() or LINK_UNAVAILABLE
-    return f"<{url}>"
+    url = dashboard_href(base, path) if path else base
+    return hyperlink(url, unavailable_notice=notice.strip() or LINK_UNAVAILABLE)
 
 
 def _joined(lines: Sequence[str], tail: Sequence[str]) -> str:
@@ -196,9 +201,17 @@ def compose(
     itself (a delivery marker); it can never loosen the budget.
     """
     limit = budget.chars if chars is None else min(chars, budget.chars)
-    lines = [first_line(line) for line in body]
-    lines = [line for line in lines if line][: budget.body_lines or None]
+    all_lines = [first_line(line) for line in body if line and line.strip()]
+    lines = all_lines[: budget.body_lines or None]
     tail = [part.strip() for part in (marker, link) if part and part.strip()]
+    if lines != all_lines or _size(lines, tail) > limit:
+        # Move authored URLs out of prose before cutting it. Links from lines
+        # beyond the line cap still reach Discord, and no cut changes a target.
+        authored_links = links_in("\n".join(all_lines))
+        if authored_links:
+            retained = reserve_links(authored_links, room=limit - _size([], tail) - 1)
+            tail = [*retained, *tail]
+            lines = [LINK_PATTERN.sub("", line).strip() for line in lines]
     while lines and _size(lines, tail) > limit:
         dropped = lines.pop()
         if lines:
@@ -224,15 +237,25 @@ def split_posts(text: str, budget: PostBudget, *, link: str = "") -> list[str]:
     if not remaining:
         return [link] if link else []
     if len(remaining) <= budget.chars:
-        return [remaining]
+        complete = "\n".join(part for part in (remaining, link) if part)
+        if len(complete) <= budget.chars:
+            return [complete]
     tail = " ".join(part for part in (ELLIPSIS, link) if part)
     if len(tail) > budget.chars:
         raise ValueError("conversation link exceeds the post budget")
     posts: list[str] = []
     for index in range(budget.posts):
         last = index == budget.posts - 1 or len(remaining) <= budget.chars
+        if last and (authored_links := links_in(remaining)):
+            retained = reserve_links(authored_links, room=budget.chars - len(tail) - 1)
+            tail = "\n".join([*retained, tail])
+            remaining = LINK_PATTERN.sub("", remaining).strip()
         room = max(budget.chars - len(tail) - 1, 0) if last else budget.chars
         boundary = min(len(remaining), room)
+        for match in LINK_PATTERN.finditer(remaining):
+            if match.start() < boundary < match.end():
+                boundary = match.start()
+                break
         if boundary < len(remaining):
             separator = remaining.rfind(" ", 0, boundary + 1)
             if separator > 0:
@@ -241,7 +264,8 @@ def split_posts(text: str, budget: PostBudget, *, link: str = "") -> list[str]:
         if last:
             posts.append(" ".join(part for part in (chunk, tail) if part))
             break
-        posts.append(chunk)
+        if chunk:
+            posts.append(chunk)
         remaining = remaining[boundary:].lstrip()
     return posts
 
