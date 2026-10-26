@@ -1,6 +1,36 @@
 load("//tools/bazel:python_data.bzl", "python_repository_data")
 load("@rules_python//python:defs.bzl", "py_library")
 load("@pypi//:requirements.bzl", "requirement")
+load("//tools/bazel:generator_inputs.bzl", "GENERATOR_INPUTS")
+
+# Data for the generator actions, not a catch-all application library. The
+# checked inventory follows the spec/projection imports and scanned resources.
+filegroup(
+    name = "generator_sources",
+    # Discovery must see additions as well as edits to the checked closure.
+    # The inventory builder scans source module names, test ASTs and resource
+    # directories; declaring these data inputs also makes stale inventory fail
+    # inside Bazel, where undeclared checkout files are deliberately invisible.
+    srcs = sorted({path: True for path in GENERATOR_INPUTS + glob([
+        "src/**/*.py",
+        "scripts/*.py",
+        "tests/**/*.py",
+        "tests/selection_*.yaml",
+        "tests/fixtures/generated_sources/**",
+        "tests/fixtures/contracts/command_audit_modules/**",
+        "src/profiles/defaults/**",
+        "src/prompts/**",
+        "src/sessions/default_harnesses/**",
+        "docs/reference/playbook-commands/*.md",
+    ], exclude = ["**/__pycache__/**", "**/.ruff_cache/**", "**/*.pyc"])}.keys()),
+    visibility = ["//tools/bazel:__pkg__"],
+)
+
+exports_files([
+    "package-lock.json",
+    "packages/aq-ts-client/package.json",
+    "scripts/regenerate-ts-client.sh",
+], visibility = ["//tools/bazel:__pkg__"])
 
 # Bootstrap source dependency for H1; never installs the generated client.
 py_library(

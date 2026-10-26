@@ -6473,3 +6473,9 @@ test_suite(
     tags = ["manual"],
 )
 # END B1 PYTHON SUITES
+
+test_suite(
+    name = "generated",
+    tests = ["//tools/bazel:generated_check"],
+    visibility = ["//visibility:public"],
+)

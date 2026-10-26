@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SPEC_FILE="$ROOT_DIR/openapi.json"
 OUTPUT_DIR="$ROOT_DIR/packages/aq-ts-client/src"
+PYTHON="${AQ_GENERATOR_PYTHON:-python3}"
 
 # npx can select an unrelated cached release in a fresh worker slot. Require
 # the checkout's locked install, including the generator's TypeScript peer.
@@ -47,7 +48,7 @@ case "${1:-}" in
     --offline)
         # See src/api/spec.py — the spec needs no daemon, only the checkout.
         echo "Building OpenAPI spec offline from this checkout ..."
-        (cd "$ROOT_DIR" && python -m src.api.spec "$SPEC_FILE")
+        (cd "$ROOT_DIR" && "$PYTHON" -m src.api.spec "$SPEC_FILE")
         ;;
     *)
         # Rendered through src.api.spec (not written raw) so the committed
@@ -55,7 +56,7 @@ case "${1:-}" in
         # tests/test_api_client_contract.py pins.  See regenerate-api-client.sh.
         echo "Fetching OpenAPI spec from running daemon..."
         curl -sf http://127.0.0.1:8081/openapi.json \
-            | (cd "$ROOT_DIR" && python3 -m src.api.spec --stdin "$SPEC_FILE") \
+            | (cd "$ROOT_DIR" && "$PYTHON" -m src.api.spec --stdin "$SPEC_FILE") \
             || { echo "Failed to fetch spec — is the daemon running? Use --offline to build it from this checkout, or --from-file to use the saved spec."; exit 1; }
         ;;
 esac

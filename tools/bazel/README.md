@@ -100,3 +100,50 @@ libraries, archive corruption and unsupported ABI.
 Without `AQ_BAZEL_SMOKE`, the two acceptance cases explicitly skip; that is not
 evidence of toolchain acceptance. This smoke does not start PostgreSQL or tmux
 sessions and does not establish parity for the full application test suite.
+
+## B2 deterministic generator actions
+
+`//checks:generated` regenerates the tracked projections in a writable action
+scratch tree and compares filenames and bytes with the checked-in outputs.
+It also compares the ignored TypeScript sources with a separate invocation of
+the locked legacy generator. The reference runs the offline Python client script
+and umbrella `--check`, then requires an empty Git diff. Recorded playbooks keep
+their approved inputs and provenance; generation never reauthors approval data.
+
+The public `//tools/bazel:typescript` directory artifact contains
+`packages/aq-ts-client/src/**`. B3 can depend on its `DefaultInfo` files or
+`OutputGroupInfo.tree`; `OutputGroupInfo.manifest` provides relative filenames
+and SHA-256 digests. It depends on the generated OpenAPI artifact, locked Node,
+and the hash-verified npm closure. It does not install packages or mutate the
+shared editable Python environment. Python generation uses the pinned wheel
+closure, including openapi-python-client and Ruff, and declared native tools.
+
+`generator_inputs.bzl` follows transitive Python imports, discovery registries,
+scanned test/resources, templates, locks and recorded inputs. Its drift check
+rejects an outdated inventory. After intentional input/lock changes, run:
+
+```bash
+python tools/bazel/generator_inputs.py --write
+```
+
+`generator_npm.lock.json` is a derived subset of the authoritative root npm lock,
+including nested dependency locations. Repository resolution checks it against
+that lock and downloads exact integrity-verified archives, without a package
+solver or lifecycle scripts. This is only the generator closure; B3 owns the
+dashboard dependency graph.
+
+On a shared AQ box, admit the two-root acceptance through the existing gate:
+
+```bash
+POSTGRES_TEST_DSN=<disposable-test-dsn> \
+AQ_BAZEL_GENERATORS=/absolute/path/to/bazel-8.3.1 \
+AQ_BAZEL_GENERATOR_EVIDENCE=/absolute/path/to/evidence \
+aq test tests/test_bazel_manifest.py -k clean_root_generator -p no:xdist -s
+```
+
+Each root has a fresh HOME, repository cache and output base, consumes the same
+source snapshot, resolves in lockfile error mode and runs
+`bazel test --config=ci --jobs=1 //checks:generated`. Logs, BEP files and both
+normalized TypeScript manifests are retained in the evidence directory. Missing
+opt-in settings skip acceptance explicitly. Actions clear inherited credentials
+and select declared tools; broader H2 launch/network isolation remains separate.
