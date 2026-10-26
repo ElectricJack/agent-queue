@@ -141,6 +141,7 @@ function project(body) {
 }
 
 export const routes = {
+  "POST /api/wait/explain": () => ({ success: true, waits: [] }),
   "GET /health": () => ({ status: "ok" }),
   "GET /ready": () => ({ ready: true }),
   "POST /api/project/list": () => projects,
