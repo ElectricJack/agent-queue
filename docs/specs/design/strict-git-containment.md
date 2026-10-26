@@ -116,6 +116,7 @@ The final `policy_docs` retirement ratchet must cover all entries before activat
 | `src/integration/drain_owners.py` | Receipt-backed owner release | admission; policy_docs |
 | `src/integration/removal_guard.py` | Receipt fallback for hierarchical archive/delete | admission |
 | `src/integration/cleanup.py` | Batch receipt cleanup gate and descendant receipt projection | admission; dispatch; policy_docs |
+| `src/integration/delivery_branches.py::unrecorded_epic_children` | Require each completed child's current retained Git witness before deleting its epic ref; deletion fence specified in `branch-retirement.md`, never delivery proof | cleanup; policy_docs |
 | `src/integration/release.py` | Terminal batch release proof from receipt ordinals/reservations | dispatch; policy_docs |
 | `src/integration/cutover.py` | Receipt inventory, target retagging writer and trigger controls | cutover |
 | `src/integration/task_deletion.py` | Receipt snapshot for historical deletion audit | policy_docs; retain audit without delivery authority |
@@ -183,7 +184,13 @@ cutover) and `records.ParentEpisodeRecords.record_disposition` (failed/withdrawn
 lifecycle audit, close_merge). `task_deletion` and `legacy_sqlite_import` copy
 rows through generic helpers. `tests/test_delivery_receipt_retirement.py` pins
 these writers and every module that still names the table with its owner;
-both sets only shrink, and admission consumers read none. Historical
+both legacy sets only shrink, and admission consumers read none. The later
+`branch-retirement.md` child-retention fence has a separate, function-scoped
+reader exception: `delivery_branches.unrecorded_epic_children` checks the
+reconciler's retained witness against the current completion and task version
+before permitting epic deletion. It neither proves delivery nor changes the
+three permitted writers. The ratchet pins this exception to that function;
+all other receipt access in the module remains forbidden. Historical
 tables/foreign keys remain until rollback retention and a separately approved
 destructive migration permit deletion.
 

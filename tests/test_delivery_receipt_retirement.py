@@ -4,6 +4,9 @@ Spec 2026-10-12 fast-smooth-integration §3.3 and the receipt consumer inventory
 in ``docs/specs/design/strict-git-containment.md``. The pinned sets below only
 shrink: a new reader or writer of ``task_delivery_receipts`` fails here until
 the inventory names it and its owner.
+
+The branch-retirement cleanup fence has a separate, function-scoped exception:
+it requires a retained child witness before deletion and grants no delivery.
 """
 
 from __future__ import annotations
@@ -52,6 +55,12 @@ READERS = {
     "src/integration/suspended_parent_recovery.py": "cutover: historical recovery",
     "src/integration/task_deletion.py": "audit: deletion snapshot",
     "src/integration/truth_reconciler.py": "audit after Git verification",
+}
+
+# branch-retirement.md requires this deletion fence for current child sources.
+# Keep it separate from the shrinking legacy inventory and pin its exact scope.
+CLEANUP_WITNESS_READERS = {
+    "src/integration/delivery_branches.py": "unrecorded_epic_children",
 }
 
 # Admission projects Git-first containment only (strict-git-containment.md,
@@ -108,8 +117,14 @@ def test_only_pinned_audit_statements_write_receipts():
 def test_receipt_readers_only_shrink_and_admission_reads_none():
     readers = {path for path, tree in _sources()
                if any(_names_table(node) for node in ast.walk(tree))}
-    assert readers == set(READERS)
+    assert readers == set(READERS) | set(CLEANUP_WITNESS_READERS)
     assert not readers.intersection(ADMISSION)
+    for path, scope in CLEANUP_WITNESS_READERS.items():
+        tree = dict(_sources())[path]
+        assert {
+            getattr(node, "name", "<module>") for node in tree.body
+            if any(_names_table(child) for child in ast.walk(node))
+        } == {scope}
 
 
 def test_retired_receipt_authority_is_absent():
