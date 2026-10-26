@@ -84,7 +84,10 @@ def aq_py_test(name, module, suite, nodes, module_spec, marker, postgres = True,
         # H2 owns user/mount/network/PID namespaces. Bazel's outer Linux sandbox
         # prevents the nested namespace setup; H2 still refuses every launch
         # whose isolation self-test fails.
-        tags = tags + ["no-sandbox"],
+        # Pure modules run serially without reserving a private PostgreSQL cluster.
+        # Memory stays configurable through the admitted runner's default resources.
+        tags = tags + ["no-sandbox", "resources:cpu:1",
+                       "resources:aq_pg:1" if postgres else "resources:aq_pg:0"],
         legacy_create_init = False,
     )
 

@@ -7,6 +7,14 @@ filegroup(name = "sources", srcs = [
         "notes/0.1.0.md",
         "notes/0.1.1.md",
     ])
+exports_files([
+        "notes/0.1.0.md",
+        "notes/0.1.1.md",
+    ])
+filegroup(name = "resources", srcs = [
+        "notes/0.1.0.md",
+        "notes/0.1.1.md",
+    ])
 py_library(
     name = "library",
     srcs = [

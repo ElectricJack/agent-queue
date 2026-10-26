@@ -932,7 +932,87 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
+HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'authorized_engine_delta': 0,
+                                             'authorized_owned_delta': 6,
+                                             'authorized_shared_owned_delta': 6,
+                                             'authorized_table_delta': 0,
+                                             'charged_files': {'src/test_dsn.py::postgres_test_dsn_error': 6},
+                                             'dev_source_revision': '4cb68c0ed8f744d5bbce144ab1f5e51e19ad6a41',
+                                             'measured_engine_lines': 83633,
+                                             'measured_owned_total': 159123,
+                                             'measured_table_count': 45,
+                                             'operator_decision': '6679052c',
+                                             'previous_measured_engine_lines': 83633,
+                                             'previous_measured_owned_total': 159117,
+                                             'previous_measured_table_count': 45,
+                                             'pull_request': 2094,
+                                             'reason': 'Exact supervisor-approved +6 owned/+0 '
+                                                       'engine/+0 tables for hand-landing PR 2094 '
+                                                       '(PostgreSQL test admission helper reached '
+                                                       'from the integration-owned aq test '
+                                                       'command). Existing inventory rules charge '
+                                                       'these six lines to shared ownership; no '
+                                                       'ownership rule or classification changes. '
+                                                       'Preserve all historical grants and '
+                                                       'measurements, the original baseline, zero '
+                                                       'remaining headroom, the s4_modules expiry '
+                                                       'and no new storage category.',
+                                             'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                             'source_revision': 'ebb3ef033b417486c329fe8c202b2f9348daf719',
+                                             'supervisor_decision_message_id': 'msg-216d06694f694f32a600007228ac11cc',
+                                             'task_id': 'stark-orbit-64'},
+ 'wait_listener_deadlock_restart_composition': {'authorized_engine_delta': 20,
+                                                'authorized_owned_delta': 13,
+                                                'authorized_table_delta': 0,
+                                                'charged_files': {'src/integration/check_reconciliation.py': 2,
+                                                                  'src/integration/checks.py': 18,
+                                                                  'src/waits/watchers/ci.py': -7},
+                                                'dev_source_revision': '5d5633e05e95f5ffb7d55d2e08fcdf45b8a35b2b',
+                                                'measured_engine_lines': 83633,
+                                                'measured_owned_total': 159117,
+                                                'measured_table_count': 45,
+                                                'operator_decision': '6679052c',
+                                                'previous_measured_engine_lines': 83613,
+                                                'previous_measured_owned_total': 159104,
+                                                'previous_measured_table_count': 45,
+                                                'pull_request': 2091,
+                                                'reason': 'Exact supervisor-approved +13 owned/+20 '
+                                                          'engine lines for hand-landing PR 2091 '
+                                                          '(wait listener restart on PostgreSQL '
+                                                          'deadlock in CIWatcher.lock_source). '
+                                                          'Preserve every historical grant, '
+                                                          'original baseline and ownership '
+                                                          'classification, zero remaining headroom '
+                                                          'and no new storage category.',
+                                                'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                'source_revision': '8ebd8b2174552fe250dcfa40170e1b8faf356b1b',
+                                                'task_id': 'keen-stone-97'},
+ 'claim_rejection_wait_dsn_merge_composition': {'task_id': 'solid-torrent-24',
+                                                'operator_decision': '6679052c',
+                                                'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                'source_revision': '8e05f9ad995f90e2fb0c4a5d2bbe0c5202cc5a87',
+                                                'dev_source_revision': '0d13d9185eefffde0d9541e7c4cd2165d28c071d',
+                                                'inherited_grants': ['bazel_dependency_dsn_helper_composition',
+                                                                     'wait_listener_deadlock_restart_composition'],
+                                                'inherited_owned_delta': 19,
+                                                'inherited_engine_delta': 20,
+                                                'previous_measured_owned_total': 159152,
+                                                'previous_measured_engine_lines': 83613,
+                                                'previous_measured_table_count': 45,
+                                                'measured_owned_total': 159171,
+                                                'measured_engine_lines': 83633,
+                                                'measured_table_count': 45,
+                                                'reason': 'Compose the published claim repair cap '
+                                                          'with the existing approved wait '
+                                                          'listener deadlock restart (+13 '
+                                                          'owned/+20 engine) and PostgreSQL test '
+                                                          'DSN helper (+6 shared owned/+0 engine) '
+                                                          'grants from dev. Preserve every '
+                                                          'historical grant, measurement and '
+                                                          'classification, zero remaining '
+                                                          'headroom, the s4_modules expiry and no '
+                                                          'new allowance or storage category.'},
+ 'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
                                          'authorized_shared_owned_delta': 51,
@@ -1283,7 +1363,7 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'appr
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3653,
+ 'authorized_owned_delta': 3672,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1487,8 +1567,8 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_backend_selection_composition': {'appr
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83613,
- 'measured_owned_total': 159152,
+ 'measured_engine_lines': 83633,
+ 'measured_owned_total': 159171,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,

@@ -14,6 +14,28 @@ filegroup(name = "sources", srcs = [
         "aq-tasks/SKILL.md",
         "aq-workspaces-and-git/SKILL.md",
     ])
+exports_files([
+        "aq-bazel-upgrade/SKILL.md",
+        "aq-cli/SKILL.md",
+        "aq-comms/SKILL.md",
+        "aq-knowledge/SKILL.md",
+        "aq-mini-projects/SKILL.md",
+        "aq-playbooks-and-gates/SKILL.md",
+        "aq-reviews/SKILL.md",
+        "aq-tasks/SKILL.md",
+        "aq-workspaces-and-git/SKILL.md",
+    ])
+filegroup(name = "resources", srcs = [
+        "aq-bazel-upgrade/SKILL.md",
+        "aq-cli/SKILL.md",
+        "aq-comms/SKILL.md",
+        "aq-knowledge/SKILL.md",
+        "aq-mini-projects/SKILL.md",
+        "aq-playbooks-and-gates/SKILL.md",
+        "aq-reviews/SKILL.md",
+        "aq-tasks/SKILL.md",
+        "aq-workspaces-and-git/SKILL.md",
+    ])
 py_library(
     name = "library",
     srcs = [
