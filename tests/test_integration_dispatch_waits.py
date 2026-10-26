@@ -276,18 +276,28 @@ async def test_dispatched_ci_reconciliation_is_bounded_and_observes_current_stat
         )
     # Dispatch the pending hints normally. Reconciliation must not treat these
     # already dispatched hints as success, nor repeatedly replay one per pass.
-    await case.service.listener.tick()
     observe = AsyncMock(wraps=case.service.registry.observe)
     case.service.registry.observe = observe
-    case.service.listener.retry_batch_size = 1
     await case.service.listener.tick()
-    observe.assert_not_awaited()  # forward dispatch already observed pending CI
+    assert observe.await_count == 2
+    assert {call.args[1].parameters["check_name"] for call in observe.await_args_list} == {
+        "linux", "windows",
+    }
+    observe.reset_mock()
+    case.service.listener.retry_batch_size = 1
+    # Forward dispatch already observed both pending conditions. Recovery shares
+    # the progress cadence and must not immediately repeat those provider reads.
+    await case.service.listener.tick()
+    observe.assert_not_awaited()
     case.now[0] += case.service.listener.safety_seconds + 1
     await case.service.listener.tick()
     assert observe.await_count == 1
     assert all(row["outcome"] == "pending" for row in await rows(world))
     await case.service.listener.tick()
     assert observe.await_count == 2  # the other source gets its bounded turn
+    assert {call.args[1].parameters["check_name"] for call in observe.await_args_list} == {
+        "linux", "windows",
+    }
     await case.service.listener.tick()
     assert observe.await_count == 2  # no hammering unchanged pending sources
 

@@ -8675,7 +8675,7 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
         integration_cleanup_items,
     )
     from src.integration.root_pull_requests import EpicPullRequestService
-    from src.integration.delivery_branches import unrecorded_epic_children
+    from src.integration.delivery_branches import train_cleanup_hold
     from src.integration.truth_reconciler import GitTruthReconciler
 
     case = collected_epic
@@ -8771,16 +8771,14 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await db.get_task("epic")).pr_url == url
 
-    # Preserve each child's completion evidence before deleting its epic ref.
-    # Reaching main proves delivery but does not retain the child's witness.
+    # Retain each child's independent witness before losing its collection target.
     async with db._engine.connect() as conn:
-        assert "aq/epic" in await unrecorded_epic_children(conn, repository_id="r")
-    reconciler = GitTruthReconciler(db, LocalGit(Path(origin.url)), data_dir=tmp_path)
-    counts = {"examined": 0, "repaired": 0}
-    await reconciler._completed(time.time(), counts)
-    assert counts["repaired"] >= 3
+        assert "has no retained completion witness" in await train_cleanup_hold(
+            conn, repository_id="r", ref=case.target.target_ref,
+        )
+    await GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path).tick(case.now[0])
     async with db._engine.connect() as conn:
-        assert "aq/epic" not in await unrecorded_epic_children(conn, repository_id="r")
+        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])
