@@ -15913,11 +15913,12 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:707bf4782ae31ddec91c4944e32098b1187c61faf34cf1f2856104e422b59a38",
+    "source_digest": "sha256:35e141c5d9a539d039a9aad4d686eb205bd55000e6087de903c83db7c2c1a7d8",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_promotion_policy.py::test_continuous_policy_cancels_and_re_requests_only_new_heads"
     ]
   },
   "promote_hotfix": {
