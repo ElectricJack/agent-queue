@@ -30,7 +30,6 @@ from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 
 from src.database.schema_key import schema_key_slug
-from src.database import Database
 from tests.pg_dsn import (
     _replace_database,
     _run_id,
@@ -617,32 +616,10 @@ def lease_dsn(name: str = "test") -> str:
     return dsn
 
 
-class InitializedDatabases:
-    """Initialize each session-owned lease database once, with fresh adapters.
+def __getattr__(name: str):
+    # Compatibility for existing fixture consumers; leases need no adapter.
+    if name == "InitializedDatabases":
+        from tests.reuse_databases import InitializedDatabases
 
-    The lease pool resets rows and restores migration seeds between tests.
-    Each test gets its own adapter and engine so callbacks, asyncio locks, and
-    pool configuration (including ``unpooled_postgres``) cannot leak across
-    tests. Only schema and startup data initialization are amortized.
-
-    Only use this cache for data tests. Schema, startup migration, and restart
-    tests must continue to initialize their own adapters.
-    """
-
-    def __init__(self):
-        self._initialized: set[str] = set()
-
-    async def get(self, dsn: str) -> Database:
-        from src.database.engine import create_postgres_engine
-
-        database = Database(dsn)
-        if dsn in self._initialized:
-            database._engine = create_postgres_engine(dsn)
-        else:
-            try:
-                await database.initialize()
-            except BaseException:
-                await database.close()
-                raise
-            self._initialized.add(dsn)
-        return database
+        return InitializedDatabases
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -256,6 +256,7 @@
         "tests/test_database_backend_selection.py",
         "tests/test_database_channels.py",
         "tests/test_database_engine.py",
+        "tests/test_database_imports.py",
         "tests/test_database_postgresql.py",
         "tests/test_db_immediate.py",
         "tests/test_metadata_cast_safety.py",
@@ -5592,6 +5593,18 @@
       ],
       "markers": [],
       "summary": "Regression coverage for schema startup safeguards."
+    },
+    "tests/test_database_imports.py": {
+      "areas": [
+        "database"
+      ],
+      "default_arm": true,
+      "digest": "sha256:34cb3babe70a76f89505cd7d4af0b043c347c0ac62829382bcd9df1854a9cf08",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Leaf imports and pytest collection must not initialize the application graph."
     },
     "tests/test_database_postgresql.py": {
       "areas": [
