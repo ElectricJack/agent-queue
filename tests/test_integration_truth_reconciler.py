@@ -390,6 +390,10 @@ async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
     service.observer.truth = repo.truth
     service.observer.store_path = lambda _repository: repo.path
     service.observer._store = AsyncMock(side_effect=AssertionError("redundant store open"))
+    # Binding lookup is independent of the shared-flight timeout. Keep database
+    # latency from exhausting the tiny budget before the reader can join.
+    monkeypatch.setattr("src.projects.storage_binding.repository_path",
+                        AsyncMock(return_value=repo.path))
     entered, release, joined = asyncio.Event(), asyncio.Event(), asyncio.Event()
     expire = asyncio.Event()
     fetch = repo.git.afetch_origin
