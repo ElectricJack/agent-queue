@@ -933,7 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 2694,
+ 'authorized_owned_delta': 2781,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1137,8 +1137,8 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 82877,
- 'measured_owned_total': 158193,
+ 'measured_engine_lines': 82963,
+ 'measured_owned_total': 158280,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1428,7 +1428,25 @@ HAND_INTEGRATION_RECONCILIATION = {'authority': 'size-cap-delegation-2026-10-23'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'source_revision': 'e6882fa3e35febcc85f51d38c6d336969244d126',
  'supervisor_grant_reference': 'noble-beacon-61 reopen feedback, 2026-10-25 21:16Z',
- 'task_id': 'noble-beacon-61'}}
+ 'task_id': 'noble-beacon-61'},
+ 'train_fetch_changed_refs_composition': {'authorized_engine_delta': 86,
+   'authorized_owned_delta': 87,
+   'authorized_table_delta': 0,
+   'dev_source_revision': 'c0255a1f4',
+   'measured_engine_lines': 82963,
+   'measured_owned_total': 158280,
+   'measured_table_count': 45,
+   'operator_decision': '6679052c',
+   'previous_measured_engine_lines': 82877,
+   'previous_measured_owned_total': 158193,
+   'previous_measured_table_count': 45,
+   'reason': 'Exact supervisor-approved +87 owned / +86 engine lines for changed-ref-only train '
+             'fetches, advisory delivery-observer refreshes and truth reconciliation on the train '
+             'repository. Preserve every historical grant; zero remaining headroom and no new '
+             'storage category.',
+   'referenced_decision': 'size-cap-delegation-2026-10-23',
+   'source_revision': '14ce4d02a',
+   'task_id': 'smart-bridge-86'}}
 
 
 def integration_table(name: str) -> bool:

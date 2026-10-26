@@ -115,13 +115,16 @@ _SNAPSHOT_SCOPE: ContextVar[dict | None] = ContextVar("git_snapshot_scope", defa
 
 
 @contextmanager
-def snapshot_scope():
+def snapshot_scope(*, reuse=False):
     """Share one repository acquisition among the tasks dispatched by a tick.
 
     This is an explicit observation boundary, never a time-based freshness cache.
     A publication's follow-up observation must enter a new scope. Callers still
     recheck remote freshness and mutable authority before acting on a proof.
     """
+    if reuse and _SNAPSHOT_SCOPE.get() is not None:
+        yield
+        return
     token = _SNAPSHOT_SCOPE.set({})
     try:
         yield

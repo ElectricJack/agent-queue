@@ -10570,7 +10570,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:96354b23128278e564285fbaa225974cb0adf859e70a97619be6e7da7c1cc134",
+      "digest": "sha256:deec543aa9f72f2d679e017c87cff80c896f0db29fcef8ed860ee845034ae0a1",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -10579,8 +10579,11 @@
         "src.git.manager",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
+        "src.integration.development",
         "src.integration.git_truth",
         "src.integration.repair",
+        "src.integration.service",
+        "src.integration.train",
         "src.integration.truth_reconciler",
         "src.integration.truth_retention",
         "src.models",

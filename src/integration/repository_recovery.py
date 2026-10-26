@@ -38,6 +38,18 @@ MAX_ATTEMPTS = 2
 FSCK_TIMEOUT_SECONDS = 300
 
 
+async def open_retained_checkout(git, store, origin_url):
+    """Serialize creation when the train and its truth reader share a store."""
+    store = Path(store)
+    store.parent.mkdir(parents=True, exist_ok=True)
+    async with git.arepository_transaction(str(store)):
+        if not (store / ".git").exists():
+            await git.acreate_checkout(origin_url, str(store), no_checkout=True)
+        await ensure_retained_origin(git, store, origin_url, lock_held=True)
+        await harden_retained_repository(git, store, lock_held=True)
+    return store
+
+
 async def ensure_retained_origin(git, store, origin_url, *, lock_held=False):
     """Repair an absent origin from configuration without rebinding another remote."""
     if not origin_url:
@@ -305,7 +317,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
                                     lock_held=True, **options)
 
-    async def unchanged():
+    async def incremental():
         # This runs under the same repository exclusion as acquisition. A fresh
         # advertisement alone says nothing about local integrity or missing refs.
         with selection_stage("snapshot_ref_probe"):
@@ -317,12 +329,38 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                 cwd=str(store), lock_held=True,
             )
             if local.returncode or local.stderr.strip():
-                return False
+                raise GitError("retained ref inventory is unavailable")
             refs = dict(line.split(" ", 1) for line in local.stdout.splitlines())
             refs.pop("refs/remotes/origin/HEAD", None)
-            refs = {ref.replace("refs/remotes/origin/", "refs/heads/", 1): oid
+            refs = {("refs/heads/" + ref.removeprefix("refs/remotes/origin/")
+                     if ref.startswith("refs/remotes/origin/") else ref): oid
                     for ref, oid in refs.items()}
-            return refs == remote
+            changed = sorted(ref for ref, oid in remote.items() if refs.get(ref) != oid)
+            removed = {ref: oid for ref, oid in refs.items()
+                       if ref not in remote and not ref.startswith("refs/tags/")}
+        selection_count("snapshot_changed_refs", len(changed))
+        selection_count("snapshot_removed_refs", len(removed))
+        if changed:
+            # Both authenticated transport and the credential-free local import
+            # carry only these explicit refs. Keep the complete captured inventory
+            # for lanes selecting different targets from this tick's observation.
+            await fetch(refs=changed)
+        if removed:
+            commands = ["start"]
+            for ref, oid in sorted(removed.items()):
+                destination = ("refs/remotes/origin/" + ref.removeprefix("refs/heads/")
+                               if ref.startswith("refs/heads/") else ref)
+                commands.append(f"delete {destination} {oid}")
+            commands.extend(["prepare", "commit", ""])
+            result = await git.arun_git_result(
+                ["update-ref", "--stdin"], cwd=str(store), lock_held=True,
+                stdin="\n".join(commands),
+            )
+            if result.returncode:
+                raise GitError("retained ref inventory changed during pruning")
+        if not changed:
+            selection_count("snapshot_unchanged")
+        return not changed
 
     async def acquire():
         nonlocal state
@@ -343,21 +381,21 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             # Check the baseline before fetch adds verified objects. Comparing
             # only afterwards makes every incremental pack require a full fsck.
             reusable = await git.aretained_store_verified(str(directory))
-            if (skip_unchanged and reusable and not journal.exists() and not pending.exists()
-                    and await unchanged()):
-                selection_count("snapshot_unchanged")
-                return True
             try:
                 if pending.exists():
                     raise GitError("retained repository recovery pending")
-                await fetch()
+                if skip_unchanged and reusable and not journal.exists():
+                    no_transfer = await incremental()
+                else:
+                    no_transfer = False
+                    await fetch()
             except (GitError, GitHubAccessError) as exc:
                 fetch_error = exc
             if not pending.exists() and await git.areuse_retained_verification(
                     str(directory), extend=reusable and fetch_error is None):
                 if fetch_error:
                     raise fetch_error
-                return
+                return no_transfer
             baseline = await git.aretained_store_baseline(str(directory))
             before = await fsck()
             if _clean(before) and not pending.exists():
