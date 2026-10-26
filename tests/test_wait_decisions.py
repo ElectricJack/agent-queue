@@ -227,7 +227,11 @@ async def test_extend_preserves_age_receipt_ceiling_and_allows_next_incident(env
     assert all(row["state"] == "cancelled" for row in resolved.values())
 
 
-async def test_same_deadline_generation_concurrently_creates_one_incident(env):
+@pytest.mark.parametrize("graph_timeout", [0.0, 0.25])
+async def test_same_deadline_generation_concurrently_creates_one_incident(
+    env, monkeypatch, graph_timeout,
+):
+    monkeypatch.setattr("src.waits.graph.BACKGROUND_GRAPH_LOCK_TIMEOUT", graph_timeout)
     now = [NOW + 60]
     service = service_for(env, now)
     receipt = await waiting(env, escalate_after_seconds=60)
@@ -235,9 +239,13 @@ async def test_same_deadline_generation_concurrently_creates_one_incident(env):
     args = {"wait_id": receipt["wait_id"], "deadline_type": "escalation", "generation": 1}
     results = await asyncio.gather(*(service.command("wait_deadline_fire", args) for _ in range(2)))
     assert sum(result["success"] for result in results) == 1, results
-    assert next(result for result in results if not result["success"])["error_code"] == (
-        "wait.deadline_stale"
-    )
+    refused = next(result for result in results if not result["success"])
+    if refused["error_code"] == "wait.graph_busy":
+        # Background graph acquisition is bounded: the losing call can time out
+        # before the winner commits. Retry after both transactions have finished,
+        # as the timer driver does, and require the same generation to be stale.
+        refused = await service.command("wait_deadline_fire", args)
+    assert not refused["success"] and refused["error_code"] == "wait.deadline_stale", refused
     assert len(await records(env, escalations)) == len(await records(env, wait_escalations)) == 1
     notices = await records(env, messages)
     assert len(notices) == 1 and notices[0]["body_kind"] == "wait_escalation"
