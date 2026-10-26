@@ -352,7 +352,7 @@ def message_inbox(
     include_consumed: bool,
     limit: int | None,
 ) -> None:
-    """Show a recipient's pending (undelivered) messages."""
+    """Show unread mail; --inject returns only undelivered messages."""
     resolved = _resolve_inbox_recipient(to, to_kind, to_id)
     assert resolved is not None
     kind, ident = resolved
@@ -375,7 +375,8 @@ def message_inbox(
 
     def _render(render_items: list[dict]) -> None:
         if not render_items and not consumed:
-            console.print(f"[dim]No pending messages for {kind}:{ident}.[/]")
+            state = "pending" if inject else "unread"
+            console.print(f"[dim]No {state} messages for {kind}:{ident}.[/]")
             return
         if render_items:
             _render_message_table(render_items, f"Inbox — {kind}:{ident}")
@@ -442,7 +443,7 @@ def inbox(
     include_consumed: bool,
     limit: int | None,
 ) -> None:
-    """Show pending messages (alias for ``aq message inbox``).
+    """Show unread messages (alias for ``aq message inbox``).
 
     This is the hook-facing form invoked from the harness's
     ``UserPromptSubmit`` hook (``.aq/hooks/claude.json``).  It is
