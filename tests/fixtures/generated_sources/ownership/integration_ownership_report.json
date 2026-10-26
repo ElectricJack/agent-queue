@@ -2840,6 +2840,11 @@
       "task_id": "wise-crest-14",
       "thread_id": "wise-crest-14-ci-size"
     },
+    "dashboard_retirement_overlap": {
+      "applied_owned_reduction": 26,
+      "overlapping_owned_reduction": 23,
+      "reason": "Both historical reductions retire the same Focus helper. The surviving BatchDetail implementation uses the responsive_dashboard_reduction total of 26 reclaimed lines, including the 23-line focus_view_retirement_reduction; apply the shared reduction once."
+    },
     "deleted_epic_child_recovery_composition": {
       "authorized_engine_delta": 103,
       "authorized_owned_delta": 103,
@@ -2883,6 +2888,20 @@
       "task_id": "stark-rapids-81"
     },
     "expires_at": "s4_modules",
+    "focus_view_retirement_reduction": {
+      "measured_engine_delta": 0,
+      "measured_owned_delta": -23,
+      "measured_owned_total": 157902,
+      "measured_table_delta": 0,
+      "previous_measured_owned_total": 157925,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2029",
+      "reason": "Retire Focus-specific batch display helpers; retain the moved BatchPage ownership. Lower the exact cap by the measured reduction, preserving historical grants, baselines and classifications with zero reusable headroom.",
+      "removed_owned_files": {
+        "dashboard/src/pages/focus/focusFormat.ts": 23
+      },
+      "source_revision": "1ed3e1fe7d2d271f2d03b1081eb110f09b0e0187",
+      "task_id": "azure-delta-20"
+    },
     "fresh_continuation_sentinel_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 15,
@@ -16933,6 +16952,11 @@
         "task_id": "wise-crest-14",
         "thread_id": "wise-crest-14-ci-size"
       },
+      "dashboard_retirement_overlap": {
+        "applied_owned_reduction": 26,
+        "overlapping_owned_reduction": 23,
+        "reason": "Both historical reductions retire the same Focus helper. The surviving BatchDetail implementation uses the responsive_dashboard_reduction total of 26 reclaimed lines, including the 23-line focus_view_retirement_reduction; apply the shared reduction once."
+      },
       "deleted_epic_child_recovery_composition": {
         "authorized_engine_delta": 103,
         "authorized_owned_delta": 103,
@@ -16976,6 +17000,20 @@
         "task_id": "stark-rapids-81"
       },
       "expires_at": "s4_modules",
+      "focus_view_retirement_reduction": {
+        "measured_engine_delta": 0,
+        "measured_owned_delta": -23,
+        "measured_owned_total": 157902,
+        "measured_table_delta": 0,
+        "previous_measured_owned_total": 157925,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2029",
+        "reason": "Retire Focus-specific batch display helpers; retain the moved BatchPage ownership. Lower the exact cap by the measured reduction, preserving historical grants, baselines and classifications with zero reusable headroom.",
+        "removed_owned_files": {
+          "dashboard/src/pages/focus/focusFormat.ts": 23
+        },
+        "source_revision": "1ed3e1fe7d2d271f2d03b1081eb110f09b0e0187",
+        "task_id": "azure-delta-20"
+      },
       "fresh_continuation_sentinel_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 15,
