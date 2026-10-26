@@ -123,6 +123,15 @@ def validate(root: Path) -> dict:
             name = dependency.split()[0]
             if not name.startswith("__") and name not in names:
                 raise ValueError(f"native runtime is incomplete: {name}")
+    sysroot = lock["native"].get("sysroot", {})
+    if (sysroot.get("path") != "x86_64-conda-linux-gnu/sysroot"
+            or sysroot.get("glibc") != "2.28"
+            or sysroot.get("package") != "sysroot_linux-64"
+            or sysroot.get("arch") != "x86_64"
+            or sysroot.get("os") != "linux"
+            or not sysroot.get("reason")
+            or not {"sysroot_linux-64", "kernel-headers_linux-64"} <= names):
+        raise ValueError("native runtime requires the declared locked glibc sysroot")
     return lock
 
 
