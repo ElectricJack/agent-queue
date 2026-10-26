@@ -20431,14 +20431,15 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:ace1960f57f6b36f4349132aa8dfd50991a7d7b5844acefc26a7c927c64ca4e9",
+      "digest": "sha256:1c32bc5b8b7299bb92e80adf0bd82e3de0024e16d400d4429d762dd69c84f950",
       "imports": [
+        "src.git.manager",
         "src.waits.listener"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."
+      "summary": "Dedicated LISTEN connection arguments and service-loop cleanup safety."
     },
     "tests/test_wait_metrics.py": {
       "areas": [
