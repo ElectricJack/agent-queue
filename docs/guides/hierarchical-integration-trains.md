@@ -360,6 +360,12 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+Idle epic visits automatically request this attested refresh when every prerequisite
+missing from the epic is proven delivered to the default branch. This includes children
+waiting to be claimed and completed candidates blocked only by `prerequisite_pending`.
+The visit reports `epic_refresh_pending`; a genuinely undelivered prerequisite stays
+`prerequisite_pending`. An existing batch retains the lane and is never replaced by
+this trigger.
 For stale children, `aq doctor --check stall.sweep` reports `epic_refresh_needed`
 and the operator stall script prints `EPIC-REFRESH-NEEDED`, with the epic's refresh
 command and any blocking batch ids. A conflicting apply files an ordinary train
