@@ -994,7 +994,7 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3365,
+ 'authorized_owned_delta': 3376,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1198,8 +1198,8 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83434,
- 'measured_owned_total': 158864,
+ 'measured_engine_lines': 83445,
+ 'measured_owned_total': 158875,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,
@@ -1729,7 +1729,32 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
              'Preserve every historical grant; zero remaining headroom and no new storage category.',
    'referenced_decision': 'size-cap-delegation-2026-10-23',
    'source_revision': 'ebb6a75bb',
-   'task_id': 'sound-meadow-89'}}
+   'task_id': 'sound-meadow-89'},
+ 'git_truth_read_deadline_composition': {'task_id': 'sound-meadow-89',
+                                         'decision_message_id': 'msg-91e492a3f4a344679083d3a0523dc2c3',
+                                         'approval_message_ids': ['msg-5eaf42adf2514d9581f197af77e446db',
+                                                                  'msg-bb36892fc18e4c018017f95572443008'],
+                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                         'operator_decision': '6679052c',
+                                         'dev_source_revision': '2373e54bf',
+                                         'source_revision': '3a7257715e0441b876d327fca96ad76dc9bab291',
+                                         'previous_measured_owned_total': 158864,
+                                         'previous_measured_engine_lines': 83434,
+                                         'previous_measured_table_count': 45,
+                                         'authorized_owned_delta': 11,
+                                         'authorized_engine_delta': 11,
+                                         'authorized_table_delta': 0,
+                                         'measured_owned_total': 158875,
+                                         'measured_engine_lines': 83445,
+                                         'measured_table_count': 45,
+                                         'charged_files': {'src/integration/truth_reconciler.py': 11},
+                                         'reason': 'Exact supervisor-approved shared tick read '
+                                                   'deadline and bounded completed-task '
+                                                   'observation/proof fanout. Compose +11 '
+                                                   'owned/+11 engine/+0 tables on current dev; '
+                                                   'preserve all historical grants, baselines and '
+                                                   'ownership classifications, with zero remaining '
+                                                   'headroom.'}}
 
 
 def integration_table(name: str) -> bool:
