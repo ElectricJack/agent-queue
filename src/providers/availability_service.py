@@ -46,6 +46,7 @@ from typing import Any
 
 from src.agents.liveness import LIVE_SESSION_STATES
 from src.models import TaskStatus
+from src.providers.login_probe import LoginProbeMixin
 from src.providers.availability import (
     AUTH_PROBE,
     AVAILABLE,
@@ -177,7 +178,7 @@ def _busiest_project(held: Iterable[Mapping[str, Any]]) -> str | None:
     return min(counts, key=lambda pid: (-counts[pid], pid))
 
 
-class ProviderAvailabilityService:
+class ProviderAvailabilityService(LoginProbeMixin):
     """Owns the availability snapshot and every write to it."""
 
     def __init__(
@@ -843,11 +844,11 @@ class ProviderAvailabilityService:
             return str(answer), {}
         return await self._login_probe(provider, timeout)
 
-    async def _login_probe(self, provider: str, timeout: float) -> tuple[str | None, dict[str, Any]]:
+    async def _perform_login_probe(self, provider: str, timeout: float) -> tuple[str | None, dict[str, Any]]:
         """The real probe: ``probe_login`` for *provider*'s login adapter.
 
-        Its own method so a test suite can stub the one place the daemon
-        shells out to a provider CLI (``tests/conftest.py`` does).
+        LoginProbeMixin supplies the patch boundary used by shared fixtures;
+        this implementation retains the service's provider CLI dependencies.
         """
         login = self._login_for(provider)
         if login is None:
