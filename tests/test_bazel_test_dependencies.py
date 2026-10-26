@@ -5,6 +5,17 @@ from textwrap import dedent
 from scripts.bazel.test_dependencies import DependencyAnalyzer, discover
 
 
+def test_repository_leaf_closure_avoids_database_bootstrap_fanout():
+    root = Path(__file__).resolve().parents[1]
+    result = discover(root, "tests/test_knowledge_inventory.py")
+    assert "src/knowledge/imports/inventory.py" in result["source_files"]
+    assert "tests/conftest.py" in result["test_sources"]
+    assert not result["conservative"], result["conservative_reasons"]
+    assert "src/database/adapters/postgresql.py" not in result["source_files"]
+    assert "src/database/queries/job_queries.py" not in result["source_files"]
+    assert not any(path.startswith("src/plugins/") for path in result["source_files"])
+
+
 def write(root, path, source=""):
     target = root / path
     target.parent.mkdir(parents=True, exist_ok=True)

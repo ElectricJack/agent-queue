@@ -1148,11 +1148,13 @@ async def observe_completed_branches(
     task_ids: Any = None,
     now: float | None = None,
     cached_only: bool = False,
+    max_age: float | None = None,
 ) -> dict[str, Any]:
     """:func:`completed_branch_dispositions` over each delivering project's repository.
 
     One snapshot of each project's integration repository answers the git
-    questions, reused when *observer* fetched it within ``READ_MAX_AGE``;
+    questions, reused when *observer* fetched it within ``READ_MAX_AGE``.
+    *max_age* overrides that cache window (zero fetches current heads for recovery);
     *cached_only* never fetches (interactive diagnostics), so an expired
     snapshot is ``unavailable``.  A project whose default branch cannot be
     observed is ``unavailable``, never clean.
@@ -1185,7 +1187,8 @@ async def observe_completed_branches(
                 raise ValueError("integration repository has no URL or default branch")
             snapshot = await observer.snapshot(
                 DeliveryTarget(project_id, repository_id, target["url"], target_ref),
-                max_age=observer.READ_MAX_AGE, cached_only=cached_only,
+                max_age=observer.READ_MAX_AGE if max_age is None else max_age,
+                cached_only=cached_only,
             )
             observation = getattr(snapshot, "observation", snapshot)
             if observation.error or not observation.target_oid:
