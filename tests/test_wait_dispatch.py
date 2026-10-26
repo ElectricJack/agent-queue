@@ -430,10 +430,13 @@ async def test_irrelevant_batch_rolls_back_on_expired_lease_and_replays(runtime_
     service = runtime(env, clock=lambda: now[0])
     prefix = service.listener._unobserved_prefix
 
-    async def expire(conn, position, watermark):
-        result = await prefix(conn, position, watermark)
+    async def expire(conn, rows):
+        from src.waits.graph import graph_locked
+
+        result = await prefix(conn, rows)
         assert len(result) == 3
-        now[0] += service.listener.lease_seconds + 1
+        if graph_locked(conn):
+            now[0] += service.listener.lease_seconds + 1
         return result
 
     monkeypatch.setattr(service.listener, "_unobserved_prefix", expire)
@@ -1487,9 +1490,11 @@ async def test_listener_retries_preparation_if_cursor_advances_during_git(runtim
     assert seen == [source[1]["seq"]]
 
 
-async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runtime_env):
+async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runtime_env, monkeypatch):
     """Cancellation inside a real query must release graph/cursor and retain the event."""
-    from sqlalchemy import func
+    from unittest.mock import Mock
+
+    from sqlalchemy import event as sql_event, func
 
     env = runtime_env
     receipt = await register(env)
@@ -1499,8 +1504,29 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     now = [NOW]
     dispatcher = ObservingDispatcher(env.registry)
     service = runtime(env, clock=lambda: now[0], dispatcher=dispatcher)
-    service.listener.event_budget_seconds = 0.2
     original = service.listener._dispatch
+    event_budget = None
+    expired_budgets = []
+
+    def controlled_timeout(seconds):
+        nonlocal event_budget
+        budget = asyncio.timeout(None)
+        if seconds == service.listener.event_budget_seconds:
+            event_budget = budget
+        return budget
+
+    # Control only the listener's clocks. Database and asyncio cancellation stay real;
+    # ordinary queries cannot consume the event or drain budget under host load.
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.side_effect = controlled_timeout
+    listener_asyncio.get_running_loop.return_value = SimpleNamespace(time=lambda: 0)
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+
+    def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        if "pg_sleep" in statement:
+            assert event_budget is not None
+            expired_budgets.append(event_budget)
+            event_budget.reschedule(asyncio.get_running_loop().time())
 
     async def stall(conn, event):
         if event["seq"] == slow_seq:
@@ -1509,7 +1535,13 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
         return await original(conn, event)
 
     service.listener._dispatch = stall
-    await service.listener.tick()
+    sql_event.listen(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
+    try:
+        assert await service.listener.tick()
+    finally:
+        sql_event.remove(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
+    assert len(expired_budgets) == 1 and expired_budgets[0].expired()
+    assert service.listener._retry_due[slow_seq] == NOW + service.listener.retry_seconds
     assert (await env.db.get_task("owner")).title != "abort"
     assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
         "outcome"] == "satisfied"
@@ -1519,7 +1551,7 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     assert cursor > slow_seq
     service.listener._dispatch = original
     now[0] += service.listener.retry_seconds + 1
-    await service.listener.tick()
+    assert await service.listener.tick()
     source = {r["seq"]: r for r in await records(env, wait_source_events)}
     assert source[slow_seq]["dispatched_at"] is not None
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == cursor
@@ -1877,3 +1909,376 @@ async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(runti
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
     assert not [r for r in await records(env, audit_events)
                 if r["event_type"] == "wait.source_redispatched"]
+
+
+async def ci_listener(env, monkeypatch, *, now=None):
+    from src.waits.graph import graph_locked
+    from src.waits.watchers.ci import CheckWatcher
+    from tests.test_wait_queries import SHA, ci_snapshot, seed_batch, seed_repo
+
+    await seed_repo(env)
+    await seed_batch(env)
+    state = {"value": "unsatisfied"}
+    reader = AsyncMock(side_effect=lambda conn, cond: ci_snapshot(cond, state=state["value"]))
+    registry = build_registry(ci_reader=reader)
+    receipt = await register(env, {"kind": "ci_check", "repository_id": "repo", "head_sha": SHA,
+                                   "check_name": "tests"}, registry=registry)
+    service = runtime(env, registry=registry, clock=lambda: now[0] if now else NOW)
+    service.orch.wait_dispatcher = service._dispatcher
+    watcher = CheckWatcher(env.db, None, None, checks=None, repository=None)
+    service.orch.wait_ci_lock_source = watcher.lock_source
+    reader.reset_mock()
+
+    async def observe(conn, cond):
+        assert not graph_locked(conn), "CI observation must precede GRAPH_LOCK"
+        # Another transaction can acquire the fence while the remote read runs.
+        from src.waits.graph import lock_graph
+        async with env.db._engine.begin() as other:
+            await lock_graph(other, queued=True, timeout=0.1)
+        return ci_snapshot(cond, state=state["value"])
+
+    reader.side_effect = observe
+    return service, receipt, reader, state, f"ci_check:repo:{SHA}:tests"
+
+
+@pytest.mark.parametrize("interleaved", [False, True])
+async def test_ci_progress_coalesces_once_unlocked_and_terminal_resolves(
+    runtime_env, monkeypatch, interleaved,
+):
+    env = runtime_env
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch)
+    dispatched = []
+    original = service.listener._dispatch
+
+    async def dispatch(conn, event, **kwargs):
+        dispatched.append(event["source_key"])
+        return await original(conn, event, **kwargs)
+
+    monkeypatch.setattr(service.listener, "_dispatch", dispatch)
+    for n in range(12):
+        await env.db.wait_source_commit(source_key=key, generation=0, revision=str(n),
+            outcome_ref="hint", payload={"conclusion": "pending"})
+        if interleaved:
+            await env.db.wait_source_commit(source_key=f"test:other:{n}", generation=0,
+                revision="1", outcome_ref="other", payload={})
+    assert await service.listener.tick()
+    assert reader.await_count == 1
+    assert dispatched.count(key) == 1
+    assert len(dispatched) == (13 if interleaved else 1)
+    assert (await records(env))[0]["outcome"] == "pending"
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    assert await service.listener.tick()
+    wait = next(r for r in await records(env) if r["id"] == receipt["wait_id"])
+    assert wait["outcome"] == "satisfied" and wait["result_ref"] == "ci:result"
+    assert reader.await_count == 2
+
+
+async def test_ci_progress_stream_keeps_only_latest_retry_and_terminal_bypasses_backoff(
+    runtime_env, monkeypatch,
+):
+    env = runtime_env
+    now = [NOW]
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, now=now)
+    for n in range(6):
+        await env.db.wait_source_commit(source_key=key, generation=0, revision=str(n),
+            outcome_ref="hint", payload={"conclusion": "pending"})
+        other = await env.db.wait_source_commit(source_key=f"test:other:{n}", generation=0,
+            revision="1", outcome_ref="other", payload={})
+        assert await service.listener.tick()
+        sources = await records(env, wait_source_events)
+        assert next(r for r in sources if r["seq"] == other)["dispatched_at"] is not None
+        pending = [r for r in sources if r["dispatched_at"] is None]
+        assert len(pending) == (0 if n == 0 else 1)
+    assert reader.await_count == 1
+    # A terminal hint bypasses progress throttling and supersedes its retained hint.
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "failure"})
+    await service.listener.tick()
+    assert reader.await_count == 2
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events)
+               if r["source_key"] == key)
+
+
+@pytest.mark.parametrize("change", ["repository", "check_cache", "condition", "owner", "subscription"])
+async def test_ci_preparation_race_never_applies_stale_observation(runtime_env, monkeypatch, change):
+    from src.database.tables import repos
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    now = [NOW]
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, now=now)
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    if change == "subscription":
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(outcome="cancelled"))
+    original_lock = listener_module.lock_graph
+    changed = False
+
+    async def mutate_before_apply(conn, **kwargs):
+        nonlocal changed
+        if not changed:
+            changed = True
+            async with env.db._engine.begin() as other:
+                await original_lock(other)
+                if change == "repository":
+                    await other.execute(update(repos).values(url="https://example/new-binding"))
+                elif change == "check_cache":
+                    checks = ExactChecks(env.db, AsyncMock(required=REQUIRED,
+                        observe=AsyncMock(return_value=[row("unit", "success", observed_at=10)])),
+                        clock=lambda: 10)
+                    await checks.refresh(head())
+                elif change == "condition":
+                    saved = (await records(env))[0]
+                    cond = {**saved["condition"], "required_check_set": "changed"}
+                    await other.execute(update(wait_records).values(condition=cond))
+                elif change == "subscription":
+                    await other.execute(update(wait_records).values(outcome="pending"))
+                else:
+                    await other.execute(update(tasks).where(tasks.c.id == "owner").values(
+                        claim_epoch=2))
+        await original_lock(conn, **kwargs)
+
+    monkeypatch.setattr(listener_module, "lock_graph", mutate_before_apply)
+    await service.listener.tick()
+    assert reader.await_count == (0 if change == "subscription" else 1)
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "pending"
+    if change in {"repository", "check_cache", "subscription"}:
+        now[0] += 2
+        await service.listener.tick()
+        assert reader.await_count == (1 if change == "subscription" else 2)
+        assert (await records(env))[0]["outcome"] == "satisfied"
+
+
+async def test_ci_failed_observation_keeps_latest_retry_and_drains_unrelated_source(
+    runtime_env, monkeypatch,
+):
+    from src.waits.conditions import WaitError
+
+    env = runtime_env
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch)
+    observe = reader.side_effect
+
+    async def unavailable(conn, cond):
+        await observe(conn, cond)
+        raise WaitError("wait.unavailable", "provider temporarily unavailable", retry_after=30)
+
+    reader.side_effect = unavailable
+    for n in range(8):
+        latest = await env.db.wait_source_commit(source_key=key, generation=0, revision=str(n),
+            outcome_ref="hint", payload={"conclusion": "pending"})
+        other = await env.db.wait_source_commit(source_key=f"test:unrelated:{n}", generation=0,
+            revision="1", outcome_ref="other", payload={})
+    await service.listener.tick()
+    assert reader.await_count == 1
+    sources = await records(env, wait_source_events)
+    assert [r["seq"] for r in sources if r["dispatched_at"] is None] == [latest]
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == other
+    # A fresh terminal event remains eligible during the old observation backoff.
+    reader.side_effect = observe
+    state["value"] = "satisfied"
+    await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "cancelled"})
+    await service.listener.tick()
+    assert reader.await_count == 2
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+
+
+@pytest.fixture
+async def large_listener_prefix(runtime_env):
+    env = runtime_env
+    await register(env)
+    base = (await records(env))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_records), [
+            {**base, "id": f"pending-{n}", "owner_id": f"observer-{n}",
+             "idempotency_key": None, "source_key": f"ci_check:unrelated:{n}"}
+            for n in range(2000)
+        ])
+    await env.db.wait_source_commit(source_key="ci_check:unused:0", generation=0,
+        revision="1", outcome_ref="hint", payload={})
+    source = (await records(env, wait_source_events))[0]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(wait_source_events), [
+            {key: value for key, value in {**source, "id": f"source-{n}", "source_key": f"ci_check:unused:{n}"}.items()
+             if key != "seq"}
+            for n in range(1, 1200)
+        ])
+    service = runtime(env)
+    assert await service.lease()
+    return service.listener, await env.db.wait_source_watermark()
+
+
+async def test_large_prefix_plans_unlocked_and_rechecks_bounded_subscriptions(
+    large_listener_prefix, monkeypatch, caplog,
+):
+    from sqlalchemy import event
+    from src.waits.graph import graph_locked
+    from src.waits import loops
+
+    listener, watermark = large_listener_prefix
+    prefix = listener._unobserved_prefix
+    phases = []
+    locked_statements = []
+
+    async def observe(conn, *args):
+        phases.append(graph_locked(conn))
+        if graph_locked(conn):
+            def statement(conn, cursor, sql, parameters, context, executemany):
+                locked_statements.append(sql)
+            event.listen(conn.sync_connection, "before_cursor_execute", statement)
+        return await prefix(conn, *args)
+
+    monkeypatch.setattr(listener, "_unobserved_prefix", observe)
+    monkeypatch.setattr(loops, "prepare_progress", AsyncMock(
+        side_effect=AssertionError("irrelevant prefix must not prepare owner progress")))
+    listener._dispatch = AsyncMock(side_effect=AssertionError("irrelevant prefix must not dispatch"))
+    result = await listener._drain_one(watermark, True, {}, {"attempted": set()})
+    assert len(result["processed"]) == listener.batch_size
+    assert (await records(SimpleNamespace(db=listener.db), wait_listener_cursors))[0][
+        "last_seq"] == result["processed"][-1] < watermark
+    assert phases == [False, True]
+    assert not any("EXISTS" in sql or "ORDER BY wait_source_events.seq" in sql
+                   for sql in locked_statements)
+    assert sum("SELECT wait_records.source_key" in sql for sql in locked_statements) == 1
+    assert "wait.graph_lock_slow" not in caplog.text
+
+
+@pytest.mark.perf
+async def test_large_prefix_graph_hold_below_one_second(
+    large_listener_prefix, perf_strict, monkeypatch,
+):
+    from src.waits import listener as listener_module
+
+    listener, watermark = large_listener_prefix
+    original_lock = listener_module.lock_graph
+    acquired = []
+    loop = asyncio.get_running_loop()
+
+    async def timed_lock(conn, **kwargs):
+        await original_lock(conn, **kwargs)
+        acquired.append(loop.time())
+
+    monkeypatch.setattr(listener_module, "lock_graph", timed_lock)
+    result = await listener._drain_one(watermark, True, {}, {"attempted": set()})
+    held = loop.time() - acquired[0]
+    print(f"large prefix: events=1200 pending_waits=2001 retired={len(result['processed'])} "
+          f"held_seconds={held:.6f}")
+    assert len(acquired) == 1
+    assert len(result["processed"]) == listener.batch_size
+    assert held < 1
+
+
+@pytest.mark.parametrize("subscribed_index", [0, 1])
+async def test_forward_prefix_rechecks_new_ci_subscriber_before_advancing(
+    runtime_env, monkeypatch, subscribed_index,
+):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    receipt = await register(env)
+    seqs = [await env.db.wait_source_commit(source_key=f"ci_check:unused:{n}", generation=0,
+                revision="1", outcome_ref="hint", payload={}) for n in range(3)]
+    listener = runtime(env).listener
+    assert await listener.service.lease()
+    original_lock = listener_module.lock_graph
+
+    async def subscribe_before_lock(conn, **kwargs):
+        async with env.db._engine.begin() as other:
+            await original_lock(other)
+            await other.execute(update(wait_records).where(
+                wait_records.c.id == receipt["wait_id"],
+            ).values(source_key=f"ci_check:unused:{subscribed_index}", source_generation=0))
+        await original_lock(conn, **kwargs)
+
+    monkeypatch.setattr(listener_module, "lock_graph", subscribe_before_lock)
+    listener._dispatch = AsyncMock(side_effect=AssertionError("must prepare new subscriber unlocked"))
+    result = await listener._drain_one(seqs[-1], True, {}, {"attempted": set()})
+    if subscribed_index == 0:
+        assert result == {"needs_preparation": True}
+    else:
+        assert result["processed"] == [seqs[0]]
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == (
+        0 if subscribed_index == 0 else seqs[0])
+    assert [row["seq"] for row in await records(env, wait_source_events)
+            if row["dispatched_at"] is not None] == seqs[:subscribed_index]
+
+
+async def test_forward_prefix_preserves_cursor_race(runtime_env, monkeypatch):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="ci_check:unused:0", generation=0,
+        revision="1", outcome_ref="hint", payload={})
+    listener = runtime(env).listener
+    assert await listener.service.lease()
+    original_lock = listener_module.lock_graph
+
+    async def advance_before_lock(conn, **kwargs):
+        async with env.db._engine.begin() as other:
+            await original_lock(other)
+            await other.execute(update(wait_listener_cursors).values(last_seq=seq))
+        await original_lock(conn, **kwargs)
+
+    monkeypatch.setattr(listener_module, "lock_graph", advance_before_lock)
+    assert await listener._drain_one(seq, True, {}, {"attempted": set()}) == {"raced": True}
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == seq
+    assert (await records(env, wait_source_events))[0]["dispatched_at"] is None
+
+
+@pytest.mark.parametrize("failure", [None, RuntimeError, asyncio.CancelledError])
+async def test_drain_hold_timing_includes_dispatch_and_transaction_end_on_failure(
+    runtime_env, monkeypatch, caplog, failure,
+):
+    from sqlalchemy import event
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    seq = await env.db.wait_source_commit(source_key="test:timing", generation=0,
+        revision="1", outcome_ref="hint", payload={})
+    listener = runtime(env).listener
+    assert await listener.service.lease()
+    elapsed = [0.0]
+    monkeypatch.setattr(listener_module, "time", SimpleNamespace(monotonic=lambda: elapsed[0]))
+    original_lock = listener_module.lock_graph
+
+    def transaction_end(conn):
+        elapsed[0] += 0.3
+
+    async def delayed_lock(conn, **kwargs):
+        await original_lock(conn, **kwargs)
+        elapsed[0] += 10  # Acquisition wait must not count as a hold.
+        event.listen(conn.sync_connection, "commit", transaction_end)
+        event.listen(conn.sync_connection, "rollback", transaction_end)
+
+    async def dispatch(conn, source, **kwargs):
+        elapsed[0] += 1.2
+        if failure:
+            raise failure()
+        return 0
+
+    monkeypatch.setattr(listener_module, "lock_graph", delayed_lock)
+    monkeypatch.setattr(listener, "_dispatch", dispatch)
+    if failure:
+        with pytest.raises(failure):
+            await listener._drain_one(seq, True, {}, {"attempted": set()})
+    else:
+        await listener._drain_one(seq, True, {}, {"attempted": set()})
+    diagnostic = next(record.getMessage() for record in caplog.records
+                      if "wait.source_lock_slow" in record.getMessage())
+    assert "held_seconds=1.500" in diagnostic
+    assert "dispatch_seconds=1.200" in diagnostic
+    assert "transaction_end_seconds=0.300" in diagnostic
+    assert all(f"{step}_seconds=0.000" in diagnostic for step in (
+        "lease", "prefix_retirement", "admission_recheck", "outcome_writes"))
+    assert ((await records(env, wait_source_events))[0]["dispatched_at"] is None) == bool(failure)
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == (0 if failure else seq)
