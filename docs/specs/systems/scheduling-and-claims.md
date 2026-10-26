@@ -350,8 +350,8 @@ session, claim epoch and released/retained disposition in `prepare_failure`.
 Explain includes that same reason as the last preparation outcome until a
 successful activation clears it. The immutable selection view remains unchanged;
 diagnostics include failures discovered by its later activation revalidation.
-One moved-input rejection may retry immediately. A second identical rejection
-returns `prepare_failed` and applies the ordinary preparation backoff, preventing
+The first moved-input rejection returns `prepare_failed` and applies the
+ordinary preparation backoff and durable refusal cooldown, preventing
 the release's `task.ready` event from driving a tight reset loop. Managed claims
 detach their branch owner with the existing handoff proof before releasing the
 claim or removing its marker. An unproved detach retains both ownership and
@@ -362,6 +362,18 @@ Activation emits `task.claimed`, `task.started` and `pool.session_claimed`.
 identity comparison, `same_session_launch`. It compares eleven identity fields,
 so a relaunched session with the same id but a new instance cannot inherit a
 preparation that belonged to its predecessor.
+
+Only a starting or running, unended pool session may take a new claim. A draining or
+stopped session is refused inside the claim transaction even if its requested
+state still says running; it must never advance a task's epoch.
+
+Admission movement before selection may refresh its observation up to three
+times. Once a task has been reset, failed activation admission ends preparation
+with `prepare_failed`, the observed admission reason and preparation backoff.
+The long poll must not repeatedly reset and reclaim that task. Exhausted
+transaction/fence contention also returns `prepare_failed`, with its concrete
+failure and cooldown, while retaining the same preparation and epoch for a safe
+retry. Neither case is an empty frontier or unfinished background preparation.
 
 **When preparation fails**, two counters on the session decide what happens.
 They answer different questions, and older docs conflate them.

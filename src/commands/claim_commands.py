@@ -1497,6 +1497,15 @@ class ClaimCommandsMixin:
                     failure = describe_preparation_failure(exc, "preparation_contention")
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
+            # The retry budget ended, but this exact preparation still owns
+            # its task, workspace and possibly a ref reservation. Report the
+            # concrete failure through the durable refusal cooldown instead
+            # of disguising retained work as an empty frontier.
+            await self.db.record_failed_preparation(
+                session.id, instance_token=session.instance_token, task_id=task.id,
+                claim_epoch=task.claim_epoch, preparation_started_at=row.claim_phase_at,
+                task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+            )
             await self._record_prepare_failure(
                 task, failure, session=session, slot=slot, epoch=task.claim_epoch,
                 disposition="retained",
@@ -1779,7 +1788,7 @@ class ClaimCommandsMixin:
         self, task, failure, *, session, slot, epoch, disposition, attempt=None,
         cleanup_unproved=False, admission_reasons=None,
     ) -> None:
-        """Record what a permanent preparation failure observed, and who saw it.
+        """Record what a failed preparation observed, and who saw it.
 
         The identity (session instance, claim epoch, workspace) makes a late
         or stale completion attributable; the record decides nothing --
@@ -2507,12 +2516,16 @@ class ClaimCommandsMixin:
                                 "detail": f"Claim admission rejected at {stage}; retry fresh inputs"}]
                 reasons = [{key: safe_text(str(reason[key])) for key in ("code", "ref", "detail")}
                            for reason in reasons]
-                prior = await self.db.get_task_meta(task.id, PREPARE_FAILURE)
-                repeated = isinstance(prior, dict) and prior.get("admission_reasons") == reasons
                 failure = PreparationFailure(
                     stage=stage, error_type="ClaimAdmissionChanged",
-                    reason=safe_text("; ".join(f"{r['code']}: {r['detail']}" for r in reasons),
+                    reason=safe_text("admission_recheck: " + "; ".join(
+                        f"{r['code']}: {r['detail']}" for r in reasons),
                                      limit=2000), causes=(),
+                )
+                await self.db.record_failed_preparation(
+                    session.id, instance_token=session.instance_token, task_id=task.id,
+                    claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
+                    task_created_at=task.created_at, failure=failure.record(), now=time.time(),
                 )
                 # Persist before release can publish task.ready and admit a
                 # successor epoch. A late disposition update is epoch-fenced.
@@ -2532,8 +2545,14 @@ class ClaimCommandsMixin:
                     session.id,
                     expected_task_id=task.id, expected_claim_epoch=epoch,
                     expected_instance_token=session.instance_token, task_status=TaskStatus.READY,
+                    # A prerequisite/gate can now block the selected task.
+                    # Release that exact IN_PROGRESS claim even when its
+                    # blocked projection changed; preserve the epoch so the
+                    # settled refusal still matches this preparation.
+                    expected_task_status=TaskStatus.IN_PROGRESS,
+                    expected_task_claim_epoch=epoch,
                     context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
-                    prepare_backoff=repeated,
+                    prepare_backoff=True,
                 ) if detachable else None
                 disposition = "released" if released and released.released else "retained"
                 await self._record_prepare_failure(
@@ -2546,10 +2565,7 @@ class ClaimCommandsMixin:
                     remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 outcome = self._simple(
-                    ClaimResult.PREPARE_FAILED if repeated or disposition == "retained"
-                    else ClaimResult.NO_READY_WORK,
-                    failure.reason if repeated or disposition == "retained"
-                    else "delivery_snapshot_changed", row, cap,
+                    ClaimResult.PREPARE_FAILED, failure.reason, row, cap,
                 )
                 outcome["admission_reasons"] = reasons
                 return outcome
