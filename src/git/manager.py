@@ -106,6 +106,7 @@ from src.git.github_contracts import (
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 from src.git.process import ProcessCleanupError, run_owned_process
 from src.git.locks import common_git_dir_from_cwd, remove_stale_locks
+from src.metrics.perf import operation_timing, timed_operation
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -715,6 +716,7 @@ def bounded_git_reads(func):
     return bounded
 
 
+@timed_operation("wait.git_read_budget_scope")
 async def within_git_read_budget(func, *args):
     """``await func(*args)`` within the active request budget; None once it lapses.
 
@@ -5141,6 +5143,11 @@ class GitManager:
                 await asyncio.sleep(delay)
         raise AssertionError("authenticated Git retry loop exhausted")
 
+    @timed_operation(
+        lambda self, args, **kw: "git.auth_" + (
+            args[0] if args and args[0] in {"fetch", "push", "clone", "ls-remote"} else "other"
+        )
+    )
     async def _arun_authenticated_git_once(
         self,
         args: list[str],
@@ -5288,15 +5295,18 @@ class GitManager:
                         )
                         broker_channel = None
                     phase = "git_communicate"
-                    output, stderr = await process.communicate()
+                    with operation_timing("git.auth_subprocess"):
+                        output, stderr = await process.communicate()
                     phase = "process_cleanup"
-                    await self._kill_app_git_group(process)
+                    with operation_timing("git.auth_cleanup"):
+                        await self._kill_app_git_group(process)
                     phase = "credential_broker_settle"
-                    served = (
-                        await self._settle_app_credential_broker(broker_task)
-                        if broker_task is not None
-                        else True
-                    )
+                    with operation_timing("wait.auth_credential_settlement"):
+                        served = (
+                            await self._settle_app_credential_broker(broker_task)
+                            if broker_task is not None
+                            else True
+                        )
                     broker_task = None
             except BaseException as exc:
                 failure_time = loop.time()
