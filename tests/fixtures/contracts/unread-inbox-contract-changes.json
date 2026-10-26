@@ -1,0 +1,96 @@
+{
+  "source_base": "5d995a8378e53acd797b19e5b8d0fb2263156c2a",
+  "review_notes": [
+    "message_inbox lists unread, unarchived mail, including delivered rows; injection retains undelivered-only CAS delivery. Supervisor aliases resolve to the current named session mailbox. Only transport help changes; argument schema, effects and return protocol remain unchanged."
+  ],
+  "previous_cli_catalogue_sha256": "e688cbb6b101db3bf624cf268b9727727163554a5b7786d3af2afad4f2ad91c9",
+  "cli_catalogue_sha256": "b1235d080ca6ba9fc74af428609e6432383274021a36a446cba75803ea489837",
+  "transport_definitions": {
+    "message_inbox": {
+      "previous": {
+        "name": "message_inbox",
+        "description": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "to_kind": {
+              "type": "string",
+              "enum": [
+                "session",
+                "task",
+                "profile",
+                "user"
+              ],
+              "description": "Recipient kind"
+            },
+            "to_id": {
+              "type": "string",
+              "description": "Recipient id"
+            },
+            "inject": {
+              "type": "boolean",
+              "description": "Mark the returned messages delivered",
+              "default": false
+            },
+            "include_consumed": {
+              "type": "boolean",
+              "description": "Also return already-consumed messages (read-only; never changes delivery state)",
+              "default": false
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Max rows (default 50, or max_inject_per_prompt when injecting)"
+            }
+          },
+          "required": [
+            "to_kind",
+            "to_id"
+          ]
+        }
+      },
+      "current": {
+        "name": "message_inbox",
+        "description": "List unread, unarchived messages for one recipient, including already-delivered mail. Supervisor aliases and the current named session UUID share an inbox. With inject=true, return only undelivered messages, mark them delivered and archive any rows flagged archive_after_inject.  include_consumed additionally returns other consumed rows for this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "to_kind": {
+              "type": "string",
+              "enum": [
+                "session",
+                "task",
+                "profile",
+                "user"
+              ],
+              "description": "Recipient kind"
+            },
+            "to_id": {
+              "type": "string",
+              "description": "Recipient id"
+            },
+            "inject": {
+              "type": "boolean",
+              "description": "Mark the returned messages delivered",
+              "default": false
+            },
+            "include_consumed": {
+              "type": "boolean",
+              "description": "Also return already-consumed messages (read-only; never changes delivery state)",
+              "default": false
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Max rows (default 50, or max_inject_per_prompt when injecting)"
+            }
+          },
+          "required": [
+            "to_kind",
+            "to_id"
+          ]
+        }
+      },
+      "previous_sha256": "4e1bda0037c759fb2a9558a3e26498ba9f07afdfe2b870c27f06ce87230110d5",
+      "sha256": "e6ebca219bb331d2a37b9e270908276f1a8961560e97aef82885a4d56bd33b9d"
+    }
+  }
+}

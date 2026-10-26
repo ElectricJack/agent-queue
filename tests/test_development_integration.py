@@ -833,6 +833,47 @@ async def test_concurrent_retained_store_hardening_is_serialized_once(setup):
                               ["config", "maintenance.auto", "false"]]
 
 
+async def test_tick_reuses_checkout_open_without_waiting_for_repository_writer(setup):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from src.integration.git_truth import snapshot_scope
+    from src.integration.repository_recovery import _open_retained_checkout
+
+    _db, service, _source, _remote, repo = setup
+    opened = AsyncMock(wraps=_open_retained_checkout)
+    with patch("src.integration.repository_recovery._open_retained_checkout", opened):
+        with snapshot_scope():
+            stores = await asyncio.gather(*(service.store(repo, fetch=False) for _ in range(10)))
+            assert len(set(stores)) == 1
+            opened.assert_awaited_once()
+            # A lane setup must not queue behind another lane's snapshot fetch.
+            async with service.git.arepository_transaction(str(stores[0])):
+                assert await asyncio.wait_for(service.store(repo, fetch=False), 1) == stores[0]
+            opened.assert_awaited_once()
+        with snapshot_scope():
+            assert await service.store(repo, fetch=False) == stores[0]
+        assert opened.await_count == 2
+        assert await service.store(repo, fetch=False) == stores[0]
+        assert opened.await_count == 3
+
+
+async def test_tick_checkout_reuse_does_not_hide_a_changed_repository_binding(setup):
+    from dataclasses import replace
+
+    from src.git.manager import GitError
+    from src.integration.git_truth import snapshot_scope
+
+    _db, service, _source, _remote, repo = setup
+    with snapshot_scope():
+        store = await service.store(repo, fetch=False)
+        with pytest.raises(GitError, match="origin differs"):
+            await service.store(replace(repo, url="different-repository"), fetch=False)
+    git(store, "config", "remote.origin.url", "changed-between-ticks")
+    with snapshot_scope(), pytest.raises(GitError, match="origin differs"):
+        await service.store(repo, fetch=False)
+
+
 async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
     from dataclasses import replace
 
