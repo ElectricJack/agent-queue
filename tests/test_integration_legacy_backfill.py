@@ -557,10 +557,12 @@ async def test_deleted_epic_backfill_admits_only_proven_child(world, recorded, m
     async def admission():
         return await observe_admission(db, ["dependent", "withheld"], service)
 
-    assert (await admission()).allowed == set()
+    # Train stacks can prove the completed child's exact source on main before backfill.
+    before_backfill = {"dependent"} if mode == "train" else set()
+    assert (await admission()).allowed == before_backfill
     preview = await backfill_legacy_deliveries(db, "p")
     assert "child" in {r["task_id"] for r in preview["results"]}
-    assert (await admission()).allowed == set()
+    assert (await admission()).allowed == before_backfill
     applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="hand landed")
     assert "child" in {r["task_id"] for r in applied["results"]}
     assert "unproven" in {r["task_id"] for r in applied["unproven"]}
