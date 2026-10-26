@@ -932,7 +932,57 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'claim_rejection_current_dev_composition': {'task_id': 'solid-torrent-24',
+HAND_INTEGRATION_RECONCILIATION = {'claim_rejection_delivery_proof_merge_composition': {'decision_message_id': 'msg-611f9fbe1b804e8e9b7f127924b38451',
+                                                      'dev_source_revision': '11c93a21b2240f0e48e94328427201950a4e8d4b',
+                                                      'inherited_decision_message_ids': ['msg-353d53ff11c84267b72457c36f4c4a5d'],
+                                                      'inherited_engine_delta': 75,
+                                                      'inherited_owned_delta': 75,
+                                                      'measured_engine_lines': 83613,
+                                                      'measured_owned_total': 159101,
+                                                      'measured_table_count': 45,
+                                                      'operator_decision': '6679052c',
+                                                      'previous_measured_engine_lines': 83538,
+                                                      'previous_measured_owned_total': 159026,
+                                                      'previous_measured_table_count': 45,
+                                                      'reason': 'Compose the published claim '
+                                                                'repair cap (159026 owned/83538 '
+                                                                'engine) with current dev delivery '
+                                                                'prerequisite proof net +75 '
+                                                                'owned/engine lines, inherited '
+                                                                'from the approved +78 delivery '
+                                                                'proof grant and its three-line '
+                                                                'merge reduction. Preserve every '
+                                                                'historical decision and '
+                                                                'classification, zero remaining '
+                                                                'headroom, and no new allowance or '
+                                                                'storage category.',
+                                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                      'source_revision': '6579ae520248cabde5493dcd6539406289c11575',
+                                                      'task_id': 'solid-torrent-24'},
+ 'delivery_prerequisite_proof_composition': {'authorized_engine_delta': 78,
+                                             'authorized_owned_delta': 78,
+                                             'authorized_table_delta': 0,
+                                             'charged_files': {'src/integration/admission.py': 17,
+                                                               'src/integration/delivery_observer.py': 61},
+                                             'decision_message_id': 'msg-353d53ff11c84267b72457c36f4c4a5d',
+                                             'dev_source_revision': '94f4c82ee1898298711498c93ca90cb459816db6',
+                                             'operator_decision': '6679052c',
+                                             'previous_measured_engine_lines': 82532,
+                                             'previous_measured_owned_total': 157793,
+                                             'previous_measured_table_count': 45,
+                                             'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2010',
+                                             'reason': 'Exact supervisor-approved +78 engine/owned '
+                                                       'lines for current default-target '
+                                                       'delivery-of proof and independent '
+                                                       'observation retries. Preserves original '
+                                                       'baselines, historical grants and ownership '
+                                                       'classifications, with zero remaining '
+                                                       'headroom and no new storage category.',
+                                             'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                             'source_revision': 'a38eefc946579e9510195854e8b09fa3cff83e82',
+                                             'task_id': 'bold-lantern-39',
+                                             'thread_id': 'bold-lantern-39-ci-size'},
+ 'claim_rejection_current_dev_composition': {'task_id': 'solid-torrent-24',
                                              'source_revision': '0a6692e9aa602e23db6efc3d77f573f054205117',
                                              'dev_source_revision': 'b284dd4aa99a867b6c0968a052b12709ca78e617',
                                              'referenced_decision': 'size-cap-delegation-2026-10-23',
@@ -1181,7 +1231,7 @@ HAND_INTEGRATION_RECONCILIATION = {'claim_rejection_current_dev_composition': {'
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'task_id': 'bright-torrent-86'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3527,
+ 'authorized_owned_delta': 3602,
  'tick_snapshot_sharing_composition': {'authorized_engine_delta': 101,
  'authorized_owned_delta': 116,
  'authorized_shared_owned_delta': 15,
@@ -1385,8 +1435,8 @@ HAND_INTEGRATION_RECONCILIATION = {'claim_rejection_current_dev_composition': {'
      'referenced_decision': 'size-cap-delegation-2026-10-23',
      'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
      'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83538,
- 'measured_owned_total': 159026,
+ 'measured_engine_lines': 83613,
+ 'measured_owned_total': 159101,
  'measured_table_count': 45,
  'operator_decision': '6679052c',
  'original_owned_total_cap': 155499,

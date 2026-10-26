@@ -25117,7 +25117,7 @@
       },
       {
         "protocol": "delegated_producer",
-        "return": "refusal('wait.unavailable', 'source re-dispatch exceeded its work budget')"
+        "return": "refusal('wait.unavailable', 'source re-dispatch timed out before dispatch')"
       },
       {
         "protocol": "delegated_producer",
@@ -25126,7 +25126,7 @@
     ],
     "review_notes": "Normal dispatch retains the typed command envelope. Timeout and listener lease/unavailability failures delegate to refusal(), which returns success false with wait.unavailable; recovery never fabricates a wake.",
     "schema_quality": "typed",
-    "source_digest": "sha256:083a3b2d906e990fcff9826fbb69b849f53ed719c84e203ec1b2d3726c24afb2",
+    "source_digest": "sha256:373279a007daa02dde19681579cbb031e75f3f211985c5ab7fbbfbae8ea60b24",
     "tests": [
       "tests/test_wait_commands.py::test_source_redispatch_requires_live_scoped_supervisor",
       "tests/test_wait_dispatch.py",
