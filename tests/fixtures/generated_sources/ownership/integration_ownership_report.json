@@ -2820,7 +2820,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3553,
+    "authorized_owned_delta": 3630,
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
       "authorized_owned_delta": 5,
@@ -2886,6 +2886,23 @@
       "source_revision": "490a0b1d82633cf41a071af421726fd9842c9d78",
       "task_id": "wise-cascade-80",
       "thread_id": "wise-cascade-80-ci-size"
+    },
+    "git_truth_phase_profile_composition": {
+      "authorized_engine_delta": 35,
+      "authorized_owned_delta": 77,
+      "authorized_table_delta": 0,
+      "dev_source_revision": "c51bb0ea8",
+      "measured_engine_lines": 83418,
+      "measured_owned_total": 158848,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83383,
+      "previous_measured_owned_total": 158771,
+      "previous_measured_table_count": 45,
+      "reason": "Exact task-preapproved reconcile_git_truth per-phase timing instrumentation (sound-meadow-89) plus sibling-slot branch release (bright-beacon-87, no size change). Preserve every historical grant; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "ebb6a75bb",
+      "task_id": "sound-meadow-89"
     },
     "held_ingestion_composition": {
       "authorized_engine_delta": 0,
@@ -3007,8 +3024,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83462,
-    "measured_owned_total": 159052,
+    "measured_engine_lines": 83497,
+    "measured_owned_total": 159129,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -16843,7 +16860,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83462,
+    "engine_cap": 83497,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -16888,7 +16905,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3553,
+      "authorized_owned_delta": 3630,
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -16954,6 +16971,23 @@
         "source_revision": "490a0b1d82633cf41a071af421726fd9842c9d78",
         "task_id": "wise-cascade-80",
         "thread_id": "wise-cascade-80-ci-size"
+      },
+      "git_truth_phase_profile_composition": {
+        "authorized_engine_delta": 35,
+        "authorized_owned_delta": 77,
+        "authorized_table_delta": 0,
+        "dev_source_revision": "c51bb0ea8",
+        "measured_engine_lines": 83418,
+        "measured_owned_total": 158848,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83383,
+        "previous_measured_owned_total": 158771,
+        "previous_measured_table_count": 45,
+        "reason": "Exact task-preapproved reconcile_git_truth per-phase timing instrumentation (sound-meadow-89) plus sibling-slot branch release (bright-beacon-87, no size change). Preserve every historical grant; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "ebb6a75bb",
+        "task_id": "sound-meadow-89"
       },
       "held_ingestion_composition": {
         "authorized_engine_delta": 0,
@@ -17075,8 +17109,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 83462,
-      "measured_owned_total": 159052,
+      "measured_engine_lines": 83497,
+      "measured_owned_total": 159129,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -17649,7 +17683,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159052,
+    "owned_total_cap": 159129,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

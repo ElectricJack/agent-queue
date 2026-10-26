@@ -8675,6 +8675,8 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
         integration_cleanup_items,
     )
     from src.integration.root_pull_requests import EpicPullRequestService
+    from src.integration.delivery_branches import train_cleanup_hold
+    from src.integration.truth_reconciler import GitTruthReconciler
 
     case = collected_epic
     db, origin, train, github = case.db, case.origin, case.train, case.github
@@ -8768,6 +8770,14 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
         git(origin.url, "merge-base", "--is-ancestor", source, repaired)
     train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await db.get_task("epic")).pr_url == url
+
+    # Retain each child's current completion witness before deleting the epic ref.
+    # Git containment alone does not release this deletion fence.
+    async with db._engine.connect() as conn:
+        assert "child" in await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref)
+    await GitTruthReconciler(db, train.lane_for.git, data_dir=tmp_path).tick(time.time())
+    async with db._engine.connect() as conn:
+        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])

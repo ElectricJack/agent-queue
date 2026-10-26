@@ -32,6 +32,7 @@ from src.git.manager import (
     RemoteRefState,
 )
 from src.orchestrator.worktree_manager import WorktreeSlotManager
+from src.metrics.operation_profile import operation_profile
 
 
 def _git(args: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> str:
@@ -2007,15 +2008,20 @@ async def test_authenticated_git_success_without_credential_request_is_not_a_fai
     home = tmp_path / "home"
     home.mkdir()
 
-    output = await manager._arun_authenticated_git(
-        ["ls-remote", "https://github.com/acme/widgets.git", "HEAD"],
-        home=home,
-        repository_url="https://github.com/acme/widgets.git",
-        token="private-installation-token",
-        deadline=asyncio.get_running_loop().time() + 5,
-    )
+    with operation_profile() as profile:
+        output = await manager._arun_authenticated_git(
+            ["ls-remote", "https://github.com/acme/widgets.git", "HEAD"],
+            home=home,
+            repository_url="https://github.com/acme/widgets.git",
+            token="private-installation-token",
+            deadline=asyncio.get_running_loop().time() + 5,
+        )
 
     assert output == b"anonymous-output\n"
+    measured = profile.as_dict()
+    assert measured["operations"]["git.auth_ls-remote"]["calls"] == 1
+    assert "private-installation-token" not in repr(measured)
+    assert "github.com" not in repr(measured)
     _assert_no_broker_tasks()
 
 

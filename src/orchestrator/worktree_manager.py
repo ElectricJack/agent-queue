@@ -1824,11 +1824,10 @@ class WorktreeSlotManager:
     ) -> None:
         """Free *branch* when its other holder is an abandoned worker slot.
 
-        Git itself is authoritative about which worktree holds a branch.  A
-        claim file and a live pool session are the two independent liveness
-        fences: only when neither names the holder is detaching safe.  A live
-        holder remains a normal branch-busy condition, never something a
-        claiming worker is allowed to disturb.
+        Git itself is authoritative about which worktree holds a branch.
+        Claim files and live task holders fence detachment. An exact taskless
+        pool reservation can release a clean branch while its session and
+        workspace rows are locked against a competing claim.
         """
         from src.claim_file import read_claim_file
         from src.orchestrator.workspace_claim_recovery import retire_stopped_slot_claim
@@ -1858,13 +1857,14 @@ class WorktreeSlotManager:
             if not path or entry.get("branch") != branch or _norm_path(path) == mine:
                 continue
             holder = managed.get(_norm_path(path))
-            if (holder is None or holder.locked_by_agent_id or holder.locked_by_task_id):
+            if (holder is None or holder.locked_by_task_id or entry.get("locked")
+                    or (holder.locked_by_agent_id and not hasattr(self.db, "_engine"))):
                 raise GitError(f"branch {branch} is already used by worktree at {path}; "
                                "holder is unmanaged or locked")
             if await self._slot_has_retained_binding(holder.id):
                 raise GitError(f"branch {branch} is already used by worktree at {path}; "
                                "holder retains an owner or job pin")
-            if _norm_path(path) in live_work_dirs:
+            if _norm_path(path) in live_work_dirs and not holder.locked_by_agent_id:
                 raise GitError(f"branch {branch} is already used by worktree at {path}")
             if Path(path, ".aq", "claim.json").exists():
                 if (read_claim_file(path) is None or await self._slot_is_live(holder)
@@ -1872,10 +1872,18 @@ class WorktreeSlotManager:
                     raise GitError(f"branch {branch} is already used by worktree at {path}")
             if not Path(path).exists():
                 raise GitError(f"branch {branch} retains a missing managed worktree at {path}")
-            async with self._idle_branch_holder(holder):
+            async with self._idle_branch_holder(
+                holder, allow_pool_reservation=True,
+            ) as reservation:
                 logger.warning("Detaching idle worktree %s from %s before preparation", path, branch)
                 await self._recover_abandoned_merge(holder, incoming_task_id=incoming_task_id)
                 await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+                if reservation:
+                    # The shared branch can advance in its new slot before
+                    # this pool claims again. Retain salvage attribution but
+                    # stop asserting that the detached checkout tracks it.
+                    sentinel = self.read_sentinel(path)
+                    self.write_sentinel(path, replace(sentinel, branch=None))
 
     @guard_workspace("slot_ws")
     async def detach_idle_slot_branch(self, slot_ws: Workspace) -> bool:
@@ -1902,36 +1910,74 @@ class WorktreeSlotManager:
         return True
 
     @contextlib.asynccontextmanager
-    async def _idle_branch_holder(self, holder, *, allow_disabled=False):
+    async def _idle_branch_holder(
+        self, holder, *, allow_disabled=False, allow_pool_reservation=False,
+    ):
         """Fence branch detachment against concurrent registered acquisition."""
         if not hasattr(self.db, "_engine"):
             yield  # lightweight doubles have no concurrent row mutation
             return
-        from sqlalchemy import select
-        from src.database.tables import sessions, workspaces
+        from sqlalchemy import or_, select
+        from src.database.tables import agents, sessions, workspaces
 
         async with self.db._engine.begin() as conn:
+            reservation = None
+            if allow_pool_reservation and holder.locked_by_agent_id:
+                # Claim selection locks its session before binding a task.
+                # NOWAIT avoids a cycle with a claimant queued for our repo mutex.
+                live = (await conn.execute(select(sessions).where(
+                    or_(sessions.c.work_dir == holder.workspace_path,
+                        sessions.c.agent_id == holder.locked_by_agent_id),
+                    sessions.c.state.in_(("starting", "running", "draining")),
+                ).with_for_update(nowait=True))).mappings().all()
+                if len(live) == 1:
+                    candidate = live[0]
+                    if (candidate["lifecycle"] == "pool"
+                            and candidate["project_id"] == holder.project_id
+                            and candidate["work_dir"] == holder.workspace_path
+                            and candidate["agent_id"] == holder.locked_by_agent_id
+                            and candidate["task_id"] is None
+                            and candidate["claim_phase"] in (None, "claiming")
+                            and candidate["failed_preparation"] is None):
+                        reservation = candidate
+                if reservation is None:
+                    raise GitError("branch holder is not an idle pool reservation")
             # The caller holds the repository mutex. Never wait for a row
             # held by preparation, which may itself be waiting for that mutex.
             row = (await conn.execute(select(workspaces).where(
                 workspaces.c.id == holder.id,
             ).with_for_update(nowait=True))).mappings().one_or_none()
             if (row is None or (not row["enabled"] and not allow_disabled)
-                    or row["locked_by_agent_id"] or row["locked_by_task_id"]
+                    or row["locked_by_agent_id"] != (
+                        holder.locked_by_agent_id if reservation is not None else None)
+                    or row["locked_by_task_id"]
                     or row["generation"] != holder.generation
                     or row["workspace_path"] != holder.workspace_path
                     or row["project_id"] != holder.project_id
                     or row["base_workspace_id"] != holder.base_workspace_id):
                 raise GitError("branch holder changed; checkout left unchanged")
+            if reservation is not None:
+                agent = (await conn.execute(select(agents).where(
+                    agents.c.id == holder.locked_by_agent_id,
+                ).with_for_update(nowait=True))).mappings().one_or_none()
+                sentinel = self.read_sentinel(holder.workspace_path)
+                if (agent is None or agent["current_task_id"] is not None
+                        or sentinel is None or sentinel.workspace_id != holder.id
+                        or sentinel.project_id != holder.project_id
+                        or sentinel.base_workspace_id != holder.base_workspace_id
+                        or await self.git.ahas_uncommitted_changes(
+                            holder.workspace_path, strict=True) is not False):
+                    raise GitError("branch holder reservation is not clean and taskless")
             if await conn.scalar(select(sessions.c.id).where(
                 sessions.c.work_dir == holder.workspace_path,
                 sessions.c.state.in_(("starting", "running", "draining")),
+                sessions.c.id != reservation["id"] if reservation is not None else True,
             ).limit(1)) or await self._slot_has_retained_binding(holder.id):
                 raise GitError("branch holder retains a session, owner or job pin")
             if (Path(holder.workspace_path, ".aq", "claim.json").exists()
                     or await self._slot_is_live(holder)):
                 raise GitError("branch holder liveness is not quiescent")
-            yield
+            yield reservation is not None
 
     async def _base_of_slot_dir(self, slot_dir: Path) -> Workspace | None:
         """Find the base row for a slot path without trusting its sentinel."""
