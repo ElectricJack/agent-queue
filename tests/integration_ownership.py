@@ -2163,7 +2163,56 @@ HAND_INTEGRATION_RECONCILIATION = {'deleted_epic_retained_selection_composition'
                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
                                         'source_revision': 'aa33d430b7168464dc3a763a33b05ed3448a1059',
                                         'supervisor_decision_comment_id': 'comment-57436ba4352943b8a1762cfc431eda05',
-                                        'task_id': 'brisk-zenith-96'}}
+                                        'task_id': 'brisk-zenith-96'},
+ 'dashboard_retirement_overlap': {'applied_owned_reduction': 26,
+                                  'overlapping_owned_reduction': 23,
+                                  'reason': 'Both historical reductions retire the same Focus '
+                                            'helper. The surviving BatchDetail implementation uses '
+                                            'the responsive_dashboard_reduction total of 26 '
+                                            'reclaimed lines, including the 23-line '
+                                            'focus_view_retirement_reduction; apply the shared '
+                                            'reduction once.'},
+ 'focus_view_retirement_reduction': {'measured_engine_delta': 0,
+                                     'measured_owned_delta': -23,
+                                     'measured_owned_total': 157902,
+                                     'measured_table_delta': 0,
+                                     'previous_measured_owned_total': 157925,
+                                     'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2029',
+                                     'reason': 'Retire Focus-specific batch display helpers; '
+                                               'retain the moved BatchPage ownership. Lower the '
+                                               'exact cap by the measured reduction, preserving '
+                                               'historical grants, baselines and classifications '
+                                               'with zero reusable headroom.',
+                                     'removed_owned_files': {'dashboard/src/pages/focus/focusFormat.ts': 23},
+                                     'source_revision': '1ed3e1fe7d2d271f2d03b1081eb110f09b0e0187',
+                                     'task_id': 'azure-delta-20'},
+ 'delivery_watchdog_epoch19_final_merge_composition': {'authorized_engine_delta': 61,
+                                                       'authorized_owned_delta': 62,
+                                                       'authorized_shared_owned_delta': 1,
+                                                       'authorized_table_delta': 0,
+                                                       'dev_source_revision': '52ffcb080343b051ea1dfcda5b48d497e5b47dcb',
+                                                       'measured_engine_lines': 83495,
+                                                       'measured_owned_total': 158925,
+                                                       'measured_table_count': 45,
+                                                       'operator_decision': '6679052c',
+                                                       'previous_measured_engine_lines': 83434,
+                                                       'previous_measured_owned_total': 158863,
+                                                       'previous_measured_table_count': 45,
+                                                       'reason': 'Carry the unchanged approved '
+                                                                 'watchdog ownership delta onto '
+                                                                 'current dev. Preserve both '
+                                                                 'implementations, every '
+                                                                 'historical grant, baseline and '
+                                                                 'ownership classification; zero '
+                                                                 'remaining headroom and no new '
+                                                                 'storage category.',
+                                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                       'source_revision': 'f5a5e741fc658de2c129e2f46318ca375422d729',
+                                                       'supervisor_grant_reference': 'sharp-grove-84 '
+                                                                                     'supervisor '
+                                                                                     'comment, '
+                                                                                     '1792967507.3855598',
+                                                       'task_id': 'sharp-grove-84'}}
 
 
 def integration_table(name: str) -> bool:
