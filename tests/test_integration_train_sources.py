@@ -8771,13 +8771,13 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await db.get_task("epic")).pr_url == url
 
-    # Retain each child's exact completion before deleting its aggregate source.
-    # Delivery is already proven above; the witnesses only release cleanup.
+    # Epic deletion waits for each child's current completion to be retained,
+    # even after the repaired parent has reached main (branch-retirement.md).
     async with db._engine.connect() as conn:
-        assert "retained completion witness" in await train_cleanup_hold(
-            conn, repository_id="r", ref=case.target.target_ref,
-        )
-    reconciler = GitTruthReconciler(db, train.lane_for.git, data_dir=tmp_path)
+        hold = await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref)
+    assert hold and "child" in hold and "has no retained completion witness" in hold
+    assert git(origin.url, "rev-parse", "aq/epic") == head
+    reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
     await reconciler.tick(case.now[0])
     async with db._engine.connect() as conn:
         assert await train_cleanup_hold(
