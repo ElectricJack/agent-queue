@@ -277,6 +277,7 @@ class PoolsMixin:
 
             hierarchy_modes = await hierarchy_frontier_modes(
                 self.db, project_ids=project_ids, cached_only=for_display,
+                background=not for_display,
             )
         # Keep this snapshot even if a launch finishes during the DB reads.
         # Its durable session is either in the rows below or counted here.

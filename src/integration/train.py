@@ -521,7 +521,7 @@ class IntegrationTrain:
         self, now: float | None = None, *, target: TrainTarget | None = None,
     ) -> dict[str, list[str]]:
         """Bound each repository's visits; give new and longest-waiting targets a turn."""
-        with snapshot_scope():
+        with snapshot_scope(reuse=True):
             return await self._tick(now, target=target)
 
     async def _tick(self, now, *, target):
