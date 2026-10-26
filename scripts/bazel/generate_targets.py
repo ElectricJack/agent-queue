@@ -85,14 +85,13 @@ def reads_docs(root: Path, paths: list[str], cache: dict | None = None) -> bool:
             continue
         tree = ast.parse((root / path).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.BinOp)):
-                if any(
+            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.BinOp)) and any(
                     isinstance(child, ast.Constant) and isinstance(child.value, str)
                     and (child.value == "docs" or child.value.startswith("docs/"))
                     for child in ast.walk(node)
-                ):
-                    cache[path] = True
-                    return True
+            ):
+                cache[path] = True
+                return True
         cache[path] = False
     return False
 
@@ -485,12 +484,90 @@ def replace_section(existing: str, name: str, content: str) -> str:
     return before + section + after
 
 
+def authored_exports(existing: str) -> set[str]:
+    """Respect exports owned by the package author, excluding our old projection."""
+    if "# BEGIN B1 PYTHON INPUT EXPORTS\n" in existing:
+        existing = replace_section(existing, "PYTHON INPUT EXPORTS", "")
+    names = set()
+    for node in ast.parse(existing).body:
+        if (
+            isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name) and node.value.func.id == "exports_files"
+            and node.value.args
+        ):
+            try:
+                exported = ast.literal_eval(node.value.args[0])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(exported, list) and all(isinstance(name, str) for name in exported):
+                names.update(exported)
+    return names
+
+
+def hydrate_manifest(document: dict) -> dict:
+    """Use the same strict V1/V2 decoder as runtime obligation readers."""
+    path = ROOT / "src/test_selection/bazel_manifest.py"
+    spec = importlib.util.spec_from_file_location("aq_bazel_manifest", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.hydrate_manifest(document)
+
+
+def intern_manifest(manifest: dict) -> dict:
+    """Losslessly intern dependency path lists; collection and obligations stay explicit."""
+    manifest = hydrate_manifest(manifest)
+    input_sets = {}
+    modules = {}
+    for path, info in manifest["modules"].items():
+        modules[path] = dict(info)
+        for key in ("source_files", "test_sources", "other_sources", "data_files"):
+            if key in info:
+                payload = json.dumps(info[key], ensure_ascii=False, separators=(",", ":"))
+                digest = hashlib.sha256(payload.encode()).hexdigest()
+                input_sets[digest] = info[key]
+                modules[path][key] = {"input_set": digest}
+    return {**manifest, "schema_version": 2, "modules": modules,
+            "dependency_sets": dict(sorted(input_sets.items()))}
+
+
 def manifest_json(manifest: dict) -> str:
     """Keep each independently collected node on one reviewable JSON row."""
+    manifest = intern_manifest(manifest)
+    # Placeholder values must be absent from both JSON keys and scalar values.
+    # Collection keywords and input paths may legitimately resemble our tokens.
+    strings = set()
+    pending = [manifest]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            strings.add(value)
+        elif isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
     marker = "__AQ_B1_NODE_TABLE__"
+    sequence = 0
+    while marker in strings:
+        sequence += 1
+        marker = f"__AQ_B1_NODE_TABLE_{sequence}__"
+    strings.add(marker)
     table = manifest["collection"]["nodes"]
+    input_rows = {}
+    dependency_sets = {}
+    sequence = 0
+    for digest, paths in manifest["dependency_sets"].items():
+        token = f"__AQ_B1_INPUT_TABLE_{sequence}__"
+        while token in strings:
+            sequence += 1
+            token = f"__AQ_B1_INPUT_TABLE_{sequence}__"
+        strings.add(token)
+        sequence += 1
+        input_rows[token] = json.dumps(paths, ensure_ascii=False, separators=(",", ":"))
+        dependency_sets[digest] = token
     body = json.dumps(
-        {**manifest, "collection": {**manifest["collection"], "nodes": marker}},
+        {**manifest, "dependency_sets": dependency_sets,
+         "collection": {**manifest["collection"], "nodes": marker}},
         indent=2,
         sort_keys=True,
     )
@@ -499,10 +576,40 @@ def manifest_json(manifest: dict) -> str:
         + ",\n".join("      " + json.dumps(node, sort_keys=True) for node in table)
         + "\n    ]"
     )
-    return body.replace(json.dumps(marker), rows, 1) + "\n"
+    body = body.replace(json.dumps(marker), rows, 1)
+    body = re.sub(
+        r'"(__AQ_B1_INPUT_TABLE_\d+__)"',
+        lambda match: input_rows.get(match[1], match[0]), body,
+    )
+    return body + "\n"
 
 
-def render(root: Path, manifest: dict) -> dict[str, str]:
+def shared_module_inputs(module_inputs: dict[str, list[str]]) -> tuple[dict, dict]:
+    """Partition inputs by identical consumers, preserving each module's exact closure."""
+    consumers = defaultdict(list)
+    for module, inputs in sorted(module_inputs.items()):
+        for label in inputs:
+            consumers[label].append(module)
+    partitions = defaultdict(list)
+    for label, modules in sorted(consumers.items()):
+        partitions[tuple(modules)].append(label)
+    groups = {}
+    rewritten = {module: [] for module in module_inputs}
+    for modules, inputs in sorted(partitions.items()):
+        if len(modules) > 1 and len(inputs) > 1:
+            digest = hashlib.sha256(json.dumps(inputs).encode()).hexdigest()
+            name = "shared_inputs_" + digest
+            groups[name] = inputs
+            inputs = [":" + name]
+        for module in modules:
+            rewritten[module].extend(inputs)
+    return dict(sorted(groups.items())), {
+        module: sorted(inputs) for module, inputs in rewritten.items()
+    }
+
+
+def render(root: Path, manifest: dict, *, factor_inputs: bool = True) -> dict[str, str]:
+    manifest = hydrate_manifest(manifest)
     output = {}
     libraries = manifest["libraries"]
     fine_inputs = {
@@ -552,10 +659,8 @@ def render(root: Path, manifest: dict) -> dict[str, str]:
         + json.dumps(EXCLUDE + ["**/test_*.py"])
         + "))\n",
     ]
+    module_inputs = {}
     for path, info in manifest["modules"].items():
-        name = info["target"].split(":")[1]
-        node_ids = [manifest["collection"]["nodes"][i]["nodeid"] for i in info["nodes"]]
-        local_indices = {ref: i for i, ref in enumerate(info["nodes"])}
         data = [path.removeprefix("tests/"), "//:python_repository_data"]
         data += [p.removeprefix("tests/") for p in info["test_sources"]]
         if info.get("fine_grained"):
@@ -572,13 +677,25 @@ def render(root: Path, manifest: dict) -> dict[str, str]:
             data += ["//:python_documentation_data"]
         if info["conservative"] and not info.get("fine_grained"):
             data += [":generator_inputs"]
+        module_inputs[path] = sorted(set(data))
+    if factor_inputs:
+        groups, module_inputs = shared_module_inputs(module_inputs)
+        for name, inputs in groups.items():
+            parts.append(
+                '\nfilegroup(\n    name = ' + json.dumps(name)
+                + ',\n    srcs = ' + lines_list(inputs) + ',\n)\n'
+            )
+    for path, info in manifest["modules"].items():
+        name = info["target"].split(":")[1]
+        node_ids = [manifest["collection"]["nodes"][i]["nodeid"] for i in info["nodes"]]
+        local_indices = {ref: i for i, ref in enumerate(info["nodes"])}
         parts += [
             "\naq_module_tests(\n    name = " + json.dumps(name) + ",\n",
             "    module = " + json.dumps(path) + ",\n",
             "    nodes = " + lines_list(node_ids) + ",\n",
             "    postgres = " + str(info["postgres"]) + ",\n",
             "    deps = " + lines_list(info["libraries"]) + ",\n",
-            "    data = " + lines_list(sorted(set(data))) + ",\n",
+            "    data = " + lines_list(module_inputs[path]) + ",\n",
             "    obligations = [\n",
         ]
         for suite, label in info["targets"].items():
@@ -620,7 +737,7 @@ def render(root: Path, manifest: dict) -> dict[str, str]:
         name = name,
         srcs = native.glob(
             ["*", ".github/**", "scripts/**", "migrations/**", "packages/aq-client/**"],
-            exclude = ["BUILD.bazel", "**/__pycache__/**", "**/*.pyc", "**/node_modules/**"],
+            exclude = ["BUILD.bazel", ".git", "**/__pycache__/**", "**/*.pyc", "**/node_modules/**"],
             allow_empty = True,
         ) + ["//tools/bazel:repository_inputs"],
         visibility = ["//visibility:public"],
@@ -680,12 +797,22 @@ py_library(
         if package in libraries or package == "tests":
             continue
         exports.setdefault(package, set()).add(name)
+    # Root-covered inputs may have needed explicit exports in an older graph.
+    # Clear our obsolete sections so authored exports cannot collide with them.
+    for package in ("", "tools/bazel"):
+        relative = str(Path(package) / "BUILD.bazel")
+        existing = output[relative]
+        if package not in exports and "# BEGIN B1 PYTHON INPUT EXPORTS\n" in existing:
+            output[relative] = replace_section(existing, "PYTHON INPUT EXPORTS", HEADER)
     for package, names in sorted(exports.items()):
         directory = root / package
         filename = "BUILD.bazel" if (directory / "BUILD.bazel").exists() else "BUILD"
         relative = str(Path(package) / filename)
         existing = output.get(relative, (directory / filename).read_text())
-        section = HEADER + "exports_files(" + lines_list(sorted(names)) + ")\n"
+        names -= authored_exports(existing)
+        section = HEADER
+        if names:
+            section += "exports_files(" + lines_list(sorted(names)) + ")\n"
         output[relative] = replace_section(existing, "PYTHON INPUT EXPORTS", section)
     return output
 
@@ -694,7 +821,8 @@ def generate(
     root: Path, collection: dict | None = None, areas: list[str] | None = None,
 ) -> dict[str, str]:
     catalogue = json.loads((root / "tests/selection_catalogue.json").read_text())
-    existing = json.loads((root / MANIFEST).read_text()) if (root / MANIFEST).exists() else {}
+    existing = hydrate_manifest(json.loads((root / MANIFEST).read_text())) \
+        if (root / MANIFEST).exists() else {}
     selected = set(existing.get("fine_grained_modules", []))
     selected.update(select_areas(catalogue["modules"], areas or []))
     selected.intersection_update(catalogue["modules"])

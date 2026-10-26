@@ -1,6 +1,9 @@
 """Per-test Bazel dependency discovery preserves runtime inputs without global fanout."""
+import json
 from pathlib import Path
 from textwrap import dedent
+
+import pytest
 
 from scripts.bazel.test_dependencies import DependencyAnalyzer, discover
 
@@ -240,6 +243,30 @@ def test_directory_data_excludes_build_metadata(tmp_path):
     assert result["data_files"] == ["src/templates/example.md"]
 
 
+def test_literal_data_excludes_worktree_control_files(tmp_path):
+    write(tmp_path, ".git", "gitdir: /operator/checkout/.git/worktrees/worker")
+    write(tmp_path, ".aq/claim.json", "{}")
+    write(tmp_path, ".codex/hooks.json", "{}")
+    write(tmp_path, ".pytest_cache/v/cache/lastfailed", "{}")
+    write(tmp_path, ".aq-worktree.json", "{}")
+    write(tmp_path, "tests/fixtures/input.txt", "declared input")
+    write(tmp_path, "tests/test_sample.py", '''
+        from pathlib import Path
+        def test_sample():
+            root = Path(__file__).resolve().parents[1]
+            paths = [".git", ".aq/claim.json", "tests/fixtures/input.txt"]
+            controls = [".codex/hooks.json", ".pytest_cache/v/cache/lastfailed",
+                        ".aq-worktree.json"]
+            (root / ".codex" / "hooks.json").read_text()
+            (root / ".pytest_cache" / "v" / "cache" / "lastfailed").read_text()
+            (root / ".aq-worktree.json").read_text()
+            assert controls
+            assert paths
+    ''')
+    result = discover(tmp_path, "tests/test_sample.py")
+    assert result["data_files"] == ["tests/fixtures/input.txt"]
+
+
 def test_lazy_package_imports_only_when_attribute_requested(tmp_path):
     write(tmp_path, "src/commands/__init__.py", """
         from typing import TYPE_CHECKING
@@ -387,3 +414,175 @@ def test_imported_fixture_explicit_name_survives_local_alias(tmp_path):
     """)
     result = discover(tmp_path, "tests/test_sample.py")
     assert result["source_files"] == ["src/imported.py", "src/shared.py"]
+
+
+def test_composed_repository_data_paths_follow_imported_readers(tmp_path):
+    root = tmp_path
+    write(root, "dashboard/src/deviceLocal.ts", "export const keys = {};\n")
+    write(root, "dashboard/AGENTS.md", "Documented transport keys\n")
+    for ignored in ("node_modules/package/index.js", "dist/bundle.js", "src/cache.tsbuildinfo"):
+        write(root, "dashboard/" + ignored)
+    write(root, "tests/read_dashboard.py", '''
+        from pathlib import Path
+        ROOT = Path(__file__).parents[1]
+        DASHBOARD = ROOT / "dashboard"
+        def contents():
+            return (DASHBOARD / "src" / "deviceLocal.ts").read_text()
+    ''')
+    write(root, "tests/test_reader.py", '''
+        from tests.read_dashboard import contents
+        def test_contents(): assert contents()
+    ''')
+    result = discover(root, "tests/test_reader.py")
+    assert "dashboard/src/deviceLocal.ts" in result["data_files"]
+    assert "dashboard/AGENTS.md" not in result["data_files"]
+    assert not any("node_modules" in path or "/dist/" in path
+                   or path.endswith(".tsbuildinfo") for path in result["data_files"])
+    assert not result["conservative"]
+
+
+def test_literal_frontend_fixture_and_source_directory_are_inputs(tmp_path):
+    write(tmp_path, "dashboard/layout-checks/fixtures/pane-frames.json", "{}")
+    write(tmp_path, "src/inspected.py", "VALUE = 1")
+    write(tmp_path, "tests/test_reader.py", '''
+        from pathlib import Path
+        ROOT = Path(__file__).parents[1]
+        def test_contents():
+            assert Path("dashboard/layout-checks/fixtures/pane-frames.json").read_text()
+            assert list((ROOT / "src").rglob("*.py"))
+    ''')
+    result = discover(tmp_path, "tests/test_reader.py")
+    assert set(result["data_files"]) == {
+        "dashboard/layout-checks/fixtures/pane-frames.json", "src/inspected.py",
+    }
+
+
+def test_composed_data_paths_keep_subtree_without_bare_string_fanout(tmp_path):
+    write(tmp_path, "src/database/schema.py", "SCHEMA = 1")
+    write(tmp_path, "src/unrelated.py", "VALUE = 1")
+    write(tmp_path, "tests/unrelated.py", "VALUE = 1")
+    write(tmp_path, "tests/fixtures/knowledge/export.json", "{}")
+    write(tmp_path, "tests/test_reader.py", '''
+        from pathlib import Path
+        ROOT = Path(__file__).parents[1]
+        module = "src"
+        tests_dir = "tests"
+        def test_contents():
+            assert "src/example.py".startswith("src/")
+            assert "tests/example.py".removeprefix("tests/")
+            assert "src/" in ("src/", "tests/")
+            assert "tests/" == "tests/"
+            assert (ROOT / "src" / "database" / "schema.py").read_text()
+            assert (Path(__file__).parent / "fixtures" / "knowledge" / "export.json").read_text()
+    ''')
+    result = discover(tmp_path, "tests/test_reader.py")
+    assert result["data_files"] == [
+        "src/database/schema.py", "tests/fixtures/knowledge/export.json",
+    ]
+
+
+
+def test_declared_subprocess_module_includes_transitive_imports_and_initializers(tmp_path):
+    write(tmp_path, "src/__init__.py")
+    write(tmp_path, "src/tool/__init__.py", "from . import bootstrap")
+    write(tmp_path, "src/tool/bootstrap.py")
+    write(tmp_path, "src/tool/entry.py", "from . import helper")
+    write(tmp_path, "src/tool/helper.py", "from . import runtime")
+    write(tmp_path, "src/tool/runtime.py")
+    write(tmp_path, "src/unrelated.py")
+    write(tmp_path, "tests/test_sample.py", """
+        import subprocess
+        import sys
+        def test_sample():
+            subprocess.run([sys.executable, "-m", "src.tool.entry"], check=True)
+    """)
+    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
+        "tests/test_sample.py": {"imports": ["src.tool.entry"]},
+    }))
+
+    result = discover(tmp_path, "tests/test_sample.py")
+
+    assert result["source_files"] == [
+        "src/__init__.py", "src/tool/__init__.py", "src/tool/bootstrap.py",
+        "src/tool/entry.py", "src/tool/helper.py", "src/tool/runtime.py",
+    ]
+    assert not result["conservative"]
+
+
+def test_declared_inputs_preserve_discovered_imports_fixtures_and_resources(tmp_path):
+    for name in ("direct", "fixture", "declared", "unrelated"):
+        write(tmp_path, f"src/{name}.py")
+    write(tmp_path, "src/template.txt", "discovered resource")
+    write(tmp_path, "tests/fixtures/contract.json", "{}")
+    write(tmp_path, "tests/conftest.py", """
+        import pytest
+        @pytest.fixture
+        def example():
+            import src.fixture
+    """)
+    write(tmp_path, "tests/test_sample.py", """
+        from pathlib import Path
+        import src.direct
+        def test_sample(example):
+            assert Path("src/template.txt").read_text()
+    """)
+    write(tmp_path, "tests/test_other.py", "def test_other(): pass")
+    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
+        "tests/test_sample.py": {
+            "imports": ["src.declared"],
+            "data": ["tests/fixtures/*.json"],
+        },
+    }))
+
+    analyzer = DependencyAnalyzer(tmp_path)
+    result = analyzer.discover("tests/test_sample.py")
+
+    assert result["source_files"] == ["src/declared.py", "src/direct.py", "src/fixture.py"]
+    assert result["data_files"] == ["src/template.txt", "tests/fixtures/contract.json"]
+    assert "tests/conftest.py" in result["test_sources"]
+    assert not result["conservative"]
+    other = analyzer.discover("tests/test_other.py")
+    assert other["source_files"] == []
+    assert other["data_files"] == []
+
+
+def test_declared_data_glob_tracks_added_and_deleted_members(tmp_path):
+    write(tmp_path, "tests/test_sample.py", "def test_sample(): pass")
+    write(tmp_path, "tests/fixtures/first.json", "{}")
+    write(tmp_path, "tests/fixtures/readme.txt", "unmatched")
+    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
+        "tests/test_sample.py": {"data": ["tests/fixtures/**/*.json"]},
+    }))
+
+    before = discover(tmp_path, "tests/test_sample.py")
+    write(tmp_path, "tests/fixtures/nested/second.json", "{}")
+    added = discover(tmp_path, "tests/test_sample.py")
+    (tmp_path / "tests/fixtures/first.json").unlink()
+    deleted = discover(tmp_path, "tests/test_sample.py")
+
+    assert before["data_files"] == ["tests/fixtures/first.json"]
+    assert added["data_files"] == [
+        "tests/fixtures/first.json", "tests/fixtures/nested/second.json",
+    ]
+    assert deleted["data_files"] == ["tests/fixtures/nested/second.json"]
+
+
+@pytest.mark.parametrize(
+    ("declaration", "diagnostic"),
+    [
+        ({"imports": ["src.missing"]}, "unknown declared import src.missing"),
+        ({"data": ["tests/fixtures/*.json"]}, "declared data matches no files"),
+    ],
+    ids=["unknown-import", "unmatched-data-glob"],
+)
+def test_invalid_declared_inputs_fail_instead_of_silently_narrowing(
+    tmp_path, declaration, diagnostic,
+):
+    write(tmp_path, "src/available.py")
+    write(tmp_path, "tests/test_sample.py", "import src.available")
+    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
+        "tests/test_sample.py": declaration,
+    }))
+
+    with pytest.raises(ValueError, match=diagnostic):
+        discover(tmp_path, "tests/test_sample.py")

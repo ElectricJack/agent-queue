@@ -144,3 +144,44 @@ Unset executable settings visibly skip this opt-in check; a skip is not isolated
 backend acceptance. The supervisor-authorized B1 extension supplies H1's pinned
 ELF loader/glibc sysroot and H2's restricted read-only ABI mappings. See
 `ENVIRONMENT.md` for its refusal and native execution checks.
+
+## Audited static input declarations
+
+The per-module analyzer follows literal Python subprocess snippets and explicit
+repository path readers without executing code. Bare directory assignments and
+prefix/comparison strings do not request directory contents. Unknown Python
+execution retains a visible conservative fallback.
+
+Inputs that syntax cannot express can be added in
+`scripts/bazel/test_dependency_inputs.json`, keyed by test module path:
+
+```json
+{
+  "tests/test_example.py": {
+    "imports": ["src.example.entry"],
+    "data": ["tests/fixtures/example/**/*.json"]
+  }
+}
+```
+
+Declarations add to discovered imports, fixtures and resources. Import entries
+include package initializers and transitive imports. Data globs track added and
+removed members; an unknown import or unmatched glob stops generation. These
+entries cannot remove a discovered dependency or suppress a conservative reason.
+
+## Manifest dependency lists
+
+`test_suites.json` schema version two stores distinct ordered dependency lists
+in `dependency_sets`. The key is SHA-256 of the list's compact JSON encoding
+(`ensure_ascii=False`, separators `,` and `:`), encoded as UTF-8. Module fields
+`source_files`, `test_sources`, `other_sources` and `data_files` contain an
+`{"input_set": "<hash>"}` reference. Expansion preserves ordering and duplicates.
+Collection evidence, target identities and suite obligations retain their
+existing shapes. Every dependency remains represented.
+
+Readers use `src/test_selection/bazel_manifest.py::hydrate_manifest`, which
+accepts version one and validates every version-two list and reference before
+returning the expanded logical version-one document. Invalid hashes or unknown
+references fail before test admission, including corruption in unselected
+modules. Generated BUILD filegroups partition labels by identical consumers;
+expanding them preserves each target's exact input set.

@@ -153,8 +153,12 @@ and select declared tools; broader H2 launch/network isolation remains separate.
 `//checks:dashboard` mirrors `npm --prefix dashboard run typecheck` and
 `npm --prefix dashboard run build`. It compiles the existing test sources but
 does not add a Vitest execution gate. The `@aq/ts-client` workspace consumes
-`//tools/bazel:typescript`, so dashboard actions cannot use ignored generated
-sources from a developer checkout. npm remains the reference backend.
+`//tools/bazel:dashboard_typescript`, which uses the committed `openapi.json`
+just like npm's `pretypecheck` and `prebuild` scripts. Dashboard actions cannot
+use ignored generated sources from a developer checkout. Backend schema
+regeneration remains in `//tools/bazel:typescript` and `//checks:generated`;
+unrelated Python edits do not invalidate frontend compilation. npm remains the
+reference backend.
 
 The root `package-lock.json` is authoritative. `import_npm.py` is the pinned,
 versioned importer: it projects npm's installed-location graph to pnpm v9 lock
@@ -198,7 +202,7 @@ aq test tests/test_bazel_manifest.py -k clean_root_dashboard_acceptance -p no:xd
 
 This retains two independent checkouts, HOME/repository/output roots, BEP and
 logs. Both run dashboard checks with poisoned ambient Node paths, consuming the
-B2 generator artifacts.
+declared committed-spec TypeScript artifact.
 The first also installs directly from the npm lock and runs the existing npm
 commands using the pinned Node 24 archive. TypeScript filename/byte manifests
 and Vite output manifests must match across both Bazel roots and npm. Missing
