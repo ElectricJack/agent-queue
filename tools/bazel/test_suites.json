@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "7fd5e79d3c0c80414f885c40841e9447a6ffade4",
+      "source_head": "70a5d6c21226944fa732097e8774da59e475a940",
       "tool_sha256": "50719aace6bcb916a8c81be1958fdba6fd79957d75e5392095f8c076135c1199"
     },
     "nodes": [
@@ -39056,7 +39056,7 @@
       "tests/task_graph/test_layout_dirty_marks.py": "e48e6ac83453544949d36b15ecce9f9c9ccd01bc324cd09e8237fadc8792b8cd",
       "tests/task_graph/test_layout_driver.py": "64cb0412339a83c513aed40b2c4ffc4215aa83461b0547fed92c9d1e1d060fbd",
       "tests/task_graph/test_layout_queries.py": "885cd413c9a6a659ab0a8a9597bebbae71e21ea8be8db353a20f9793d5fd5443",
-      "tests/task_graph/test_layout_step.py": "2dc10185147e98a90e3fbccd5305419a0cc8ec85bf6869554775dd7169304c23",
+      "tests/task_graph/test_layout_step.py": "4ca38e50074a17ebc80ebbc576478d00a95d2baf6bc805377af62c8a8ad39db2",
       "tests/test_activation_source_scope.py": "c2db5ad08c5f0022eacc1ba4a63c9492d3a865700c3e287a9ab02679a6f250c4",
       "tests/test_additive_migrations.py": "8167ee9b2ab73ed2ef10828ec49ea6940b8c846aa0367db6f27ac0e717f684f9",
       "tests/test_agent_cron.py": "2bf954783ea6139d13948fcb313d7ad7ec43db3bda683f1605e0cc2d5d126739",
