@@ -129,6 +129,18 @@ completion generation before recording the audited row. Missing source evidence
 stays unproven; a dry run writes no rows and a repeated apply is idempotent.
 This recovery inventory does not relax the train's filing-origin requirements.
 
+For an originless task with a passing completion, backfill also retains that
+generation's exact final reported source when Git proves it is an ancestor of
+the default target. This source binding lets ordinary dependency admission
+re-evaluate containment through its existing Git provenance reader. Preview
+publishes nothing. Repeating backfill repairs a previously recorded legacy row
+that lacks this binding, using fresh Git proof rather than the row as authority.
+An earlier reported commit, content equivalence, a failed completion or an
+unavailable final source cannot supply this provenance. A changed generation
+refuses retention, and later target rewinds still fail ordinary containment.
+Admission tracks each snapshot's evaluated task IDs itself when checking
+freshness, so this fence works with the shared Git truth snapshot API.
+
 Salvage, repair and squash re-landings put a task's content on the default
 branch under different SHAs, so neither ancestry nor patch-id proves the source
 branch merged. `scripts/backfill-legacy-deliveries.py PROJECT --relanded
