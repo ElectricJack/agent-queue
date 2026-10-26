@@ -1,0 +1,179 @@
+WEBVTT
+
+1
+00:00:05.733 --> 00:00:08.500
+One coding agent feels like a superpower.
+
+2
+00:00:09.033 --> 00:00:10.167
+You describe a feature.
+
+3
+00:00:10.467 --> 00:00:11.833
+It writes some code.
+
+4
+00:00:12.033 --> 00:00:12.867
+You make a coffee.
+
+5
+00:00:13.467 --> 00:00:14.300
+Things are looking good.
+
+6
+00:00:15.300 --> 00:00:17.167
+Then you try running five agents.
+
+7
+00:00:17.833 --> 00:00:18.467
+Or twenty.
+
+8
+00:00:19.467 --> 00:00:20.933
+Three edit the same file.
+
+9
+00:00:21.400 --> 00:00:23.800
+Four launch the entire test suite.
+
+10
+00:00:23.933 --> 00:00:26.000
+Your laptop starts preparing for takeoff.
+
+11
+00:00:26.433 --> 00:00:30.300
+And two agents ask you the same
+question while a third confidently
+
+12
+00:00:30.300 --> 00:00:32.267
+implements the opposite answer.
+
+13
+00:00:33.033 --> 00:00:34.000
+Congratulations.
+
+14
+00:00:34.467 --> 00:00:36.967
+You've become a middle manager for robots.
+
+15
+00:00:46.067 --> 00:00:49.133
+That's the problem Agent
+Q is built to solve.
+
+16
+00:00:49.767 --> 00:00:51.200
+The name has two meanings.
+
+17
+00:00:51.267 --> 00:00:53.933
+Queue, because you queue
+up work for agents.
+
+18
+00:00:54.200 --> 00:00:57.433
+And Q, as in the gadget
+maker from the Bond films:
+
+19
+00:00:57.800 --> 00:01:00.933
+the workshop that equips
+you for the mission.
+
+20
+00:01:01.033 --> 00:01:03.433
+In this case, the gadgets are software.
+
+21
+00:01:04.267 --> 00:01:06.400
+You bring the ideas and the judgment.
+
+22
+00:01:06.967 --> 00:01:10.833
+Agent Q organizes the agents,
+their tools, and the work
+
+23
+00:01:10.833 --> 00:01:12.867
+needed to build them.
+
+24
+00:01:12.867 --> 00:01:16.600
+Underneath, it's a background service
+that coordinates coding agents,
+
+25
+00:01:16.933 --> 00:01:20.267
+gives them separate places to work,
+and carries finished branches
+
+26
+00:01:20.267 --> 00:01:23.000
+through checks toward the
+shared development branch.
+
+27
+00:01:25.067 --> 00:01:27.400
+One of the original
+motivations was simple:
+
+28
+00:01:27.833 --> 00:01:31.667
+get more useful work out of the
+Claude and Codex subscriptions you're
+
+29
+00:01:31.667 --> 00:01:33.367
+already paying for.
+
+30
+00:01:33.367 --> 00:01:36.800
+Whether that's one twenty-dollar
+plan or several two-hundred-dollar
+
+31
+00:01:36.800 --> 00:01:40.700
+plans, the aim is to make good
+use of the capacity available to
+
+32
+00:01:41.400 --> 00:01:41.467
+you.
+
+33
+00:01:41.467 --> 00:01:43.000
+Keep a backlog ready.
+
+34
+00:01:43.000 --> 00:01:44.433
+Assign suitable work.
+
+35
+00:01:44.800 --> 00:01:48.100
+Watch reported usage and
+provider availability.
+
+36
+00:01:48.433 --> 00:01:51.700
+Let independent tasks move while
+something else is waiting.
+
+37
+00:01:52.500 --> 00:01:56.467
+The goal is useful, checked software
+for the capacity you've paid
+
+38
+00:01:56.667 --> 00:01:57.033
+for.
+
+39
+00:01:57.300 --> 00:02:01.200
+Otherwise, we've invented a very
+elaborate way to turn tokens into
+
+40
+00:02:01.200 --> 00:02:02.033
+laptop heat.
+
