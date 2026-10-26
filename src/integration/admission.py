@@ -776,6 +776,18 @@ class AdmissionView:
     async def matches(self, *, conn=None, lock=False, task_id=None):
         return await self._snapshot.matches(conn=conn, lock=lock, task_id=task_id)
 
+    def revalidation_reasons(self, task_id):
+        """Current guard failures, including those observed after publication.
+
+        ``reasons`` is the immutable selection decision. Activation can discover
+        newer input movement; do not lose that evidence by reading the frozen
+        selection reasons again.
+        """
+        reasons = list(self._snapshot.reasons.get(task_id, ()))
+        if self.pr is not None:
+            reasons.extend(r for r in self.pr.reasons.get(task_id, ()) if r not in reasons)
+        return [dict(reason) for reason in reasons]
+
     async def counts(self, project_id, **policy):
         """Project the same eligible IDs into compatible pool demand."""
         return await self._snapshot.db.count_ready_by_profile(

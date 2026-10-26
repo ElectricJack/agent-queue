@@ -345,6 +345,18 @@ control lock. It retries transient failures up to three times. The steps are:
    `preparing` to `active`. It bumps the session's `claims` count and clears
    the refusal counters.
 
+Post-reset admission rejection records the failed guard/comparison, stage,
+session, claim epoch and released/retained disposition in `prepare_failure`.
+Explain includes that same reason as the last preparation outcome until a
+successful activation clears it. The immutable selection view remains unchanged;
+diagnostics include failures discovered by its later activation revalidation.
+One moved-input rejection may retry immediately. A second identical rejection
+returns `prepare_failed` and applies the ordinary preparation backoff, preventing
+the release's `task.ready` event from driving a tight reset loop. Managed claims
+detach their branch owner with the existing handoff proof before releasing the
+claim or removing its marker. An unproved detach retains both ownership and
+the claim file and returns an explicit preparation refusal.
+
 Activation emits `task.claimed`, `task.started` and `pool.session_claimed`.
 [src/claim_preparation.py](../../../src/claim_preparation.py) holds the
 identity comparison, `same_session_launch`. It compares eleven identity fields,

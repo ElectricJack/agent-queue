@@ -5871,6 +5871,21 @@ class TaskCommandsMixin:
             reasons.append((_recovery_hold_reason if recovery_held else _recovery_incident_reason)(
                 recovery))
         needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
+        prepared = await self.db.get_task_meta(str(task_id), "prepare_failure")
+        if (isinstance(prepared, dict) and prepared.get("claim_epoch") == task.claim_epoch
+                and prepared.get("error_type") == "ClaimAdmissionChanged"):
+            for reason in prepared.get("admission_reasons", []):
+                reasons.append(Reason(
+                    code=reason["code"], ref=reason["ref"],
+                    detail=(f"Last claim preparation (epoch {task.claim_epoch}, "
+                            f"{prepared.get('disposition')}): {reason['detail']}"),
+                ))
+        elif (isinstance(prepared, dict) and prepared.get("claim_epoch") == task.claim_epoch
+                and prepared.get("stage") == "preparation_contention"):
+            reasons.append(Reason(
+                code="claim_preparation_contention", ref=task.id,
+                detail=f"Last claim preparation retained after bounded retries: {prepared['reason']}",
+            ))
         if needs_attention and not retirement:
             detail = str(needs_attention)
             if needs_attention == "slot_reset_failed":

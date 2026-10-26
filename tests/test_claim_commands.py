@@ -706,15 +706,24 @@ async def test_repair_prepare_contention_is_bounded_and_resumes_same_claim(
     ])
     monkeypatch.setattr(db, "activate_claim", injected)
     result = await settled_claim(env.handler, {"next": True})
-    assert result["result"] == "no_ready_work", result
+    assert result["result"] == "prepare_failed", result
+    assert "DeadlockDetectedError" in result["reason"]
+    assert result["refusal_count"] == 1
     assert injected.await_count == 3
     held = await db.get_session(env.sid)
     assert (held.claim_phase, held.last_claim_epoch, held.claims) == ("preparing", 1, 0)
     assert (await env.locks.get(env.target)).fence == env.lease.fence
     assert await db.get_task_meta(env.task_id, "needs_attention") is None
-    assert not (env.wd / ".aq" / "claim.json").exists()
+    assert (env.wd / ".aq" / "claim.json").exists()
+    failure = await db.get_task_meta(env.task_id, "prepare_failure")
+    assert failure["disposition"] == "retained"
+    assert failure["stage"] == "preparation_contention"
+    explained = await handler._cmd_explain_task({"task_id": env.task_id})
+    assert any(r["code"] == "claim_preparation_contention"
+               and "DeadlockDetectedError" in r["detail"] for r in explained["reasons"])
 
     monkeypatch.setattr(db, "activate_claim", activate)
+    await db.update_session(env.sid, claim_refusal=None)
     resumed = await settled_claim(env.handler, {"next": True})
     assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
     assert (await env.locks.get(env.target)).fence == env.lease.fence
@@ -767,7 +776,8 @@ async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_r
     operation = handler.orchestrator._hierarchy_repair_start
     operation.side_effect = BranchLockTimeout(env.target, 150)
     result = await settled_claim(env.handler, {"next": True})
-    assert result["result"] == "no_ready_work", result
+    assert result["result"] == "prepare_failed", result
+    assert "BranchLockTimeout" in result["reason"]
     assert operation.await_count == 3
     held = await db.get_session(env.sid)
     assert (held.claim_phase, held.last_claim_epoch, held.claims) == ("preparing", 1, 0)
@@ -778,12 +788,17 @@ async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_r
     assert (lease.holder, lease.fence) == (env.task_id, env.lease.fence)
     assert held.claim_failure_count == 0
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
-    for key in ("needs_attention", "slot_reset_failure", "prepare_failure"):
+    for key in ("needs_attention", "slot_reset_failure"):
         assert await db.get_task_meta(env.task_id, key) is None
+    failure = await db.get_task_meta(env.task_id, "prepare_failure")
+    assert failure["stage"] == "preparation_contention"
+    assert failure["disposition"] == "retained"
     assert "pool.prepare_failed" not in handler.orchestrator.bus.seen_event_types
+    # The fence timed out before reset could publish a holder marker.
     assert not (env.wd / ".aq" / "claim.json").exists()
 
     operation.side_effect = None
+    await db.update_session(env.sid, claim_refusal=None)
     resumed = await settled_claim(env.handler, {"next": True})
     assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
     assert (await env.locks.get(env.target)).fence == env.lease.fence
@@ -8362,6 +8377,8 @@ async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
         # Exercise the same rejection after the no-wait response has returned,
         # without relying on the runner being slower than the response window.
         monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
+    else:
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60)
     if response == "completed_before_response":
         claim = handler._cmd_task_claim
 
@@ -8377,7 +8394,13 @@ async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
 
         monkeypatch.setattr(handler, "_cmd_task_claim", complete_before_response)
     result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["result"] == "no_ready_work", result
+    repeated = response == "normal" and movement in {"pr", "checkout"}
+    assert result["result"] == ("prepare_failed" if repeated else "no_ready_work"), result
+    if repeated:
+        code = "admission_policy_changed" if movement == "pr" else "admission_workspace_changed"
+        assert code in result["reason"]
+        assert manager.reset_slot_for_task.await_count == 2
+        assert await db.get_task_meta("dependent", "claim_prepare_backoff_until") > time.time()
     dependent = await db.get_task("dependent")
     assert dependent.status is not TaskStatus.IN_PROGRESS
     assert dependent.status is TaskStatus.READY
@@ -8926,3 +8949,107 @@ async def test_pr_gate_bookkeeping_clear_records_lock_or_input_failure(
     detail = next(r["detail"] for r in view.reasons["dependent"] if r["code"] == code)
     assert ("candidate branches" if failure == "inputs" else "55P03") in detail
     assert (await db.get_task("dependent")).is_blocked
+
+
+@pytest.mark.parametrize("guard", ["freshness", "inputs", "workspace"])
+async def test_post_reset_rejection_is_durable_bounded_and_explained(
+    handler, db, tmp_path, monkeypatch, guard,
+):
+    from src.integration.admission import AdmissionSnapshot, AdmissionView
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "rejected", profile_id="worker")
+    sid, work_dir = await pool_session(db, tmp_path)
+    resets = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+    reset = resets.side_effect
+    code = "admission_inputs_changed" if guard == "inputs" else f"admission_{guard}_changed"
+
+    async def reject_freshness(self, task_id=None):
+        return guard != "freshness"
+
+    original_matches = AdmissionSnapshot.matches
+
+    async def reject_inputs(self, *, conn=None, lock=False, task_id=None):
+        if (lock and task_id and guard == "inputs" and await conn.scalar(
+                select(tasks.c.status).where(tasks.c.id == task_id)) == "IN_PROGRESS"):
+            return self.record_change(code, "source completion changed; retry", task_id)
+        return await original_matches(self, conn=conn, lock=lock, task_id=task_id)
+
+    monkeypatch.setattr(AdmissionSnapshot, "is_fresh", reject_freshness)
+    monkeypatch.setattr(AdmissionSnapshot, "matches", reject_inputs)
+    if guard == "workspace":
+        # A PR checkout guard can fail after the published selection decision.
+        original_pr = AdmissionView.pr.fget
+
+        def pr_view(self):
+            pr = original_pr(self)
+            pr.verify_workspace = AsyncMock(return_value=False)
+            return pr
+
+        monkeypatch.setattr(AdmissionView, "pr", property(pr_view))
+
+    worker = scoped(handler, sid)
+    result = await settled_claim(worker, {"next": True, "wait": 10})
+    assert result["result"] == "prepare_failed", result
+    assert code in result["reason"], result
+    assert result["refusal_count"] == 1
+    assert resets.await_count == 2
+    assert not (work_dir / ".aq" / "claim.json").exists()
+    current = await db.get_session(sid)
+    assert current.claim_phase is None and current.claims == 0
+    assert (await db.get_task("rejected")).status == TaskStatus.READY
+    assert await db.get_task_meta("rejected", "claim_prepare_backoff_until") > time.time()
+    failure = await db.get_task_meta("rejected", "prepare_failure")
+    assert failure["claim_epoch"] == 2 and failure["disposition"] == "released"
+    assert failure["admission_reasons"][0]["code"] == code
+    explained = await handler._cmd_explain_task({"task_id": "rejected"})
+    assert any(r["code"] == code and "Last claim preparation" in r["detail"]
+               for r in explained["reasons"]), explained
+
+    # The same inputs now pass. Successful activation retires the diagnostic
+    # and the backoff, without an operator clearing evidence by hand.
+    monkeypatch.undo()
+    resets.side_effect = reset
+    await db.update_session(sid, claim_refusal=None)
+    await db.set_task_meta("rejected", "claim_prepare_backoff_until", 0)
+    result = await settled_claim(worker, {"next": True})
+    assert result["result"] == "claimed", result
+    assert await db.get_task_meta("rejected", "prepare_failure") is None
+
+
+@pytest.mark.parametrize("detach", [True, False])
+async def test_managed_admission_rejection_preserves_or_releases_owner_proof(
+    handler, db, tmp_path, monkeypatch, detach,
+):
+    from src.integration.admission import AdmissionSnapshot
+
+    ownership, fence = await TestClaim._hierarchy_task(
+        TestClaim(), db, tmp_path,
+    )
+    sid, work_dir = await pool_session(db, tmp_path)
+    monkeypatch.setattr(AdmissionSnapshot, "is_fresh", AsyncMock(return_value=False))
+
+    async def release(task, **kwargs):
+        # The marker must survive until guarded detachment succeeds.
+        marker = json.loads((work_dir / ".aq" / "claim.json").read_text())
+        assert marker["task_id"] == "child" and marker["claim_epoch"] == task.claim_epoch
+        evidence = await db.get_task_meta(task.id, "prepare_failure")
+        assert evidence["claim_epoch"] == task.claim_epoch
+        assert evidence["admission_reasons"][0]["code"] == "admission_freshness_changed"
+        if detach:
+            confirmed = BranchOwnership(db, confirm_handoff=AsyncMock(return_value=True))
+            current = ownership._fence(await ownership.get_owner(fence.target))
+            await confirmed.transfer(current, task.id, "worker")
+        return detach
+
+    handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(side_effect=release)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "prepare_failed", result
+    failure = await db.get_task_meta("child", "prepare_failure")
+    assert failure["disposition"] == ("released" if detach else "retained")
+    assert failure["admission_reasons"][0]["code"] == "admission_freshness_changed"
+    current = await db.get_session(sid)
+    assert current.claim_phase == (None if detach else "preparing")
+    assert (work_dir / ".aq" / "claim.json").exists() is (not detach)
+    owner = await ownership.get_owner(fence.target)
+    assert owner["handoff_state"] == ("reserved" if detach else "attached")
