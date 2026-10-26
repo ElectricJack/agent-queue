@@ -39,8 +39,9 @@ independent dependencies or migrating every legacy area is outside this refactor
 
 Use the repository's disposable test PostgreSQL DSN for collection and pytest.
 Collection executes no tests; it preserves all marker arms and collected nodes.
-Until `swift-meadow-43` fixes path filtering, run these commands in a disposable
-checkout whose absolute path has no `.aq` component, as in the repair below.
+With the `swift-meadow-43` path-filter fix merged from dev `974dbb33b`, these
+commands also work inside `.aq` worktrees. The earlier repair below used a
+disposable checkout outside `.aq` before that fix landed.
 
 ```bash
 python scripts/generate-selection-catalogue.py
@@ -112,6 +113,33 @@ publication without waiting for `swift-meadow-43` or `calm-summit-34`; the five
 fix. Before publication, dev advanced to `1db2576f1` with the documentation-owner
 fix, so that revision is merged as requested. This repair changes no production code and retains the accepted **0 / 0 / 0**
 owned/engine/tables disposition.
+
+## Merge repair after the path-filter fix
+
+Merged dev `974dbb33b` into the published `ba73f1391` branch without rebasing.
+The three conflicts in `checks/BUILD.bazel`, `tests/BUILD.bazel`, and
+`tools/bazel/test_suites.json` were resolved by regenerating from the merged
+sources in the `.aq` worker checkout. The merged regression checks that ordinary
+and `.aq` checkout paths produce identical directory-data dependencies.
+
+Fresh collection contains 39,088 nodes: every one of dev's 39,074 nodes plus
+the same 14 refactor regressions. No modules or nodes were removed, and all 26
+opted-in modules remain selected. Comparing every module's source, data, test,
+and other-source inputs against dev finds removals only in the two intentionally
+narrowed knowledge leaves, with the same Python/data counts recorded above.
+The generated diff includes collection and workflow regrouping, with no broad
+directory-input loss. No production refactor changes were needed.
+
+The final targeted AQ-admitted check passed **122 tests**, with six optional
+Bazel execution checks skipped because their executable settings were absent:
+
+```bash
+python -m src.cli.app test tests/test_bazel_manifest.py tests/test_bazel_test_dependencies.py tests/test_selection_catalogue.py tests/test_documentation_coverage.py -q
+```
+
+This includes graph reproducibility, worker-root directory-data parity, the real
+leaf import-closure regression, catalogue regeneration, and documentation coverage.
+The existing limits on full-suite, isolated execution, and selection claims remain.
 
 ## Validation and ownership
 

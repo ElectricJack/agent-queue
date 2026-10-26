@@ -3,10 +3,9 @@
 `scripts/bazel/generate_targets.py` owns the generated `src/**/BUILD.bazel`,
 `tests/BUILD.bazel`, `test_suites.json`, and marked sections in the root,
 `tools/bazel`, and `checks` BUILD files. The other sections belong to their
-respective generators. Until the `swift-meadow-43` path-filter fix lands, generate
-and verify from a disposable checkout outside any `.aq` directory: the current
-analyzer can omit literal directory data beneath that path. Refresh after changing
-tests or fixtures:
+respective generators. The `swift-meadow-43` path-filter fix is merged: directory
+data exclusions are relative to the checkout, so generation and verification also
+work in `.aq` worktrees. Refresh after changing tests or fixtures:
 
 ```bash
 python scripts/generate-selection-catalogue.py
