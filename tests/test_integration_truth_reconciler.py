@@ -173,6 +173,9 @@ async def test_reconciler_joins_inflight_tick_snapshot_without_opening_store(
     target = DeliveryTarget("p", "r", str(repo.remote), "refs/heads/main")
     observe = service.observer.snapshot
     if budgeted:
+        # Exercise timeout while joining the fetch, independently of database lookup latency.
+        monkeypatch.setattr("src.projects.storage_binding.repository_path",
+                            AsyncMock(return_value=repo.path))
         monkeypatch.setattr("src.git.manager.REQUEST_GIT_READ_SECONDS", 0.01)
         observe = bounded_git_reads(observe)
     with snapshot_scope():
