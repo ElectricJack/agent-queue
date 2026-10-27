@@ -41,7 +41,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3635,
+    "authorized_owned_delta": 3678,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -370,6 +370,24 @@
       "source_revision": "e411d0ca59cbd842a0bee1d558aaf8209bffb23a",
       "task_id": "bright-glacier-60"
     },
+    "incoming_child_batch_composition": {
+      "authorized_engine_delta": 20,
+      "authorized_owned_delta": 43,
+      "authorized_shared_owned_delta": 23,
+      "authorized_table_delta": 0,
+      "decision_message_id": "msg-a8972b49541b431e9146cd95001f18b4",
+      "dev_source_revision": "c10b5b6f9",
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82542,
+      "previous_measured_owned_total": 157803,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2017",
+      "reason": "Exact supervisor-approved incoming-child-batch ownership and fresh-head recovery footprint after merging dev and its setup-script test fix. Preserve original baselines, every historical grant and ownership classification, with zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "3c4ccef55c93e3b400a35485e4ebd70ad016931a",
+      "task_id": "solid-forge-85",
+      "thread_id": "solid-forge-85-ci-size"
+    },
     "initial_inventory": "/tmp/smart-nexus-83-live-inventory.json",
     "inventory_sha256": "87c9b5ab3d968137db1e136be1ee523790bbef710bc6ef8124c90cb2d345e416",
     "large_session_prompt_composition": {
@@ -443,8 +461,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83644,
-    "measured_owned_total": 159134,
+    "measured_engine_lines": 83664,
+    "measured_owned_total": 159177,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
