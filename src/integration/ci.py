@@ -940,12 +940,15 @@ class AuthenticatedGitHubObserver:
         self, client: Any, *, expected_event: str | None = None,
         ignore_cancelled_batches: bool = False,
         allow_push_fallback: bool = False,
+        expected_branch: str | None = None,
+        expected_workflow: str | None = None,
     ):
         if allow_push_fallback and expected_event != "pull_request":
             raise ValueError("push fallback requires pull_request observation")
         self.client, self.expected_event = client, expected_event
         self.ignore_cancelled_batches = ignore_cancelled_batches
         self.allow_push_fallback = allow_push_fallback
+        self.expected_branch, self.expected_workflow = expected_branch, expected_workflow
 
     async def observe(
         self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
@@ -956,6 +959,14 @@ class AuthenticatedGitHubObserver:
             f"/repos/{trust.full_name}/actions/runs?head_sha={head_sha}&per_page=100",
             key="workflow_runs",
         )
+        # Filter before selecting checks, including the missing-check and latest
+        # attempt paths. Another ref's green run on the same SHA cannot satisfy
+        # a promotion that explicitly requested fresh CI.
+        workflow_records = [record for record in workflow_records
+                            if (self.expected_branch is None
+                                or record.get("head_branch") == self.expected_branch)
+                            and (self.expected_workflow is None
+                                 or record.get("path") == self.expected_workflow)]
         cancelled_batch_suites: set[int] = set()
         if self.ignore_cancelled_batches:
             suites: dict[int, list[dict[str, Any]]] = {}
