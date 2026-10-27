@@ -979,7 +979,7 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3948,
+ 'authorized_owned_delta': 3950,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1239,6 +1239,35 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                                     'headroom and no new storage category.',
                                           'referenced_decision': 'size-cap-delegation-2026-10-23',
                                           'task_id': 'bright-quest-30'},
+ 'held_listener_isolation_composition': {'authorized_engine_delta': 0,
+                                         'authorized_owned_delta': 2,
+                                         'authorized_shared_owned_delta': 2,
+                                         'authorized_table_delta': 0,
+                                         'charged_files': {'src/waits/listener.py:WaitSourceListener._dispatch': 2},
+                                         'decision_message_id': 'msg-e66af06a5cf24ecba22e415bf56f3089',
+                                         'dev_source_revision': '0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3',
+                                         'measured_engine_lines': 83732,
+                                         'measured_owned_total': 159449,
+                                         'measured_table_count': 45,
+                                         'operator_decision': '6679052c',
+                                         'previous_measured_engine_lines': 83732,
+                                         'previous_measured_owned_total': 159447,
+                                         'previous_measured_table_count': 45,
+                                         'reason': 'Exact supervisor-approved +2 shared owned '
+                                                   'lines for the WaitSourceListener._dispatch '
+                                                   'retry accumulator (initialization and maximum '
+                                                   'aggregation), preserving per-wait retry '
+                                                   'receipts during held hibernation isolation. '
+                                                   'Compose on the existing approved cap; preserve '
+                                                   'every historical grant, original baseline and '
+                                                   'ownership classification, with zero remaining '
+                                                   'headroom and no threshold or storage-category '
+                                                   'changes.',
+                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                         'request_message_id': 'msg-817a5b7565264655831ac5c0d229612a',
+                                         'source_revision': 'b7afd8397fb66a8134ec396fc830c84f44b03848',
+                                         'task_id': 'clear-journey-76',
+                                         'thread_id': 'clear-journey-76-held-size'},
  'historical_root_pr_diagnostics_composition': {'authorized_engine_delta': 86,
                                                 'authorized_owned_delta': 86,
                                                 'authorized_table_delta': 0,
@@ -1446,7 +1475,7 @@ HAND_INTEGRATION_RECONCILIATION = {'aborted_batch_branch_retirement_composition'
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83732,
- 'measured_owned_total': 159447,
+ 'measured_owned_total': 159449,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
