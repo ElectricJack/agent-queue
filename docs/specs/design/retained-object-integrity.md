@@ -20,6 +20,19 @@ No global lock or persistent integrity cache is introduced. Full verification
 has a cost proportional to the retained object store; timeout leaves that
 observation unavailable. Independent stores retain their existing concurrency.
 
+Ordinary authenticated origin fetches run full verification and tip lending
+before acquiring repository exclusion. Network transfer, checked local imports,
+exact ref readback and baseline extension share one repository transaction.
+The borrowed object store remains protected from foreground maintenance during
+transfer and import. The baseline is rechecked after staging under that
+transaction, so concurrent unknown writes
+cannot be accepted as checked additions. Automatic maintenance is disabled on
+the local imports; foreground maintenance retains its verifier exclusion.
+Callers explicitly passing `lock_held=True` retain their enclosing transaction
+and its stronger compound-operation guarantees. Bounded repository-lock waiters
+(such as claim preparation and Git truth reconciliation) can acquire the lock
+while an ordinary pull's full integrity check is running.
+
 A failed full verification is retried up to three times with one-, two- and
 four-second backoff within the same integrity deadline (including lock waits
 and backoff). Verification and GitManager's foreground `gc`, `repack` and
@@ -169,8 +182,8 @@ whose target type and OID match one of those absences. Standalone or unexplained
 broken links, errors, warnings, corruption, truncated objects and all other
 diagnostics retain unavailable evidence without attempting an import.
 
-Under the existing repository transaction and common retained-store exclusion,
-recheck the evidence, acquire a complete isolated origin store without borrowing
+Under common retained-store exclusion, recheck the evidence, then acquire a
+complete isolated origin store without borrowing
 retained objects, and prove every named object is available with its expected
 type. Import only those OIDs and their reachable closure, with incoming object
 checking, without changing destination refs or FETCH_HEAD. Preserve every local
@@ -181,3 +194,14 @@ or a second integrity failure propagate to the existing workspace hold. There
 is one recovery attempt per acquisition, bounded by the retained integrity
 deadline, with no new workspace retry classification or relaxation of
 `verify_saved_branch`.
+
+Ordinary acquisition keeps every full integrity check and isolated network
+staging outside repository exclusion, preserving the bounded lock wait of claims.
+Only the additive import takes repository exclusion, followed by common-store
+exclusion. Revalidate the object-store fingerprint before importing; a changed
+store retains unavailable evidence. Release repository exclusion before the final
+full integrity check. An explicit enclosing transaction passed with
+`lock_held=True` retains its caller's existing stronger exclusion guarantee.
+The recovery deadline includes lock waits, and the additive local import disables
+automatic maintenance. This preserves the claim-lock guarantee of `ce8dc58cb`
+under supervisor decision `msg-3a67a988804742469c386795c725cd62`.

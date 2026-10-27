@@ -81,7 +81,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -2343,19 +2343,13 @@ class GitManager:
         self.github_access.validate_repository_reference(binding, configured_origin)
         source_url = f"https://github.com/{binding.full_name}.git"
 
-        async def acquire() -> None:
-            token = await self._atoken_for_repository(binding)
-            await self._afetch_origin_with_auth_to_url(
-                checkout_path, source_url=source_url, token=token,
-                **({"refetch": True} if refetch else {}),
-                **({"refs": refs} if refs is not None else {}),
-            )
-
-        if lock_held:
-            await acquire()
-        else:
-            async with self.arepository_transaction(checkout_path):
-                await acquire()
+        token = await self._atoken_for_repository(binding)
+        await self._afetch_origin_with_auth_to_url(
+            checkout_path, source_url=source_url, token=token,
+            **({"refetch": True} if refetch else {}),
+            **({"refs": refs} if refs is not None else {}),
+            **({"lock_held": True} if lock_held else {}),
+        )
 
     @staticmethod
     def _origin_refspecs(refs: Sequence[str], *, staged: bool = False) -> list[str]:
@@ -2377,6 +2371,7 @@ class GitManager:
         token: str | None,
         refetch: bool = False,
         refs: Sequence[str] | None = None,
+        lock_held: bool = False,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2431,90 +2426,103 @@ class GitManager:
                         destination_git_dir, home=home, deadline=deadline,
                     )
                 except RetainedMissingObjects:
-                    await self._arecover_missing_retained_objects(
-                        destination_git_dir, source_url=source_url, token=token, home=home,
-                        deadline=loop.time() + _RETAINED_VERIFY_TIMEOUT_SECONDS,
-                    )
+                    recovery_deadline = loop.time() + _RETAINED_VERIFY_TIMEOUT_SECONDS
+                    async with asyncio.timeout_at(recovery_deadline):
+                        await self._arecover_missing_retained_objects(
+                            destination_git_dir, source_url=source_url, token=token, home=home,
+                            deadline=recovery_deadline, checkout_path=checkout_path,
+                            lock_held=lock_held,
+                        )
                     deadline += loop.time() - verification_started
                 seeded_tips = await self._alend_fetch_objects(
                     imported, destination_git_dir, borrowable_objects,
                     patterns=("refs/remotes/origin", "refs/tags", "refs/aq/provenance"),
                     home=home, deadline=deadline,
                 )
-            reusable = await self.aretained_store_verified(destination_git_dir)
-            mode = "incremental" if borrowable_objects is not None else "full"
-            prepared_at = loop.time()
-            try:
-                await self._arun_authenticated_git(
-                    # The checkout's tips reach negotiation only through the
-                    # seeded refs: the no-op alternateRefsCommand keeps the
-                    # credentialed process from running for-each-ref against
-                    # the checkout (and so reading its worker-writable config).
-                    ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
-                     "-c", "fetch.fsckObjects=true",
-                     f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
-                     *transport_refs],
-                    home=home,
-                    repository_url=source_url,
-                    token=token,
-                    deadline=deadline,
-                    budget_seconds=self._GIT_TIMEOUT,
+            # Full verification uses its own maintenance exclusion before
+            # taking repository exclusion. Keep the transfer/import serialized,
+            # including the lifetime of the borrowed objects, without starving
+            # bounded claim/reconciliation waiters during fsck.
+            transaction = (
+                nullcontext() if lock_held else self.arepository_transaction(checkout_path)
+            )
+            async with transaction:
+                mode = "incremental" if borrowable_objects is not None else "full"
+                prepared_at = loop.time()
+                try:
+                    await self._arun_authenticated_git(
+                        # The checkout's tips reach negotiation only through the
+                        # seeded refs: the no-op alternateRefsCommand keeps the
+                        # credentialed process from running for-each-ref against
+                        # the checkout (and so reading its worker-writable config).
+                        ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
+                         "-c", "fetch.fsckObjects=true",
+                         f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
+                         *transport_refs],
+                        home=home,
+                        repository_url=source_url,
+                        token=token,
+                        deadline=deadline,
+                        budget_seconds=self._GIT_TIMEOUT,
+                    )
+                except GitError as exc:
+                    raise GitError(
+                        f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
+                    ) from None
+                acquired_at = loop.time()
+                received_objects, received_kib = await self._areceived_objects(
+                    imported, home=home, deadline=deadline
                 )
-            except GitError as exc:
-                raise GitError(
-                    f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
-                ) from None
-            acquired_at = loop.time()
-            received_objects, received_kib = await self._areceived_objects(
-                imported, home=home, deadline=deadline
-            )
-            await self._run_isolated_import_git(
-                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                 "-c", "fetch.fsckObjects=true",
-                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                 *(["--prune"] if refs is None else []),
-                 *(["--refetch"] if refetch else []),
-                 str(imported), *import_refs],
-                home=home,
-                deadline=deadline,
-            )
-            if not refetch and refs is None:
+                # Recheck after staging: another writer may have invalidated the
+                # verified baseline while no repository lock was held.
+                reusable = await self.aretained_store_verified(destination_git_dir)
                 await self._run_isolated_import_git(
                     ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                     "-c", "fetch.fsckObjects=true",
+                     "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
                      f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                     str(imported), "+refs/tags/*:refs/tags/*"],
+                     *(["--prune"] if refs is None else []),
+                     *(["--refetch"] if refetch else []),
+                     str(imported), *import_refs],
                     home=home,
                     deadline=deadline,
                 )
-            imported_refs = await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
-                 "refs/heads", "refs/tags", "refs/aq/provenance"],
-                home=home, deadline=deadline,
-            )
-            destination_refs = await self._run_isolated_import_git(
-                [f"--git-dir={destination_git_dir}", "for-each-ref",
-                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
-                 "refs/aq/provenance"],
-                home=home, deadline=deadline,
-            )
-            imported_map = dict(
-                (ref, oid) for oid, ref in
-                (line.split(" ", 1) for line in imported_refs.decode("ascii").splitlines())
-            )
-            destination_map = dict(
-                (ref, oid) for oid, ref in
-                (line.split(" ", 1) for line in destination_refs.decode("ascii").splitlines())
-            )
-            for ref, oid in imported_map.items():
-                destination_ref = (
-                    ref.replace("refs/heads/", "refs/remotes/origin/", 1)
-                    if ref.startswith("refs/heads/") else ref
+                if not refetch and refs is None:
+                    await self._run_isolated_import_git(
+                        ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                         "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
+                         f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                         str(imported), "+refs/tags/*:refs/tags/*"],
+                        home=home,
+                        deadline=deadline,
+                    )
+                imported_refs = await self._run_isolated_import_git(
+                    [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
+                     "refs/heads", "refs/tags", "refs/aq/provenance"],
+                    home=home, deadline=deadline,
                 )
-                if destination_map.get(destination_ref) != oid:
-                    raise GitError("authenticated Git fetch imported a different ref")
-            if reusable:
-                await self.aextend_retained_store_verified(destination_git_dir)
+                destination_refs = await self._run_isolated_import_git(
+                    [f"--git-dir={destination_git_dir}", "for-each-ref",
+                     "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
+                     "refs/aq/provenance"],
+                    home=home, deadline=deadline,
+                )
+                imported_map = dict(
+                    (ref, oid) for oid, ref in
+                    (line.split(" ", 1) for line in imported_refs.decode("ascii").splitlines())
+                )
+                destination_map = dict(
+                    (ref, oid) for oid, ref in
+                    (line.split(" ", 1) for line in destination_refs.decode("ascii").splitlines())
+                )
+                for ref, oid in imported_map.items():
+                    destination_ref = (
+                        ref.replace("refs/heads/", "refs/remotes/origin/", 1)
+                        if ref.startswith("refs/heads/") else ref
+                    )
+                    if destination_map.get(destination_ref) != oid:
+                        raise GitError("authenticated Git fetch imported a different ref")
+                if reusable:
+                    await self.aextend_retained_store_verified(destination_git_dir)
         transfer = _OriginFetchTransfer(
             mode=mode,
             seeded_tips=seeded_tips,
@@ -2638,16 +2646,17 @@ class GitManager:
 
     async def _arecover_missing_retained_objects(
         self, git_dir: str, *, source_url: str, token: str | None, home: Path, deadline: float,
+        checkout_path: str, lock_held: bool,
     ) -> None:
         """Add absent objects from the authorized origin, without changing refs.
 
-        The origin acquisition's caller holds its repository transaction and
-        has validated repository identity. Never use the damaged store as a
-        lender, replace it, remove objects, or relax the read-only verifier.
+        The caller has validated repository identity. Only the additive import
+        takes repository exclusion; full checks and staging leave ordinary
+        repository waiters free. Never lend, replace or remove damaged objects.
         """
+        check = [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                 "--no-reflogs", "--no-progress"]
         async with self._aretained_store_exclusion(git_dir, deadline=deadline):
-            check = [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
-                     "--no-reflogs", "--no-progress"]
             fingerprint, started = await self.aretained_store_baseline(git_dir)
             try:
                 await self._run_isolated_import_git(
@@ -2657,38 +2666,47 @@ class GitManager:
                 return  # An independent writer already completed the store.
             except RetainedMissingObjects as exc:
                 missing = exc.objects
-            staged = home / "missing-objects.git"
-            await self._run_isolated_import_git(
-                ["init", "--bare", "--template=", str(staged)], home=home, deadline=deadline,
-            )
-            await self._arun_authenticated_git(
-                ["-c", "maintenance.auto=false", "-c", "fetch.fsckObjects=true",
-                 f"--git-dir={staged}", "fetch", "--no-tags", source_url,
-                 "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
-                 "+refs/aq/provenance/*:refs/aq/provenance/*"],
-                home=home, repository_url=source_url, token=token, deadline=deadline,
-                budget_seconds=max(0.0, deadline - asyncio.get_running_loop().time()),
-            )
-            found = await self._run_isolated_import_git(
-                [f"--git-dir={staged}", "cat-file", "--batch-check"],
-                home=home, deadline=deadline,
-                input="".join(f"{oid}\n" for oid, _kind in missing).encode("ascii"),
-            )
-            if [(parts[0], parts[1]) for line in found.decode("ascii").splitlines()
-                    if len(parts := line.split()) == 3] != list(missing):
-                raise GitError("retained Git object integrity is unavailable: "
-                               "missing objects are unavailable from origin: "
-                               + " ".join(oid for oid, _kind in missing))
-            await self._run_isolated_import_git(
-                [f"--git-dir={staged}", *check[1:]], home=home, deadline=deadline,
-                verify_integrity=True,
-            )
-            await self._run_isolated_import_git(
-                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                 "-c", "fetch.fsckObjects=true", f"--git-dir={git_dir}", "fetch",
-                 "--refetch", "--no-tags", "--no-write-fetch-head", str(staged),
-                 *(oid for oid, _kind in missing)], home=home, deadline=deadline,
-            )
+        staged = home / "missing-objects.git"
+        await self._run_isolated_import_git(
+            ["init", "--bare", "--template=", str(staged)], home=home, deadline=deadline,
+        )
+        await self._arun_authenticated_git(
+            ["-c", "maintenance.auto=false", "-c", "fetch.fsckObjects=true",
+             f"--git-dir={staged}", "fetch", "--no-tags", source_url,
+             "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+             "+refs/aq/provenance/*:refs/aq/provenance/*"],
+            home=home, repository_url=source_url, token=token, deadline=deadline,
+            budget_seconds=max(0.0, deadline - asyncio.get_running_loop().time()),
+        )
+        found = await self._run_isolated_import_git(
+            [f"--git-dir={staged}", "cat-file", "--batch-check"],
+            home=home, deadline=deadline,
+            input="".join(f"{oid}\n" for oid, _kind in missing).encode("ascii"),
+        )
+        if [(parts[0], parts[1]) for line in found.decode("ascii").splitlines()
+                if len(parts := line.split()) == 3] != list(missing):
+            raise GitError("retained Git object integrity is unavailable: "
+                           "missing objects are unavailable from origin: "
+                           + " ".join(oid for oid, _kind in missing))
+        await self._run_isolated_import_git(
+            [f"--git-dir={staged}", *check[1:]], home=home, deadline=deadline,
+            verify_integrity=True,
+        )
+        transaction = nullcontext() if lock_held else self.arepository_transaction(checkout_path)
+        async with transaction:
+            async with self._aretained_store_exclusion(git_dir, deadline=deadline):
+                current, _ = await self.aretained_store_baseline(git_dir)
+                if current != fingerprint:
+                    raise GitError("retained Git object integrity is unavailable: "
+                                   "object store changed during missing-object acquisition")
+                await self._run_isolated_import_git(
+                    ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                     "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
+                     f"--git-dir={git_dir}", "fetch",
+                     "--refetch", "--no-tags", "--no-write-fetch-head", str(staged),
+                     *(oid for oid, _kind in missing)], home=home, deadline=deadline,
+                )
+        async with self._aretained_store_exclusion(git_dir, deadline=deadline):
             fingerprint, started = await self.aretained_store_baseline(git_dir)
             await self._run_isolated_import_git(
                 check, home=home, deadline=deadline, verify_integrity=True,
@@ -2733,8 +2751,8 @@ class GitManager:
         A clean result is reused only while the object store holds the same
         files (path, size, inode) and for at most
         ``_RETAINED_VERIFY_TTL_SECONDS``: unverified object writes invalidate it. A
-        full check holds the repository lock for many seconds on a large store,
-        so repeating it on every no-op fetch starves the integration train.
+        full check may take many seconds on a large store. Ordinary origin
+        fetches run it before taking repository exclusion for transfer and import.
         """
         # One full check per store at a time: concurrent fetches into the same
         # store wait for it and reuse a clean result instead of each running

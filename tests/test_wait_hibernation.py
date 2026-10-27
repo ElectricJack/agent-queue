@@ -2996,8 +2996,7 @@ async def test_resume_missing_object_recovery_or_existing_workspace_hold(
 
     async def origin(path, *, repository_url):
         assert repository_url == source.as_uri()
-        async with git.arepository_transaction(path):
-            await fetch(path, source_url=repository_url, token=None)
+        await fetch(path, source_url=repository_url, token=None)
 
     monkeypatch.setattr(git, 'afetch_origin', origin)
     if fault == 'post_import':
