@@ -1180,6 +1180,10 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
         service.scheduler.reader = SimpleNamespace(observe_task=observe)
         monkeypatch.setattr(scheduler, "SCHEDULER_SYNC_TIMEOUT",
                             5 if interruption == "timeout" else 30)
+        # Visit healthy q after interrupted p so its budget cannot hide the fault.
+        monkeypatch.setattr(scheduler, "_rotated", lambda projects: sorted(
+            projects, key=lambda project: project.id,
+        ))
         async def tick():
             return await scheduler.scheduler_tick(service.orch._command_handler)
     else:
@@ -1194,14 +1198,15 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
         service.listener.lease_seconds = 1
         tick = service.listener.tick
 
+    candidate_budget = None
     fault_budget = None
 
     def controlled_timeout(seconds):
-        nonlocal fault_budget
+        nonlocal candidate_budget
         budget = asyncio.timeout(None)
         if seconds == (service.listener.lease_seconds if driver == "listener"
                        else scheduler.SCHEDULER_SYNC_TIMEOUT):
-            fault_budget = budget
+            candidate_budget = budget
         return budget
 
     # Arm the real timeout only once the rollback target reaches its SQL stall.
@@ -1215,7 +1220,11 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
     monkeypatch.setattr(scheduler, "asyncio", scheduler_asyncio)
 
     def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        nonlocal fault_budget
         if interruption == "timeout" and "pg_sleep" in statement:
+            # Later healthy projects open their own budgets. Assert expiry of
+            # the one armed for this SQL stall, not the last budget created.
+            fault_budget = candidate_budget
             assert fault_budget is not None
             fault_budget.reschedule(asyncio.get_running_loop().time())
 
