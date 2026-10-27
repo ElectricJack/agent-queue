@@ -932,7 +932,42 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {
+HAND_INTEGRATION_RECONCILIATION = {'claim_admission_bookkeeping_composition': {'authorized_engine_delta': 42,
+                                             'authorized_owned_delta': 42,
+                                             'authorized_table_delta': 0,
+                                             'charged_files': {'src/integration/admission.py': 42},
+                                             'dev_source_revision': 'b0875405bdcd9e7c589a66206f1d271b9754cdb3',
+                                             'measured_engine_lines': 83906,
+                                             'measured_owned_total': 160116,
+                                             'measured_table_count': 45,
+                                             'operator_decision': '6679052c',
+                                             'previous_measured_engine_lines': 83864,
+                                             'previous_measured_owned_total': 160074,
+                                             'previous_measured_table_count': 45,
+                                             'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2084',
+                                             'reason': 'Exact supervisor-approved +42 owned/+42 '
+                                                       'engine/+0 tables for admission timestamp '
+                                                       'normalization and per-field '
+                                                       'delivery-request diagnostics. Compose the '
+                                                       'unchanged delta on current dev as '
+                                                       'explicitly preapproved; preserve original '
+                                                       'baselines, every historical grant and '
+                                                       'ownership classification, zero remaining '
+                                                       'headroom and no new storage category.',
+                                             'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                             'source_revision': '2d18916a339eecdbe45614bb987075b2c357719d',
+                                             'supervisor_decision_comment_id': 'comment-666520c98f4847e3a8112e8d22b76f54',
+                                             'supervisor_decision_message_id': 'msg-2eb2fef782f24d9cbe0b3611909fc3bc',
+                                             'task_id': 'stark-journey-19',
+                                             'thread_id': 'stark-journey-19-size-repair',
+                                             'merge_measurement': {'dev_source_revision': '696a099bfdaa0a74e0e0ead7a87984d71fb0e5f4',
+                                                                   'previous_measured_owned_total': 160345,
+                                                                   'previous_measured_engine_lines': 83865,
+                                                                   'previous_measured_table_count': 45,
+                                                                   'measured_owned_total': 160387,
+                                                                   'measured_engine_lines': 83907,
+                                                                   'measured_table_count': 45}},
+
  'retained_holder_repair_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 328,
  'authorized_shared_owned_delta': 328,
@@ -1300,7 +1335,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4846,
+ 'authorized_owned_delta': 4888,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1871,8 +1906,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83865,
- 'measured_owned_total': 160345,
+ 'measured_engine_lines': 83907,
+ 'measured_owned_total': 160387,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
