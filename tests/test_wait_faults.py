@@ -135,16 +135,19 @@ async def test_matrix_daemon_crash_and_double_listeners_keep_one_immutable_outco
     assert await first.lease()
     await env.db.transition_task("source", TaskStatus.COMPLETED)
     if crash == "inside-dispatch":
+        class ProcessDeath(BaseException):
+            """Bypass recoverable source errors as an abruptly stopped process would."""
+
         # Fail after the outcome/message writes but before their transaction commits.
         original = first.dispatcher.commit
 
         async def abort(*args, **kwargs):
             result = await original(*args, **kwargs)
             assert result["committed"]
-            raise RuntimeError("injected process death before commit")
+            raise ProcessDeath("injected process death before commit")
 
         first.dispatcher.commit = abort
-        with pytest.raises(RuntimeError, match="injected process death"):
+        with pytest.raises(ProcessDeath, match="injected process death"):
             await first.tick()
         assert (await records(env))[0]["outcome"] == "pending"
         assert not await records(env, wait_measurements)
@@ -1147,7 +1150,8 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
 
     from src.wait_runtime import scheduler
 
-    service = service_for(env, [NOW + 1])
+    now = [NOW + 1]
+    service = service_for(env, now)
     service.orch.config.wait_policy.scheduler_waits_enabled = True
     await env.db.transition_task("source", TaskStatus.READY)
     outgoing = await env.db.create_message(
@@ -1234,8 +1238,9 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
                     running.cancel()
                 await asyncio.gather(running, return_exceptions=True)
         elif driver == "listener":
-            with pytest.raises(TimeoutError):
-                await tick()
+            # Source-local timeouts roll back, then persist a retry so later
+            # events can advance without restarting the listener.
+            assert await tick()
         else:
             await tick()
             assert service.scheduler.health["failed_projects"]["p"]["consecutive_failures"] == 1
@@ -1248,13 +1253,29 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
     assert (await env.db.get_task("source")).title == original_title
     assert (await records(env))[0]["outcome"] == "pending"
     assert not await records(env, wait_measurements)
-    assert (await records(env, wait_listener_cursors))[0]["last_seq"] < source_seq
+    source = next(row for row in await records(env, wait_source_events)
+                  if row["seq"] == source_seq)
+    assert source["dispatched_at"] is None
+    cursor = (await records(env, wait_listener_cursors))[0]["last_seq"]
+    if driver == "listener" and interruption == "timeout":
+        assert cursor >= source_seq
+        assert source["dispatch_failures"] == 1
+        assert source["dispatch_retry_at"] == now[0] + service.listener.retry_seconds
+    else:
+        assert cursor < source_seq
+        assert source["dispatch_failures"] == 0
+        assert source["dispatch_retry_at"] is None
     assert not any(m["body_kind"] == "wait_outcome" for m in await records(env, messages))
 
     service.scheduler.reader = SimpleNamespace(observe_task=AsyncMock(return_value=None))
     monkeypatch.setattr(service.listener, "_dispatch", original_dispatch)
     service.listener.lease_seconds = 30
+    if driver == "listener" and interruption == "timeout":
+        assert await service.listener.tick()
+        assert (await records(env))[0]["outcome"] == "pending"
+        now[0] = source["dispatch_retry_at"]
     assert await service.listener.tick()
+    assert (await records(env))[0]["outcome"] == "satisfied"
     await scheduler.scheduler_tick(service.orch._command_handler)
     assert service.scheduler.health == {"ok": True, "failed_projects": {}}
     outcome = await one_outcome(env)
