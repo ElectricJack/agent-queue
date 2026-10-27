@@ -8437,15 +8437,18 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:f0b10a0e8c03f195536275254473db34bcd7ff454a8324b1cc3aca4d781e3d61",
+      "digest": "sha256:5af86b8e94e9f5f4f70221ec03c0ebea3c29e91b0452095c16a36e2fc76ef168",
       "imports": [
+        "src.install",
         "src.install.engine",
         "src.install.platform",
         "src.install.prerequisites",
         "src.install.redaction",
+        "src.install.registry",
         "src.install.results",
         "src.install.state",
-        "src.install.steps"
+        "src.install.steps",
+        "src.install.wizard"
       ],
       "markers": [],
       "summary": "The installer engine: ordering, idempotent reruns, resume and secrecy."
