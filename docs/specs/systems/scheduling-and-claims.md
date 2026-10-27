@@ -330,6 +330,19 @@ statements ([tests/perf/test_claim_statements.py](../../../tests/perf/test_claim
 
 ### Preparation
 
+Claim preparation waits at most five seconds for each shared repository mutex
+acquisition, including slot reset, serialized fetches and compound Git operations.
+A train read or full integrity check retains its exclusive lock and its existing
+operation budget. Contention returns `prepare_failed` with a concrete repository
+lock reason and the ordinary `retry_after` / `refusal_count` instructions, rather
+than leaving the worker in `claim_in_progress` for minutes. The attempt unwinds
+its database and branch exclusions, retaining the same claim epoch, workspace and
+ref reservation for a later retry. It does not quarantine the slot, increment
+task retries, allocate an additional repair attempt, or internally repeat the
+timed-out acquisition.
+The bound applies only to acquisition during claim preparation; an acquired
+operation keeps its existing Git and fence budgets.
+
 `_prepare_and_activate` (claim_commands around L1316) runs under the task's
 control lock. It retries transient failures up to three times. The steps are:
 
