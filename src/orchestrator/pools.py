@@ -1274,6 +1274,18 @@ class PoolsMixin:
             # session receives the checkout.
             if kind.is_git_repo:
                 await self._ensure_control_files_excluded(work_dir)
+                if workspace.is_slot:
+                    try:
+                        # Acquisition returns its pre-update snapshot; read the
+                        # incremented generation for the normalization fence.
+                        reserved = await self.db.get_workspace(workspace.id)
+                        if reserved is not None:
+                            await self._worktree_slots().normalize_pool_slot(reserved)
+                    except Exception:
+                        logger.warning(
+                            "Pool slot %s normalization deferred; source preserved",
+                            workspace.id, exc_info=True,
+                        )
 
             # Same guard as the task-launch path: a pool session may not run
             # in the base checkout (see :mod:`src.orchestrator.base_workspace`).
