@@ -932,7 +932,68 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'promotion_ci_policy_composition': {'authorized_engine_delta': 94,
+HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_engine_delta': 26,
+ 'authorized_owned_delta': 26,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/batches.py': 3,
+                   'src/integration/fixer_batches.py': 11,
+                   'src/integration/fixers.py': 12},
+ 'dev_source_revision': 'e7d3814e9774efb2103610a61cd6fc0e26fee8a7',
+ 'measured_engine_lines': 83773,
+ 'measured_owned_total': 159649,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83747,
+ 'previous_measured_owned_total': 159623,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved abort-recovery fix: preserve explicit batch withdrawal '
+           'across late fixer callbacks, restart resumption and family rebinding. Preserve every '
+           'historical grant, original baseline and ownership classification, with zero remaining '
+           'headroom and no new table or storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '4ee16125826b48d9c832fcc158bf00ffa3216f10',
+ 'supervisor_decision_message_id': 'msg-d2d0c4d3281646709611d165cc13f946',
+ 'task_id': 'vivid-willow-73',
+ 'thread_id': 'vivid-willow-73-abort-recovery-size'},
+ 'queued_continuation_demand_composition': {'authorized_engine_delta': 0,
+                                            'authorized_owned_delta': 6,
+                                            'authorized_shared_owned_delta': 6,
+                                            'authorized_table_delta': 0,
+                                            'charged_files': {'src/orchestrator/pools.py': 6},
+                                            'decision_message_id': 'msg-927da743554448619862dd297dea6afe',
+                                            'dev_source_revision': '94f4c82ee1898298711498c93ca90cb459816db6',
+                                            'generic_capacity_classification': {'src/waits/occupancy.py::continuation_capacity': 'Same '
+                                                                                                                                 'read-only '
+                                                                                                                                 'wait/session '
+                                                                                                                                 'capacity '
+                                                                                                                                 'classification '
+                                                                                                                                 'as '
+                                                                                                                                 'continuation_occupancy; '
+                                                                                                                                 'no '
+                                                                                                                                 'integration '
+                                                                                                                                 'ref '
+                                                                                                                                 'policy, '
+                                                                                                                                 'mutation '
+                                                                                                                                 'authority '
+                                                                                                                                 'or '
+                                                                                                                                 'delivery '
+                                                                                                                                 'storage.'},
+                                            'operator_decision': '6679052c',
+                                            'previous_measured_engine_lines': 82532,
+                                            'previous_measured_owned_total': 157793,
+                                            'previous_measured_table_count': 45,
+                                            'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2007',
+                                            'reason': 'Exact supervisor-approved +6 shared owned '
+                                                      'lines for queued continuation pool demand '
+                                                      'after combining demand and occupancy into '
+                                                      'one statement. Preserve original baselines, '
+                                                      'all historical grants and classifications; '
+                                                      'zero remaining headroom and no new storage '
+                                                      'category.',
+                                            'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                            'source_revision': '30d8c9fd755a90cc2580dd3af856a0a1fb25193e',
+                                            'task_id': 'sharp-harbor-94'},
+ 'promotion_ci_policy_composition': {'authorized_engine_delta': 94,
  'authorized_owned_delta': 101,
  'authorized_shared_owned_delta': 7,
  'authorized_table_delta': 0,
@@ -1141,7 +1202,7 @@ HAND_INTEGRATION_RECONCILIATION = {'promotion_ci_policy_composition': {'authoriz
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4215,
+ 'authorized_owned_delta': 4247,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1712,8 +1773,8 @@ HAND_INTEGRATION_RECONCILIATION = {'promotion_ci_policy_composition': {'authoriz
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83838,
- 'measured_owned_total': 159714,
+ 'measured_engine_lines': 83864,
+ 'measured_owned_total': 159746,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -1961,13 +2022,13 @@ HAND_INTEGRATION_RECONCILIATION = {'promotion_ci_policy_composition': {'authoriz
                                                      'authorized_owned_delta': 91,
                                                      'authorized_table_delta': 0,
                                                      'charged_files': {'src/integration/owner_recovery.py': 91},
-                                                     'dev_source_revision': 'ae4f7a8db',
-                                                     'measured_engine_lines': 83744,
-                                                     'measured_owned_total': 159299,
+                                                     'dev_source_revision': '8333fd66a4a58abe6396a2841df4a63a6e7532f4',
+                                                     'measured_engine_lines': 83864,
+                                                     'measured_owned_total': 159746,
                                                      'measured_table_count': 45,
                                                      'operator_decision': '6679052c',
-                                                     'previous_measured_engine_lines': 83653,
-                                                     'previous_measured_owned_total': 159208,
+                                                     'previous_measured_engine_lines': 83773,
+                                                     'previous_measured_owned_total': 159655,
                                                      'previous_measured_table_count': 45,
                                                      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2112',
                                                      'reason': 'Exact supervisor-approved +91 owned/+91 engine/+0 tables for stopped reserved '
