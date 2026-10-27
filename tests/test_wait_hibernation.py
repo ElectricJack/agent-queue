@@ -3346,6 +3346,120 @@ async def test_requeue_of_a_launch_hold_returns_to_the_capacity_queue(env):
     assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
 
 
+async def released_resume_seat(env):
+    """The reservation, assignment and checkout lock a dead resume seat held."""
+    from src.database.tables import admission_reservations, agents, workspaces
+
+    async with env.db._engine.connect() as conn:
+        return (
+            await conn.scalar(select(admission_reservations.c.state).where(
+                admission_reservations.c.id == 'reservation')),
+            (await env.db.get_task('owner')).assigned_agent_id,
+            await conn.scalar(select(agents.c.state).where(agents.c.id == 'a')),
+            (await conn.execute(select(workspaces.c.locked_by_task_id, workspaces.c.locked_by_agent_id)
+                                .where(workspaces.c.id == 'resume-slot'))).one(),
+        )
+
+
+async def readmit_resume(env):
+    """A real admission scheduler for the released continuation's next pass."""
+    from src.database.tables import workspaces
+    from src.models import AgentProfile, RepoConfig, RepoSourceType
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    await env.db.create_profile(AgentProfile(id='worker', name='Worker', lifecycle='pool',
+                                            max_active=1))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url='https://example.test/repo',
+        source_type=RepoSourceType.CLONE, checkout_base_path='/tmp/resume-admission'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(workspaces).where(workspaces.c.id == 'resume-slot').values(
+            kind_id='project-repo'))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker', route_source='override'))
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    config.swarm.global_max_active = 1
+    orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
+                           _pool_quarantine_state=lambda *a: (None, None))
+    service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch, clock=lambda: NOW))
+    return ResumeTransaction(service, clock=lambda: NOW + 400)
+
+
+async def test_requeue_of_a_dead_reserved_seat_releases_it_and_reserves_afresh(env):
+    """solid-torrent-24: a held seat whose grant expired must not be reused."""
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import admission_reservations
+
+    service, _, now = await workspace_resume(env)
+    # The workspace hold kept agent 'a', its grant and checkout lock; no process
+    # runs for it and the grant's deadline has passed.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='resume_workspace_failed'))
+        await conn.execute(update(admission_reservations).values(deadline_at=NOW + 60))
+    now[0] = NOW + 400
+    args = {'wait_id': env.wait_id, 'decision': 'requeue', 'continuation_id': 'c',
+            'expected_generation': 1, 'note': 'Checkout repaired'}
+    with principal_context(TRUSTED_LOCAL):
+        assert (await service.orch._command_handler.execute('wait_decide', args))['success']
+    row = await intent(env)
+    assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
+    assert await released_resume_seat(env) == ('cancelled', None, 'IDLE', (None, None))
+    action = await (await readmit_resume(env)).reserve('c', 1)
+    assert action is not None and action.agent_id != 'a'
+    async with env.db._engine.connect() as conn:
+        grant = (await conn.execute(select(admission_reservations).where(
+            admission_reservations.c.state == 'granted'))).mappings().one()
+    assert grant['id'] != 'reservation' and grant['deadline_at'] > NOW + 400
+    assert (await env.db.get_task('owner')).assigned_agent_id == action.agent_id
+    assert (await intent(env))['resume_state'] == 'reserved'
+
+
+async def test_reserved_seat_with_expired_grant_returns_to_the_capacity_queue(env):
+    """smart-rapids-92: the scheduler must not relaunch on a lapsed grant."""
+    from dataclasses import replace
+
+    from src.database.tables import admission_reservations
+
+    service, action, now = await workspace_resume(env)
+    driver = service.lifecycle.resume
+    assert await driver.reserve('c', 1) == action  # A live grant keeps its seat.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(admission_reservations).values(deadline_at=NOW + 60))
+    await env.db.create_session(replace(await env.db.get_session('fresh'), id='live',
+                                        state='running', desired_state='running'))
+    now[0] = NOW + 400
+    assert await driver.reserve('c', 1) == action  # So does a live process.
+    await env.db.update_session('live', state='stopped', desired_state='stopped')
+    assert await driver.reserve('c', 1) is None
+    assert (await intent(env))['resume_state'] == 'queued'
+    assert await released_resume_seat(env) == ('cancelled', None, 'IDLE', (None, None))
+
+
+async def test_reconciler_expires_only_held_grants_past_their_deadline(env):
+    from src.database.tables import admission_reservations
+
+    service, _, now = await workspace_resume(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='resume_workspace_failed'))
+    service.command = AsyncMock()
+
+    async def grant():
+        async with env.db._engine.connect() as conn:
+            return await conn.scalar(select(admission_reservations.c.state))
+
+    await service.lifecycle.resume_pending()
+    assert await grant() == 'granted'  # NOW + 300 has not passed.
+    now[0] = NOW + 301
+    await service.lifecycle.resume_pending()
+    assert await grant() == 'cancelled'
+    assert (await intent(env))['resume_state'] == 'held'
+
+
 @pytest.mark.parametrize('failure', ['graph_busy', 'cancel_after_write'])
 async def test_refused_or_cancelled_requeue_preserves_generation_and_hold(env, monkeypatch, failure):
     from src.commands.principal import TRUSTED_LOCAL

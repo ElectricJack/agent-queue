@@ -150,6 +150,12 @@ class WaitV2CommandsMixin:
             self._wait_listener_authorize(lifecycle.service.listener)
             return await lifecycle.report_resume_stalls()
 
+    async def wait_service_expire_resume_grants(self, lifecycle):
+        """Internal maintenance boundary: release capacity held resumes cannot use."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            self._wait_listener_authorize(lifecycle.service.listener)
+            return await lifecycle.resume.expire_held_grants()
+
     def _wait_listener_authorize(self, listener, *, release=False):
         principal = current_principal()
         if (principal is None or principal.kind != PrincipalKind.SERVICE

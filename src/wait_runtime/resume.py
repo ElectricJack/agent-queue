@@ -8,9 +8,10 @@ from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, or_, select, update
 
 from src.database.queries.continuation_queries import wait_outcome_envelope
+from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.tables import (
     admission_reservations, agents, continuations, events, messages, provider_availability,
     tasks, sessions, workspaces,
@@ -111,8 +112,15 @@ class ResumeTransaction:
             if intent['id'] != continuation_id or intent['suspension_generation'] != generation:
                 raise WaitError('continuation.stale_generation', 'resume generation changed')
             if intent['resume_state'] == 'reserved' and task['status'] == 'RESUME_PENDING':
-                return AssignAction(task['assigned_agent_id'], task['id'], task['project_id'],
-                                    continuation_id=intent['id'], generation=generation)
+                if not await self.release_expired_grant(conn, task, intent):
+                    return AssignAction(task['assigned_agent_id'], task['id'], task['project_id'],
+                                        continuation_id=intent['id'], generation=generation)
+                # The next pass admits it afresh; admission must be observed
+                # before the graph lock, which this transaction already holds.
+                await conn.execute(update(continuations).where(continuations.c.id == intent['id'])
+                                   .values(resume_state='queued', version=intent['version'] + 1,
+                                           facts={**intent['facts'], 'workspace_retry': {}}))
+                return None
             if (intent['resume_state'] != 'queued' or task['status'] != 'RESUME_PENDING'
                     or wait['outcome'] == 'pending'
                     or not await parked(conn, task, wait, intent)):
@@ -167,6 +175,51 @@ class ResumeTransaction:
             ))
             return AssignAction(agent.id, task['id'], task['project_id'],
                                 continuation_id=intent['id'], generation=generation)
+
+    async def release_expired_grant(self, conn, task, intent):
+        """Return a dead reservation's agent, grant and checkout lock; True if released.
+
+        A reserved agent is only as good as its grant. Once the grant's deadline
+        has passed and no process runs for the task, reusing the agent would
+        launch on capacity nobody holds, so the continuation must be admitted
+        again. A live grant, or any live session, keeps the reservation.
+        """
+        agent_id = task['assigned_agent_id']
+        if agent_id is None or await conn.scalar(select(admission_reservations.c.id).where(
+            admission_reservations.c.continuation_id == intent['id'],
+            admission_reservations.c.state == 'granted',
+            admission_reservations.c.deadline_at > self.clock(),
+        ).limit(1)) or await conn.scalar(select(sessions.c.id).where(
+            or_(sessions.c.task_id == task['id'], sessions.c.agent_id == agent_id),
+            sessions.c.state.in_(LIVE_SESSION_STATES),
+        ).limit(1)):
+            return False
+        await conn.execute(update(admission_reservations).where(
+            admission_reservations.c.continuation_id == intent['id'],
+            admission_reservations.c.state.in_(('pending', 'overdue', 'granted')),
+        ).values(state='cancelled'))
+        await conn.execute(update(tasks).where(tasks.c.id == task['id']).values(
+            assigned_agent_id=None, updated_at=self.clock(),
+        ))
+        await conn.execute(update(agents).where(agents.c.id == agent_id).values(
+            state='IDLE', current_task_id=None,
+        ))
+        # No writer ever ran in a checkout the failed preparation acquired;
+        # the saved head is on origin, so ordinary slot release is safe.
+        await self.db.release_workspaces_for_agent(agent_id, conn=conn)
+        return True
+
+    async def expire_held_grants(self):
+        """Cancel past-deadline grants of held resumes; nothing will launch on them."""
+        async with self.db._engine.begin() as conn:
+            result = await conn.execute(update(admission_reservations).where(
+                admission_reservations.c.provenance == 'resume',
+                admission_reservations.c.state == 'granted',
+                admission_reservations.c.deadline_at <= self.clock(),
+                admission_reservations.c.continuation_id.in_(select(continuations.c.id).where(
+                    continuations.c.resume_state == 'held')),
+            ).values(state='cancelled'))
+            return result.rowcount
 
     async def fresh_workspace(self, action, task, agent, intent):
         """A newly provisioned directory, even when reusing a numbered slot.
@@ -332,7 +385,17 @@ class ResumeTransaction:
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 facts={**intent['facts'], 'workspace_retry': {
                     'failures': failures, 'due_at': retry_at, 'error': str(exc)}}))
-        if task['status'] != 'PAUSED' and failures < WORKSPACE_ATTEMPTS and retryable_workspace_error(exc):
+            retry = (task['status'] != 'PAUSED' and failures < WORKSPACE_ATTEMPTS
+                     and retryable_workspace_error(exc))
+            if retry:
+                # The backoff keeps the grant: extend it past the retry so the
+                # resume scheduler does not mistake it for a dead reservation.
+                await conn.execute(update(admission_reservations).where(
+                    admission_reservations.c.continuation_id == intent['id'],
+                    admission_reservations.c.state == 'granted',
+                ).values(deadline_at=retry_at
+                         + self.orch.config.wait_policy.transition_budget_seconds))
+        if retry:
             return retry_at
 
     async def requeue(self, args, *, principal, scope, handler):
@@ -381,8 +444,10 @@ class ResumeTransaction:
                      'generation': intent['suspension_generation'], 'at': self.clock(),
                      'note': args['note'], 'principal_kind': principal.kind,
                      'session_id': principal.session_id, 'hold_reason': intent['hold_reason']}
-            # A workspace hold keeps its reserved agent and grant; a launch hold released both.
-            kept = task['assigned_agent_id'] is not None
+            # A workspace hold keeps its reserved agent and grant while the grant
+            # lives; a launch hold released both, and an expired grant is released here.
+            kept = (task['assigned_agent_id'] is not None
+                    and not await self.release_expired_grant(conn, task, intent))
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved' if kept else 'queued', hold_reason=None,
                 launch_attempts=intent['launch_attempts'] if kept else 0, new_session_id=None,
