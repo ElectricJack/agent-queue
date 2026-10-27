@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "44f2697b0e81631954bf5c8ce0b18fb9a3c05781",
+      "source_head": "cc067c21fe0328d90bdfad8dff21d89c1819822c",
       "tool_sha256": "edf71529d50a5c985c9ca33513ebee75a078b8d021bf06ea1b00a6a51e7cddf7"
     },
     "nodes": [
@@ -39614,7 +39614,7 @@
       "tests/test_delivery_precondition_refusals.py": "d2382e49acad8392c91e18c12fd5a019a80e5b3fe7327db79ffd771dda56f588",
       "tests/test_delivery_receipt_retirement.py": "513469ab026340c5384b1f54969248e00ba558dbe8f35716670c4d8ec5a50725",
       "tests/test_dependency_queries.py": "2e46f3e1a19bda12778fd9c0acbc1ce2db997a33fd21f9a48d4239b0c16ccc05",
-      "tests/test_development_integration.py": "631a36ab9a901e7ee1795efdf957020176a6ec17bf98fd57bb1dc9d3d02d8f08",
+      "tests/test_development_integration.py": "76aaad188c1f3f83a66354b43062f49b91bb56c79c52e34f83df58bd17fba154",
       "tests/test_development_subjects.py": "901b74f44de868e80eff92126b7d6af43accefe2c513da0570841fe2cfe3379b",
       "tests/test_digest.py": "5328970042145db895d685ec2ae281f5a71e1e499ee26f3ba5a67efb0ca26e3f",
       "tests/test_digest_commands.py": "b33bb3dd97a5fbed004afc59a2c01b4877df2650b3b4477d2982d929af48f899",
