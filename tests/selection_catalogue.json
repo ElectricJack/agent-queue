@@ -20370,7 +20370,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:602020802f41800f61ece44da1c6621716c9a1b0cf6658d4ea9d49a8e68d76dc",
+      "digest": "sha256:51ef42487f8a41667069f2b66146ca1c4ac0c7fa9bc882ee8867b326884976c9",
       "imports": [
         "src.claim_file",
         "src.cli.waits",
@@ -20401,6 +20401,7 @@
         "src.wait_runtime.hibernate",
         "src.wait_runtime.lifecycle",
         "src.wait_runtime.measurements",
+        "src.wait_runtime.restart",
         "src.wait_runtime.resume",
         "src.wait_runtime.scheduler",
         "src.waits",
