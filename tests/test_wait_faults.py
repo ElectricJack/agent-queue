@@ -1208,8 +1208,12 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
     # Host load before that point must not consume the injected fault budget.
     listener_asyncio = Mock(wraps=asyncio)
     listener_asyncio.timeout.side_effect = controlled_timeout
-    listener_asyncio.get_running_loop.return_value = SimpleNamespace(time=lambda: 0)
     monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+    # Deadline rescheduling needs the real loop clock. Keep ordinary work
+    # unbounded here; expire_on_query still expires the injected fault budget.
+    monkeypatch.setattr(service.listener, "event_budget_seconds", float("inf"))
+    monkeypatch.setattr(service.listener, "preparation_budget_seconds", float("inf"))
+    monkeypatch.setattr(service.listener, "drain_budget_seconds", float("inf"))
     scheduler_asyncio = Mock(wraps=asyncio)
     scheduler_asyncio.timeout.side_effect = controlled_timeout
     monkeypatch.setattr(scheduler, "asyncio", scheduler_asyncio)
