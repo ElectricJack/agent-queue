@@ -14,7 +14,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83768,
+    "engine_cap": 83797,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -1148,7 +1148,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159409,
+    "owned_total_cap": 159438,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
