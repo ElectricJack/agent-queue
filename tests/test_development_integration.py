@@ -2405,3 +2405,71 @@ async def test_supervisor_clears_exhausted_retained_incident_after_clean_fsck(
     assert incident['state'] == 'resolved'
     assert (await clear({'project_id': 'p'}))['outcome'] == 'not_found'
     assert await service.store(repo) == store
+
+
+@pytest.mark.parametrize('trigger', ['count', 'bytes'])
+async def test_retained_maintenance_includes_registered_main_repository(
+    setup, tmp_path, monkeypatch, trigger,
+):
+    from src.database.tables import repos
+    from src.integration import repository_maintenance as module
+
+    db, service, source, _remote, repo = setup
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == repo.id).values(
+            checkout_base_path=str(source), source_path=str(source)))
+    head = git(source, 'rev-parse', 'HEAD')
+    unreferenced = source / 'unreferenced'
+    unreferenced.write_text('preserve unreachable loose body')
+    oid = git(source, 'hash-object', '-w', str(unreferenced))
+    unreferenced.unlink()
+    monkeypatch.setattr(module, 'LOOSE_THRESHOLD', 1 if trigger == 'count' else 100000)
+    monkeypatch.setattr(module, 'LOOSE_BYTES_THRESHOLD', 1 if trigger == 'bytes' else 10**9)
+    maintenance = module.RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    preview = await maintenance.run('p')
+    [item] = preview['evidence']['stores']
+    assert item['cache'] == str(source) and item['outcome'] == 'eligible'
+    assert item['loose_count'] > 0 and item['loose_bytes'] > 0 and item['pack_count'] == 0
+    applied = await maintenance.run('p', apply=True)
+    [item] = applied['evidence']['stores']
+    assert item['outcome'] == 'repacked' and item['after_loose_count'] < item['loose_count']
+    assert git(source, 'rev-parse', 'HEAD') == head
+    assert git(source, 'cat-file', '-p', oid) == 'preserve unreachable loose body'
+    assert git(source, 'fsck', '--full', '--no-dangling') == ''
+    assert (await maintenance.run('other'))['evidence']['stores'] == []
+
+
+async def test_retained_maintenance_cleans_only_old_regular_temporary_packs(setup, tmp_path):
+    import os
+
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, _repo = setup
+    store = await service.store(_repo)
+    pack_dir = store / '.git' / 'objects' / 'pack'
+    stale, recent, link = [pack_dir / name for name in (
+        'tmp_pack_abandoned', 'tmp_pack_recent', 'tmp_pack_symlink')]
+    stale.write_bytes(b'aborted pack')
+    recent.write_bytes(b'active pack')
+    unrelated = tmp_path / 'unrelated'
+    unrelated.write_bytes(b'outside store')
+    link.symlink_to(unrelated)
+    (pack_dir / 'tmp_pack_directory').mkdir()
+    os.utime(stale, (1000, 1000))
+    os.utime(recent, (5000, 5000))
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data', clock=lambda: 5000)
+    [item] = (await maintenance.run('p'))['evidence']['stores']
+    assert item['outcome'] == 'eligible' and item['stale_temp_count'] == 1
+    assert item['repack_needed'] is False and stale.exists()
+    pending = store / '.git' / 'aq-empty-object-backups' / 'pending'
+    pending.parent.mkdir()
+    pending.touch()
+    [item] = (await maintenance.run('p', apply=True))['evidence']['stores']
+    assert item['outcome'] == 'recovery_pending' and stale.exists()
+    pending.unlink()
+    with patch.object(service.git, 'arun_git_result', wraps=service.git.arun_git_result) as run:
+        [item] = (await maintenance.run('p', apply=True))['evidence']['stores']
+    assert item['outcome'] == 'cleaned' and item['removed_temp_count'] == 1
+    assert not any('repack' in call.args[0] for call in run.await_args_list)
+    assert not stale.exists() and recent.read_bytes() == b'active pack'
+    assert link.is_symlink() and unrelated.read_bytes() == b'outside store'

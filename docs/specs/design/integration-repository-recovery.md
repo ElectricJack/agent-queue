@@ -23,21 +23,26 @@ stale-report block itself is forgiven on a zero exit; any other `error:`/`fatal:
 still fails.
 
 Every five minutes the service considers one configured retained store, rotating
-through development `repository`/`observer` clones and bare repository readers,
-including their durable storage bindings. Two or more packs trigger
+through development `repository`/`observer` clones, bare repository readers and
+registered repository checkout/source paths, including durable storage bindings.
+Two or more packs, 1,024 loose objects or 256 MiB of loose objects trigger
 `git repack -a -d -k` (keep unreachable objects); one attempt per store per hour
 limits rewrite churn, including after failures and restarts. Busy stores and
 open recovery incidents are skipped. Repack runs at reduced CPU priority where
 `nice` is available, with one compression thread, a 64 MiB window and a 240-second
 budget. Cancellation reaps Git before releasing exclusion. Maintenance preserves
 refs, loose unreachable objects, packed unreachable objects and recovery backups;
-it never prunes by age or clears an incident. A successful repack removes stale
-`gc.log`. Integrity fingerprints still invalidate after pack replacement, and
+it never prunes Git objects by age or clears an incident. Under the same exclusion,
+maintenance removes regular `objects/pack/tmp_pack_*` files at least one hour old,
+even below the repack threshold; recent files, symlinks and directories remain.
+A successful repack removes stale `gc.log`. Integrity fingerprints still invalidate
+after pack replacement, and
 the existing full-body checks remain required; maintenance is no integrity proof.
 
 `aq integration store-maintenance --project-id <p>` previews existing stores,
-pack counts/bytes and cooldown/recovery status. A local operator or live scoped
-supervisor may use `--apply` to run eligible repacks with the same guards and
+pack and loose-object counts/bytes, stale temporary-pack counts and cooldown/recovery
+status. A local operator or live scoped supervisor may use `--apply` to run eligible
+repacks with the same guards and
 budgets. Long controls return a running handle; repeating the command joins that
 operation. No command accepts arbitrary filesystem paths or creates a store.
 

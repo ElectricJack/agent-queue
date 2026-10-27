@@ -1937,7 +1937,7 @@ def _batch_authority_changes():
 def _before_batch_authority_catalogue(catalogue=None):
     evidence = _batch_authority_changes()
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_store_maintenance_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -1949,10 +1949,36 @@ def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_unread_inbox_catalogue(json.loads(render_command_catalogue()))
+    catalogue = _before_unread_inbox_catalogue(_before_store_maintenance_catalogue())
     rendered = json.dumps(catalogue, indent=2) + "\n"
     previous = json.dumps(_before_batch_authority_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
+    )
+def _store_maintenance_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/store-maintenance-contract-changes.json").read_text()
+    )
+
+
+def _before_store_maintenance_catalogue():
+    catalogue = json.loads(render_command_catalogue())
+    evidence = _store_maintenance_changes()
+    assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
+    return catalogue
+
+
+def test_store_maintenance_catalogue_only_adds_scoped_control():
+    evidence = _store_maintenance_changes()
+    assert evidence["command"] == "integration_store_maintenance"
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
+    previous = json.dumps(_before_store_maintenance_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
     )

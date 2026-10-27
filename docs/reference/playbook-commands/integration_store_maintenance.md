@@ -68,20 +68,25 @@ aq integration store-maintenance --project-id agent-queue --apply
 ## Authority and execution
 
 Only a local operator or live owning supervisor may run the control. It derives
-existing development, observer and bare stores from configured repositories and
-storage bindings. It accepts no filesystem path. Automatic background maintenance
+existing development, observer, bare stores and registered checkout/source paths
+from configured repositories and storage bindings. It accepts no filesystem path.
+Automatic background maintenance
 uses the same implementation, considering one store every five minutes.
 
 ## Persistence and diagnostics
 
-Stores with at least two packs are eligible. Apply obtains repository exclusion,
-skips open recovery incidents and runs a bounded, low-priority `repack -a -d -k`.
+Stores with at least two packs, 1,024 loose objects or 256 MiB of loose objects are
+eligible. Regular `tmp_pack_*` files at least one hour old also qualify for cleanup
+without repacking; recent files, symlinks and directories remain. Apply obtains
+repository exclusion, skips open recovery incidents and runs a bounded,
+low-priority `repack -a -d -k`.
 Refs and unreachable objects remain available. A local maintenance marker records
 the attempt before Git starts, preserving the one-hour cooldown across failures
 and daemon restarts. No integration operation or incident rows are changed.
 
-The evidence lists pack counts/bytes, eligibility, cooldown and each applied
-result. `busy` means a writer or maintenance pass owns exclusion. `unavailable`
+The evidence lists pack/loose counts and bytes, stale temporary-pack and removal
+counts, eligibility, cooldown and each applied result. `busy` means a writer or
+maintenance pass owns exclusion. `unavailable`
 includes safe per-store diagnostics; ordinary acquisition still requires full
 object integrity checks. `not_found` means the project is not configured.
 Long-running apply requests return `running`; repeat the supplied `poll` command

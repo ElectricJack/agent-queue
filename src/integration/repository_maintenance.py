@@ -15,12 +15,24 @@ from src.integration.repository_recovery import _git_dir, _write
 from src.projects.storage_binding import repository_path
 
 PACK_THRESHOLD = 2
+LOOSE_THRESHOLD = 1024
+LOOSE_BYTES_THRESHOLD = 256 * 1024 * 1024
 INTERVAL_SECONDS = 300
 COOLDOWN_SECONDS = 3600
 REPACK_TIMEOUT_SECONDS = 240
 _REPACK = ["-c", "pack.threads=1", "-c", "pack.windowMemory=64m",
            "repack", "-a", "-d", "-k", "--quiet"]
 logger = logging.getLogger(__name__)
+
+
+def _temporary_packs(directory, now, *, remove=False):
+    stale = [path for path in (directory / "objects" / "pack").glob("tmp_pack_*")
+             if not path.is_symlink() and path.is_file()
+             and now - path.stat().st_mtime >= COOLDOWN_SECONDS]
+    if remove:
+        for path in stale:
+            path.unlink()
+    return len(stale)
 
 
 def _inspect(store, now):
@@ -31,6 +43,13 @@ def _inspect(store, now):
     packs = list(pack_dir.glob("*.pack"))
     if any(pack.is_symlink() or not pack.is_file() for pack in packs):
         raise GitError("retained pack is not a regular file")
+    loose = list(pack_dir.parent.glob("[0-9a-f][0-9a-f]/" + "[0-9a-f]" * 38))
+    if any(path.is_symlink() or path.parent.is_symlink() or not path.is_file() for path in loose):
+        raise GitError("loose object is not a regular file")
+    loose_bytes = sum(path.stat().st_size for path in loose)
+    repack = (len(packs) >= PACK_THRESHOLD or len(loose) >= LOOSE_THRESHOLD
+              or loose_bytes >= LOOSE_BYTES_THRESHOLD)
+    temporary = _temporary_packs(directory, now)
     marker = directory / "aq-store-maintenance.json"
     journal = directory / "aq-empty-object-backups" / "incident.json"
     if marker.is_symlink() or journal.is_symlink() or journal.parent.is_symlink():
@@ -45,9 +64,11 @@ def _inspect(store, now):
     pending = (journal.parent / "pending").exists() or (
         bool(recovery) and recovery.get("status") != "recovered")
     retry_at = attempted_at + COOLDOWN_SECONDS
-    outcome = ("recovery_pending" if pending else "below_threshold" if len(packs) < PACK_THRESHOLD
+    outcome = ("recovery_pending" if pending else "below_threshold" if not repack and not temporary
                else "cooldown" if previous and now < retry_at else "eligible")
     return {"cache": str(store), "pack_count": len(packs),
+            "loose_count": len(loose), "loose_bytes": loose_bytes,
+            "repack_needed": repack, "stale_temp_count": temporary,
             "pack_bytes": sum(pack.stat().st_size for pack in packs), "outcome": outcome,
             "retry_at": retry_at if previous else None}, directory, marker
 
@@ -67,9 +88,11 @@ class RetainedStoreMaintenance:
             paths = [self.data_dir / "development-integration" / digest[:20] / name
                      for name in ("repository", "observer")]
             paths.append(self.data_dir / "integration-repositories" / f"{digest}.git")
+            paths.extend(Path(path).expanduser() for path in
+                         {repo.checkout_base_path, repo.source_path} if path)
             for path in paths:
                 bound = await repository_path(self.db, repo.id, path)
-                if await asyncio.to_thread(bound.exists):
+                if (repo, bound) not in result and await asyncio.to_thread(bound.exists):
                     result.append((repo, bound))
         return result
 
@@ -113,17 +136,23 @@ class RetainedStoreMaintenance:
                         return item
                     # Record even failed/interrupted attempts, to bound churn across restarts.
                     await asyncio.to_thread(_write, marker, {"attempted_at": self.clock()})
-                    result = await self.git.arun_git_result(
-                        _REPACK, cwd=str(path), lock_held=True, env={"LC_ALL": "C"},
-                        timeout=REPACK_TIMEOUT_SECONDS, low_priority=True,
-                    )
-                    if result.returncode or result.stderr.strip():
-                        raise GitError(safe_git_detail(result.stderr or "retained repack failed"))
-                    report = directory / "gc.log"
-                    if report.is_file() and not report.is_symlink():
-                        report.unlink()
+                    removed = await asyncio.to_thread(
+                        _temporary_packs, directory, self.clock(), remove=True)
+                    if item["repack_needed"]:
+                        result = await self.git.arun_git_result(
+                            _REPACK, cwd=str(path), lock_held=True, env={"LC_ALL": "C"},
+                            timeout=REPACK_TIMEOUT_SECONDS, low_priority=True,
+                        )
+                        if result.returncode or result.stderr.strip():
+                            raise GitError(safe_git_detail(result.stderr or "retained repack failed"))
+                        report = directory / "gc.log"
+                        if report.is_file() and not report.is_symlink():
+                            report.unlink()
                     after, _, _ = await asyncio.to_thread(_inspect, path, self.clock())
-                    return {**item, "outcome": "repacked", "after_pack_count": after["pack_count"],
+                    return {**item, "outcome": "repacked" if item["repack_needed"] else "cleaned",
+                            "removed_temp_count": removed, "after_loose_count": after["loose_count"],
+                            "after_loose_bytes": after["loose_bytes"],
+                            "after_pack_count": after["pack_count"],
                             "after_pack_bytes": after["pack_bytes"]}
         except RepositoryLockTimeout:
             return {"cache": str(path), "outcome": "busy"}
