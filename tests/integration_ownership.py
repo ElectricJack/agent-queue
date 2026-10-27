@@ -932,7 +932,74 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch8_composition': {'task_id': 'sound-falcon-86',
+HAND_INTEGRATION_RECONCILIATION = {'queued_continuation_demand_composition': {'authorized_engine_delta': 0,
+                                            'authorized_owned_delta': 6,
+                                            'authorized_shared_owned_delta': 6,
+                                            'authorized_table_delta': 0,
+                                            'charged_files': {'src/orchestrator/pools.py': 6},
+                                            'decision_message_id': 'msg-927da743554448619862dd297dea6afe',
+                                            'dev_source_revision': '94f4c82ee1898298711498c93ca90cb459816db6',
+                                            'generic_capacity_classification': {'src/waits/occupancy.py::continuation_capacity': 'Same '
+                                                                                                                                 'read-only '
+                                                                                                                                 'wait/session '
+                                                                                                                                 'capacity '
+                                                                                                                                 'classification '
+                                                                                                                                 'as '
+                                                                                                                                 'continuation_occupancy; '
+                                                                                                                                 'no '
+                                                                                                                                 'integration '
+                                                                                                                                 'ref '
+                                                                                                                                 'policy, '
+                                                                                                                                 'mutation '
+                                                                                                                                 'authority '
+                                                                                                                                 'or '
+                                                                                                                                 'delivery '
+                                                                                                                                 'storage.'},
+                                            'operator_decision': '6679052c',
+                                            'previous_measured_engine_lines': 82532,
+                                            'previous_measured_owned_total': 157793,
+                                            'previous_measured_table_count': 45,
+                                            'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2007',
+                                            'reason': 'Exact supervisor-approved +6 shared owned '
+                                                      'lines for queued continuation pool demand '
+                                                      'after combining demand and occupancy into '
+                                                      'one statement. Preserve original baselines, '
+                                                      'all historical grants and classifications; '
+                                                      'zero remaining headroom and no new storage '
+                                                      'category.',
+                                            'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                            'source_revision': '30d8c9fd755a90cc2580dd3af856a0a1fb25193e',
+                                            'task_id': 'sharp-harbor-94'},
+ 'attached_owner_close_atomicity_epoch9_composition': {'authorized_engine_delta': 0,
+                                                       'authorized_owned_delta': 4,
+                                                       'authorized_shared_owned_delta': 4,
+                                                       'authorized_table_delta': 0,
+                                                       'dev_source_revision': 'caab5f21274261ae590560cb10e51ea09483fd91',
+                                                       'measured_engine_lines': 83773,
+                                                       'measured_owned_total': 159659,
+                                                       'measured_table_count': 45,
+                                                       'operator_decision': '6679052c',
+                                                       'previous_measured_engine_lines': 83773,
+                                                       'previous_measured_owned_total': 159655,
+                                                       'previous_measured_table_count': 45,
+                                                       'reason': 'Carry forward the unchanged '
+                                                                 'attached-owner close grant under '
+                                                                 'the explicit epoch6 approval for '
+                                                                 'the same +4 shared owned/+0 '
+                                                                 'engine/+0 tables over later dev. '
+                                                                 'Preserve incoming '
+                                                                 'queued-continuation demand and '
+                                                                 'every historical grant, '
+                                                                 'ownership classification, zero '
+                                                                 'headroom, s4_modules expiry and '
+                                                                 'no new storage category.',
+                                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                       'request_message_id': 'msg-2bc1b4eeb6b74f1cb849176d92e3b761',
+                                                       'source_revision': '0abec1dc5f34ea8461a0bbc429093ef2cc2f3fc8',
+                                                       'supervisor_decision_message_id': 'msg-753ed33f5aae40cfa23a343221437e4e',
+                                                       'task_id': 'sound-falcon-86',
+                                                       'thread_id': 'sound-falcon-86-epoch9-size'},
+ 'attached_owner_close_atomicity_epoch8_composition': {'task_id': 'sound-falcon-86',
                                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
                                                        'operator_decision': '6679052c',
                                                        'supervisor_decision_message_id': 'msg-753ed33f5aae40cfa23a343221437e4e',
@@ -1324,7 +1391,7 @@ HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch8_compos
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4154,
+ 'authorized_owned_delta': 4160,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1896,7 +1963,7 @@ HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch8_compos
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83773,
- 'measured_owned_total': 159653,
+ 'measured_owned_total': 159659,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
