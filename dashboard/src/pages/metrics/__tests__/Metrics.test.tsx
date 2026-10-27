@@ -102,7 +102,6 @@ function page() {
 }
 
 beforeEach(() => {
-  localStorage.clear();
   plots.calls = [];
   api.calls = [];
   api.detail = null;
@@ -116,11 +115,7 @@ beforeEach(() => {
 });
 
 afterAll(() => vi.unstubAllGlobals());
-afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
-  localStorage.clear();
-});
+afterEach(cleanup);
 
 describe("pure sample readers", () => {
   it("reads a nested value and reports a missing hop as no reading, not zero", () => {
@@ -204,63 +199,18 @@ describe("Metrics page", () => {
     expect(content).toBeVisible();
   });
 
-  it("remembers every section independently across remounts and saves reopening", async () => {
-    const sections = [
-      ["Stat tiles", "aq:metrics:stat-tiles:open"],
-      ["Graphs", "aq:metrics:graphs:open"],
-      ["Provider usage", "aq:metrics:provider-usage:open"],
-      ["Delivery latency", "aq:metrics:delivery-latency:open"],
-    ] as const;
+  it("starts every section expanded on each load", async () => {
     const first = render(page());
     await screen.findByTestId("chart-Running agents");
-    for (const [name, key] of sections) {
+    for (const name of ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"]) {
       fireEvent.click(screen.getByRole("button", { name }));
-      expect(localStorage.getItem(key)).toBe("false");
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
     }
     first.unmount();
 
-    const second = render(page());
-    for (const [name] of sections) {
-      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
-    }
-    fireEvent.click(screen.getByRole("button", { name: "Graphs" }));
-    expect(localStorage.getItem("aq:metrics:graphs:open")).toBe("true");
-    second.unmount();
-
-    render(page());
-    for (const [name] of sections) {
-      expect(screen.getByRole("button", { name }))
-        .toHaveAttribute("aria-expanded", String(name === "Graphs"));
-    }
-  });
-
-  it("defaults invalid stored values to expanded", () => {
-    localStorage.setItem("aq:metrics:stat-tiles:open", "null");
-    localStorage.setItem("aq:metrics:graphs:open", "broken");
-    localStorage.setItem("aq:metrics:provider-usage:open", "0");
-    localStorage.setItem("aq:metrics:delivery-latency:open", "{}");
     render(page());
     for (const name of ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"]) {
       expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "true");
-    }
-  });
-
-  it("allows toggling when storage reads and writes throw", async () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new DOMException("Storage blocked", "SecurityError");
-    });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new DOMException("Quota exceeded", "QuotaExceededError");
-    });
-    render(page());
-    await screen.findByTestId("chart-Running agents");
-    for (const name of ["Stat tiles", "Graphs", "Provider usage", "Delivery latency"]) {
-      const header = screen.getByRole("button", { name });
-      expect(header).toHaveAttribute("aria-expanded", "true");
-      fireEvent.click(header);
-      expect(header).toHaveAttribute("aria-expanded", "false");
-      fireEvent.click(header);
-      expect(header).toHaveAttribute("aria-expanded", "true");
     }
   });
 
