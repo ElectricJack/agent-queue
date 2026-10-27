@@ -21152,7 +21152,7 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:c5486f5c57d7d1e649922ea3a036111efe30475b8903f22d0b01b06300488e44",
+      "digest": "sha256:47f45ad026abb84404d14318d46f30dfe4aec791457d285c622690d627a16fbb",
       "imports": [
         "src.claim_file",
         "src.config",
@@ -21161,6 +21161,7 @@
         "src.git.locks",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.task_checkpoint",
