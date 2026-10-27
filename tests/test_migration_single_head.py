@@ -33,6 +33,12 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """Revision graph inspection never runs upgrades or connects to a database."""
+
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 

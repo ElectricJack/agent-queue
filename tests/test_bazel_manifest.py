@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -219,7 +221,7 @@ _spec_graph.loader.exec_module(targets)
 
 
 def _manifest():
-    return json.loads((ROOT / "tools/bazel/test_suites.json").read_text())
+    return targets.hydrate_manifest(json.loads((ROOT / "tools/bazel/test_suites.json").read_text()))
 
 
 # azure-cascade-11: full-graph regeneration measured ~178s under load; allow headroom.
@@ -401,9 +403,92 @@ def _render_graph(root, modules, fine_grained):
         for path, info in discovered.items()
     }
     return targets.render(root, {
-        "libraries": libraries, "modules": entries, "collection": {"nodes": []},
+        "schema_version": 1, "libraries": libraries, "modules": entries, "collection": {"nodes": []},
         "suites": {}, "aliases": {},
     })
+
+
+def test_tracked_inputs_ignore_local_artifacts_and_survive_archive(tmp_path):
+    modules = _fine_graph_fixture(tmp_path)
+    tracked = {
+        ".gitignore": "packages/aq-ts-client/src/index.ts\ntests/test_ignored.py\n",
+        "packages/aq-ts-client/src/tracked.ts": "export const value = 1;\n",
+        "tools/lookup/data.json": "{}\n",
+        "scripts/bazel/test_dependency_inputs.json": json.dumps({
+            "tests/test_behavior.py": {"data": ["packages/aq-ts-client/src/*.ts"]},
+        }),
+    }
+    for relative, content in tracked.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    (tmp_path / "tests/test_behavior.py").write_text(
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
+        "def test_behavior(selected):\n"
+        "    assert selected == 1\n"
+        "    (ROOT / 'tools' / 'lookup' / 'data.json').read_text()\n"
+        "    list((ROOT / 'packages' / 'aq-ts-client' / 'src').glob('*.ts'))\n"
+        "    open('packages/aq-ts-client/src/index.ts')\n"
+    )
+    subprocess.check_call(["git", "init", "-q", str(tmp_path)])
+    subprocess.check_call(["git", "add", "."], cwd=tmp_path)
+    baseline = _render_graph(tmp_path, modules, set(modules))
+    graph = targets.graph(tmp_path, modules, fine_grained=set(modules))
+    fingerprints = targets.collection_inputs(tmp_path)
+    inventory = targets.load_inventory(ROOT)
+    baseline_sources = inventory.Collector(tmp_path).source_files
+    def collect():
+        script = (
+            "import json, sys; from pathlib import Path; "
+            "sys.path.insert(0, sys.argv[1]); "
+            "import pytest; from scripts.bazel.inventory import Collector; "
+            "root = Path(sys.argv[2]); plugin = Collector(root); "
+            "code = pytest.main([str(root / 'tests'), '--collect-only', '-q', "
+            "'-o', 'addopts=', '--confcutdir', str(root)], plugins=[plugin]); "
+            "print('COLLECTION_JSON=' + json.dumps(plugin.document, sort_keys=True)); "
+            "raise SystemExit(code)"
+        )
+        output = subprocess.check_output(
+            [sys.executable, "-c", script, str(ROOT), str(tmp_path)], cwd=tmp_path,
+            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}, text=True,
+        )
+        return json.loads(next(line.removeprefix("COLLECTION_JSON=") for line in output.splitlines()
+                               if line.startswith("COLLECTION_JSON=")))
+
+    collected = collect()
+    assert [node["nodeid"] for node in collected["nodes"]] == [
+        "tests/test_behavior.py::test_behavior",
+    ]
+    assert "packages/aq-ts-client/src/tracked.ts" in graph[1]["tests/test_behavior.py"]["data_files"]
+    for relative in (
+        "packages/aq-ts-client/src/index.ts", "src/local.py", "tests/test_local.py",
+        "tests/test_ignored.py", "tests/local/test_new.py", "tools/lookup/BUILD.bazel",
+    ):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("raise RuntimeError('local artifact must not be read')\n")
+    assert _render_graph(tmp_path, modules, set(modules)) == baseline
+    assert targets.graph(tmp_path, modules, fine_grained=set(modules)) == graph
+    assert targets.collection_inputs(tmp_path) == fingerprints
+    plugin = inventory.Collector(tmp_path)
+    assert plugin.source_files == baseline_sources
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/test_local.py", None) is True
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/test_ignored.py", None) is True
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/local", None) is True
+    assert plugin.pytest_ignore_collect(tmp_path / "tests/test_behavior.py", None) is None
+    assert collect() == collected
+    assert targets.file_label("tools/lookup/data.json", {}, tmp_path) == "//:tools/lookup/data.json"
+    # Fresh invocations observe index changes; no process-global snapshot cache.
+    subprocess.check_call(["git", "add", "src/local.py"], cwd=tmp_path)
+    assert "src/local.py" in targets.source_files(tmp_path)
+    subprocess.check_call(["git", "rm", "--cached", "-q", "src/local.py"], cwd=tmp_path)
+    shutil.rmtree(tmp_path / ".git")
+    snapshot = tmp_path / ".aq/bazel-source-files.json"
+    snapshot.parent.mkdir()
+    snapshot.write_text(json.dumps({"schema_version": 1, "files": sorted(baseline_sources)}))
+    assert _render_graph(tmp_path, modules, set(modules)) == baseline
+    assert targets.collection_inputs(tmp_path) == fingerprints
+    assert inventory.Collector(tmp_path).source_files == baseline_sources
 
 
 def test_fine_graph_only_carries_used_fixture_sources(tmp_path):
@@ -421,6 +506,179 @@ def test_fine_graph_only_carries_used_fixture_sources(tmp_path):
     assert '"//src:library"' not in build
     assert '":fixtures"' not in build
     assert '"//:python_documentation_data"' not in build
+
+
+def test_shared_inputs_preserve_expanded_module_vectors_and_obligations(tmp_path):
+    modules = _fine_graph_fixture(tmp_path)
+    for name, body in {
+        "second": "def test_behavior(selected): assert selected == 1\n",
+        "third": "from src.unrelated import VALUE\ndef test_behavior(): assert VALUE == 2\n",
+    }.items():
+        path = f"tests/test_{name}.py"
+        (tmp_path / path).write_text(body)
+        modules[path] = {}
+    libraries, discovered = targets.graph(tmp_path, modules, fine_grained=set(modules))
+    nodes = []
+    entries = {}
+    suites = {
+        "module": {"modules": {}, "marker": "", "perf_strict": False},
+        "default": {"modules": {}, "marker": "not slow", "perf_strict": False},
+        "perf": {"modules": {}, "marker": "perf", "perf_strict": True},
+    }
+    for path, info in discovered.items():
+        indices = list(range(len(nodes), len(nodes) + 2))
+        nodes.extend({"nodeid": path + suffix} for suffix in ("::test_a", "::test_b[p]"))
+        entries[path] = {
+            **info, "target": targets.target(path, "module"), "nodes": indices,
+            "targets": {suite: targets.target(path, suite) for suite in suites},
+        }
+        for suite, selected in (("module", indices), ("default", indices[:1]), ("perf", [])):
+            suites[suite]["modules"][path] = selected
+    manifest = {
+        "schema_version": 1, "libraries": libraries, "modules": entries, "collection": {"nodes": nodes},
+        "suites": suites, "aliases": {},
+    }
+    original = targets.render(tmp_path, manifest, factor_inputs=False)
+    factored = targets.render(tmp_path, manifest)
+    assert factored == targets.render(tmp_path, manifest)
+    assert {k: v for k, v in original.items() if k != "tests/BUILD.bazel"} == {
+        k: v for k, v in factored.items() if k != "tests/BUILD.bazel"
+    }
+
+    def invocations(build):
+        groups, consumers = {}, {}
+        for expression in ast.parse(build).body:
+            if not isinstance(expression, ast.Expr) or not isinstance(expression.value, ast.Call):
+                continue
+            call = expression.value
+            if not isinstance(call.func, ast.Name):
+                continue
+            if call.func.id == "aq_module_tests":
+                values = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+                consumers[values["module"]] = values
+            elif call.func.id == "filegroup":
+                name = next(kw.value.value for kw in call.keywords if kw.arg == "name")
+                if name.startswith("shared_inputs_"):
+                    groups[":" + name] = ast.literal_eval(next(
+                        kw.value for kw in call.keywords if kw.arg == "srcs"
+                    ))
+        return groups, consumers
+
+    _, before = invocations(original["tests/BUILD.bazel"])
+    groups, after = invocations(factored["tests/BUILD.bazel"])
+    assert groups
+    assert sum(len(info["data"]) for info in after.values()) < sum(
+        len(info["data"]) for info in before.values()
+    )
+    for info in after.values():
+        info["data"] = sorted({leaf for value in info["data"] for leaf in groups.get(value, [value])})
+    # Compare complete invocation metadata as well as every expanded input vector:
+    # parametrized node IDs, arm selection, markers, manual tags and perf activation.
+    assert before == after
+    reordered = dict(reversed(list(entries.items())))
+    assert targets.shared_module_inputs({path: info["data"] for path, info in after.items()}) == (
+        targets.shared_module_inputs({path: after[path]["data"] for path in reordered})
+    )
+
+
+def test_generated_exports_preserve_authored_public_exports(tmp_path):
+    modules = _fine_graph_fixture(tmp_path)
+    authored = 'exports_files(["openapi.json"], visibility = ["//visibility:public"])\n'
+    (tmp_path / "BUILD.bazel").write_text(
+        authored + '# BEGIN B1 PYTHON INPUT EXPORTS\n'
+        'exports_files(["openapi.json", "obsolete.txt"])\n'
+        '# END B1 PYTHON INPUT EXPORTS\n'
+    )
+    (tmp_path / "openapi.json").write_text("{}")
+    (tmp_path / "tests/test_behavior.py").write_text(
+        "from pathlib import Path\ndef test_behavior(): assert Path('openapi.json').read_text()\n"
+    )
+    rendered = _render_graph(tmp_path, modules, set(modules))
+    assert '"//:openapi.json"' in rendered["tests/BUILD.bazel"]
+    assert authored in rendered["BUILD.bazel"]
+    assert 'load("//tools/bazel:python_data.bzl", "python_repository_data")' in rendered["BUILD.bazel"]
+    assert "obsolete.txt" not in rendered["BUILD.bazel"]
+    assert rendered["BUILD.bazel"].count('exports_files(["openapi.json"]') == 1
+    assert targets.authored_exports(rendered["BUILD.bazel"]) == {"openapi.json"}
+
+
+def test_interned_manifest_hashes_each_distinct_input_list_once(monkeypatch):
+    shared = ["src/café.py", "src/a.py", "src/a.py"]
+    manifest = {"schema_version": 1, "modules": {
+        "tests/test_a.py": {"source_files": shared, "data_files": list(shared)},
+        "tests/test_b.py": {"source_files": list(shared), "test_sources": []},
+    }}
+    expected = targets.intern_manifest(manifest)
+    encoded = []
+    original = targets.json.dumps
+
+    def dumps(value, *args, **kwargs):
+        if isinstance(value, list) and kwargs.get("separators") == (",", ":"):
+            encoded.append(tuple(value))
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(targets.json, "dumps", dumps)
+    assert targets.intern_manifest(manifest) == expected
+    assert encoded == [tuple(shared), ()]
+    assert targets.hydrate_manifest(expected) == manifest
+
+
+def test_generate_reads_existing_manifest_once_and_validates_references(tmp_path, monkeypatch):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/selection_catalogue.json").write_text('{"modules": {}}')
+    manifest_path = tmp_path / targets.MANIFEST
+    manifest_path.parent.mkdir(parents=True)
+    encoded = targets.intern_manifest({
+        "schema_version": 1, "collection": {"source_files": {}},
+        "modules": {"tests/test_a.py": {"source_files": ["src/a.py"]}},
+    })
+    manifest_path.write_text(json.dumps(encoded))
+    sentinel = {"rendered": "unchanged"}
+    monkeypatch.setattr(targets, "collection_inputs", lambda root: {})
+    monkeypatch.setattr(targets, "graph", lambda *args: ({}, {}))
+    monkeypatch.setattr(targets, "make_manifest", lambda *args: {})
+    monkeypatch.setattr(targets, "render", lambda *args: sentinel)
+    reads = []
+    original = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == manifest_path:
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert targets.generate(tmp_path) is sentinel
+    assert reads == [manifest_path]
+    encoded["modules"]["tests/test_a.py"]["source_files"] = {"input_set": "missing"}
+    manifest_path.write_text(json.dumps(encoded))
+    with pytest.raises(ValueError, match="unknown dependency set reference"):
+        targets.generate(tmp_path)
+
+
+def test_interned_manifest_dependency_arrays_round_trip_exactly():
+    shared = ["src/a.py", "src/b.py"]
+    manifest = {
+        "schema_version": 1,
+        "collection": {"nodes": [{
+            "nodeid": "tests/test_x.py::test_a[p]",
+            "keywords": ["__AQ_B1_NODE_TABLE__", "__AQ_B1_INPUT_TABLE_0__"],
+        }]},
+        "example_metadata": {"__AQ_B1_INPUT_TABLE_1__": "__AQ_B1_NODE_TABLE_1__"},
+        "modules": {"tests/test_x.py": {
+            "source_files": shared, "test_sources": [],
+            "other_sources": ['scripts/quoted"name.py', "scripts/café.py"], "data_files": shared,
+        }},
+    }
+    serialized = targets.manifest_json(manifest)
+    encoded = json.loads(serialized)
+    assert encoded["schema_version"] == 2
+    info = encoded["modules"]["tests/test_x.py"]
+    assert info["source_files"] == info["data_files"]
+    assert len(encoded["dependency_sets"]) == 3
+    assert targets.hydrate_manifest(encoded) == manifest
+    assert targets.hydrate_manifest(manifest) == manifest
+    assert '["src/a.py","src/b.py"]' in serialized
+    assert targets.manifest_json(encoded) == serialized
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -780,7 +1038,7 @@ def test_clean_root_generator_acceptance():
                  f"--build_event_json_file={evidence / f'root-{number}.bep.jsonl'}"],
             ):
                 result = subprocess.run(prefix + command, cwd=checkout, env=env, text=True,
-                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800)
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800, check=False)
                 (evidence / f"root-{number}-{command[0]}.log").write_text(result.stdout)
                 assert result.returncode == 0, result.stdout
             binary = subprocess.check_output(prefix + ["info", "bazel-bin"], cwd=checkout,
@@ -883,6 +1141,56 @@ def test_npm_projection_refuses_conflicting_same_version_contexts(tmp_path):
     (tmp_path / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": packages}))
     with pytest.raises(ValueError, match="ambiguous npm dependency context"):
         importer.derive(tmp_path)
+
+
+@pytest.mark.parametrize("use_upstream", [False, True])
+def test_dashboard_generation_preserves_declared_openapi_provenance(
+    tmp_path, monkeypatch, use_upstream,
+):
+    generate = _generator_module("generate")
+    committed = tmp_path / "openapi.json"
+    committed.write_text('{"info": {"version": "committed"}}')
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    (upstream / "openapi.json").write_text('{"info": {"version": "regenerated"}}')
+    inputs = tmp_path / "inputs.json"
+    inputs.write_text(json.dumps([[str(committed), "openapi.json"]]))
+    commands = []
+
+    def run(command, root, env):
+        commands.append(command)
+        # The existing npm --from-file path must read the declared spec, even
+        # when a developer checkout contains a different generated client.
+        spec = json.loads((root / "openapi.json").read_text())
+        generated = root / "packages/aq-ts-client/src"
+        generated.mkdir(parents=True)
+        (generated / "index.ts").write_text(spec["info"]["version"])
+        return ""
+
+    monkeypatch.setattr(generate, "run", run)
+    output = tmp_path / "output"
+    generate.execute(generate.argparse.Namespace(
+        inputs=inputs, native=tmp_path / "native", node=tmp_path / "node",
+        npm=tmp_path / "npm", ruff=tmp_path / "ruff", kind="typescript",
+        upstream=upstream if use_upstream else None, output=output, manifest=None,
+    ))
+    assert (output / "packages/aq-ts-client/src/index.ts").read_text() == (
+        "regenerated" if use_upstream else "committed"
+    )
+    assert len(commands) == 1
+    assert commands[0][1:] == ["scripts/regenerate-ts-client.sh", "--from-file"]
+
+
+def test_dashboard_generation_refuses_absent_declared_openapi(tmp_path):
+    generate = _generator_module("generate")
+    inputs = tmp_path / "inputs.json"
+    inputs.write_text("[]")
+    with pytest.raises(ValueError, match="declared OpenAPI"):
+        generate.execute(generate.argparse.Namespace(
+            inputs=inputs, native=tmp_path / "native", node=tmp_path / "node",
+            npm=tmp_path / "npm", ruff=tmp_path / "ruff", kind="typescript",
+            upstream=None, output=tmp_path / "output", manifest=None,
+        ))
 
 
 def test_dashboard_environment_ignores_ambient_node_and_credentials(tmp_path, monkeypatch):
@@ -996,13 +1304,13 @@ def test_clean_root_dashboard_acceptance():
         ]
         for command in commands:
             result = subprocess.run(prefix + command, cwd=checkout, env=env, text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800)
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=1800, check=False)
             (base / f"{command[0]}.log").write_text(result.stdout)
             assert result.returncode == 0, result.stdout
         binary = subprocess.check_output(prefix + ["info", "bazel-bin"], cwd=checkout,
                                          env=env, text=True).strip()
         binary = Path(binary)
-        actual = json.loads((binary / "tools/bazel/typescript.manifest.json").read_text())
+        actual = json.loads((binary / "tools/bazel/dashboard_typescript.manifest.json").read_text())
         manifests.append(actual)
         (base / "typescript.json").write_text(json.dumps(actual, indent=2))
         build = manifest(binary / "dashboard/build.tree/dist")
@@ -1026,7 +1334,7 @@ def test_clean_root_dashboard_acceptance():
                 [str(node), str(npm), "--prefix", "dashboard", "run", "build"],
             )):
                 result = subprocess.run(command, cwd=reference, env=reference_env, text=True,
-                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600)
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=600, check=False)
                 (base / f"npm-{index}.log").write_text(result.stdout)
                 assert result.returncode == 0, result.stdout
             ts = manifest(reference / "packages/aq-ts-client/src")
