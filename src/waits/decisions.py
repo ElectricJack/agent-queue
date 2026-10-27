@@ -151,6 +151,8 @@ class WaitDecisions:
             return await self.service.lifecycle.resume.requeue(
                 args, principal=principal, scope=scope, handler=handler,
             )
+        if args['decision'] == 'retire':
+            return await self.retire(args, principal=principal, scope=scope)
         now = self.clock()
         routing = None
         async with self.service.orch.db._engine.begin() as conn:
@@ -255,6 +257,88 @@ class WaitDecisions:
             return {"success": True, "wait_id": wait["id"], "decision": decision,
                     "outcome": "cancelled" if decision in {"wake", "cancel", "reroute"}
                     else "pending", "generation": escalation["generation"]}
+
+    async def retire(self, args, *, principal, scope):
+        """Retire one current suspension; termination still owns writer release."""
+        from src.database.queries.continuation_queries import retire_task_waits
+        from src.wait_runtime.hibernate import locked_suspension, suspension_writer
+
+        db = self.service.orch.db
+        async with db._engine.connect() as conn:
+            task_id = await conn.scalar(select(continuations.c.task_id).where(
+                continuations.c.id == args['continuation_id'],
+            ))
+        if task_id is None:
+            raise WaitError('continuation.stale_generation', 'continuation disappeared')
+        # Serialize with stop/save/park and resume's external effects, then use
+        # their graph -> task -> wait -> continuation lock order.
+        async with self.service.orch._task_control_lock(task_id):
+            async with db._engine.begin() as conn:
+                await lock_graph(conn, queued=True)
+                task, wait, intent = await locked_suspension(conn, args['wait_id'])
+                if scope.get('project_id') not in (None, task['project_id']):
+                    raise WaitError('wait.out_of_scope', 'continuation is outside supervisor scope')
+                await self.authorize(conn, principal, task['project_id'])
+                if ((intent['id'], intent['suspension_generation']) != (
+                        args['continuation_id'], args['expected_generation'])
+                        or task['branch_name'] != intent['branch']
+                        or task['status'] not in {
+                            'WAITING', 'IN_PROGRESS', 'HIBERNATED', 'RESUME_PENDING', 'PAUSED'}
+                        or wait['cleared_at'] is not None):
+                    raise WaitError('continuation.stale_generation', 'retirement owner changed')
+                writer_id = wait['session_id']
+                if intent['stopped_at'] is None:
+                    writer = await suspension_writer(conn, task, wait, intent)
+                elif intent['new_session_id']:
+                    writer_id = intent['new_session_id']
+                    delivery = intent['facts'].get('resume_delivery', {})
+                    writer = (await conn.execute(select(sessions).where(
+                        sessions.c.id == writer_id, sessions.c.task_id == task['id'],
+                        sessions.c.agent_id == task['assigned_agent_id'],
+                        sessions.c.last_claim_epoch == task['claim_epoch'],
+                        sessions.c.instance_token == delivery.get('instance_token'),
+                    ).with_for_update())).mappings().first()
+                    if not writer or delivery.get('claim_epoch') != task['claim_epoch']:
+                        raise WaitError('continuation.stale_generation', 'resume writer changed')
+                else:
+                    if task['claim_epoch'] <= wait['claim_epoch']:
+                        raise WaitError('continuation.stale_generation', 'parked claim changed')
+                    # Parking retired this attachment. Its former session row
+                    # may now belong to a different instance or task.
+                    writer_id = None
+                if await conn.scalar(select(sessions.c.id).where(
+                    sessions.c.task_id == task['id'], sessions.c.id != writer_id,
+                    sessions.c.state.not_in(('stopped', 'failed')),
+                ).limit(1)):
+                    raise WaitError('continuation.stop_uncertain', 'another task writer exists')
+                now = self.clock()
+                audit = {'continuation_id': intent['id'],
+                         'generation': intent['suspension_generation'], 'note': args['note'],
+                         'principal_kind': principal.kind, 'session_id': principal.session_id}
+                await retire_task_waits(conn, task['id'], wait_id=wait['id'],
+                                        reason='supervisor_retire', now=now)
+                if writer_id:
+                    changed = await conn.execute(update(sessions).where(
+                        sessions.c.id == writer_id, sessions.c.task_id == task['id'],
+                        sessions.c.instance_token == writer['instance_token'],
+                    ).values(desired_state='stopped'))
+                    if changed.rowcount != 1:
+                        raise WaitError('continuation.stale_generation', 'retirement writer changed')
+                # The durable manual-pause snapshot fences the old claim and
+                # lets normal maintenance stop/checkpoint/release its resources.
+                # A bare PAUSED status is an orphan that maintenance can reopen.
+                snapshot, transition = await db._pause_task_on(task['id'], conn=conn)
+                if snapshot['status'] in {'WAITING', 'HIBERNATED', 'RESUME_PENDING'}:
+                    # Explicit Resume must not restore a suspended status after
+                    # its only continuation has been retired.
+                    await db._upsert_meta(task['id'], 'manual_pause', {
+                        **snapshot, 'status': 'READY', 'retired_status': snapshot['status'],
+                    }, conn=conn)
+                await self.audit(conn, wait, 'wait.continuation_retired', now, **audit)
+            if transition:
+                await db.log_blocked_flips(transition.flipped)
+            return {'success': True, 'wait_id': wait['id'], 'decision': 'retire',
+                    'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
 
     @admission_pass("service.scheduler.reader")
     async def cancel(self, args, *, principal, scope, handler):

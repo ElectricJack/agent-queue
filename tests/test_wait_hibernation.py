@@ -1344,6 +1344,289 @@ async def test_held_stop_recovers_on_later_tick_and_withdraws_incident(
     case.provider.stop.assert_not_awaited()
 
 
+async def publication_hold(env, monkeypatch):
+    from tests.test_wait_dispatch import runtime
+
+    case = await suspension_case(env, monkeypatch, 'push')
+    now = [NOW + 200]
+    service = runtime(env, clock=lambda: now[0], registry=build_registry())
+    service.orch.__dict__.update(case.orch.__dict__)
+    service.orch.config = AppConfig()
+    handler = service.orch._command_handler
+    assert (await service.lifecycle.hibernate.advance(env.wait_id, handler=handler))['held']
+    assert (await intent(env))['hold_reason'] == 'push_failed'
+    case.provider.stop.reset_mock()
+    return case, service, now
+
+
+@pytest.mark.parametrize('resolved', [False, True])
+async def test_publication_hold_recovers_after_restart_with_persisted_backoff(
+    env, monkeypatch, resolved,
+):
+    from src.database.tables import escalations
+    from src.wait_runtime.lifecycle import WaitLifecycle
+
+    case, service, now = await publication_hold(env, monkeypatch)
+    held = await intent(env)
+    if resolved:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=now[0]))
+    service.lifecycle = WaitLifecycle(service, clock=lambda: now[0])
+    case.save.return_value = SimpleNamespace(status='pushed', commit='a' * 40, error=None)
+    try:
+        await service.lifecycle.tick()
+        assert not service.lifecycle._hibernate_tasks
+        assert case.save.await_count == 1
+        now[0] = held['facts']['hibernation']['push_retry_at']
+        await service.lifecycle.tick()
+        await asyncio.gather(*service.lifecycle._hibernate_tasks.values())
+    finally:
+        await service.lifecycle.stop()
+    row = await intent(env)
+    assert row['hold_reason'] is None and row['saved_head'] == 'a' * 40
+    assert row['resume_state'] == ('queued' if resolved else 'sleeping')
+    assert row['suspension_generation'] == held['suspension_generation']
+    assert case.save.await_count == 2
+    case.provider.stop.assert_not_awaited()
+    case.orch._release_workspace_and_cleanup.assert_awaited_once()
+    async with env.db._engine.connect() as conn:
+        incident = (await conn.execute(select(escalations))).mappings().one()
+    assert incident['id'] == held['facts']['hold_escalation_id']
+    assert incident['state'] == 'cancelled' and incident['terminal_outcome'] == 'source_satisfied'
+
+
+@pytest.mark.parametrize('failure', ['push', 'repository', 'live', 'successor', 'paused', 'epoch'])
+async def test_publication_retry_retains_ownership_when_proofs_fail(env, monkeypatch, failure):
+    case, service, now = await publication_hold(env, monkeypatch)
+    held = await intent(env)
+    now[0] = held['facts']['hibernation']['push_retry_at']
+    if failure == 'live':
+        case.provider.process_alive.return_value = True
+    elif failure == 'repository':
+        monkeypatch.setattr(env.db, 'get_repo', AsyncMock(return_value=None))
+    elif failure == 'successor':
+        case.provider.confirm_stopped.return_value = False
+    elif failure in {'paused', 'epoch'}:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+                **({'status': 'PAUSED'} if failure == 'paused' else {'claim_epoch': 2})))
+    if failure == 'epoch':
+        with pytest.raises(WaitError, match='writer identity changed'):
+            await service.lifecycle.hibernate.advance(env.wait_id, handler=service.orch._command_handler)
+    else:
+        result = await service.lifecycle.hibernate.advance(
+            env.wait_id, handler=service.orch._command_handler)
+        assert result['held']
+    row = await intent(env)
+    assert row['stopped_at'] is None and row['saved_head'] is None
+    assert row['facts']['local_head'] == held['facts']['local_head']
+    assert case.save.await_count == (2 if failure == 'push' else 1)
+    if failure in {'push', 'repository', 'live', 'successor'}:
+        assert row['facts']['hibernation']['push_retry_at'] > now[0]
+    case.provider.stop.assert_not_awaited()
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+    case.orch.token_store.revoke_session.assert_not_awaited()
+
+
+@pytest.mark.parametrize('resolved', [False, True])
+async def test_supervisor_requeues_publication_hold_without_releasing_writer(env, monkeypatch, resolved):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    case, service, now = await publication_hold(env, monkeypatch)
+    held = await intent(env)
+    if resolved:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=now[0]))
+    args = dict(wait_id=env.wait_id, decision='requeue', continuation_id='c',
+                expected_generation=2, note='Publication credentials repaired')
+    handler = service.orch._command_handler
+    with principal_context(TRUSTED_LOCAL):
+        assert (await handler.execute('wait_decide', args))['error_code'] == 'continuation.stale_generation'
+        assert await intent(env) == held
+        args['expected_generation'] = 1
+        result = await handler.execute('wait_decide', args)
+        assert result['success'], result
+    row = await intent(env)
+    assert row['resume_state'] == 'held' and row['hold_reason'] == 'push_failed'
+    assert row['facts']['hibernation']['push_retry_at'] == 0
+    assert row['facts']['resume_requeue']['note'] == args['note']
+    assert (await env.db.get_task('owner')).claim_epoch == 1
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+    case.save.return_value = SimpleNamespace(status='pushed', commit='a' * 40, error=None)
+    assert (await service.lifecycle.hibernate.advance(env.wait_id, handler=handler))['parked']
+    case.provider.stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize('resolved', [False, True])
+async def test_supervisor_retires_publication_hold_by_continuation_id(env, monkeypatch, resolved):
+    import json
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import admission_reservations, escalations, events, wait_deadlines, wait_edges
+
+    case, service, now = await publication_hold(env, monkeypatch)
+    held = await intent(env)
+    async with env.db._engine.begin() as conn:
+        if resolved:
+            await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=now[0]))
+        await conn.execute(insert(admission_reservations).values(
+            id='retiring-seat', project_id='p', continuation_id='c', scope={},
+            effective_priority=100, provenance='resume', deadline_at=NOW + 300,
+            state='pending', created_at=NOW))
+    args = dict(decision='retire', continuation_id='c', expected_generation=1,
+                note='Retire this stranded continuation')
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute('wait_decide', args)
+    assert result['success'], result
+    row = await intent(env)
+    assert row['resume_state'] == 'cancelled' and row['hold_reason'] == 'supervisor_retire'
+    assert row['summary'] == held['summary'] and row['facts'] == held['facts']
+    task = await env.db.get_task('owner')
+    assert task.status.value == 'PAUSED' and task.claim_epoch == 2 and task.assigned_agent_id == 'a'
+    pause = await env.db.get_task_meta('owner', 'manual_pause')
+    assert pause['cleanup_pending'] and pause['claim_epoch'] == 1
+    assert pause['status'] == 'READY' and pause['retired_status'] == 'WAITING'
+    assert pause['sessions'][0]['id'] == 's'
+    await env.db.validate_task_pause('owner', pause)
+    assert await env.db.recover_orphaned_pause('owner') is None
+    session = await env.db.get_session('s')
+    assert session.desired_state == 'stopped' and session.task_id == 'owner'
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+    case.orch.token_store.revoke_session.assert_not_awaited()
+    async with env.db._engine.connect() as conn:
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait['outcome'] == ('satisfied' if resolved else 'cancelled')
+        assert wait['cleared_at'] == now[0] and not wait['blocking']
+        assert not await conn.scalar(select(wait_edges.c.id).where(wait_edges.c.active.is_(True)))
+        assert not await conn.scalar(select(wait_deadlines.c.id).where(
+            wait_deadlines.c.cancelled_at.is_(None), wait_deadlines.c.fired_at.is_(None)))
+        assert await conn.scalar(select(admission_reservations.c.state)) == 'cancelled'
+        assert await conn.scalar(select(escalations.c.state)) == 'cancelled'
+        audit = json.loads(await conn.scalar(select(events.c.payload).where(
+            events.c.event_type == 'wait.continuation_retired')))
+    assert audit['continuation_id'] == 'c' and audit['generation'] == 1
+    assert audit['note'] == args['note']
+    # Normal pause cleanup may only release a proved stopped holder. Once it
+    # finishes, explicit Resume must not recreate an orphan HIBERNATED task.
+    await env.db.update_session('s', state='stopped', last_claim_result='manually_paused')
+    await env.db.finish_task_pause('owner', pause)
+    await env.db.resume_task('owner')
+    assert (await env.db.get_task('owner')).status.value == 'READY'
+
+
+@pytest.mark.parametrize('change', [
+    'generation', 'wait', 'epoch', 'branch', 'instance', 'acknowledged', 'terminal',
+])
+async def test_retire_refuses_stale_continuation_without_mutation(env, monkeypatch, change):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    _, service, _ = await publication_hold(env, monkeypatch)
+    args = dict(decision='retire', continuation_id='c', expected_generation=1, note='Retire')
+    async with env.db._engine.begin() as conn:
+        if change == 'generation':
+            args['expected_generation'] = 2
+        elif change == 'wait':
+            args['wait_id'] = 'foreign'
+        elif change == 'instance':
+            await conn.execute(update(sessions).where(sessions.c.id == 's').values(
+                instance_token='replacement'))
+        elif change in {'epoch', 'branch', 'terminal'}:
+            await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(**{
+                'epoch': {'claim_epoch': 2}, 'branch': {'branch_name': 'aq/replacement'},
+                'terminal': {'status': 'COMPLETED'},
+            }[change]))
+        else:
+            await conn.execute(update(continuations).values(resume_state='acknowledged'))
+    held = await intent(env)
+    before = await env.db.get_task('owner')
+    with principal_context(TRUSTED_LOCAL):
+        assert not (await service.orch._command_handler.execute('wait_decide', args))['success']
+    assert await intent(env) == held
+    assert await env.db.get_task('owner') == before
+    assert (await env.db.get_session('s')).desired_state == 'running'
+
+
+async def test_retirement_requires_live_scoped_supervisor_and_task_control_fence(env, monkeypatch):
+    from dataclasses import replace
+
+    _, service, _ = await publication_hold(env, monkeypatch)
+    handler = service.orch._command_handler
+    record = replace(await env.db.get_session('s'), id='supervisor', name='supervisor',
+                     task_id=None, agent_id=None, lifecycle='named', profile_id='supervisor')
+    await env.db.create_session(record)
+    principal = ExecutionPrincipal(kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=['wait_decide']),
+        session_id=record.id, session_instance_token=record.instance_token,
+        project_id='p', profile_id='supervisor', elevated=True)
+    args = dict(decision='retire', continuation_id='c', expected_generation=1, note='Retire')
+    held = await intent(env)
+    for rejected in (replace(principal, elevated=False), replace(principal, project_id='foreign'),
+                     replace(principal, session_instance_token='stale')):
+        with principal_context(rejected):
+            assert not (await handler.execute('wait_decide', args))['success']
+        assert await intent(env) == held
+    lock = asyncio.Lock()
+    service.orch._task_control_lock = lambda _: lock
+    with principal_context(principal):
+        async with lock:
+            retirement = asyncio.create_task(handler.execute('wait_decide', args))
+            await asyncio.sleep(0)
+            assert not retirement.done()
+            assert await intent(env) == held
+        result = await retirement
+    assert result['success'], result
+
+
+@pytest.mark.parametrize('writer', ['parked', 'reused_original', 'resumed', 'successor'])
+async def test_retirement_after_parking_fences_the_resume_writer(env, monkeypatch, writer):
+    from dataclasses import replace
+    from src.commands.principal import TRUSTED_LOCAL
+
+    case, service, _ = await publication_hold(env, monkeypatch)
+    case.save.return_value = SimpleNamespace(status='pushed', commit='a' * 40, error=None)
+    with principal_context(TRUSTED_LOCAL):
+        assert (await service.orch._command_handler.execute('wait_decide', dict(
+            wait_id=env.wait_id, decision='requeue', continuation_id='c',
+            expected_generation=1, note='Retry publication')))['success']
+    assert (await service.lifecycle.hibernate.advance(
+        env.wait_id, handler=service.orch._command_handler))['parked']
+    if writer == 'reused_original':
+        # Simulate restored/replaced session history; the lifecycle API rightly
+        # forbids reviving a terminal session row.
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(sessions).where(sessions.c.id == 's').values(
+                task_id='source', instance_token='replacement',
+                state='running', desired_state='running'))
+    elif writer != 'parked':
+        record = replace(await env.db.get_session('s'), id='resume', name='resume',
+                         task_id='owner', state='running', desired_state='running',
+                         last_claim_epoch=2, instance_token='fresh')
+        await env.db.create_session(record)
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+                status='RESUME_PENDING', assigned_agent_id='a'))
+            row = await intent(env)
+            await conn.execute(update(continuations).values(
+                new_session_id='resume', resume_state='delivered', facts={**row['facts'],
+                    'resume_delivery': {'claim_epoch': 2,
+                                        'instance_token': 'stale' if writer == 'successor' else 'fresh'}}))
+    before = await intent(env)
+    with principal_context(TRUSTED_LOCAL):
+        result = await service.orch._command_handler.execute('wait_decide', dict(
+            decision='retire', continuation_id='c', expected_generation=1, note='Retire'))
+    assert result['success'] == (writer != 'successor'), result
+    if writer == 'successor':
+        assert await intent(env) == before
+        assert (await env.db.get_session('resume')).desired_state == 'running'
+    else:
+        assert (await intent(env))['resume_state'] == 'cancelled'
+        assert (await env.db.get_task('owner')).status.value == 'PAUSED'
+        if writer == 'resumed':
+            assert (await env.db.get_session('resume')).desired_state == 'stopped'
+        elif writer == 'reused_original':
+            replacement = await env.db.get_session('s')
+            assert replacement.task_id == 'source' and replacement.desired_state == 'running'
+
+
 @pytest.mark.parametrize('status', ['COMPLETED', 'FAILED', 'BLOCKED'])
 @pytest.mark.parametrize('outcome', ['pending', 'satisfied', 'cancelled'])
 @pytest.mark.parametrize('cleared', [False, True])
