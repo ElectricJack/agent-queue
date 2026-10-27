@@ -867,6 +867,86 @@ async def test_repair_fence_timeout_retains_claim_and_allocation_after_bounded_r
     assert (await env.store.get("repair-batch")).repair_attempt_count == 1
 
 
+@pytest.mark.parametrize("operation", ["repair_start", "slot_reset", "prefetch"])
+async def test_repository_contention_returns_cooldown_and_resumes_same_preparation(
+    handler, db, tmp_path, monkeypatch, operation,
+):
+    from src.commands import claim_commands
+    from src.git.manager import GitManager
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    monkeypatch.setattr(claim_commands, "_CLAIM_REPOSITORY_LOCK_SECONDS", 0.05)
+    # The real orchestrator mutex is shared by train compound reads, fetches
+    # and slot reset. Only acquisition is bounded, never the train's work.
+    lock = handler.orchestrator._git_mutex(str(tmp_path))
+    git = GitManager()
+    git.set_lock_provider(lambda cwd: lock)
+    git._arun_unlocked = AsyncMock(return_value="")
+    reading, release = asyncio.Event(), asyncio.Event()
+    mutations = []
+
+    async def train_read():
+        async with git.arepository_transaction(str(tmp_path)):
+            reading.set()
+            await release.wait()
+
+    async def prepare(*args, **kwargs):
+        if operation == "repair_start":
+            async with git.arepository_transaction(str(tmp_path)):
+                mutations.append(operation)
+            return "b" * 40
+        if operation == "prefetch":
+            await git._arun(["fetch", "origin"], cwd=str(tmp_path))
+        else:
+            async with lock:
+                mutations.append(operation)
+            return env.target.branch.removeprefix("refs/heads/")
+
+    slots = handler.orchestrator._worktree_slots()
+    pending = {
+        "repair_start": handler.orchestrator._hierarchy_repair_start,
+        "slot_reset": slots.reset_slot_for_task,
+        "prefetch": slots.prefetch_slot_for_task,
+    }[operation]
+    pending.side_effect = prepare
+    train = asyncio.create_task(train_read())
+    try:
+        await asyncio.wait_for(reading.wait(), timeout=5)
+        result = await settled_claim(env.handler, {"next": True})
+        assert result["result"] == "prepare_failed", result
+        assert "repository lock busy" in result["reason"]
+        assert result["retry_after"] > 0 and result["refusal_count"] == 1
+        assert "Respect retry_after" in result["instructions"]
+        assert pending.await_count == 1  # no hidden acquisition retry loop
+        assert not mutations
+        git._arun_unlocked.assert_not_awaited()
+        assert lock.locked() and not train.done()
+        held = await db.get_session(env.sid)
+        assert (held.claim_phase, held.last_claim_epoch, held.claims) == ("preparing", 1, 0)
+        assert held.claim_failure_count == 0
+        task = await db.get_task(env.task_id)
+        assert task.status is TaskStatus.IN_PROGRESS and task.retry_count == 0
+        assert (await env.locks.get(env.target)).grant() == env.lease.grant()
+        assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+        assert await db.get_task_meta(env.task_id, "slot_reset_failure") is None
+        assert await db.get_task_meta(env.task_id, "needs_attention") is None
+        failure = await db.get_task_meta(env.task_id, "prepare_failure")
+        assert (failure["stage"], failure["disposition"]) == ("repository_lock", "retained")
+        assert not (env.wd / ".aq" / "claim.json").exists()
+
+        release.set()
+        await train
+        await expire_claim_refusal(db, env.sid)
+        resumed = await settled_claim(env.handler, {"next": True})
+        assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
+        assert (await env.locks.get(env.target)).grant() == env.lease.grant()
+        assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+        assert await db.get_task_meta(env.task_id, "prepare_failure") is None
+    finally:
+        release.set()
+        await train
+
+
 async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp_path, monkeypatch):
     from src.integration import lock as lock_module
 
@@ -906,10 +986,12 @@ async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp
         # Exceed the real 30s fence deadline without shortening SQL lock budgets.
         await asyncio.sleep(40)
         assert not inside
+        return True
 
     async def reset(*args, **kwargs):
         assert inside
         assert kwargs["fetch_origin"] is False
+        assert kwargs["origin_refreshed"] is True
         return env.target.branch
 
     slots.prefetch_slot_for_task.side_effect = slow_fetch
@@ -917,6 +999,9 @@ async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp
     result = await settled_claim(env.handler, {"next": True}, timeout=60)
     assert result["result"] == "claimed", result
     slots.prefetch_slot_for_task.assert_awaited_once()
+    assert slots.prefetch_slot_for_task.await_args.kwargs["target_branch"] == (
+        env.target.branch.removeprefix("refs/heads/")
+    )
     slots.reset_slot_for_task.assert_awaited_once()
 
 
@@ -2762,10 +2847,12 @@ class TestClaim:
                 return "a" * 40
             raise AssertionError(args)
 
+        handler.orchestrator.git._arun = AsyncMock(side_effect=run)
         handler.orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
         result = await settled_claim(scoped(handler, sid), {"next": True})
 
         assert result["result"] == "prepare_failed"
+        handler.orchestrator.git._arun.assert_awaited_once_with(["fetch", "origin"], cwd=str(wd))
         task = await db.get_task("child")
         session = await db.get_session(sid)
         owner = await ownership.get_owner(fence.target)

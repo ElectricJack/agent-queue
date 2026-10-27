@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import gc
 import logging
 import os
@@ -9,6 +10,7 @@ import signal
 import shutil
 import ssl
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +25,7 @@ from src.git.askpass_fd import MAX_REQUEST_BYTES, answer_prompt
 from src.git.askpass_broker import make_request_channel, serve_one_credential
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.github_contracts import GitHubCredentialMode
+from src.git.repository_lock import RepositoryLock, repository_lock_wait_limit
 from src.git.manager import (
     APP_AUTH_PUSH_TIMEOUT_SECONDS,
     GitError,
@@ -680,6 +683,152 @@ async def test_isolated_git_cleanup_runs_off_loop_and_retains_ownership(
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOTEMPTY, errno.EBUSY])
+async def test_isolated_directory_retries_transient_removal_errors(
+    tmp_path, monkeypatch, caplog, error_number,
+):
+    original_rmtree = manager_module.tempfile.TemporaryDirectory._rmtree
+    attempts = []
+
+    def flaky_rmtree(cls, name, **kwargs):
+        attempts.append(name)
+        if len(attempts) < 3:
+            raise OSError(error_number, "injected removal race")
+        original_rmtree(name, **kwargs)
+
+    monkeypatch.setattr(
+        manager_module.tempfile.TemporaryDirectory, "_rmtree", classmethod(flaky_rmtree),
+    )
+    async with manager_module._isolated_git_directory(dir=tmp_path) as name:
+        (Path(name) / "refs").mkdir()
+    assert attempts == [name] * 3
+    assert not Path(name).exists()
+    assert "temporary directory leaked" not in caplog.text
+
+
+@pytest.mark.parametrize("exit_kind", ["success", "failure", "cancellation"])
+@pytest.mark.parametrize("error_number", [errno.ENOTEMPTY, errno.EBUSY, errno.EACCES, None])
+async def test_isolated_directory_removal_failure_warns_without_replacing_outcome(
+    tmp_path, monkeypatch, caplog, exit_kind, error_number,
+):
+    original_rmtree = manager_module.tempfile.TemporaryDirectory._rmtree
+    attempts = []
+
+    def failed_rmtree(cls, name, **kwargs):
+        attempts.append(name)
+        if error_number is None:
+            raise RuntimeError("injected removal failure")
+        raise OSError(error_number, "injected removal failure")
+
+    monkeypatch.setattr(
+        manager_module.tempfile.TemporaryDirectory, "_rmtree", classmethod(failed_rmtree),
+    )
+
+    async def operation():
+        async with manager_module._isolated_git_directory(dir=tmp_path) as name:
+            if exit_kind == "failure":
+                raise GitError("original Git failure")
+            if exit_kind == "cancellation":
+                raise asyncio.CancelledError("original cancellation")
+            return name
+
+    if exit_kind == "success":
+        await operation()
+    else:
+        error = GitError if exit_kind == "failure" else asyncio.CancelledError
+        with pytest.raises(error, match="original"):
+            await operation()
+    name = attempts[0]
+    try:
+        assert len(attempts) == (3 if error_number in {errno.ENOTEMPTY, errno.EBUSY} else 1)
+        assert Path(name).exists()
+        warnings = [r for r in caplog.records if "temporary directory leaked" in r.message]
+        assert len(warnings) == 1
+        assert name in warnings[0].message
+    finally:
+        original_rmtree(name)
+
+
+async def test_repeated_spawn_cancellation_reaps_writer_before_directory_cleanup(
+    tmp_path, monkeypatch,
+):
+    manager = GitManager()
+    spawned, release_spawn = asyncio.Event(), asyncio.Event()
+    killing, release_kill = asyncio.Event(), asyncio.Event()
+    processes, directories, returncodes_at_cleanup = [], [], []
+    ready = tmp_path / "writer-ready"
+    real_spawn = asyncio.create_subprocess_exec
+    real_kill = manager._kill_app_git_group
+    real_cleanup = manager_module._cleanup_isolated_git_directory
+
+    async def delayed_spawn(*args, **kwargs):
+        process = await real_spawn(*args, **kwargs)
+        processes.append(process)
+        await _wait_for_file(ready)
+        spawned.set()
+        await release_spawn.wait()
+        return process
+
+    async def delayed_kill(process):
+        killing.set()
+        await release_kill.wait()
+        await real_kill(process)
+
+    def record_cleanup(directory):
+        returncodes_at_cleanup.extend(p.returncode for p in processes)
+        real_cleanup(directory)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(manager, "_kill_app_git_group", delayed_kill)
+    monkeypatch.setattr(manager_module, "_cleanup_isolated_git_directory", record_cleanup)
+
+    async def operation():
+        async with manager_module._isolated_git_directory(dir=tmp_path) as name:
+            directories.append(Path(name))
+            await manager._spawn_isolated_git(
+                sys.executable, "-c",
+                "import pathlib, sys, time\n"
+                "refs = pathlib.Path(sys.argv[1]) / 'refs'\n"
+                "refs.mkdir()\n"
+                "pathlib.Path(sys.argv[2]).write_text('ready')\n"
+                "while True:\n"
+                "    (refs / 'head').write_text('writing')\n"
+                "    time.sleep(0.001)\n",
+                name, str(ready), start_new_session=True,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+
+    request = asyncio.create_task(operation())
+    try:
+        await asyncio.wait_for(spawned.wait(), 10)
+        request.cancel("original cancellation")
+        await asyncio.sleep(0)
+        request.cancel("second cancellation")
+        await asyncio.sleep(0)
+        assert not request.done()
+        assert directories[0].exists()
+        release_spawn.set()
+        await asyncio.wait_for(killing.wait(), 10)
+        request.cancel("cancellation during reaping")
+        await asyncio.sleep(0)
+        assert not request.done()
+        assert directories[0].exists()
+        release_kill.set()
+        with pytest.raises(asyncio.CancelledError, match="original cancellation"):
+            await request
+        assert returncodes_at_cleanup and all(code is not None for code in returncodes_at_cleanup)
+        assert not _process_group_exists(processes[0].pid)
+        assert not directories[0].exists()
+    finally:
+        release_spawn.set()
+        release_kill.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        for process in processes:
+            await real_kill(process)
 
 
 def _origin_fetch_case(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -1449,19 +1598,79 @@ async def test_authenticated_default_branch_discovery_uses_pinned_https_source(
 
 
 @pytest.mark.asyncio
-async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkeypatch):
+@pytest.mark.parametrize("linked", [False, True])
+async def test_slow_pull_fsck_allows_bounded_repository_waiter(tmp_path, monkeypatch, linked):
+    work, source, _trap, base, tip = _git_push_case(tmp_path)
     checkout = tmp_path / "checkout"
+    _git(["clone", str(source), str(checkout)], tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/main"], work)
+    if linked:
+        other = tmp_path / "linked"
+        _git(["worktree", "add", "-b", "worker", str(other), "HEAD"], checkout)
+        checkout = other
+    _git(["config", "remote.origin.url", "https://github.com/acme/widgets.git"], checkout)
     manager = GitManager(github_access=_BoundAppAccess())
-    # This tests serialization, not subprocess latency on a busy CI runner.
-    async def read_origin(args, **kwargs):
-        assert args == ["config", "--get", "remote.origin.url"]
-        assert kwargs == {"cwd": str(checkout)}
-        return "https://github.com/acme/widgets.git"
+    lock = RepositoryLock()
+    manager.set_lock_provider(lambda _cwd: lock)
+    checking = asyncio.Event()
+    release = asyncio.Event()
+    original = manager._run_isolated_import_git
+    network = manager._arun_authenticated_git
 
-    monkeypatch.setattr(manager, "_arun", read_origin)
+    async def slow_fsck(args, **kwargs):
+        if "fsck" in args:
+            assert not lock.locked()
+            checking.set()
+            await release.wait()
+        if "fetch" in args:
+            assert lock.locked()
+            assert "fetch.fsckObjects=true" in args
+            assert "maintenance.auto=false" in args
+        return await original(args, **kwargs)
+
+    async def local_network(args, **kwargs):
+        assert lock.locked()
+        args = [source.as_uri() if arg == "https://github.com/acme/widgets.git" else arg
+                for arg in args]
+        return await network(args, **{**kwargs, "token": None, "repository_url": source.as_uri()})
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", slow_fsck)
+    monkeypatch.setattr(manager, "_arun_authenticated_git", local_network)
+    pull = asyncio.create_task(manager.apull_branch(
+        str(checkout), "main", repository_url="https://github.com/acme/widgets.git",
+    ))
+    try:
+        await asyncio.wait_for(checking.wait(), 10)
+        # Claims and the git-truth reconciler take this same repository lock
+        # with bounded acquisition. Neither must refuse while fsck is paused.
+        with repository_lock_wait_limit(0.1):
+            async with manager.arepository_transaction(str(checkout)):
+                assert not pull.done()
+                assert _git(["rev-parse", "HEAD"], checkout) == base
+        release.set()
+        assert await asyncio.wait_for(pull, 10) == "main"
+        assert _git(["rev-parse", "HEAD"], checkout) == tip
+        assert not lock.locked()
+    finally:
+        release.set()
+        pull.cancel()
+        await asyncio.gather(pull, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock_held", [False, True])
+async def test_authenticated_fetch_serializes_local_import(tmp_path, monkeypatch, lock_held):
+    work, source, _trap, _base, tip = _git_push_case(tmp_path)
+    checkout = tmp_path / "checkout"
+    _git(["clone", str(source), str(checkout)], tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/main"], work)
+    _git(["config", "remote.origin.url", "https://github.com/acme/widgets.git"], checkout)
+    manager = GitManager(github_access=_BoundAppAccess())
+    entered = asyncio.Event()
+    release = asyncio.Event()
     contended = asyncio.Event()
 
-    class ObservedLock(asyncio.Lock):
+    class ObservedLock(RepositoryLock):
         async def acquire(self):
             if self.locked():
                 contended.set()
@@ -1469,32 +1678,55 @@ async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkey
 
     lock = ObservedLock()
     manager.set_lock_provider(lambda _cwd: lock)
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    runs = 0
+    original = manager._run_isolated_import_git
+    network = manager._arun_authenticated_git
+    imports = 0
 
-    async def held_fetch(*_args, **_kwargs):
-        nonlocal runs
-        assert lock.locked()
-        runs += 1
-        entered.set()
-        await release.wait()
+    async def held_import(args, **kwargs):
+        nonlocal imports
+        if "fetch" in args:
+            assert lock.locked()
+            imports += 1
+            entered.set()
+            await release.wait()
+        return await original(args, **kwargs)
 
-    monkeypatch.setattr(manager, "_afetch_origin_with_auth_to_url", held_fetch)
-    first = asyncio.create_task(
-        manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
-    )
+    async def local_network(args, **kwargs):
+        args = [source.as_uri() if arg == "https://github.com/acme/widgets.git" else arg
+                for arg in args]
+        return await network(args, **{**kwargs, "token": None, "repository_url": source.as_uri()})
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", held_import)
+    monkeypatch.setattr(manager, "_arun_authenticated_git", local_network)
+
+    async def fetch():
+        await manager.afetch_origin(
+            str(checkout), repository_url="https://github.com/acme/widgets.git",
+            lock_held=lock_held,
+        )
+
+    async def first_fetch():
+        if lock_held:
+            async with manager.arepository_transaction(str(checkout)):
+                await fetch()
+        else:
+            await fetch()
+
+    async def waiter():
+        async with manager.arepository_transaction(str(checkout)):
+            assert _git(["rev-parse", "refs/remotes/origin/main"], checkout) == tip
+
+    first = asyncio.create_task(first_fetch())
     tasks = [first]
     try:
-        await asyncio.wait_for(entered.wait(), timeout=1)
-        tasks.append(asyncio.create_task(
-            manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
-        ))
-        await asyncio.wait_for(contended.wait(), timeout=1)
-        assert runs == 1
+        await asyncio.wait_for(entered.wait(), 10)
+        tasks.append(asyncio.create_task(waiter()))
+        await asyncio.wait_for(contended.wait(), 10)
+        assert imports == 1
+        assert not tasks[1].done()
         release.set()
-        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
-        assert runs == 2
+        await asyncio.wait_for(asyncio.gather(*tasks), 10)
+        assert imports == 2  # heads and tags remain in one transaction
         assert not lock.locked()
     finally:
         release.set()
@@ -1518,7 +1750,7 @@ async def test_worktree_base_fetch_passes_project_repository_to_authenticated_gi
         "/checkout", "main", required=True, project_id="project-1"
     ) == "origin/main"
     git.afetch_origin.assert_awaited_once_with(
-        "/checkout", repository_url="git@github.com:acme/widgets.git", lock_held=True
+        "/checkout", repository_url="git@github.com:acme/widgets.git"
     )
 
 
@@ -3479,6 +3711,30 @@ async def test_checked_incremental_fetch_preserves_full_check_until_ttl(
     await fetch(3)
     assert len(checks) == 2
     assert manager.retained_store_verified(git_dir)
+
+
+@pytest.mark.asyncio
+async def test_origin_import_does_not_verify_unknown_additions_during_staging(tmp_path, monkeypatch):
+    work, source, _trap, _base, tip = _git_push_case(tmp_path)
+    checkout = tmp_path / "checkout"
+    _git(["clone", str(source), str(checkout)], tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/main"], work)
+    manager = GitManager()
+    network = manager._arun_authenticated_git
+    added = tmp_path / "unknown-blob"
+    added.write_text("unverified concurrent addition")
+
+    async def write_during_staging(args, **kwargs):
+        assert manager.retained_store_verified(str(checkout / ".git"))
+        _git(["hash-object", "-w", str(added)], checkout)
+        return await network(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", write_during_staging)
+    await manager._afetch_origin_with_auth_to_url(
+        str(checkout), source_url=source.as_uri(), token=None,
+    )
+    assert _git(["rev-parse", "refs/remotes/origin/main"], checkout) == tip
+    assert not manager.retained_store_verified(str(checkout / ".git"))
 
 
 async def test_retained_verification_has_own_budget_and_preserves_transfer_time(

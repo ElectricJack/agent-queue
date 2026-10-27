@@ -92,7 +92,7 @@ async def test_tick_posts_each_pending_review_once_with_its_deep_link():
                     "📄 Revised plan (rev 2): Review notifications",
                     "Project: agent-queue · Author task: steady-lantern.5",
                     "Addressed the delivery feedback.",
-                    "https://aq.example.test/reviews/rev-bright-harbor",
+                    "[Dashboard](https://aq.example.test/reviews/rev-bright-harbor)",
                 ]
             ),
         )
@@ -173,7 +173,7 @@ async def test_a_long_changes_note_is_truncated_and_the_link_stays_last():
         "Project: agent-queue · Author task: steady-lantern.5\nc"
     )
     assert content.endswith(
-        f"c{TRUNCATION_NOTICE}\nhttps://aq.example.test/reviews/rev-bright-harbor"
+        f"c{TRUNCATION_NOTICE}\n[Dashboard](https://aq.example.test/reviews/rev-bright-harbor)"
     )
     assert db.marked == [("rev-bright-harbor", 2)]
 
@@ -253,5 +253,5 @@ async def test_the_link_resolver_supplies_the_review_origin():
 
     assert await notifier.tick() == 1
     assert transport.posts[0][1].endswith(
-        "https://queue.tail1234.ts.net/reviews/rev-bright-harbor"
+        "[Dashboard](https://queue.tail1234.ts.net/reviews/rev-bright-harbor)"
     )

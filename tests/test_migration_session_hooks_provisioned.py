@@ -3,6 +3,13 @@
 import ast
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _pg_backend():
+    """These migration and metadata source scans never allocate a database."""
+
 
 def _numeric_boolean_defaults(path: Path) -> list[str]:
     """Return ``file:line`` for every Boolean Column with a numeric server_default.

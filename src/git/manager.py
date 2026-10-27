@@ -67,6 +67,7 @@ from src.claim_timing import timed_claim_git
 
 import asyncio
 import contextvars
+import errno
 import functools
 import logging
 import math
@@ -80,7 +81,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -105,6 +106,7 @@ from src.git.github_contracts import (
 )
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 from src.git.process import ProcessCleanupError, run_owned_process
+from src.git.repository_lock import RepositoryLock
 from src.git.locks import common_git_dir_from_cwd, remove_stale_locks
 from src.metrics.perf import operation_timing, timed_operation
 
@@ -131,6 +133,26 @@ def _zeroized_credential(buffer: bytearray):
         zeroize(buffer)
 
 
+def _cleanup_isolated_git_directory(directory: tempfile.TemporaryDirectory) -> None:
+    """Best-effort removal, called off-loop after the store's writers stop."""
+    for attempt in range(3):
+        try:
+            directory.cleanup()
+            return
+        except Exception as exc:
+            if (isinstance(exc, OSError) and exc.errno in {errno.ENOTEMPTY, errno.EBUSY}
+                    and attempt < 2):
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            # cleanup() detaches TemporaryDirectory's finalizer before removal,
+            # so a retained path will not cause another unhandled cleanup later.
+            logger.warning(
+                "isolated Git temporary directory leaked: path=%s error=%s errno=%s",
+                directory.name, type(exc).__name__, getattr(exc, "errno", None),
+            )
+            return
+
+
 @asynccontextmanager
 async def _isolated_git_directory(**kwargs):
     """Remove large temporary stores off-loop, retaining ownership on cancellation."""
@@ -138,7 +160,7 @@ async def _isolated_git_directory(**kwargs):
     try:
         yield directory.name
     finally:
-        cleanup = asyncio.create_task(asyncio.to_thread(directory.cleanup))
+        cleanup = asyncio.create_task(asyncio.to_thread(_cleanup_isolated_git_directory, directory))
         try:
             await asyncio.shield(cleanup)
         except asyncio.CancelledError:
@@ -1106,7 +1128,7 @@ class GitManager:
         lock = self._lock_provider(cwd) if self._lock_provider else None
         if lock is None:
             key = str(Path(cwd).resolve())
-            lock = self._repository_operation_locks.setdefault(key, asyncio.Lock())
+            lock = self._repository_operation_locks.setdefault(key, RepositoryLock())
         async with lock:
             yield
 
@@ -2287,19 +2309,13 @@ class GitManager:
         self.github_access.validate_repository_reference(binding, configured_origin)
         source_url = f"https://github.com/{binding.full_name}.git"
 
-        async def acquire() -> None:
-            token = await self._atoken_for_repository(binding)
-            await self._afetch_origin_with_auth_to_url(
-                checkout_path, source_url=source_url, token=token,
-                **({"refetch": True} if refetch else {}),
-                **({"refs": refs} if refs is not None else {}),
-            )
-
-        if lock_held:
-            await acquire()
-        else:
-            async with self.arepository_transaction(checkout_path):
-                await acquire()
+        token = await self._atoken_for_repository(binding)
+        await self._afetch_origin_with_auth_to_url(
+            checkout_path, source_url=source_url, token=token,
+            **({"refetch": True} if refetch else {}),
+            **({"refs": refs} if refs is not None else {}),
+            **({"lock_held": True} if lock_held else {}),
+        )
 
     @staticmethod
     def _origin_refspecs(refs: Sequence[str], *, staged: bool = False) -> list[str]:
@@ -2321,6 +2337,7 @@ class GitManager:
         token: str | None,
         refetch: bool = False,
         refs: Sequence[str] | None = None,
+        lock_held: bool = False,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2377,80 +2394,90 @@ class GitManager:
                     patterns=("refs/remotes/origin", "refs/tags", "refs/aq/provenance"),
                     home=home, deadline=deadline,
                 )
-            reusable = await self.aretained_store_verified(destination_git_dir)
-            mode = "incremental" if borrowable_objects is not None else "full"
-            prepared_at = loop.time()
-            try:
-                await self._arun_authenticated_git(
-                    # The checkout's tips reach negotiation only through the
-                    # seeded refs: the no-op alternateRefsCommand keeps the
-                    # credentialed process from running for-each-ref against
-                    # the checkout (and so reading its worker-writable config).
-                    ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
-                     "-c", "fetch.fsckObjects=true",
-                     f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
-                     *transport_refs],
-                    home=home,
-                    repository_url=source_url,
-                    token=token,
-                    deadline=deadline,
-                    budget_seconds=self._GIT_TIMEOUT,
+            # Full verification uses its own maintenance exclusion before
+            # taking repository exclusion. Keep the transfer/import serialized,
+            # including the lifetime of the borrowed objects, without starving
+            # bounded claim/reconciliation waiters during fsck.
+            transaction = (
+                nullcontext() if lock_held else self.arepository_transaction(checkout_path)
+            )
+            async with transaction:
+                mode = "incremental" if borrowable_objects is not None else "full"
+                prepared_at = loop.time()
+                try:
+                    await self._arun_authenticated_git(
+                        # The checkout's tips reach negotiation only through the
+                        # seeded refs: the no-op alternateRefsCommand keeps the
+                        # credentialed process from running for-each-ref against
+                        # the checkout (and so reading its worker-writable config).
+                        ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
+                         "-c", "fetch.fsckObjects=true",
+                         f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
+                         *transport_refs],
+                        home=home,
+                        repository_url=source_url,
+                        token=token,
+                        deadline=deadline,
+                        budget_seconds=self._GIT_TIMEOUT,
+                    )
+                except GitError as exc:
+                    raise GitError(
+                        f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
+                    ) from None
+                acquired_at = loop.time()
+                received_objects, received_kib = await self._areceived_objects(
+                    imported, home=home, deadline=deadline
                 )
-            except GitError as exc:
-                raise GitError(
-                    f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
-                ) from None
-            acquired_at = loop.time()
-            received_objects, received_kib = await self._areceived_objects(
-                imported, home=home, deadline=deadline
-            )
-            await self._run_isolated_import_git(
-                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                 "-c", "fetch.fsckObjects=true",
-                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                 *(["--prune"] if refs is None else []),
-                 *(["--refetch"] if refetch else []),
-                 str(imported), *import_refs],
-                home=home,
-                deadline=deadline,
-            )
-            if not refetch and refs is None:
+                # Recheck after staging: another writer may have invalidated the
+                # verified baseline while no repository lock was held.
+                reusable = await self.aretained_store_verified(destination_git_dir)
                 await self._run_isolated_import_git(
                     ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                     "-c", "fetch.fsckObjects=true",
+                     "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
                      f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                     str(imported), "+refs/tags/*:refs/tags/*"],
+                     *(["--prune"] if refs is None else []),
+                     *(["--refetch"] if refetch else []),
+                     str(imported), *import_refs],
                     home=home,
                     deadline=deadline,
                 )
-            imported_refs = await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
-                 "refs/heads", "refs/tags", "refs/aq/provenance"],
-                home=home, deadline=deadline,
-            )
-            destination_refs = await self._run_isolated_import_git(
-                [f"--git-dir={destination_git_dir}", "for-each-ref",
-                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
-                 "refs/aq/provenance"],
-                home=home, deadline=deadline,
-            )
-            imported_map = dict(
-                (ref, oid) for oid, ref in
-                (line.split(" ", 1) for line in imported_refs.decode("ascii").splitlines())
-            )
-            destination_map = dict(
-                (ref, oid) for oid, ref in
-                (line.split(" ", 1) for line in destination_refs.decode("ascii").splitlines())
-            )
-            for ref, oid in imported_map.items():
-                destination_ref = (
-                    ref.replace("refs/heads/", "refs/remotes/origin/", 1)
-                    if ref.startswith("refs/heads/") else ref
+                if not refetch and refs is None:
+                    await self._run_isolated_import_git(
+                        ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                         "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
+                         f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                         str(imported), "+refs/tags/*:refs/tags/*"],
+                        home=home,
+                        deadline=deadline,
+                    )
+                imported_refs = await self._run_isolated_import_git(
+                    [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
+                     "refs/heads", "refs/tags", "refs/aq/provenance"],
+                    home=home, deadline=deadline,
                 )
-                if destination_map.get(destination_ref) != oid:
-                    raise GitError("authenticated Git fetch imported a different ref")
-            if reusable:
-                await self.aextend_retained_store_verified(destination_git_dir)
+                destination_refs = await self._run_isolated_import_git(
+                    [f"--git-dir={destination_git_dir}", "for-each-ref",
+                     "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
+                     "refs/aq/provenance"],
+                    home=home, deadline=deadline,
+                )
+                imported_map = dict(
+                    (ref, oid) for oid, ref in
+                    (line.split(" ", 1) for line in imported_refs.decode("ascii").splitlines())
+                )
+                destination_map = dict(
+                    (ref, oid) for oid, ref in
+                    (line.split(" ", 1) for line in destination_refs.decode("ascii").splitlines())
+                )
+                for ref, oid in imported_map.items():
+                    destination_ref = (
+                        ref.replace("refs/heads/", "refs/remotes/origin/", 1)
+                        if ref.startswith("refs/heads/") else ref
+                    )
+                    if destination_map.get(destination_ref) != oid:
+                        raise GitError("authenticated Git fetch imported a different ref")
+                if reusable:
+                    await self.aextend_retained_store_verified(destination_git_dir)
         transfer = _OriginFetchTransfer(
             mode=mode,
             seeded_tips=seeded_tips,
@@ -2610,8 +2637,8 @@ class GitManager:
         A clean result is reused only while the object store holds the same
         files (path, size, inode) and for at most
         ``_RETAINED_VERIFY_TTL_SECONDS``: unverified object writes invalidate it. A
-        full check holds the repository lock for many seconds on a large store,
-        so repeating it on every no-op fetch starves the integration train.
+        full check may take many seconds on a large store. Ordinary origin
+        fetches run it before taking repository exclusion for transfer and import.
         """
         # One full check per store at a time: concurrent fetches into the same
         # store wait for it and reuse a clean result instead of each running
@@ -5398,12 +5425,28 @@ class GitManager:
             # The child can already be running while asyncio connects its pipes.
             # Finish acquiring its handle before closing inherited credential FDs
             # or returning cancellation to the operation's caller.
-            process = None
-            # Preserve cancellation if startup itself failed.
-            with suppress(Exception):
-                process = await asyncio.shield(spawn)
-            if process is not None:
+            async def stop_spawn():
+                # Preserve cancellation if startup itself failed.
+                try:
+                    process = await spawn
+                except Exception:
+                    return
                 await self._kill_app_git_group(process)
+
+            cleanup = asyncio.create_task(stop_spawn())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    # TaskGroup shutdown or an outer deadline can cancel again
+                    # while startup or process-group reaping is still pending.
+                    pass
+                except Exception:
+                    break
+            try:
+                cleanup.result()
+            except Exception as exc:
+                logger.warning("isolated Git process cleanup failed: error=%s", type(exc).__name__)
             raise
 
     @staticmethod

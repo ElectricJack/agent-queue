@@ -457,6 +457,21 @@ def _dispatchable_session_commands() -> list[str]:
     return sorted(derived)
 
 
+def _project_supervisor_scope() -> RequestScope:
+    return RequestScope(
+        kind="session", session_id="supervisor-p1", project_id="p1", elevated=True
+    )
+
+
+def _gate_refused_session_commands() -> frozenset[str]:
+    """Global controls name sessions too, but never reach a project handler."""
+    return frozenset(
+        command
+        for command in _unpinnable_session_commands()
+        if check_command_scope(command, {}, _project_supervisor_scope()) is not None
+    )
+
+
 def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
     """Guard the guard, and name the finding in one place.
 
@@ -476,12 +491,24 @@ def test_the_unpinnable_session_set_is_derived_and_holds_the_filed_commands():
     # ``target_scope_error`` instead of leaving it to the handler.
     for command in ("session_kill", "provider_reroute_undo"):
         assert gap[command] & set(TARGET_RESOLVERS), command
-    # The whole session family the derivation reaches, so a new unfenced
-    # session command cannot appear without this test noticing.
-    assert _dispatchable_session_commands() == [
+    # The session family requiring an in-handler project fence. Global-only
+    # controls are instead refused by the transport's real scope gate below.
+    assert sorted(_unpinnable_session_commands() - _gate_refused_session_commands()) == [
         "rebind_workspace", "session_drain_ack", "session_kill", "session_logs", "session_peek",
         "supervisor_restart",
     ]
+
+
+def test_retained_holder_repair_is_global_only_before_argument_validation():
+    command = "recover_retained_holder"
+    assert command in _gate_refused_session_commands()
+    for args in ({}, {"session_id": "s2"}, {"project_id": "p1", "session_id": "s2"}):
+        error = check_command_scope(command, dict(args), _project_supervisor_scope())
+        assert error is not None and error.startswith("out of scope:"), error
+        for scope in (RequestScope(kind="local"), RequestScope(
+            kind="session", session_id="supervisor-global", elevated=True,
+        )):
+            assert check_command_scope(command, dict(args), scope) is None
 
 
 @pytest.fixture
@@ -530,23 +557,24 @@ async def test_a_project_supervisor_cannot_reach_another_projects_session(
     which a project-A token is refused before the session is consulted.  The refusal has to arrive before
     anything is read, written or signalled — hence the unchanged row.
 
-    Handlers are called directly with ``_current_scope`` set rather than
-    through ``execute``: its capability gate resolves the principal from the
+    The transport scope gate runs first, including the global-only repair
+    controls. Admitted handlers are called with ``_current_scope`` set rather
+    than through ``execute``: its capability gate resolves the principal from the
     session row, and a scope naming a session that does not exist fails closed
     to ``DENY_ALL`` before the fence is reached.  The fence under test reads
     nothing else.
     """
     handler, session_id = matrix_foreign_session
 
-    handler._current_scope = {
-        "kind": "session",
-        "session_id": "supervisor-p1",
-        "task_id": None,
-        "project_id": "p1",
-        "elevated": True,
-    }
+    scope = _project_supervisor_scope()
+    handler._current_scope = vars(scope)
     try:
-        result = await getattr(handler, f"_cmd_{command}")({"session_id": session_id})
+        args = {"session_id": session_id}
+        error = check_command_scope(command, args, scope)
+        result = (
+            {"success": False, "error": error}
+            if error else await getattr(handler, f"_cmd_{command}")(args)
+        )
     finally:
         handler._current_scope = None
 

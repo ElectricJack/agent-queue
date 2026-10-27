@@ -11559,6 +11559,46 @@
       }
     },
     {
+      "path": "aq project recover-retained-holder",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "recover_retained_holder",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--reason"
+        ],
+        "optional": [
+          "--workspace-id",
+          "--expected-proof",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq project release-constraint",
       "registration": "generated",
       "owner_kind": "core",
@@ -22681,6 +22721,7 @@
         "required": [],
         "optional": [
           "--aq-detach",
+          "--aq-backend",
           "--aq-wait",
           "--aq-idempotency-key",
           "--aq-status",

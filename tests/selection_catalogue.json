@@ -108,7 +108,9 @@
     "bazel-toolchains": {
       "description": "Pinned toolchain, dependency lock and Linux ABI integrity boundaries.",
       "modules": [
-        "tests/test_bazel_manifest.py"
+        "tests/test_bazel_manifest.py",
+        "tests/test_bazel_subprocess_dependencies.py",
+        "tests/test_bazel_test_dependencies.py"
       ]
     },
     "capabilities": {
@@ -168,6 +170,7 @@
     "cli-test-runner": {
       "description": "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, signal forwarding and the no-tests-collected exit.",
       "modules": [
+        "tests/test_bazel_cli.py",
         "tests/test_cli_test_runner.py",
         "tests/test_resource_semaphore.py"
       ]
@@ -256,6 +259,7 @@
         "tests/test_database_backend_selection.py",
         "tests/test_database_channels.py",
         "tests/test_database_engine.py",
+        "tests/test_database_imports.py",
         "tests/test_database_postgresql.py",
         "tests/test_db_immediate.py",
         "tests/test_metadata_cast_safety.py",
@@ -608,7 +612,8 @@
         "tests/test_integration_ownership.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
-        "tests/test_integration_workspace_handoff.py"
+        "tests/test_integration_workspace_handoff.py",
+        "tests/test_retained_holder_repair.py"
       ]
     },
     "integration-promotion": {
@@ -3329,6 +3334,24 @@
       ],
       "summary": "Review identity covers live graph semantics and survives cosmetic edits."
     },
+    "tests/test_bazel_cli.py": {
+      "areas": [
+        "cli-test-runner"
+      ],
+      "default_arm": true,
+      "digest": "sha256:9f150dac9a0823346606493d1989de94a58f151b313b2448cac5e3498dfb1271",
+      "imports": [
+        "src.cli.app",
+        "src.cli.test_runner",
+        "src.resources.box_lock",
+        "src.resources.semaphore",
+        "src.test_selection.bazel_manifest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bazel CLI selections and real shared admission/cancellation boundaries."
+    },
     "tests/test_bazel_environment.py": {
       "areas": [
         "bazel-environment"
@@ -3346,10 +3369,11 @@
         "bazel-toolchains"
       ],
       "default_arm": true,
-      "digest": "sha256:2669f7605d8f5cbe70f349cfb090cbef8746aa7950d5e34ab0a9ed298fdd9e47",
+      "digest": "sha256:ebafdc0f026e86f51c24718a87a948f6976ec9b8dc9d5d3fb46cc6e1babc7bf7",
       "imports": [],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "timeout"
       ],
       "summary": "H1 lock/ABI boundaries and opt-in, admitted clean-root toolchain verification."
     },
@@ -3376,6 +3400,30 @@
         "parametrize"
       ],
       "summary": "H5 contracts: real pytest lifecycles with synthetic time, never timing benchmarks."
+    },
+    "tests/test_bazel_subprocess_dependencies.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:23259458e82f26c9a3cb84172672687c7037f77e27cd0eb36bd288a6369e48c4",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Python subprocess imports must remain present in narrowed Bazel runfiles."
+    },
+    "tests/test_bazel_test_dependencies.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:390f5c0279f298ffd03d4a7cb7ef7bd7601445d06788a5f55c9160325727b272",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Per-test Bazel dependency discovery preserves runtime inputs without global fanout."
     },
     "tests/test_blocked_state.py": {
       "areas": [
@@ -5261,13 +5309,15 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:fb352d2eda1a59d8bf44c0bbd2f0fe74bbc38002f384e722620f2ffb04cde801",
+      "digest": "sha256:c5aa418ec1140f40bf101be6497fd575b8bba605a15dc171ff23fba7ef36e294",
       "imports": [
         "src.conversations.render",
         "src.delivery.message"
       ],
-      "markers": [],
-      "summary": "Explicit replies are bounded, mention-free and link-filtered."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit replies are bounded, mention-free and preserve links."
     },
     "tests/test_conversation_wiring.py": {
       "areas": [
@@ -5398,7 +5448,7 @@
         "messaging-adapters"
       ],
       "default_arm": true,
-      "digest": "sha256:9e95940c2d115da12282aa361dd9315b852c940d29032eebd89373e61e0ea5d4",
+      "digest": "sha256:c71ee1ca9963e84562bc96231db835a5aae2b5b6f3b5e19d0967d71c6a1e1119",
       "imports": [
         "src.dashboard_paths",
         "src.digest",
@@ -5410,7 +5460,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "One link resolver, one path scheme, one link per post (spec §6.1, §6.2)."
+      "summary": "One link resolver, one path scheme, clickable dashboard links (spec §6.1, §6.2)."
     },
     "tests/test_dashboard_perf_kit.py": {
       "areas": [
@@ -5592,6 +5642,18 @@
       ],
       "markers": [],
       "summary": "Regression coverage for schema startup safeguards."
+    },
+    "tests/test_database_imports.py": {
+      "areas": [
+        "database"
+      ],
+      "default_arm": true,
+      "digest": "sha256:34cb3babe70a76f89505cd7d4af0b043c347c0ac62829382bcd9df1854a9cf08",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Leaf imports and pytest collection must not initialize the application graph."
     },
     "tests/test_database_postgresql.py": {
       "areas": [
@@ -7621,7 +7683,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:71ad48995a804f32f2464630ab912db53675f1301b11f7420d02cc81cb870ab0",
+      "digest": "sha256:4978f6182fd32633f14d054123413df86a0d1c22dea46e1fb29ec2d9feb8f1e0",
       "imports": [
         "src.config",
         "src.git.askpass_broker",
@@ -7629,6 +7691,7 @@
         "src.git.github_app",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.git.repository_lock",
         "src.integration.service",
         "src.logging_config",
         "src.metrics.operation_profile",
@@ -7731,7 +7794,7 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:10df1072d05de1a4708d823523162b72d251d9163fcfc4d3b58188bd6206fbc8",
+      "digest": "sha256:ca0f6d725cdb60af97822e79522e3b48a575adaca4aaa18733100e034bd4c804",
       "imports": [
         "src.event_bus",
         "src.git",
@@ -7739,6 +7802,7 @@
         "src.git.locks",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.models",
         "src.orchestrator.git_ops",
         "src.orchestrator.workspace_attachments"
@@ -8374,15 +8438,18 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:f0b10a0e8c03f195536275254473db34bcd7ff454a8324b1cc3aca4d781e3d61",
+      "digest": "sha256:5af86b8e94e9f5f4f70221ec03c0ebea3c29e91b0452095c16a36e2fc76ef168",
       "imports": [
+        "src.install",
         "src.install.engine",
         "src.install.platform",
         "src.install.prerequisites",
         "src.install.redaction",
+        "src.install.registry",
         "src.install.results",
         "src.install.state",
-        "src.install.steps"
+        "src.install.steps",
+        "src.install.wizard"
       ],
       "markers": [],
       "summary": "The installer engine: ordering, idempotent reruns, resume and secrecy."
@@ -8866,7 +8933,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0b5328f33fa5f4086c5d03e8553c8f04b448a4ed818506832aa991fc9a59c3b2",
+      "digest": "sha256:e3541d9f3407e8b629a079babf6712a726b1c4834a9a73b3812fcf8a92db0d38",
       "imports": [
         "src.database.tables",
         "src.git.manager",
@@ -8874,7 +8941,12 @@
         "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.runtime_contracts",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.models",
+        "src.waits",
+        "src.waits.conditions",
+        "src.waits.sources",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"
@@ -9687,7 +9759,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:d365abe971a426cfb0ba0e4e7da89c91763e5efa16381813bb911880979500db",
+      "digest": "sha256:412699795d47c44e8c87a45f488e735e22b9ff4cf4fc538e718cf7216c8e3166",
       "imports": [
         "src.api.auth",
         "src.claim_file",
@@ -9699,6 +9771,7 @@
         "src.git.manager",
         "src.git.process",
         "src.integration.delegate_release",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.owner_recovery",
         "src.integration.ownership",
@@ -15305,7 +15378,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:7addf5dccf6208210bc37e8291730e19c9cd79c6b77d41cbc5001040ef1ac7d6",
+      "digest": "sha256:c7117e8ab55e598075037b5ff6e5cb3fc73f29895521d123f0cede5ed5cd4b3a",
       "imports": [
         "src.cli.app",
         "src.commands.contracts",
@@ -15323,6 +15396,7 @@
         "src.integration.promotion_steps",
         "src.integration.provenance",
         "src.integration.train",
+        "src.integration.train_sources",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -15523,7 +15597,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:2c4863611309b1238749fee922d9d6f80f384fcd8ac150fb0faeb6d87a1e29bf",
+      "digest": "sha256:196e23c6d4c58bd4bbefdbe3efac820b0ab1f4cc3e91ffc9cd8bcba8683fc5df",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -15537,6 +15611,7 @@
         "src.integration.batches",
         "src.integration.checks",
         "src.integration.ci",
+        "src.integration.ci_producers",
         "src.integration.git_truth",
         "src.integration.models",
         "src.integration.promotion_steps",
@@ -16609,6 +16684,31 @@
         "asyncio"
       ],
       "summary": "A resume key must name a session the harness can actually resume."
+    },
+    "tests/test_retained_holder_repair.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "digest": "sha256:7ea3cb5a6e3689599188506beab08ab3650c3d75b1cf53db61cf968770602cc2",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.claim_file",
+        "src.commands",
+        "src.commands.principal",
+        "src.commands.retained_holder_repair",
+        "src.database.tables",
+        "src.git.manager",
+        "src.models",
+        "src.orchestrator.worktree_manager",
+        "src.profiles.capabilities",
+        "src.wait_runtime.restart"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Historical failed-push damage, with real Git objects and PostgreSQL fences."
     },
     "tests/test_retired_defaults.py": {
       "areas": [
@@ -20231,7 +20331,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:ea48167444a746e0165f4d347bdb51d5789123941d0833fbfdb5c97065a96ed2",
+      "digest": "sha256:fa758b7c0e0afee67f6f333448a60d0cf2c70830931cdf50df3f66bd19a00357",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -20253,6 +20353,7 @@
         "src.waits.registry",
         "src.waits.resource_sources",
         "src.waits.sources",
+        "src.waits.timers",
         "src.waits.watchers.ci"
       ],
       "markers": [
@@ -20333,7 +20434,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:602020802f41800f61ece44da1c6621716c9a1b0cf6658d4ea9d49a8e68d76dc",
+      "digest": "sha256:51ef42487f8a41667069f2b66146ca1c4ac0c7fa9bc882ee8867b326884976c9",
       "imports": [
         "src.claim_file",
         "src.cli.waits",
@@ -20364,6 +20465,7 @@
         "src.wait_runtime.hibernate",
         "src.wait_runtime.lifecycle",
         "src.wait_runtime.measurements",
+        "src.wait_runtime.restart",
         "src.wait_runtime.resume",
         "src.wait_runtime.scheduler",
         "src.waits",
@@ -20433,14 +20535,15 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:ace1960f57f6b36f4349132aa8dfd50991a7d7b5844acefc26a7c927c64ca4e9",
+      "digest": "sha256:1c32bc5b8b7299bb92e80adf0bd82e3de0024e16d400d4429d762dd69c84f950",
       "imports": [
+        "src.git.manager",
         "src.waits.listener"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Dedicated LISTEN connections preserve SQLAlchemy URL connection arguments."
+      "summary": "Dedicated LISTEN connection arguments and service-loop cleanup safety."
     },
     "tests/test_wait_metrics.py": {
       "areas": [
@@ -21076,7 +21179,7 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:c5486f5c57d7d1e649922ea3a036111efe30475b8903f22d0b01b06300488e44",
+      "digest": "sha256:47f45ad026abb84404d14318d46f30dfe4aec791457d285c622690d627a16fbb",
       "imports": [
         "src.claim_file",
         "src.config",
@@ -21085,6 +21188,7 @@
         "src.git.locks",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.task_checkpoint",

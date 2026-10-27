@@ -253,7 +253,7 @@ class PoolsMixin:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
         The loop is still per project — one ``count_ready_by_profile`` and
-        one ``count_available_workspaces`` per active project with a pool
+        per-kind ``count_available_workspaces`` checks per active project with a pool
         profile — but each project now folds into the *aggregate* key rather
         than minting one of its own, and also records its own breakdown
         (``PoolSupply.by_project``) and its standing as a placement
@@ -302,9 +302,14 @@ class PoolsMixin:
         measurement.pool_sessions = await self.db.list_sessions(
             lifecycle="pool", **({"excluded_states": ("stopped",)} if for_display else {}),
         )
-        from src.waits.occupancy import continuation_occupancy, evictable_sessions
+        from src.waits.occupancy import continuation_capacity, evictable_sessions
+        from src.routing.readiness import orchestrator_ready_projects
+
+        ready_projects = await orchestrator_ready_projects(self)
         evictable = await evictable_sessions(self.db, self.config)
-        resuming, reserved = await continuation_occupancy(self.db, self.config)
+        resuming, reserved, resume_demand = await continuation_capacity(
+            self.db, pool_profiles=pool_profiles, ready_projects=ready_projects,
+        )
         known = {session.id for session in measurement.pool_sessions}
         for session_id in resuming - known:
             session = await self.db.get_session(session_id)
@@ -313,9 +318,6 @@ class PoolsMixin:
         task_statuses = await self.db.get_task_statuses([
             s.task_id for s in measurement.pool_sessions if s.task_id
         ])
-        from src.routing.readiness import orchestrator_ready_projects
-
-        ready_projects = await orchestrator_ready_projects(self)
         sessions_by_project: dict[str, list[SessionRecord]] = {}
         for session in measurement.pool_sessions:
             status = task_statuses.get(session.task_id)
@@ -353,7 +355,7 @@ class PoolsMixin:
                     **({"cached_only": True} if for_display else {}),
                 )
                 allowed = batch.allowed
-            # Demand is claimable work only (mandatory routing §9.1): an
+            # Ordinary demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.
             policy = dict(
@@ -409,6 +411,10 @@ class PoolsMixin:
                 until, _reason = self._pool_quarantine_state(project.id, profile_id, now)
                 for kind_id in sorted(kind_ids):
                     ready, repair_ready = demand_by_profile.get((profile_id, kind_id), (0, 0))
+                    # Fresh resumes launch in project-repo workspaces. Their
+                    # queued intents need seats too, before occupancy owns one.
+                    if kind_id == "project-repo":
+                        ready += resume_demand.get((project.id, profile_id), 0)
                     measurement.demand[key] += ready
                     local = PoolProjectSupply(running_busy=(
                         reserved.get((project.id, profile_id), 0) if kind_id == "project-repo" else 0
@@ -1406,6 +1412,17 @@ class PoolsMixin:
             locks = self._pool_teardown_locks = {}
         return locks.setdefault(session_id, asyncio.Lock())
 
+    async def _detach_idle_pool_branch(self, session) -> None:
+        """Best-effort branch release; the slot manager rechecks every ownership fence."""
+        slot = await self._slot_workspace_at(session.work_dir)
+        if slot is not None:
+            try:
+                await self._worktree_slots().detach_idle_slot_branch(slot)
+            except Exception:
+                logger.warning(
+                    "pool session %s: branch release deferred", session.id, exc_info=True,
+                )
+
     async def _terminate_pool_session(
         self,
         session,
@@ -1566,14 +1583,7 @@ class PoolsMixin:
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
         if not other_live and still_owned:
-            slot = await self._slot_workspace_at(session.work_dir)
-            if slot is not None:
-                try:
-                    await self._worktree_slots().detach_idle_slot_branch(slot)
-                except Exception:
-                    logger.warning(
-                        "pool session %s: branch release deferred", session.id, exc_info=True,
-                    )
+            await self._detach_idle_pool_branch(session)
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(
