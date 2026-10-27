@@ -1316,6 +1316,197 @@ async def test_rows_outside_the_recoverable_states_are_refused(env, state, role)
     assert (await env.row("o12"))["handoff_state"] == state
 
 
+async def _reserved_ref_writer(env, tmp_path, *, live=False):
+    from src.database.tables import task_session_attempts
+    from src.integration.lock import BranchLock
+    from src.integration.models import BranchKey
+    from src.integration.ownership import BranchOwnership
+    from src.sessions.provider import SessionHandle
+
+    tip = env.branch("aq/producer", extra=1)
+    await env.task("producer")
+    slot = await env.slot("slot", "aq/producer", locked_by_task_id="producer")
+    await env.db.update_task("producer", repo_id="r", branch_name="aq/producer", claim_epoch=15)
+    await env.session(
+        "writer", work_dir=slot, last_claim_epoch=14,
+        state="running" if live else "stopped", desired_state="running" if live else "stopped",
+        ended_at=None if live else time.time(), end_reason=None if live else "task_closed",
+        claim_phase_at=None,
+    )
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(task_session_attempts).values(
+            id="old-attempt", session_id="writer", task_id="producer", project_id="p",
+            profile_id="worker", name="n-writer", lifecycle="pool", harness="claude",
+            provider="fake", state="running" if live else "stopped", work_dir=str(slot),
+            started_at=1.0, session_started_at=1.0,
+            ended_at=None if live else time.time(), end_reason=None if live else "task_closed",
+        ))
+    await env.owner("owner", "aq/producer", "producer", state="reserved")
+    # Use the real managed attachment: it leaves handoff_state=reserved and
+    # workspace_id=NULL, unlike the legacy attachment the service already handles.
+    target = BranchKey(repository_id="r", branch="aq/producer")
+    fence = await BranchLock(env.db, clock=lambda: 2.0).acquire(
+        target, "producer", ttl_seconds=1,
+    )
+    await BranchOwnership(env.db, clock=lambda: 2.0).attach(fence, "writer", "ws-slot")
+    provider, _, orch, handler, _ = await _pool_daemon(env, tmp_path, slot)
+    if not live:
+        await provider.stop(SessionHandle("n-writer", "fake", "tok-writer"), grace=0)
+    return tip, slot, fence, orch, handler
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+async def test_release_owner_preserves_reserved_stopped_ref_lease_and_allows_successor(
+    env, tmp_path, dirty,
+):
+    from src.integration.lock import BranchLock
+    from src.integration.ownership import BranchOwnership, StaleFence
+
+    tip, slot, fence, _, handler = await _reserved_ref_writer(env, tmp_path)
+    if dirty:
+        (slot / "unfinished.txt").write_text("stopped writer work\n")
+    before = await env.row("owner")
+    assert (before["handoff_state"], before["workspace_id"]) == ("reserved", None)
+    published = remote_sha(env.origin, "aq/producer")
+    index = (Path(git(slot, "rev-parse", "--absolute-git-dir")) / "index").read_bytes()
+
+    preview = await handler.execute("integration_release_owner", {"task_id": "producer"})
+    assert preview["outcome"] == "preserved_and_released", preview
+    assert preview["outcomes"][0]["dry_run"] is True
+    assert await env.row("owner") == before
+    assert remote_sha(env.origin, "aq/producer") == published
+    assert not detached(slot)
+    assert await env.audits("owner") == []
+
+    result = await handler.execute(
+        "integration_release_owner", {"task_id": "producer", "dry_run": False},
+    )
+    assert result["outcome"] == "preserved_and_released", result
+    evidence = result["outcomes"][0]["evidence"]
+    assert evidence["stop_proof"]["instance_token"] == "tok-writer"
+    assert evidence["recovery_workspace_id"] == "ws-slot"
+    assert evidence["task_work_proof"]["origin_id"] == "origin-owner"
+    assert evidence["task_work_proof"]["claim_at"] == 1.0
+    row = await env.row("owner")
+    assert (row["handoff_state"], row["holder"], row["session_id"], row["workspace_id"]) == (
+        "released", None, None, None,
+    )
+    assert row["fence"] == row["fence_token"] == fence.token + 1
+    assert row["expires_at"] <= time.time()
+    assert row["confirmed_workspace_id"] == "ws-slot"
+    assert detached(slot)
+    assert (Path(git(slot, "rev-parse", "--absolute-git-dir")) / "index").read_bytes() == index
+    preserved = remote_sha(env.origin, "aq/producer")
+    if dirty:
+        git(env.base, "merge-base", "--is-ancestor", tip, preserved)
+        assert git(env.base, "show", f"{preserved}:unfinished.txt") == "stopped writer work"
+        assert (slot / "unfinished.txt").read_text() == "stopped writer work\n"
+        assert not (await env.db.get_workspace("ws-slot")).enabled
+    else:
+        assert preserved == tip
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id is None
+    assert (await env.db.get_task("producer")).status is TaskStatus.BLOCKED
+    [audit] = await env.audits("owner")
+    assert audit["outcome"] == "preserved_and_released"
+
+    lock = BranchLock(env.db)
+    with pytest.raises(StaleFence):
+        lock.require_current(row, fence)
+    successor = await lock.acquire(fence.target, "producer")
+    await BranchOwnership(env.db).attach(successor, "next-writer", "ws-slot")
+    assert successor.token > row["fence"]
+    assert (await env.row("owner"))["session_id"] == "next-writer"
+
+
+@pytest.mark.parametrize("blocker", ["live", "provider", "origin", "successor"])
+async def test_reserved_ref_lease_recovery_retains_work_when_proof_fails(
+    env, tmp_path, monkeypatch, blocker,
+):
+    from src.integration.lock import BranchLock
+
+    _, slot, fence, orch, handler = await _reserved_ref_writer(
+        env, tmp_path, live=blocker == "live",
+    )
+    before = await env.row("owner")
+    published = remote_sha(env.origin, "aq/producer")
+    provider = orch.session_providers.create("fake")
+    if blocker == "provider":
+        monkeypatch.setattr(provider, "confirm_stopped", AsyncMock(return_value=False))
+    elif blocker == "origin":
+        env.origin.rename(env.tmp / "offline.git")
+    elif blocker == "successor":
+        async def confirm_and_reacquire(_session):
+            await BranchLock(env.db).acquire(fence.target, "successor")
+            return True
+        monkeypatch.setattr(provider, "confirm_stopped", confirm_and_reacquire)
+
+    result = await handler.execute(
+        "integration_release_owner", {"task_id": "producer", "dry_run": False},
+    )
+    assert result["outcome"] == "not_eligible", result
+    reason = {"live": "writer_live", "provider": "writer_live",
+              "origin": "origin_unreachable", "successor": "stale_fence"}[blocker]
+    assert result["outcomes"][0]["reason"] == reason, result
+    row = await env.row("owner")
+    if blocker == "successor":
+        assert (row["holder"], row["fence"]) == ("successor", fence.token + 1)
+    else:
+        assert row == before
+    origin = env.tmp / "offline.git" if blocker == "origin" else env.origin
+    assert remote_sha(origin, "aq/producer") == published
+    assert not detached(slot)
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "producer"
+
+
+async def test_reserved_ref_lease_cannot_be_reacquired_during_publication(env, tmp_path, monkeypatch):
+    from sqlalchemy.exc import DBAPIError
+
+    from src.integration.lock import BranchLock
+
+    _, _, fence, _, _ = await _reserved_ref_writer(env, tmp_path)
+    service = env.service()
+    push = service.git.apush_validated_ref
+    attempts = []
+
+    async def push_with_contender(*args, **kwargs):
+        # Expiry alone would admit this caller. It must wait for preservation
+        # and the release transaction to finish before taking the ref.
+        with pytest.raises(DBAPIError) as caught:
+            async with env.db.immediate() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '100ms'"))
+                await BranchLock(env.db).acquire(fence.target, "successor", conn=conn)
+        assert caught.value.orig.sqlstate == "55P03"
+        attempts.append(True)
+        return await push(*args, **kwargs)
+
+    monkeypatch.setattr(service.git, "apush_validated_ref", push_with_contender)
+    result = await service.recover("owner", principal="supervisor")
+    assert result.outcome == "preserved_and_released", result
+    assert attempts == [True]
+    successor = await BranchLock(env.db).acquire(fence.target, "successor")
+    assert successor.token > fence.token
+
+
+async def test_reserved_ref_lease_replays_interrupted_publication(env, tmp_path, monkeypatch):
+    from src.git.manager import GitError
+
+    tip, _, _, _, _ = await _reserved_ref_writer(env, tmp_path)
+    service = env.service()
+    release = service._release
+    monkeypatch.setattr(service, "_release", AsyncMock(side_effect=GitError("interrupted")))
+    with pytest.raises(GitError, match="interrupted"):
+        await service.recover("owner", principal="supervisor")
+    assert remote_sha(env.origin, "aq/producer") == tip
+    assert (await env.row("owner"))["holder"] == "producer"
+
+    monkeypatch.setattr(service, "_release", release)
+    result = await service.recover("owner", principal="supervisor")
+    assert result.outcome == "preserved_and_released", result
+    [audit] = await env.audits("owner")
+    assert audit["outcome"] == "preserved_and_released"
+    assert audit["evidence"]["preserved_sha"] == tip
+
+
 async def test_a_missing_row_is_not_found(env):
     result = await env.service().recover("nope", principal="sweep")
 
@@ -1372,11 +1563,17 @@ async def test_candidates_are_quiet_rows_whose_writer_is_not_live(env):
     await env.owner("recent", "aq/e", "e", session_id="stopped", updated_at=now - 60)
     await env.owner("collector", "aq/f", "f", role="collector", updated_at=now - 900)
     await env.owner("reserved", "aq/g", "g", state="reserved", updated_at=now - 900)
+    await env.owner("reserved-stopped", "aq/i", "i", state="reserved",
+                    session_id="stopped", updated_at=now - 800)
+    await env.owner("reserved-live", "aq/j", "j", state="reserved",
+                    session_id="live", updated_at=now - 900)
     await env.owner("released", "aq/h", "h", state="released", updated_at=now - 900)
 
     found = await env.service(clock=lambda: now).candidates(quiet_seconds=600)
 
-    assert [row["id"] for row in found] == ["quiet-pending", "quiet-stopped"]
+    assert [row["id"] for row in found] == [
+        "quiet-pending", "quiet-stopped", "reserved-stopped",
+    ]
     assert set(RECOVERABLE_STATES) == {"attached", "handoff_pending"}
     assert [row["id"] for row in await env.service(clock=lambda: now).candidates(limit=1)] == [
         "quiet-pending"

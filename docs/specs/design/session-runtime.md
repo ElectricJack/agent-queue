@@ -367,6 +367,16 @@ holds, pinned jobs and integration-owned delegates are not automatically requeue
 the same preservation and release. Command callers must pass `dry_run: false` to
 apply. Preview performs no publication, detach, release or audit writes.
 
+Session-bound managed ref leases remain `reserved` after attachment. Owner
+recovery includes these rows, even after TTL expiry, with the same fresh provider
+stop proof and preservation requirements. The session's recorded work directory
+must resolve to one project slot when the lease has no workspace binding; the
+existing origin, claim-time and sentinel checks still apply. Recovery holds the
+ref acquisition lock through preservation and release, revalidates the captured
+lease and stopped instance, clears its holder/session, expires it and advances
+both fence counters. A changed lease or live writer refuses recovery. An unbound
+reservation remains outside routine owner recovery.
+
 Preservation requires a local task ref and its live, materialized
 `task_branch_origins` record. Each candidate must descend from the recorded filing
 base; every unpublished
