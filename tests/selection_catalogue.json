@@ -9758,7 +9758,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:d365abe971a426cfb0ba0e4e7da89c91763e5efa16381813bb911880979500db",
+      "digest": "sha256:56ff77eaa6b6fd94c0a1e9484ee7c56eefb69d0a224ef0f9d75553689498a0b5",
       "imports": [
         "src.api.auth",
         "src.claim_file",
@@ -9769,6 +9769,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.integration.delegate_release",
         "src.integration.models",
         "src.integration.owner_recovery",

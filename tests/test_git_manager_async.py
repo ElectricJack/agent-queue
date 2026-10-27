@@ -2527,6 +2527,33 @@ async def test_repository_wait_bound_preserves_owner_and_does_not_bound_body(mgr
             await work
 
 
+async def test_repository_timeout_identifies_current_holder(mgr, tmp_path, caplog):
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def slow_repository_writer():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            entered.set()
+            await finish.wait()
+
+    owner = asyncio.create_task(slow_repository_writer())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        with repository_lock_wait_limit(0.01), pytest.raises(RepositoryLockTimeout):
+            async with mgr.arepository_transaction(str(tmp_path)):
+                pytest.fail("entered another writer's critical section")
+        record = next(r for r in caplog.records if hasattr(r, "owner_chain"))
+        assert any("slow_repository_writer" in name for name in record.owner_chain)
+        assert record.held_seconds > 0
+        assert record.wait_seconds == 0.01
+        assert not owner.done()
+    finally:
+        finish.set()
+        await owner
+    lock = mgr._repository_operation_locks[str(tmp_path.resolve())]
+    assert lock._owner is None
+    assert lock._acquired_at is None
+
+
 @pytest.mark.parametrize("runner", ["local", "result"])
 @pytest.mark.parametrize("during_spawn", [False, True])
 async def test_cancelling_git_operation_reaps_process_before_next_writer(
