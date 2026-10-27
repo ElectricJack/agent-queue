@@ -1391,6 +1391,40 @@ async def test_cleaned_legacy_prerequisite_uses_exact_contained_completion(stack
     assert not await view.fresh()
 
 
+async def test_recompleted_cleaned_prerequisite_remains_current_when_contained(stack):
+    git(stack.origin.clone, "push", "origin", f"{stack.first}:main", ":aq/first")
+    git(stack.origin.clone, "push", "origin", ":" + CompletionIdentity(
+        "p", "r", "first", "close-first",
+    ).ref)
+    # An operator reclose changes the completion identity without changing
+    # the source already present in the child's published head and default.
+    await close(stack.db, "first", [stack.first], close_id="first-recompleted")
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "first",
+        ).values(retired_at=2))
+    observed = await snapshot(stack.world, TrainTarget("p", "r", "refs/heads/aq/epic", "epic"))
+    assert await stack.service.current("child", source_sha=stack.child, snapshot=observed)
+
+
+async def test_preparation_accepts_cleaned_retired_prerequisite_delivered_to_default(stack):
+    git(stack.origin.clone, "push", "origin", f"{stack.first}:main", ":aq/first")
+    git(stack.origin.clone, "push", "origin", ":" + CompletionIdentity(
+        "p", "r", "first", "close-first",
+    ).ref)
+    await close(stack.db, "first", [stack.first], close_id="first-recompleted")
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "child").values(status="READY"))
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "first",
+        ).values(retired_at=2))
+    # The parent branch predates the delivered source. Preparation can use its
+    # retained origin and the verified stack instead of demanding parent delivery.
+    assert await stack.db.hierarchy_prerequisite_delivery_head("child") is None
+    assert await stack.db.is_hierarchy_task_runnable("child")
+    assert (await stack.service.prepare("child"))["prerequisite_head"] == stack.first
+
+
 async def test_cleaned_legacy_prerequisite_preserves_batch_publication_authority(stack):
     target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
     git(stack.origin.clone, "push", "origin", f"{stack.first}:aq/epic")
