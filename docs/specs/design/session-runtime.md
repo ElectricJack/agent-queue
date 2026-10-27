@@ -310,6 +310,18 @@ and its claim/workspace bindings remain available for recovery; quarantining a
 workspace never deletes its checkout or removes an index lock. An operator repairs
 and re-enables it after proving the retained work safe.
 
+A taskless pool with stopped intent receives a submitted instruction to run
+`aq session drain-ack` and exit. Reconciliation allows `idle_stop_grace_seconds`
+for the acknowledgement, then stops the exact session instance even if it ignores
+the instruction. Preparing or active claims keep their ownership fences. Before
+the acknowledgement, reconciliation may detach a managed task branch only when
+the session and workspace rows still prove a taskless reservation, no claim file,
+writer, integration owner or job pin remains, and the clean HEAD exactly equals
+the freshly fetched origin branch. Detachment preserves HEAD and the local branch
+ref. A released `failed_preparation` snapshot does not itself retain a claim.
+Preparation in another slot can use the same proof to release a draining, idle or
+stopped holder. Dirty or unpublished holders remain checked out for recovery.
+
 An active pool claim must retain its workspace's `.aq/claim.json`. Preparation
 reads back the marker before activation; a failed write/readback releases ordinary
 preparation with backoff and drains the unusable worker. Each reconciliation pass

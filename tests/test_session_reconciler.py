@@ -1617,6 +1617,51 @@ class TestIdleStopIntent:
             await reconciler._step_observe(at), at
         )
 
+    @pytest.mark.parametrize("acknowledge", [False, True])
+    async def test_taskless_drain_is_submitted_and_stops_without_an_ack(
+        self, db, provider, pool_reconciler, tmp_path, acknowledge,
+    ):
+        row = await self._finished_worker(
+            db, provider, tmp_path, claims=0, failed_preparation={"task_id": "t1"},
+        )
+        detach = pool_reconciler.test_orch._detach_idle_pool_branch = AsyncMock()
+        await pool_reconciler._step_drain_ack([row], NOW)
+        detach.assert_awaited_once()
+        assert len(provider.sent_nudges) == 1
+        assert "aq session drain-ack" in provider.sent_nudges[0][1]
+        assert (await db.get_session(row.id)).state == "running"
+        await pool_reconciler._step_drain_ack([row], NOW + 59)
+        assert pool_reconciler.test_orch.terminations == []
+        assert len(provider.sent_nudges) == 1
+        if acknowledge:
+            await provider.set_meta(pool_reconciler._handle(row), DRAIN_ACK_KEY, "1")
+        await pool_reconciler._step_drain_ack([row], NOW + (59 if acknowledge else 61))
+        assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
+        assert (await db.get_session(row.id)).state == "stopped"
+
+    @pytest.mark.parametrize("deferred", [False, True])
+    async def test_taskless_drain_retries_submission_without_extending_grace(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, deferred,
+    ):
+        row = await self._finished_worker(db, provider, tmp_path)
+        original = provider.nudge
+        if deferred:
+            async def defer(*args):
+                raise NudgeDeferred("existing user draft")
+            monkeypatch.setattr(provider, "nudge", defer)
+        else:
+            provider.swallow_next_nudge(row.name)
+        await pool_reconciler._step_drain_ack([row], NOW)
+        assert provider.sent_nudges == []
+        assert pool_reconciler.test_orch.terminations == []
+        monkeypatch.setattr(provider, "nudge", original)
+        await pool_reconciler._step_drain_ack([row], NOW + 59)
+        assert len(provider.sent_nudges) == 1
+        assert pool_reconciler.test_orch.terminations == []
+        await pool_reconciler._step_drain_ack([row], NOW + 61)
+        assert len(provider.sent_nudges) == 1
+        assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
+
     async def test_a_finished_worker_is_stopped_and_its_slot_freed(
         self, db, provider, pool_reconciler, tmp_path
     ):
