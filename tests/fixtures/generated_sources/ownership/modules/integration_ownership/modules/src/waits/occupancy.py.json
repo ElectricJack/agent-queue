@@ -1,9 +1,11 @@
 {
   "exclusions": {
+    "src/waits/occupancy.py::continuation_capacity": "Generic wait/session capacity observation, following continuation_occupancy: reads queued resume demand and occupied seats without integration ref policy, mutation authority or delivery storage.",
     "src/waits/occupancy.py::continuation_occupancy": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
     "src/waits/occupancy.py::evictable_sessions": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
   },
   "generic_dependencies": {
+    "src/waits/occupancy.py::continuation_capacity": "Generic wait/session capacity observation, following continuation_occupancy: reads queued resume demand and occupied seats without integration ref policy, mutation authority or delivery storage.",
     "src/waits/occupancy.py::continuation_occupancy": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
     "src/waits/occupancy.py::evictable_sessions": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage."
   }
