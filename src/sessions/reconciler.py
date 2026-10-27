@@ -259,6 +259,10 @@ class SessionReconciler:
         #: why ``sessions.stop_intent_pending`` exists.
         self._idle_stop_intent_seen: dict[tuple[str, str], float] = {}
         self._drain_instruction_sent: set[tuple[str, str]] = set()
+        #: session id -> its in-flight idle branch release. Off the tick: an
+        #: origin refresh queued behind a preparation once held drain-ack past
+        #: the stage bound, so exits and stalls never ran (2026-10-27).
+        self._branch_detaches: dict[str, asyncio.Task] = {}
         #: (session id, instance token) -> (read at, the harness store's
         #: activity for that session, or ``None`` when unreadable).  The wedge
         #: check's own cache: a wedged TUI repaints forever, so without it the
@@ -616,17 +620,16 @@ class SessionReconciler:
                     continue
                 if row.desired_state == "stopped":
                     # A released preparation can leave its branch checked out
-                    # while the harness is idle. Free it before asking the
-                    # worker to leave, under the same fences as slot reset.
+                    # while the harness is idle. Free it alongside asking the
+                    # worker to leave, under the same fences as slot reset; the
+                    # release refreshes origin, so it never holds this tick.
                     instance_token = row.instance_token
                     row = await self._still_live(row)
                     if (row is None or row.desired_state != "stopped"
                             or row.instance_token != instance_token
                             or row.task_id or row.claim_phase is not None):
                         continue
-                    detach = getattr(self.orchestrator, "_detach_idle_pool_branch", None)
-                    if detach is not None:
-                        await detach(row)
+                    self._start_branch_detach(row)
                     key = (row.id, row.instance_token)
                     if not await self._agent_acked_drain(row):
                         first = self._idle_stop_intent_seen.setdefault(key, now)
@@ -673,6 +676,24 @@ class SessionReconciler:
                 task_id=row.task_id,
                 project_id=row.project_id,
             )
+
+    def _start_branch_detach(self, row: SessionRecord) -> None:
+        """Release an idle pool's branch in the background, one release per session."""
+        detach = getattr(self.orchestrator, "_detach_idle_pool_branch", None)
+        running = self._branch_detaches.get(row.id)
+        if detach is None or (running is not None and not running.done()):
+            return
+        task = asyncio.create_task(detach(row), name=f"pool-branch-detach-{row.id}")
+        self._branch_detaches[row.id] = task
+
+        def finished(done: asyncio.Task, session_id=row.id) -> None:
+            if self._branch_detaches.get(session_id) is done:
+                del self._branch_detaches[session_id]
+            if not done.cancelled() and done.exception() is not None:
+                logger.warning("Pool session %s: branch release failed", session_id,
+                               exc_info=done.exception())
+
+        task.add_done_callback(finished)
 
     async def _stop_drain_acked_holder(self, row: SessionRecord) -> bool:
         """Stop a drain-acked pool worker whose held task no close can change.
