@@ -134,3 +134,36 @@ The audit performs read-only queries with a 2 GiB JVM limit. It records source,
 catalogue, policy, manifest and BUILD digests; asserts mandatory-set containment,
 direct imports and parity; and reports actual selection breadth. Required test
 execution continues through `aq test`.
+
+## Merge repair against dev `ae4f7a8db`
+
+The reopened task merges dev into published slice A commit `88bd0ac28`, preserving
+both parents and the existing PR. The dependency declarations are the exact union
+of the 122 slice A entries and dev's `test_migration_single_head.py` declaration.
+The selection ownership row retains both declaration and slice A audit paths.
+Generated BUILD files and the suite manifest are regenerated from the resolved
+sources, seeded with dev's manifest and all four slice A module globs. No shared
+analyzer, CI policy or runtime source changes are introduced by the repair.
+
+Fresh independent collection succeeds with 39,239 nodes and no failed reports.
+The all-module audit retains all 1,013 modules' obligations against each parent,
+with exactly their union of nodes/markers and 845 fine-grained module opt-ins.
+Within-module ordering, named commands, non-default memberships and default-shard
+unions are preserved. The full independent collection agrees in identity and
+order. The incoming migration target retains `alembic.ini`, all 136 migration
+revision files and `migrations/integration_guards.py`, and remains pure.
+The merged manifest SHA-256 is
+`e55df04197a1a17d072f8bfa0ecceec706ef2c182dfaad63bf719a013620721b`.
+
+Focused dependency/subprocess-analyzer, selection-catalogue, documentation,
+generated-contract, ownership-size and graph-command checks pass 416 tests.
+The manifest check passes another 54 tests with six skips, including graph
+reproducibility (178.85 seconds). General regeneration, recorded-artifact and
+generator-input drift checks, and Git whitespace checks also pass.
+The slice audit passes all 1,223 source observations, 12 command records and
+6,474 slice collection nodes. All five pinned Bazel queries succeed and retain
+the mandatory sets shown above, with unchanged selection breadth; the dedicated
+query server is shut down afterwards. All 122 slice modules remain conservative,
+so the original precision limitation still applies.
+The repair's evidence is retained under `.aq/tmp/slice-a-repair-*`; the earlier
+counts and digests above describe the original submission, not this merged tree.

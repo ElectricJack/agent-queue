@@ -12216,6 +12216,15 @@
       "src/warm_workspaces.py"
     ]
   },
+  "tests/test_migration_single_head.py": {
+    "data": [
+      "alembic.ini",
+      "migrations/versions/*.py"
+    ],
+    "imports": [
+      "migrations.integration_guards"
+    ]
+  },
   "tests/test_wait_admission.py": {
     "data": [
       "src/__init__.py",
