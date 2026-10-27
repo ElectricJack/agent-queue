@@ -56,8 +56,6 @@ from src.digest.facts import CATEGORIES, DigestWindow
 from src.digest.render import MAX_CHARS
 from src.digest.schedule import DigestSchedule, provider_facts_enabled, schedule_for
 from src.digest.supervisor import (
-    SKIP_QUIET_HOURS,
-    SKIP_UNCHANGED,
     STUCK_BLOCKED_MINUTES,
     author_deadline,
     bounded_facts,
@@ -552,7 +550,18 @@ class DigestScheduleService:
             "quiet_line_day": quiet_day,
             "decision": decision.action,
         }
-        if decision.action in (SKIP_QUIET_HOURS, SKIP_UNCHANGED):
+        text = ""
+        if not decision.skips:
+            text = (
+                quiet_line(
+                    collected["sessions_working"],
+                    base_url=dashboard_url,
+                    notice=dashboard_notice,
+                )
+                if decision.quiet_line_due
+                else fallback_text(result.text, brief)
+            )
+        if decision.skips or not text:
             # Facts are still frozen -- quiet hours suppress the post, never the
             # collection -- so the next window can compare against this one.
             await self.db.complete_digest_evaluation(
@@ -565,15 +574,6 @@ class DigestScheduleService:
             report.evaluated += 1
             report.suppressed += 1
             return report
-        text = (
-            quiet_line(
-                collected["sessions_working"],
-                base_url=dashboard_url,
-                notice=dashboard_notice,
-            )
-            if decision.quiet_line_due
-            else fallback_text(result.text, brief)
-        )
         author_candidate = None
         if not decision.quiet_line_due:
             author_candidate = {
