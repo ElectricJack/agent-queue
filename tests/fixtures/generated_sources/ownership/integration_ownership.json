@@ -2022,6 +2022,30 @@
     "src/workspace_spec_watcher.py::WorkspaceSpecWatcher": "Generic dependency; integration-specific definitions in this file are charged independently."
   },
   "hand_integration_reconciliation": {
+    "abort_recovery_composition": {
+      "authorized_engine_delta": 26,
+      "authorized_owned_delta": 26,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/batches.py": 3,
+        "src/integration/fixer_batches.py": 11,
+        "src/integration/fixers.py": 12
+      },
+      "dev_source_revision": "e7d3814e9774efb2103610a61cd6fc0e26fee8a7",
+      "measured_engine_lines": 83773,
+      "measured_owned_total": 159649,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83747,
+      "previous_measured_owned_total": 159623,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved abort-recovery fix: preserve explicit batch withdrawal across late fixer callbacks, restart resumption and family rebinding. Preserve every historical grant, original baseline and ownership classification, with zero remaining headroom and no new table or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "4ee16125826b48d9c832fcc158bf00ffa3216f10",
+      "supervisor_decision_message_id": "msg-d2d0c4d3281646709611d165cc13f946",
+      "task_id": "vivid-willow-73",
+      "thread_id": "vivid-willow-73-abort-recovery-size"
+    },
     "aborted_batch_branch_retirement_composition": {
       "authorized_engine_delta": 55,
       "authorized_owned_delta": 63,
@@ -2063,7 +2087,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 4188,
+    "authorized_owned_delta": 4214,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -2551,8 +2575,8 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "task_id": "steady-vault-53"
     },
-    "measured_engine_lines": 83798,
-    "measured_owned_total": 159687,
+    "measured_engine_lines": 83824,
+    "measured_owned_total": 159713,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
