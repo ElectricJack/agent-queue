@@ -2820,7 +2820,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3709,
+    "authorized_owned_delta": 3910,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -3238,8 +3238,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83653,
-    "measured_owned_total": 159208,
+    "measured_engine_lines": 83768,
+    "measured_owned_total": 159409,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -3521,6 +3521,37 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "source_revision": "2681b3e0caa93c033ff01af7701c456ecf3b7e48",
       "task_id": "noble-harbor-10"
+    },
+    "retained_store_maintenance_composition": {
+      "authorized_engine_delta": 115,
+      "authorized_owned_delta": 201,
+      "authorized_shared_owned_delta": 86,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/api/scope.py": 1,
+        "src/cli/auto_commands.py": 1,
+        "src/cli/integration.py": 10,
+        "src/commands/contracts/integration.py": 28,
+        "src/commands/integration_commands.py": 31,
+        "src/git/repository_lock.py": 11,
+        "src/integration/repository_maintenance.py": 141,
+        "src/integration/repository_recovery.py": -26,
+        "src/orchestrator/core.py": 4
+      },
+      "dev_source_revision": "512996c4738a348ac2a6372697f184e20a955a8c",
+      "evidence_path": "docs/reports/2026-10-26-retained-store-maintenance-ownership.json",
+      "measured_engine_lines": 83768,
+      "measured_owned_total": 159409,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83653,
+      "previous_measured_owned_total": 159208,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved retained-store pack maintenance and scoped preview/apply control after merging origin/dev. Preserves full fsck, original baselines, historical grants, ownership classification, zero remaining headroom, s4_modules expiry and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "677a14ca8560dbdc009221c9c5c0d5aa691ebe06",
+      "supervisor_decision_message_id": "msg-ac391b12aa444a02aa254a1038a0cd89",
+      "task_id": "clear-rapids-41"
     },
     "review_followup_composition": {
       "authorized_engine_delta": 0,
@@ -17085,7 +17116,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83653,
+    "engine_cap": 83768,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -17130,7 +17161,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3709,
+      "authorized_owned_delta": 3910,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -17548,8 +17579,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 83653,
-      "measured_owned_total": 159208,
+      "measured_engine_lines": 83768,
+      "measured_owned_total": 159409,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -17831,6 +17862,37 @@
         "referenced_decision": "size-cap-delegation-2026-10-23",
         "source_revision": "2681b3e0caa93c033ff01af7701c456ecf3b7e48",
         "task_id": "noble-harbor-10"
+      },
+      "retained_store_maintenance_composition": {
+        "authorized_engine_delta": 115,
+        "authorized_owned_delta": 201,
+        "authorized_shared_owned_delta": 86,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/api/scope.py": 1,
+          "src/cli/auto_commands.py": 1,
+          "src/cli/integration.py": 10,
+          "src/commands/contracts/integration.py": 28,
+          "src/commands/integration_commands.py": 31,
+          "src/git/repository_lock.py": 11,
+          "src/integration/repository_maintenance.py": 141,
+          "src/integration/repository_recovery.py": -26,
+          "src/orchestrator/core.py": 4
+        },
+        "dev_source_revision": "512996c4738a348ac2a6372697f184e20a955a8c",
+        "evidence_path": "docs/reports/2026-10-26-retained-store-maintenance-ownership.json",
+        "measured_engine_lines": 83768,
+        "measured_owned_total": 159409,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83653,
+        "previous_measured_owned_total": 159208,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved retained-store pack maintenance and scoped preview/apply control after merging origin/dev. Preserves full fsck, original baselines, historical grants, ownership classification, zero remaining headroom, s4_modules expiry and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "677a14ca8560dbdc009221c9c5c0d5aa691ebe06",
+        "supervisor_decision_message_id": "msg-ac391b12aa444a02aa254a1038a0cd89",
+        "task_id": "clear-rapids-41"
       },
       "review_followup_composition": {
         "authorized_engine_delta": 0,
@@ -18154,7 +18216,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159208,
+    "owned_total_cap": 159409,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

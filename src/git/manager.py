@@ -74,6 +74,7 @@ import math
 import os
 import random
 import re
+import shutil
 import shlex
 import signal
 import subprocess
@@ -1030,6 +1031,7 @@ class GitManager:
         env: dict[str, str] | None = None,
         timeout: int | None = None,
         lock_held: bool = False,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         """Run Git while preserving expected nonzero status and diagnostics.
 
@@ -1053,10 +1055,12 @@ class GitManager:
         if lock is not None:
             async with lock:
                 return await self._arun_git_result_unlocked(
-                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+                    low_priority=low_priority,
                 )
         return await self._arun_git_result_unlocked(
-            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+            low_priority=low_priority,
         )
 
     async def _arun_git_result_unlocked(
@@ -1067,9 +1071,12 @@ class GitManager:
         stdin: str | None,
         env: dict[str, str],
         timeout: int | None,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
+        if low_priority and shutil.which("nice"):
+            command = ["nice", "-n", "10", *command]
         try:
             try:
                 async with self._amaintenance_exclusion(args, cwd, effective_timeout) as remaining:

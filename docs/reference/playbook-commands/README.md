@@ -142,6 +142,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_settle_batch`](integration_settle_batch.md) | Integration Settle Batch | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
+| [`integration_store_maintenance`](integration_store_maintenance.md) | Maintain retained integration packs | Preview or consolidate configured retained stores while keeping unreachable objects. |
 | [`integration_supersede_completion`](integration_supersede_completion.md) | Supersede one retained completion | Operator or owning supervisor retires an exact stopped Subject with original verified human evidence. |
 | [`integration_train_tick`](integration_train_tick.md) | Integration Train Tick | Start one level-triggered visit per idle target (git_first: active). |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |

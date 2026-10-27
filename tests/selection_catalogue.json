@@ -6025,7 +6025,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:529603ba9c698540188eb1a2974ade5d903d01bc568a06b7f7f1663517e6459b",
+      "digest": "sha256:06a218d5cbdf230eb960e4dcf53d285fb38a3ff5a76250895cb8bdf535eca810",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -6045,6 +6045,7 @@
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.repository_incidents",
+        "src.integration.repository_maintenance",
         "src.integration.repository_recovery",
         "src.models",
         "src.prime.sections",

@@ -300,6 +300,7 @@ start code work, tests or QA from a digest author turn.
     "integration_delegate_publication",
     "integration_revoke_publication",
     "integration_clear_retained_recovery",
+    "integration_store_maintenance",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
     "integration_status",

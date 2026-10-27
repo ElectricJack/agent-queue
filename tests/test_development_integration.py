@@ -1474,8 +1474,8 @@ def recovery_handler(setup, tmp_path):
     from src.config import AppConfig
 
     db, service, *_ = setup
-    handler = CommandHandler(SimpleNamespace(db=db, git=service.git),
-                             AppConfig(data_dir=str(tmp_path / 'data')))
+    config = AppConfig(data_dir=str(tmp_path / 'data'))
+    handler = CommandHandler(SimpleNamespace(db=db, git=service.git, config=config), config)
     service.git.retained_recovery_state = handler.retained_repository_recovery
     return handler
 
@@ -2035,7 +2035,7 @@ async def test_retained_fetch_failure_on_a_clean_store_never_opens_an_incident(
         assert (await conn.execute(select(escalations))).all() == []
 
 
-async def test_retained_maintenance_runs_foreground_and_drops_stale_gc_log(setup):
+async def test_retained_acquisition_does_not_run_pack_maintenance(setup):
     _db, service, _source, _remote, repo = setup
     store = await service.store(repo)
     report = store / '.git' / 'gc.log'
@@ -2045,10 +2045,223 @@ async def test_retained_maintenance_runs_foreground_and_drops_stale_gc_log(setup
         assert await service.store(repo) == store
     commands = [call.args[0] for call in run.await_args_list]
     assert not any('fsck' in command for command in commands)
-    assert any('gc' in command and 'gc.autoDetach=false' in command for command in commands)
-    assert not report.exists()
+    assert not any(any(op in command for op in ('gc', 'repack', 'maintenance'))
+                   for command in commands)
+    assert report.exists()  # Only scheduled maintenance may retire this report.
     assert git(store, 'config', 'gc.auto') == '0'
     assert git(store, 'config', 'gc.autoDetach') == 'false'
+
+
+def maintenance_packs(store):
+    """Two packs, including an unreachable blob with no loose copy, plus a loose blob."""
+    git(store, 'repack', '-a', '-d')
+    directory = store / '.git' if (store / '.git').exists() else store
+    bodies = []
+    for name in ('packed-unreachable', 'loose-unreachable'):
+        path = store / name
+        path.write_text(name)
+        bodies.append(git(store, 'hash-object', '-w', str(path)))
+        path.unlink()
+    subprocess.run(['git', '-C', str(store), 'pack-objects',
+                    str(directory / 'objects' / 'pack' / 'pack')],
+                   input=bodies[0] + '\n', text=True, check=True, capture_output=True)
+    git(store, 'prune-packed')
+    assert len(list((directory / 'objects' / 'pack').glob('*.pack'))) == 2
+    return bodies
+
+
+async def test_retained_repack_preserves_refs_and_all_unreachable_objects(setup, tmp_path):
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    packed, loose = maintenance_packs(store)
+    head = git(store, 'rev-parse', 'HEAD')
+    git(store, 'update-ref', 'refs/heads/aq/local-only', head)
+    refs = git(store, 'for-each-ref')
+    report = store / '.git' / 'gc.log'
+    report.write_text('fatal: stale detached gc failure\n')
+    baseline = await service.git.aretained_store_baseline(str(store / '.git'))
+    await service.git.arecord_retained_store_verified(str(store / '.git'), *baseline)
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    with patch.object(service.git, 'arun_git_result', wraps=service.git.arun_git_result) as run:
+        result = await maintenance.run('p', apply=True)
+    assert result['outcome'] == 'maintained'
+    [item] = result['evidence']['stores']
+    assert item['outcome'] == 'repacked' and item['after_pack_count'] == 1
+    assert git(store, 'cat-file', 'blob', packed) == 'packed-unreachable'
+    assert git(store, 'cat-file', 'blob', loose) == 'loose-unreachable'
+    assert git(store, 'for-each-ref') == refs
+    assert not report.exists()
+    assert not await service.git.aretained_store_verified(str(store / '.git'))
+    [repack] = [call for call in run.await_args_list if 'repack' in call.args[0]]
+    assert '-k' in repack.args[0] and repack.kwargs['low_priority'] is True
+    assert repack.kwargs['timeout'] == 240
+    git(store, 'fsck', '--full', '--no-dangling')
+
+
+async def test_retained_maintenance_preview_and_cooldown_survive_restart(setup, tmp_path):
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    marker = store / '.git' / 'aq-store-maintenance.json'
+    clock = [10000]
+
+    def instance():
+        return RetainedStoreMaintenance(db, service.git, tmp_path / 'data', clock=lambda: clock[0])
+
+    before = list((store / '.git' / 'objects' / 'pack').iterdir())
+    preview = await instance().run('p')
+    assert preview['evidence']['stores'][0]['outcome'] == 'eligible'
+    assert not marker.exists()
+    assert list((store / '.git' / 'objects' / 'pack').iterdir()) == before
+    normal = service.git.arun_git_result
+
+    async def fail_repack(args, **kwargs):
+        if 'repack' in args:
+            raise GitError('repack timed out')
+        return await normal(args, **kwargs)
+
+    from src.git.manager import GitError
+
+    with patch.object(service.git, 'arun_git_result', fail_repack):
+        failed = await instance().run('p', apply=True)
+    assert failed['outcome'] == 'unavailable'
+    assert 'timed out' in failed['evidence']['stores'][0]['error']
+    cooled = await instance().run('p', apply=True)
+    assert cooled['evidence']['stores'][0]['outcome'] == 'cooldown'
+    clock[0] += 3600
+    retried = await instance().run('p', apply=True)
+    assert retried['evidence']['stores'][0]['outcome'] == 'repacked'
+
+
+async def test_retained_maintenance_skips_busy_store_and_pending_recovery(setup, tmp_path):
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    async with service.git.arepository_transaction(str(store)):
+        result = await maintenance.run('p', apply=True)
+    assert result['evidence']['stores'][0]['outcome'] == 'busy'
+    root = store / '.git' / 'aq-empty-object-backups'
+    root.mkdir(exist_ok=True)
+    (root / 'pending').touch()
+    result = await maintenance.run('p', apply=True)
+    assert result['evidence']['stores'][0]['outcome'] == 'recovery_pending'
+    assert not (store / '.git' / 'aq-store-maintenance.json').exists()
+
+
+async def test_retained_maintenance_tick_rotates_without_acquisition(setup, tmp_path):
+    import hashlib
+
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    observer = store.with_name('observer')
+    await service.git.acreate_checkout(repo.url, str(observer), no_checkout=True)
+    maintenance_packs(observer)
+    bare = tmp_path / 'data' / 'integration-repositories' / (
+        hashlib.sha256(repo.id.encode()).hexdigest() + '.git')
+    bare.parent.mkdir(parents=True)
+    await service.git.acreate_bare_checkout(repo.url, str(bare))
+    unreachable = maintenance_packs(bare)
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    first = await maintenance.tick(10000)
+    assert first['outcome'] == 'repacked' and first['cache'] == str(store)
+    assert await maintenance.tick(10001) is None
+    second = await maintenance.tick(10300)
+    assert second['outcome'] == 'repacked' and second['cache'] == str(observer)
+    third = await maintenance.tick(10600)
+    assert third['outcome'] == 'repacked' and third['cache'] == str(bare)
+    for oid in unreachable:
+        assert git(bare, 'cat-file', '-t', oid) == 'blob'
+
+
+async def test_retained_maintenance_cancellation_releases_writer_and_keeps_cooldown(setup, tmp_path):
+    import asyncio
+
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    entered = asyncio.Event()
+    normal = service.git.arun_git_result
+
+    async def blocked(args, **kwargs):
+        if 'repack' in args:
+            entered.set()
+            await asyncio.Event().wait()
+        return await normal(args, **kwargs)
+
+    with patch.object(service.git, 'arun_git_result', blocked):
+        task = asyncio.create_task(maintenance.run('p', apply=True))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    async with service.git.arepository_transaction(str(store)):
+        assert not maintenance._run_lock.locked()
+    result = await maintenance.run('p', apply=True)
+    assert result['evidence']['stores'][0]['outcome'] == 'cooldown'
+
+
+async def test_retained_maintenance_uses_storage_binding_and_refuses_wrong_origin(setup, tmp_path):
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    old = await service.store(repo)
+    moved = old.with_name('relocated')
+    old.rename(moved)
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == 'p').values(
+            storage_binding={'paths': {str(old): str(moved)}}))
+    maintenance_packs(moved)
+    git(moved, 'remote', 'set-url', 'origin', 'https://example.invalid/other.git')
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    refused = await maintenance.run('p', apply=True)
+    [item] = refused['evidence']['stores']
+    assert item['cache'] == str(moved) and item['outcome'] == 'unavailable'
+    assert not old.exists()
+    assert not (moved / '.git' / 'aq-store-maintenance.json').exists()
+
+
+async def test_retained_maintenance_control_rejects_workers_and_cross_project(
+    setup, tmp_path, monkeypatch,
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    handler = recovery_handler(setup, tmp_path)
+    worker = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+                                session_id='worker', project_id='p', elevated=False)
+    with principal_context(worker):
+        result = await handler._cmd_integration_store_maintenance({'project_id': 'p'})
+    assert result['outcome'] == 'unauthorized'
+    supervisor = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+                                    session_id='supervisor', project_id='p', elevated=True)
+    row = SimpleNamespace(id='supervisor', project_id='p', profile_id='supervisor',
+                          lifecycle='named', state='running', desired_state='running')
+    monkeypatch.setattr(handler.db, 'get_session', AsyncMock(return_value=row))
+    with principal_context(supervisor):
+        assert (await handler._cmd_integration_store_maintenance({'project_id': 'other'}))[
+            'outcome'] == 'unauthorized'
+        assert (await handler._cmd_integration_store_maintenance({'project_id': 'p'}))[
+            'outcome'] == 'preview'
+    assert (await handler._cmd_integration_store_maintenance({'project_id': 'missing'}))[
+        'outcome'] == 'not_found'
+    assert (await handler._cmd_integration_store_maintenance({'project_id': 'p'}))[
+        'outcome'] == 'preview'
 
 
 @pytest.mark.parametrize('transport', ['direct', 'isolated'])

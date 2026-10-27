@@ -25,11 +25,6 @@ _HEX = re.compile(r"[0-9a-f]+\Z")
 _LOOSE_PATH = re.compile(r"(?:[^\s:]*objects)/([0-9a-f]{2})/([0-9a-f]{38}|[0-9a-f]{62})(?![0-9a-f])")
 _FSCK = ["--no-replace-objects", "fsck", "--full", "--no-dangling", "--no-reflogs",
          "--no-progress"]
-# Every write to a retained store disables auto-gc (the stores' config and the isolated
-# import environment); this foreground run, with a valid cwd under the repository
-# transaction, replaces it.  Command-line -c beats both.
-_MAINTENANCE = ["-c", "gc.auto=6700", "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false",
-                "gc", "--auto", "--quiet"]
 _RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
                     ("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"))
 MAX_ATTEMPTS = 2
@@ -281,24 +276,6 @@ async def _publish_local_heads(git, store, repository_url):
         raise GitError("guarded local-only AQ branch publication failed")
 
 
-async def _maintain(git, store, git_dir):
-    """Best-effort foreground gc; a successful run makes any old gc.log obsolete."""
-    try:
-        result = await git.arun_git_result(_MAINTENANCE, cwd=str(store), lock_held=True,
-                                           env={"LC_ALL": "C"})
-    except GitError as exc:
-        logger.warning("retained cache %s maintenance failed: %s", store, exc)
-        return
-    if result.returncode:
-        logger.warning("retained cache %s maintenance failed: %s", store,
-                       safe_git_detail(result.stderr, limit=1000))
-        return
-    report = git_dir / "gc.log"
-    if report.is_file() and not report.is_symlink():
-        report.unlink()
-        logger.info("retained cache %s: removed stale gc.log after foreground gc", store)
-
-
 @asynccontextmanager
 async def _transaction(git, store, lock_held):
     if lock_held:
@@ -511,7 +488,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
     async with _transaction(git, store, lock_held):
         try:
             async with asyncio.timeout_at(deadline):
-                no_change = await acquire()
+                await acquire()
         except BaseException as exc:
             if state is not None and state["status"] != "recovered":
                 state["status"] = "exhausted" if state["attempts"] >= MAX_ATTEMPTS else "failed"
@@ -530,9 +507,6 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             if isinstance(exc, TimeoutError):
                 raise GitError("retained Git acquisition timed out") from exc
             raise
-        if not no_change:
-            with selection_stage("retained_maintenance"):
-                await _maintain(git, store, directory)
 
 
 async def clear_retained_recovery(git, state, *, by, record):
