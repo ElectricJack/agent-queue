@@ -2333,11 +2333,16 @@ async def test_ci_source_conflict_rolls_back_and_reobserves_without_restart(
 
     service.orch.wait_ci_lock_source = conflict_once
     drained = asyncio.Event()
+    resume_drain = asyncio.Event()
     original_drain = service.drain
 
     async def drain(watermark):
         result = await original_drain(watermark)
+        # Keep the next tick from consuming the completion message source
+        # before the test inspects the cursor left by this drain.
         drained.set()
+        await resume_drain.wait()
+        resume_drain.clear()
         return result
 
     service.drain = drain
@@ -2359,6 +2364,7 @@ async def test_ci_source_conflict_rolls_back_and_reobserves_without_restart(
         drained.clear()
         now[0] += service.listener.retry_seconds + 1
         service.listener.changed.set()
+        resume_drain.set()
         await asyncio.wait_for(drained.wait(), 15)
         assert reader.await_count == attempts == 2
         assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
