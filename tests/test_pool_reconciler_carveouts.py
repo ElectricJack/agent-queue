@@ -355,14 +355,20 @@ class TestExits:
         task = await db.get_task("t1")
         claim_epoch = None if epoch_delta is None else task.claim_epoch + epoch_delta
         await db.update_session(sid, last_claim_epoch=claim_epoch)
+        before = await db.get_session(sid)
+        workspace = await db.get_workspace_for_agent("agent-1")
         provider.peek = AsyncMock(return_value="rate limit exceeded, please retry later")
         live, now = await observe(reconciler)
 
         await reconciler._step_exits(live, now)
 
-        task = await db.get_task("t1")
-        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
-        assert (await db.get_session(sid)).state == "running"
+        assert await db.get_task("t1") == task
+        assert await db.get_workspace_for_agent("agent-1") == workspace
+        row = await db.get_session(sid)
+        assert (row.state, row.desired_state, row.ended_at) == ("stopped", "stopped", now)
+        assert (row.task_id, row.agent_id, row.claim_phase, row.last_claim_epoch) == (
+            before.task_id, before.agent_id, before.claim_phase, before.last_claim_epoch,
+        )
         assert await db.get_task_meta("t1", "worker_failure_streak") is None
         assert orch._pool_quarantine == {}
 
