@@ -14,7 +14,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83864,
+    "engine_cap": 83865,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -83,7 +83,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 4575,
+      "authorized_owned_delta": 4576,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -179,6 +179,30 @@
         "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
         "task_id": "wise-crest-14",
         "thread_id": "wise-crest-14-ci-size"
+      },
+      "claim_owner_refresh_composition": {
+        "authorized_engine_delta": 1,
+        "authorized_owned_delta": 1,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/integration/owner_recovery.py": 1
+        },
+        "combined_source_revision": "4755e276a64e6245c2cb18dc3b07207533e603c9",
+        "dev_source_revision": "b0875405bdcd9e7c589a66206f1d271b9754cdb3",
+        "measured_engine_lines": 83865,
+        "measured_owned_total": 160075,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83864,
+        "previous_measured_owned_total": 160074,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2130",
+        "reason": "Exact supervisor-approved owner-refresh composition after merging dev into PR 2130. Origin refresh precedes shared checkout exclusion; all local proofs remain inside it. Generic repository-lock diagnostics add zero charged lines. Preserve the original baseline, every historical grant and ownership classification, zero remaining headroom, the s4_modules expiry and existing storage categories.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "604080554fcd0add8305220e0c4bd27b4e0de3a4",
+        "supervisor_decision_message_id": "msg-4bbbd603dea14a6380283b0c2b569b36",
+        "task_id": "grand-crest-72",
+        "thread_id": "grand-crest-72-epoch2-size"
       },
       "cold_restart_deadline_composition": {
         "authorized_engine_delta": 0,
@@ -528,8 +552,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 83864,
-      "measured_owned_total": 160074,
+      "measured_engine_lines": 83865,
+      "measured_owned_total": 160075,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -1264,7 +1288,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 160074,
+    "owned_total_cap": 160075,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

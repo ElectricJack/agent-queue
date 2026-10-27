@@ -1202,7 +1202,7 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4575,
+ 'authorized_owned_delta': 4576,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1773,8 +1773,8 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83864,
- 'measured_owned_total': 160074,
+ 'measured_engine_lines': 83865,
+ 'measured_owned_total': 160075,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -2790,7 +2790,31 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                                       'source_revision': '2c8b9ef98bdd108dbd9b07907a70f691784e0191',
                                                       'supervisor_decision_message_id': 'msg-6c6199d3fc8c4821986b8c3ede7f3ea2',
                                                       'task_id': 'fresh-ridge-27',
-                                                      'thread_id': 'fresh-ridge-27-size-disposition'}}
+                                                      'thread_id': 'fresh-ridge-27-size-disposition'},
+ 'claim_owner_refresh_composition': {'task_id': 'grand-crest-72',
+ 'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2130',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'supervisor_decision_message_id': 'msg-4bbbd603dea14a6380283b0c2b569b36',
+ 'thread_id': 'grand-crest-72-epoch2-size',
+ 'dev_source_revision': 'b0875405bdcd9e7c589a66206f1d271b9754cdb3',
+ 'source_revision': '604080554fcd0add8305220e0c4bd27b4e0de3a4',
+ 'combined_source_revision': '4755e276a64e6245c2cb18dc3b07207533e603c9',
+ 'previous_measured_owned_total': 160074,
+ 'previous_measured_engine_lines': 83864,
+ 'previous_measured_table_count': 45,
+ 'authorized_owned_delta': 1,
+ 'authorized_engine_delta': 1,
+ 'authorized_table_delta': 0,
+ 'measured_owned_total': 160075,
+ 'measured_engine_lines': 83865,
+ 'measured_table_count': 45,
+ 'charged_files': {'src/integration/owner_recovery.py': 1},
+ 'reason': 'Exact supervisor-approved owner-refresh composition after merging dev into PR 2130. '
+           'Origin refresh precedes shared checkout exclusion; all local proofs remain inside '
+           'it. Generic repository-lock diagnostics add zero charged lines. Preserve the '
+           'original baseline, every historical grant and ownership classification, zero '
+           'remaining headroom, the s4_modules expiry and existing storage categories.'}}
 
 
 def integration_table(name: str) -> bool:
