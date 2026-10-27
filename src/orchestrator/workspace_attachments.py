@@ -673,8 +673,8 @@ async def detach_slot_for_integration_handoff(
 
     Handoff is not terminal-failure cleanup.  It must never invoke the slot
     restore ladder, which may salvage and reset work.  Instead, hold the
-    repository mutex while proving the checkout is clean, its exact current
-    branch tip equals the freshly fetched remote tip, and then detach that
+    repository mutex after refreshing origin to prove the checkout is clean,
+    its exact current branch tip equals the refreshed remote tip, and detach that
     immutable HEAD.  Unknown Git state is a failed proof, never release
     evidence.
     """
@@ -730,6 +730,12 @@ async def _probe_workspace_checkout(
     expected_branch = expected_branch.removeprefix("refs/heads/")
     branch_ref = f"refs/heads/{expected_branch}"
     remote_ref = f"refs/remotes/origin/{expected_branch}"
+    # Full lender verification must precede the shared checkout mutex. All
+    # checkout/ref observations used as release evidence are re-read below.
+    if repository_url:
+        await git.afetch_origin(mutex_path, repository_url=repository_url)
+    else:
+        await git._arun(["fetch", "origin"], cwd=mutex_path)
     async with git_mutex(mutex_path):
         current = await git._arun_unlocked(
             ["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout
@@ -742,12 +748,6 @@ async def _probe_workspace_checkout(
         if status:
             return None
 
-        if repository_url:
-            await git.afetch_origin(
-                mutex_path, repository_url=repository_url, lock_held=True
-            )
-        else:
-            await git._arun_unlocked(["fetch", "origin"], cwd=mutex_path)
         local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
         remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
