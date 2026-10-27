@@ -106,6 +106,7 @@ from src.git.github_contracts import (
 )
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 from src.git.process import ProcessCleanupError, run_owned_process
+from src.git.repository_lock import RepositoryLock
 from src.git.locks import common_git_dir_from_cwd, remove_stale_locks
 from src.metrics.perf import operation_timing, timed_operation
 
@@ -1161,7 +1162,7 @@ class GitManager:
         lock = self._lock_provider(cwd) if self._lock_provider else None
         if lock is None:
             key = str(Path(cwd).resolve())
-            lock = self._repository_operation_locks.setdefault(key, asyncio.Lock())
+            lock = self._repository_operation_locks.setdefault(key, RepositoryLock())
         async with lock:
             yield
 
