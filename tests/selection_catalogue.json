@@ -7762,7 +7762,7 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:10df1072d05de1a4708d823523162b72d251d9163fcfc4d3b58188bd6206fbc8",
+      "digest": "sha256:ca0f6d725cdb60af97822e79522e3b48a575adaca4aaa18733100e034bd4c804",
       "imports": [
         "src.event_bus",
         "src.git",
@@ -7770,6 +7770,7 @@
         "src.git.locks",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.models",
         "src.orchestrator.git_ops",
         "src.orchestrator.workspace_attachments"
