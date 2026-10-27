@@ -932,7 +932,58 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch7_composition': {'task_id': 'sound-falcon-86',
+HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch8_composition': {'task_id': 'sound-falcon-86',
+                                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                       'operator_decision': '6679052c',
+                                                       'supervisor_decision_message_id': 'msg-753ed33f5aae40cfa23a343221437e4e',
+                                                       'request_message_id': 'msg-2cb7327f35dd496ca122871e1287500a',
+                                                       'thread_id': 'sound-falcon-86-epoch8-size',
+                                                       'dev_source_revision': '9a785337771f9f6b5700e1f1473d42a479ca0d43',
+                                                       'source_revision': 'ee4d67f38',
+                                                       'authorized_owned_delta': 4,
+                                                       'authorized_shared_owned_delta': 4,
+                                                       'authorized_engine_delta': 0,
+                                                       'authorized_table_delta': 0,
+                                                       'previous_measured_owned_total': 159649,
+                                                       'previous_measured_engine_lines': 83773,
+                                                       'previous_measured_table_count': 45,
+                                                       'measured_owned_total': 159653,
+                                                       'measured_engine_lines': 83773,
+                                                       'measured_table_count': 45,
+                                                       'reason': 'Carry forward the unchanged '
+                                                                 'attached-owner close grant under '
+                                                                 'the explicit epoch6 approval for '
+                                                                 'the same +4 shared owned/+0 '
+                                                                 'engine/+0 tables over later dev. '
+                                                                 'Preserve incoming abort-recovery '
+                                                                 'and every historical grant, '
+                                                                 'ownership classification, zero '
+                                                                 'headroom, s4_modules expiry and '
+                                                                 'no new storage category.'},
+ 'abort_recovery_composition': {'authorized_engine_delta': 26,
+ 'authorized_owned_delta': 26,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/batches.py': 3,
+                   'src/integration/fixer_batches.py': 11,
+                   'src/integration/fixers.py': 12},
+ 'dev_source_revision': 'e7d3814e9774efb2103610a61cd6fc0e26fee8a7',
+ 'measured_engine_lines': 83773,
+ 'measured_owned_total': 159649,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83747,
+ 'previous_measured_owned_total': 159623,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved abort-recovery fix: preserve explicit batch withdrawal '
+           'across late fixer callbacks, restart resumption and family rebinding. Preserve every '
+           'historical grant, original baseline and ownership classification, with zero remaining '
+           'headroom and no new table or storage category.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision': '4ee16125826b48d9c832fcc158bf00ffa3216f10',
+ 'supervisor_decision_message_id': 'msg-d2d0c4d3281646709611d165cc13f946',
+ 'task_id': 'vivid-willow-73',
+ 'thread_id': 'vivid-willow-73-abort-recovery-size'},
+ 'attached_owner_close_atomicity_epoch7_composition': {'task_id': 'sound-falcon-86',
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'operator_decision': '6679052c',
  'supervisor_decision_message_id': 'msg-753ed33f5aae40cfa23a343221437e4e',
@@ -1273,7 +1324,7 @@ HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch7_compos
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4128,
+ 'authorized_owned_delta': 4154,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1844,8 +1895,8 @@ HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch7_compos
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83747,
- 'measured_owned_total': 159627,
+ 'measured_engine_lines': 83773,
+ 'measured_owned_total': 159653,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
