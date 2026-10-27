@@ -10,7 +10,8 @@
     "src/database/queries/task_queries.py::TaskQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_queries.py::TransitionResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_queries.py::_OPERATOR_ADOPTION_TOKEN": "Generic dependency; integration-specific definitions in this file are charged independently.",
-    "src/database/queries/task_queries.py::supports_returning": "Generic dependency; integration-specific definitions in this file are charged independently."
+    "src/database/queries/task_queries.py::supports_returning": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::task_resumes_on_branch": "Generic task-lifecycle predicate (can a non-live task still restart on its branch); it reads task status, completions and metadata only and supplies no integration ownership or delivery authority."
   },
   "shared": {
     "src/database/queries/task_queries.py::INTEGRATION_REWORK_AT_KEY": {

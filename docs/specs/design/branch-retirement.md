@@ -19,6 +19,20 @@ live sessions, owners, active subjects/batches and attached worktrees, and
 uses the observed SHA as an exact lease. Reopened or re-claimed work invalidates
 an older decision. A moved head is a conflict; transport failures and temporarily
 held branches retry with backoff. The audit is retained after successful removal.
+
+A failed close that leaves the task BLOCKED does not dispose of its work,
+because a BLOCKED task can be restarted on its branch, and deleting a remote
+branch also closes its open pull request as the integration bot. While the task
+exists and can still resume (neither COMPLETED nor FAILED, no abandoned work
+outcome on its latest close or in its metadata, and no cancel's `stop_task`
+terminal mark), its retirement is withdrawn (`task_resumes_on_branch` in
+`src/database/queries/task_queries.py`). The branch stays until a later explicit
+decision (cancel, abandon, archive, FAILED) or the daily backstop queues it
+again. An explicit materialized-origin discard is the human decision, so it is
+exempt. Every settled decision (complete, withdrawn or conflict) is logged as
+`Branch retirement <state> of <branch> (task <id>, <request> '<reason>'):
+<error>; remote <evidence>`, and the retirement row keeps the reason, state and
+audit, so a bot-closed PR always has a recorded reason (2026-10-27, PR #2084).
 Batch abort intent and terminal lifecycles override stale queue and cleanup
 metadata when checking live refs. Aborted and promoted batches (including
 superseded and settled batches, respectively) are no longer ref owners.

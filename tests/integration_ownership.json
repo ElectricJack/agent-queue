@@ -1209,6 +1209,7 @@
     "src/database/queries/task_queries.py::TransitionResult": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_queries.py::_OPERATOR_ADOPTION_TOKEN": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_queries.py::supports_returning": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/task_queries.py::task_resumes_on_branch": "Generic task-lifecycle predicate (can a non-live task still restart on its branch); it reads task status, completions and metadata only and supplies no integration ownership or delivery authority.",
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_requirements_queries.py::TaskRequirementsQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/task_reroute_queries.py::TaskRerouteQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",

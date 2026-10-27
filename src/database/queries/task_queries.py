@@ -280,6 +280,31 @@ TERMINAL_BLOCKED_CONTEXTS = frozenset(
 )
 
 
+async def task_resumes_on_branch(conn, task) -> bool:
+    """Whether a task that is not live can still be restarted on its branch.
+
+    COMPLETED and FAILED never resume. A BLOCKED one (a failed close) can,
+    unless an abandon (on its latest close or in its metadata) or a cancel
+    (the ``stop_task`` terminal mark) decided otherwise.
+    """
+    if task["status"] in {"COMPLETED", "FAILED"}:
+        return False
+    latest = await conn.scalar(select(task_completion_records.c.work_outcome).where(
+        task_completion_records.c.task_id == task["id"],
+    ).order_by(task_completion_records.c.completed_at.desc(),
+               task_completion_records.c.id.desc()).limit(1))
+    if latest == "abandoned":
+        return False
+    decided = await conn.scalar(select(task_metadata.c.task_id).where(
+        task_metadata.c.task_id == task["id"],
+        ((task_metadata.c.key == "work_outcome")
+         & (task_metadata.c.value == json.dumps("abandoned")))
+        | ((task_metadata.c.key == TERMINAL_BLOCKED_META_KEY)
+           & (task_metadata.c.value == json.dumps("stop_task"))),
+    ).limit(1))
+    return decided is None
+
+
 def _ready_reason(context: str) -> str:
     """Resolve a ``transition_task`` context to its ``task.ready`` reason."""
     if context in _READY_REASONS:
