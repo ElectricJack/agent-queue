@@ -2842,10 +2842,12 @@ class TestClaim:
                 return "a" * 40
             raise AssertionError(args)
 
+        handler.orchestrator.git._arun = AsyncMock(side_effect=run)
         handler.orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
         result = await settled_claim(scoped(handler, sid), {"next": True})
 
         assert result["result"] == "prepare_failed"
+        handler.orchestrator.git._arun.assert_awaited_once_with(["fetch", "origin"], cwd=str(wd))
         task = await db.get_task("child")
         session = await db.get_session(sid)
         owner = await ownership.get_owner(fence.target)
