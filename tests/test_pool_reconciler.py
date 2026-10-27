@@ -210,7 +210,7 @@ async def git_first_frontier(orch, db, tmp_path):
     await db.update_profile("worker", default_class="standard-medium")
     orch.config.worktrees.enabled = False
     orch._worktree_slots = MagicMock(return_value=MagicMock(
-        prefetch_slot_for_task=AsyncMock(),
+        prefetch_slot_for_task=AsyncMock(return_value=False),
         reset_slot_for_task=AsyncMock(return_value="aq/second"),
     ))
     await db.create_repo(RepoConfig(id="repo", project_id=PROJECT_ID,
@@ -725,9 +725,11 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
         "target_branch": "aq/second",
         "preserve_branch": True,
         "fetch_origin": False,
+        "origin_refreshed": False,
     }
     orch._worktree_slots().prefetch_slot_for_task.assert_awaited_once_with(
         prepare.await_args.args[0], base_branch=env.source, preserve_branch=True,
+        target_branch="aq/second",
     )
 
 
