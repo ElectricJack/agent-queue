@@ -1,7 +1,8 @@
 """Release an integration branch owner whose writer is gone, preserving its work first.
 
-An ``integration_branch_owners`` row in ``attached`` or ``handoff_pending``
-fences its branch for one writer.  Several paths end a writer without
+An ``integration_branch_owners`` row in ``attached``, ``handoff_pending`` or
+``reserved`` with a session binding fences its branch for one writer.
+Several paths end a writer without
 releasing that row (spec §1, G1–G7): delegate retirement and
 ``cancel_preserving`` keep it by design, a failed transfer leaves it
 ``handoff_pending``, archive/delete forget it, and slot reuse destroys the
@@ -99,8 +100,19 @@ from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
 
-#: Handoff states that name a writer, and so can strand a branch.
+#: Legacy handoff states that name a writer; ref leases instead retain a
+#: session binding in ``reserved`` (see :func:`recoverable_owner_clause`).
 RECOVERABLE_STATES: tuple[str, ...] = ("attached", "handoff_pending")
+
+
+def recoverable_owner_clause():
+    """Writer attachments, including session-bound ref leases, never idle reservations."""
+    owners = integration_branch_owners
+    return or_(
+        owners.c.handoff_state.in_(RECOVERABLE_STATES),
+        and_(owners.c.handoff_state == "reserved", owners.c.session_id.is_not(None)),
+    )
+
 
 #: A ``collector`` row's owner is an integration operation, not a writer.
 COLLECTOR_ROLE = "collector"
@@ -338,26 +350,42 @@ class OwnerRecovery:
             "session_id": row["session_id"],
             "workspace_id": row["workspace_id"],
         }
+        if row["fence"] is not None:
+            evidence["ref_lease"] = {
+                "holder": row["holder"], "fence": row["fence"], "expires_at": row["expires_at"],
+            }
         try:
-            if row["handoff_state"] not in self.recoverable_states or (
+            bound_reservation = row["handoff_state"] == "reserved" and row["session_id"]
+            if (row["handoff_state"] not in self.recoverable_states and not bound_reservation) or (
                 row["owner_role"] == COLLECTOR_ROLE
             ):
                 raise _Refusal(
                     NOT_RECOVERABLE_STATE,
                     f"a {row['owner_role']} row in {row['handoff_state']} names no writer to "
                     "recover; only worker and repair rows in "
-                    f"{' or '.join(self.recoverable_states)} are recoverable",
+                    f"{' or '.join(self.recoverable_states)}, or session-bound reserved rows, "
+                    "are recoverable",
                 )
             session = await self._prove_writer_gone(row, evidence)
-            # Preservation commits carry the owning project's identity.
-            with commit_identity(await self._row_identity(row)):
-                plan = await self._secure_branch(
-                    row, evidence, dry_run=dry_run, no_push=no_push,
+            # Managed leases can be reacquired after TTL expiry. Exclude that
+            # throughout preservation and release, even when the old TTL expired.
+            async with self._recovery_exclusion(row, session) as conn:
+                preservation_row = await self._preservation_row(row, session, evidence)
+                # Preservation commits carry the owning project's identity.
+                with commit_identity(await self._row_identity(row)):
+                    plan = await self._secure_branch(
+                        preservation_row, evidence, dry_run=dry_run, no_push=no_push,
+                    )
+                outcome = PRESERVED_AND_RELEASED if plan.preserved else RELEASED
+                if dry_run:
+                    return RecoveryOutcome(row["id"], outcome, None, evidence, True)
+                result, claim_result = await self._release(
+                    row, session, plan, outcome, evidence, principal, conn=conn,
                 )
-            outcome = PRESERVED_AND_RELEASED if plan.preserved else RELEASED
-            if dry_run:
-                return RecoveryOutcome(row["id"], outcome, None, evidence, True)
-            return await self._release(row, session, plan, outcome, evidence, principal)
+            if claim_result is not None:
+                await self.db._after_release(claim_result)
+            await self._comment(row, _release_comment(row, result, principal))
+            return result
         except _Refusal as refusal:
             evidence["detail"] = refusal.detail
             result = RecoveryOutcome(row["id"], NOT_ELIGIBLE, refusal.reason, evidence, dry_run)
@@ -528,7 +556,7 @@ class OwnerRecovery:
                     select(owners)
                     .select_from(owners.outerjoin(sessions, sessions.c.id == owners.c.session_id))
                     .where(
-                        owners.c.handoff_state.in_(RECOVERABLE_STATES),
+                        recoverable_owner_clause(),
                         owners.c.owner_role != COLLECTOR_ROLE,
                         owners.c.updated_at <= cutoff,
                         or_(
@@ -543,6 +571,52 @@ class OwnerRecovery:
             return [dict(row) for row in rows]
 
     # -- step 1: the row ------------------------------------------------------
+
+    @contextlib.asynccontextmanager
+    async def _recovery_exclusion(self, row, session):
+        """Keep an expired managed lease from admitting a successor during Git I/O."""
+        if row["fence"] is None:
+            yield None
+            return
+        from src.integration.lock import BranchLock
+        from src.integration.models import BranchKey
+
+        async with self.db.immediate() as conn:
+            for project_id in await _project_ids(conn, row["repository_id"]):
+                await self.db.lock_hierarchy_project(conn, project_id)
+            current = await BranchLock(self.db).lock_on(conn, BranchKey(
+                repository_id=row["repository_id"], branch=row["ref"],
+            ))
+            fields = ("id", "fence", "holder", "fence_token", "handoff_state",
+                      "session_id", "workspace_id", "owner_id", "owner_role")
+            if current is None or any(current[key] != row[key] for key in fields):
+                raise _Refusal(STALE_FENCE, "ref lease changed before recovery exclusion")
+            if session is not None:
+                stopped, blocker = await _stopped_writer(
+                    conn, current, lock=False, require_workspace=False,
+                )
+                if blocker or any(stopped[key] != session[key] for key in (
+                    "name", "provider", "instance_token", "started_at", "work_dir",
+                )):
+                    raise _Refusal(WRITER_LIVE, blocker or "writer instance changed")
+            if await _live_task_session(conn, row["owner_id"]) is not None:
+                raise _Refusal(WRITER_LIVE, "a live session now holds the task")
+            yield conn
+
+    async def _preservation_row(self, row, session, evidence):
+        """Managed attach binds a session only; resolve its slot for provenance checks."""
+        if row["fence"] is None or row["workspace_id"] or session is None:
+            return row
+        async with self.db._engine.connect() as conn:
+            slots = (await conn.execute(select(workspaces).where(
+                workspaces.c.workspace_path == session["work_dir"],
+                workspaces.c.project_id == session["project_id"],
+                workspaces.c.base_workspace_id.is_not(None),
+            ))).mappings().all()
+        if len(slots) != 1:
+            raise _Refusal(UNPROVEN_TASK_WORK, "stopped ref lease has no unique recorded slot")
+        evidence["recovery_workspace_id"] = slots[0]["id"]
+        return {**row, "workspace_id": slots[0]["id"]}
 
     async def _row_identity(self, row: dict[str, Any]):
         """The commit identity of the project that owns *row*'s branch."""
@@ -1093,11 +1167,19 @@ class OwnerRecovery:
         outcome: str,
         evidence: dict[str, Any],
         principal: str,
-    ) -> RecoveryOutcome:
+        *,
+        conn=None,
+    ):
         owners = integration_branch_owners
         now = self.clock()
+        next_fence = max(row["fence"] or 0, row["fence_token"]) + 1
+        managed_values = (
+            {"fence": next_fence, "holder": None, "expires_at": now}
+            if row["fence"] is not None else {}
+        )
+        workspace_id = evidence.get("recovery_workspace_id", row["workspace_id"])
         claim_result = None
-        async with self.db.immediate() as conn:
+        async with (self.db.immediate() if conn is None else contextlib.nullcontext(conn)) as conn:
             for project_id in await _project_ids(conn, row["repository_id"]):
                 await self.db.lock_hierarchy_project(conn, project_id)
             swapped = await conn.execute(
@@ -1106,21 +1188,28 @@ class OwnerRecovery:
                     owners.c.id == row["id"],
                     owners.c.fence_token == row["fence_token"],
                     owners.c.handoff_state == row["handoff_state"],
+                    owners.c.session_id.is_not_distinct_from(row["session_id"]),
+                    owners.c.workspace_id.is_not_distinct_from(row["workspace_id"]),
+                    owners.c.fence.is_not_distinct_from(row["fence"]),
+                    owners.c.holder.is_not_distinct_from(row["holder"]),
                 )
                 .values(
                     handoff_state="released",
-                    fence_token=row["fence_token"] + 1,
+                    fence_token=next_fence,
+                    **managed_values,
                     session_id=None,
                     workspace_id=None,
                     confirmed_workspace_id=(
-                        None if evidence.get("ignored_base_workspace") else row["workspace_id"]
+                        None if evidence.get("ignored_base_workspace") else workspace_id
                     ),
                     updated_at=now,
                 )
             )
             if swapped.rowcount == 1:
-                evidence["released_fence_token"] = int(row["fence_token"]) + 1
-                await self._unlock_workspace(conn, row, session, plan, evidence)
+                evidence["released_fence_token"] = next_fence
+                await self._unlock_workspace(conn, {
+                    **row, "workspace_id": workspace_id,
+                }, session, plan, evidence)
                 if session is not None:
                     claim_result = await self._release_claim(conn, row, session, now, evidence)
                 result = RecoveryOutcome(row["id"], outcome, None, evidence)
@@ -1143,10 +1232,7 @@ class OwnerRecovery:
             if evidence.get("preserved_ref"):
                 detail += f"; {evidence['preserved_ref']} keeps what was preserved"
             raise _Refusal(STALE_FENCE, detail)
-        if claim_result is not None:
-            await self.db._after_release(claim_result)
-        await self._comment(row, _release_comment(row, result, principal))
-        return result
+        return result, claim_result
 
     async def _unlock_workspace(
         self,
@@ -1256,12 +1342,17 @@ class OwnerRecovery:
                 integration_owner_recoveries.c.owner_row_id == row["id"],
                 integration_owner_recoveries.c.outcome == NOT_ELIGIBLE,
             ).order_by(integration_owner_recoveries.c.created_at.desc()))).mappings().all()
-        return next((record for record in records if (
-            record["reason"] == "publication_pending" or record["evidence"].get("publication_id")
-        ) and record["evidence"].get("preserved_sha") and all(
-            record["evidence"].get(key) == row[key]
-            for key in ("fence_token", "session_id", "workspace_id", "handoff_state")
-        )), None)
+        for record in records:
+            evidence = record["evidence"]
+            if not (record["reason"] == "publication_pending" or evidence.get("publication_id")):
+                continue
+            workspace_id = evidence.get("recovery_workspace_id", evidence.get("workspace_id"))
+            if evidence.get("preserved_sha") and workspace_id == row["workspace_id"] and all(
+                evidence.get(key) == row[key]
+                for key in ("fence_token", "session_id", "handoff_state")
+            ):
+                return record
+        return None
 
     async def _journal_publication(self, row, evidence):
         async with self.db.immediate() as conn:
