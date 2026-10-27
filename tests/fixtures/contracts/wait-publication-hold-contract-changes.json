@@ -1,0 +1,567 @@
+{
+  "source_base": "9fcda52701c82e2ce18a6f27418bd85c74dd0f66",
+  "reason": "agile-ember-72 adds generation-fenced retirement by continuation id to wait_decide; other decisions still require wait_id.",
+  "command": "wait_decide",
+  "previous_contract_fingerprint": "sha256:db3d6538532a23ac1b92892d72b76b39ba9f8fc25f79bfad921c6e6d9ddda2c2",
+  "contract_fingerprint": "sha256:6b0697ae4b8915f4d4c4233dd3e8d58728c8db223a3494c6f99deb89d02096e6",
+  "previous_execution": {
+    "schema_generation": 1,
+    "name": "wait_decide",
+    "args_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "wait_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "extend",
+            "wake",
+            "cancel",
+            "reroute",
+            "escalate_to_human",
+            "requeue"
+          ],
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "extend_seconds": {
+          "anyOf": [
+            {
+              "maximum": 86400,
+              "minimum": 60,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "to": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "expected_generation": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "continuation_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "decision",
+        "note",
+        "wait_id"
+      ],
+      "type": "object"
+    },
+    "result_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "wait_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "next_step": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "decision",
+        "wait_id"
+      ],
+      "type": "object"
+    },
+    "outcomes": [
+      {
+        "name": "completed",
+        "classification": "success"
+      },
+      {
+        "name": "rejected",
+        "classification": "failure"
+      }
+    ],
+    "capability": "wait_decide",
+    "side_effect": "resolve",
+    "idempotency": {
+      "mode": "natural",
+      "key_field": null
+    },
+    "retry_safe": true,
+    "timeout_seconds": null,
+    "effects": [],
+    "sensitive_args": [],
+    "sensitive_result_fields": [],
+    "receipt_projection": [],
+    "supports_preview": false
+  },
+  "execution": {
+    "schema_generation": 1,
+    "name": "wait_decide",
+    "args_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "wait_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "decision": {
+          "enum": [
+            "extend",
+            "wake",
+            "cancel",
+            "reroute",
+            "escalate_to_human",
+            "requeue",
+            "retire"
+          ],
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "extend_seconds": {
+          "anyOf": [
+            {
+              "maximum": 86400,
+              "minimum": 60,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "to": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "expected_generation": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "continuation_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "decision",
+        "note"
+      ],
+      "type": "object"
+    },
+    "result_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "wait_id": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "next_step": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "decision",
+        "wait_id"
+      ],
+      "type": "object"
+    },
+    "outcomes": [
+      {
+        "name": "completed",
+        "classification": "success"
+      },
+      {
+        "name": "rejected",
+        "classification": "failure"
+      }
+    ],
+    "capability": "wait_decide",
+    "side_effect": "resolve",
+    "idempotency": {
+      "mode": "natural",
+      "key_field": null
+    },
+    "retry_safe": true,
+    "timeout_seconds": null,
+    "effects": [],
+    "sensitive_args": [],
+    "sensitive_result_fields": [],
+    "receipt_projection": [],
+    "supports_preview": false
+  },
+  "previous_definition": {
+    "name": "wait_decide",
+    "description": "Record a supervisor decision for a verified wait.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "wait_id": {
+          "minLength": 1,
+          "title": "Wait Id",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "extend",
+            "wake",
+            "cancel",
+            "reroute",
+            "escalate_to_human",
+            "requeue"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        },
+        "extend_seconds": {
+          "anyOf": [
+            {
+              "maximum": 86400,
+              "minimum": 60,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extend Seconds"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To"
+        },
+        "expected_generation": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Generation"
+        },
+        "continuation_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Continuation Id"
+        }
+      },
+      "required": [
+        "wait_id",
+        "decision",
+        "note"
+      ],
+      "title": "WaitDecideArgs",
+      "type": "object"
+    }
+  },
+  "definition": {
+    "name": "wait_decide",
+    "description": "Record a supervisor decision for a verified wait.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "wait_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wait Id"
+        },
+        "decision": {
+          "enum": [
+            "extend",
+            "wake",
+            "cancel",
+            "reroute",
+            "escalate_to_human",
+            "requeue",
+            "retire"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        },
+        "extend_seconds": {
+          "anyOf": [
+            {
+              "maximum": 86400,
+              "minimum": 60,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extend Seconds"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To"
+        },
+        "expected_generation": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Generation"
+        },
+        "continuation_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Continuation Id"
+        }
+      },
+      "required": [
+        "decision",
+        "note"
+      ],
+      "title": "WaitDecideArgs",
+      "type": "object"
+    }
+  },
+  "previous_cli_catalogue_sha256": "9bdba69a2656181a1f707d27fb272d2e17b736caf8cab3353b70262054185f29",
+  "cli_catalogue_sha256": "59d6fb58f238a2e7668fb2b9bf9b30a12cb230f81feee4719db2c3f51965884c"
+}
