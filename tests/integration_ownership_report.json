@@ -2889,6 +2889,30 @@
     "unknown_sinks": []
   },
   "hand_integration_reconciliation": {
+    "abort_recovery_composition": {
+      "authorized_engine_delta": 26,
+      "authorized_owned_delta": 26,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/batches.py": 3,
+        "src/integration/fixer_batches.py": 11,
+        "src/integration/fixers.py": 12
+      },
+      "dev_source_revision": "e7d3814e9774efb2103610a61cd6fc0e26fee8a7",
+      "measured_engine_lines": 83773,
+      "measured_owned_total": 159649,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83747,
+      "previous_measured_owned_total": 159623,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved abort-recovery fix: preserve explicit batch withdrawal across late fixer callbacks, restart resumption and family rebinding. Preserve every historical grant, original baseline and ownership classification, with zero remaining headroom and no new table or storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "4ee16125826b48d9c832fcc158bf00ffa3216f10",
+      "supervisor_decision_message_id": "msg-d2d0c4d3281646709611d165cc13f946",
+      "task_id": "vivid-willow-73",
+      "thread_id": "vivid-willow-73-abort-recovery-size"
+    },
     "aborted_batch_branch_retirement_composition": {
       "authorized_engine_delta": 55,
       "authorized_owned_delta": 63,
@@ -2930,7 +2954,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 4136,
+    "authorized_owned_delta": 4168,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -3375,8 +3399,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83759,
-    "measured_owned_total": 159635,
+    "measured_engine_lines": 83785,
+    "measured_owned_total": 159667,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -3535,6 +3559,29 @@
       "source_revision": "03a30e91b1374d1b91e3c04fc6d2a63825cf9565",
       "supervisor_decision_message_id": "msg-e2b6f604ca564c87b63159d46b56b709",
       "task_id": "sound-flare-80"
+    },
+    "queued_continuation_demand_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 6,
+      "authorized_shared_owned_delta": 6,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/orchestrator/pools.py": 6
+      },
+      "decision_message_id": "msg-927da743554448619862dd297dea6afe",
+      "dev_source_revision": "94f4c82ee1898298711498c93ca90cb459816db6",
+      "generic_capacity_classification": {
+        "src/waits/occupancy.py::continuation_capacity": "Same read-only wait/session capacity classification as continuation_occupancy; no integration ref policy, mutation authority or delivery storage."
+      },
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 82532,
+      "previous_measured_owned_total": 157793,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2007",
+      "reason": "Exact supervisor-approved +6 shared owned lines for queued continuation pool demand after combining demand and occupancy into one statement. Preserve original baselines, all historical grants and classifications; zero remaining headroom and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "30d8c9fd755a90cc2580dd3af856a0a1fb25193e",
+      "task_id": "sharp-harbor-94"
     },
     "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
     "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
@@ -17273,10 +17320,34 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83759,
+    "engine_cap": 83785,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
+      "abort_recovery_composition": {
+        "authorized_engine_delta": 26,
+        "authorized_owned_delta": 26,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/integration/batches.py": 3,
+          "src/integration/fixer_batches.py": 11,
+          "src/integration/fixers.py": 12
+        },
+        "dev_source_revision": "e7d3814e9774efb2103610a61cd6fc0e26fee8a7",
+        "measured_engine_lines": 83773,
+        "measured_owned_total": 159649,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83747,
+        "previous_measured_owned_total": 159623,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved abort-recovery fix: preserve explicit batch withdrawal across late fixer callbacks, restart resumption and family rebinding. Preserve every historical grant, original baseline and ownership classification, with zero remaining headroom and no new table or storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "4ee16125826b48d9c832fcc158bf00ffa3216f10",
+        "supervisor_decision_message_id": "msg-d2d0c4d3281646709611d165cc13f946",
+        "task_id": "vivid-willow-73",
+        "thread_id": "vivid-willow-73-abort-recovery-size"
+      },
       "aborted_batch_branch_retirement_composition": {
         "authorized_engine_delta": 55,
         "authorized_owned_delta": 63,
@@ -17318,7 +17389,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 4136,
+      "authorized_owned_delta": 4168,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -17763,8 +17834,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 83759,
-      "measured_owned_total": 159635,
+      "measured_engine_lines": 83785,
+      "measured_owned_total": 159667,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -17923,6 +17994,29 @@
         "source_revision": "03a30e91b1374d1b91e3c04fc6d2a63825cf9565",
         "supervisor_decision_message_id": "msg-e2b6f604ca564c87b63159d46b56b709",
         "task_id": "sound-flare-80"
+      },
+      "queued_continuation_demand_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 6,
+        "authorized_shared_owned_delta": 6,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/orchestrator/pools.py": 6
+        },
+        "decision_message_id": "msg-927da743554448619862dd297dea6afe",
+        "dev_source_revision": "94f4c82ee1898298711498c93ca90cb459816db6",
+        "generic_capacity_classification": {
+          "src/waits/occupancy.py::continuation_capacity": "Same read-only wait/session capacity classification as continuation_occupancy; no integration ref policy, mutation authority or delivery storage."
+        },
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 82532,
+        "previous_measured_owned_total": 157793,
+        "previous_measured_table_count": 45,
+        "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2007",
+        "reason": "Exact supervisor-approved +6 shared owned lines for queued continuation pool demand after combining demand and occupancy into one statement. Preserve original baselines, all historical grants and classifications; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "30d8c9fd755a90cc2580dd3af856a0a1fb25193e",
+        "task_id": "sharp-harbor-94"
       },
       "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
       "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
@@ -18420,7 +18514,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159635,
+    "owned_total_cap": 159667,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
