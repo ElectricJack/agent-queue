@@ -1,148 +1,120 @@
 # Slice A dependency assessment
 
-Task: `clear-beacon-42`. This slice opts in 122 existing test modules: 83
-`test_integration_*` modules, 24 `test_wait*` / `test_delivery*` modules, and
-15 modules under `tests/task_graph/`. There are no matching root-level
-`test_train*` or `test_stack*` modules. The 26 prior knowledge opt-ins remain.
-`tests/perf/test_train_selection.py` remains outside this slice.
+Task: `clear-beacon-42`. Current base: dev `266ddce1f`. This submission is blocked
+awaiting PR #2103's V2 manifest factoring. Supervisor decision
+`msg-3b1c8fb5793b4c968f999329bbfee4c4` authorizes publishing owned source, the
+approved ownership reconciliation, and this report only. Regenerated Bazel
+outputs remain local evidence; no shared analyzer or formatter change is included.
 
-The graph package now resolves its authoring exports on demand. Layout imports
-retain the model exports without starting graph creation, command discovery or
-plugins. An isolated-interpreter regression checks deferred initialization,
-public export identities and unknown-attribute behavior.
+The slice targets 122 existing modules: 83 `test_integration_*`, 24 root
+`test_wait*` / `test_delivery*`, and 15 under `tests/task_graph/`. There are no
+matching root `test_train*` or `test_stack*` modules. The performance-only train
+selection module remains outside this slice. CI and smart-selection policy
+remain unchanged.
 
-Source-inspection inputs are explicit beside their consumers. Integration size
-inspection declares `src/`, `dashboard/src/` and its ownership manifest; the two
-delivery retirement inspections declare `src/`. The wait fault-accounting JSON
-is a dashboard input. These are data dependencies rather than Python imports.
-The source-inspection audit verifies all 1,661 inventory inputs are covered.
+The graph facade defers authoring services until requested while preserving its
+public exports. Its isolated-interpreter regression exercises deferred imports,
+export identity, and unknown attributes. Explicit source-tree inspection inputs
+remain beside integration-size and delivery-retirement consumers.
 
-The shared analyzer belongs to `swift-pinnacle-16`, per supervisor guidance
-`msg-5d56e28477a34ceb97208da91a930f41`. Generation requires its repository-relative
-skip filtering and dashboard path recognition. Absolute filtering incorrectly
-ignored directories when the checkout lived beneath `.aq/`. A proposed automatic
-bare-directory recognizer was rejected after a real graph check showed it
-mistook intermediate `ROOT / "src" / ...` expressions for whole-tree reads.
-The explicit consumer declarations avoid that overdeclaration.
+## Current acceptance and handoff
 
-Resolved import closures include nine layout modules (93–99 application files),
-two integration inspection/documentation modules (88 each), and wait migration
-(88). The remaining 110 modules retain real conservative plugin-discovery
-closures. Unmigrated legacy areas also retain their package declarations.
-These import counts alone are not reverse-dependency or timing evidence.
+Acceptance requires Bazel reverse dependencies to contain legacy's real
+mandatory set `M`, together with collection and named-command parity. The
+shadow-only static fallback `S` is not a precision target.
 
-## Preserved obligations
+Independent synthetic single-modified-file observations use the public
+`mandatory_set` API and a complete observation, without static fallback:
 
-The collection comparison preserves all 39,087 baseline node identities and adds
-only `test_layout_import_defers_graph_services_and_preserves_public_exports`,
-giving 39,088 nodes. Slice A contains 6,457 nodes, up from 6,456. All 122 slice
-modules are opted in alongside the 26 prior opt-ins (148 total).
+| Changed source | Mandatory modules across the catalogue | Mandatory modules in the audited group |
+| --- | ---: | ---: |
+| `src/task_graph/layout/order_key.py` | 39 | All 15 graph modules |
+| `src/integration/models.py` | 103 | 65 of 83 integration modules |
 
-The comparison checks each existing node's markers and ordering metadata, each
-module's areas, marker expression, PostgreSQL classification and target label,
-and each suite's command, marker expression and performance policy. Non-default
-suite obligations retain their identities. The eight duration-balanced default
-groups redistribute membership after collection changes; their union preserves
-every prior default node exactly once and equals the legacy command's selected
-node set. CLI obligations remain in their existing separate suite.
+Both graph-layout and task-graph-creation ownership rules apply to order-key.
+A proposed nine-module graph subset would omit six mandatory modules under the
+current rules: active-expansion, cost, flow, layering, ordering, and view. Final
+precision work must retain `M`; import-closure precision alone is insufficient.
 
-These are collection and named-command obligations. They do not establish
-source-change selection parity with the installed smart selector's proposal.
-That selector combines mandatory ownership/area/critical modules (`M`) with
-static impact (`S`). Synthetic single-path observations give 39 mandatory modules
-for `src/task_graph/layout/order_key.py` and 103 for `src/integration/models.py`.
-Both paths occur in the trusted 1,146-path import-time load closure, causing the
-static fallback to propose all 1,012 catalogue modules. A smaller raw Bazel
-reverse-dependency set cannot equal that `M union S` fallback proposal.
-The observations used synthetic single-modified-path snapshots with the public
-static adapter, `pytest-impacted 0.30.0` / `astroid 4.3.2`; they do not describe
-the broader working-tree diff. The contracts are `src/test_selection/mandatory.py`,
-`static_impact.py` (import-time widening), and `policy.py` (fallback composition).
+Slice D is not an ancestor of this base. The current analyzer still treats
+`startswith("src/")` as a source-tree data read, so raw reverse dependencies
+remain overdeclared. No successful narrowing or source-selection cutover is
+claimed. The shared-hook handoff must:
 
-Smart selection remains shadow-only: those proposals do not instruct this task
-to execute the full suite, and ordinary execution still runs the caller's named
-targets and marker arm. The actual backend comparison below uses the same four
-named order-key test identities. No selection-policy or CI cutover is included.
+1. Merge settled dev after #2103 and use its additive JSON declaration hook.
+2. Preserve the delivery source scans, integration-size source/dashboard scans,
+   the wait fault-accounting dashboard JSON, imported test helpers, and exact
+   schema-hash inputs, including hierarchy migration and every migration file.
+3. Regenerate, compare named-command node identities, and re-run source-change
+   proofs against `M` with the same generated graph. Keep conservative paths
+   unless their actual dependencies are proven.
 
-## Measured precision limit
+The current V1 generation produces `tests/BUILD.bazel` at 89,781,545 bytes and
+`tools/bazel/test_suites.json` at 110,245,748 bytes. The latter exceeds GitHub's
+100 MiB limit; both exceed the approved 40 MB generated-file budget. The source-only
+publication deliberately retains dev's generated graph. After #2103 lands, the
+supervisor will reopen this task for V2 regeneration and final proofs.
 
-The v2 generated graph still broadens nominally resolved targets through data.
-For example, order-key layout has 93 imported source files but also declares all
-1,221 application Python files as data. The analyzer mistakes
-`path.startswith("src/")` in `src/test_selection/catalogue.py` for a recursive
-source-tree read. Actual Bazel diagnostic queries therefore selected all 15 graph
-modules and all 83 integration modules in their respective scoped universes.
-These are overdeclaration findings, not successful narrowing proofs.
+Independent collection contains 39,110 nodes: all 39,109 dev nodes plus the new
+facade regression. The diagnostic generation opts in 122 slice modules, increasing
+fine-grained modules from 26 to 148. Comparison found no missing identities and
+preserved commands, markers, PostgreSQL requirements, ordering and non-default
+obligations. These unpublished artifacts establish collection parity, not a
+completed dependency rollout.
 
-The shared analyzer owner has the predicate false positive. Removing it must
-retain the exact schema hash inputs read by `src.database.schema_key`: tables,
-record schema, knowledge protection schema, and hierarchy migration source,
-plus migration files. In particular, `hierarchy_migration.py` is read as data
-without being imported by layout or wait-migration tests.
+Diagnostic Bazel queries selected all 83 integration targets for `models.py`,
+retaining all 65 mandatory targets with 18 extras. Both delivery scans retain all
+1,221 source Python files; the containment spec, 47 wait source files, schema
+inputs, migrations and fixture helpers are retained. The wait-fault dashboard JSON
+is missing from the generated dependency graph and remains a required correction
+through slice D's shared hook. Timer reverse dependencies select all 24 wait and
+delivery targets. Three graph queries timed out during cold external-repository
+preparation; a fourth confirmed the unwanted direct dependency on `creator.py`.
+Graph reverse-dependency and retention proofs remain incomplete. No current Bazel
+build or execution-parity claim is made.
 
-The explicit data audit covers all 1,221 source Python files read by each delivery
-retirement inspection and the wait fault-accounting dashboard JSON. Final
-generation uses a separate checkout outside `.aq` to avoid the known absolute
-path-filtering defect. CI and required-check policy retain their existing commands.
+Detailed evidence is under
+`.aq/tmp/slice-a-resume/`, `.aq/tmp/slice-a-resume-graph/`,
+`.aq/tmp/slice-a-resume-wait/`, and `.aq/tmp/slice-a-resume-integration/`.
 
-## Ownership grant
+The heartbeat still reports `stack_stale_input` after the current dev merge; the
+supervisor identified this as prerequisite-identity bug `steady-vault-53`.
 
-Supervisor message `msg-bb71c846812341e68b2a81bd464d39ef` approves +314 shared
-owned lines, +0 engine lines and +0 tables under
-`size-cap-delegation-2026-10-23` (operator decision `6679052c`). The measured
-composition is +43 in the lazy facade, plus 132 unchanged parser lines and 139
-unchanged validator lines newly reached by the ownership scanner's alias tracing.
-The approved baseline 159,123 / 83,633 / 45 becomes 159,437 / 83,633 / 45,
-with historical grants preserved and no headroom.
+## Ownership reconciliation
 
-## Validation evidence
+The previously approved +314 shared owned lines, +0 engine lines and +0 tables
+are applied once to dev's 159,166 / 83,653 / 45 ledger, yielding exactly
+159,480 / 83,653 / 45 with no headroom. The composition remains +43 facade
+lines plus 132 unchanged parser lines and 139 unchanged validator lines newly
+reached through aliases. Original decision `6679052c`, grant history and the
+original measurement remain intact. A separate merge remeasurement references
+the original composition and explicitly creates no new grant.
 
-The following checks ran through AQ admission with its configured resource caps
-and default marker exclusions. The database uses the repository's disposable
-test PostgreSQL service, never the operator database.
-The table uses the `aq test` spelling; all but the integration-size command were
-invoked as `python -m src.cli.app test` from the repository environment.
+The live inventory has no budget errors. `scripts/bookkeeping_sources.py --check`
+passes, and `aq test tests/test_integration_size.py -q` passes 136 tests.
 
-| Check | Result |
-| --- | --- |
-| `aq test tests/test_bazel_test_dependencies.py tests/task_graph/ tests/test_task_graph.py -q` | 432 passed; included two temporary analyzer regressions subsequently transferred to the shared analyzer owner |
-| `aq test tests/test_wait_faults.py tests/test_wait_migration.py tests/test_delivery_receipt_retirement.py tests/test_delivery_consumers.py tests/test_integration_troubleshooting_doc.py -q` | 180 passed, one skipped |
-| `aq test tests/test_integration_size.py` | 136 passed; exact approved caps and historical grants verified |
-| `python scripts/bookkeeping_sources.py --check` | Passed |
-| Ruff on changed Python sources | Passed |
-| `aq test --aq-backend bazel tests/task_graph/layout/test_order_key.py` with the pinned Bazel 8.3.1 executable | Four pytest nodes passed, zero errors/failures/skips; target 81.8 seconds, Bazel elapsed 177.395 seconds |
+## Current verification
 
-The mapped Bazel result establishes one real admitted execution. It does not
-establish full-suite execution parity, cache-hit parity or a speed improvement.
-Its JUnit identities match all four independently collected legacy order-key
-node identities, with no missing or extra nodes.
-The final `aq test tests/test_bazel_manifest.py tests/test_selection_catalogue.py
--q` run passed 96 checks and skipped six optional acceptance checks in 271.69
-seconds. It verifies the graph generated outside `.aq` against the final 39,088-node
-collection. An earlier run found a stale generator-input inventory after the
-grant measurement file was added; refreshing the inventory resolved it.
+The isolated graph-command check passes eight tests, and documentation coverage
+passes seven. Ruff on changed Python files and `git diff --check` pass.
+The area check across `tests/task_graph/`, `test_task_graph.py`, wait faults and
+migration, delivery retirement and consumers, and the troubleshooting document
+passes 592 tests with one skip. These checks use the separate disposable
+PostgreSQL service; operator database settings remain unchanged.
 
-Positive Bazel queries on the v2 graph returned nine of nine required order-key
-source/fixture/schema labels and a direct target-to-order-key-source path. A timer
-reverse-dependency query over wait-listener and wait-migration returned both
-expected targets. Full dependency queries confirmed the wait fault-accounting
-dashboard JSON and every one of the 1,221 Python files inspected by delivery
-retirement. These prove input retention while the source-predicate
-overdeclaration remains a separate precision limit.
+`aq test tests/test_bazel_manifest.py tests/test_selection_catalogue.py -q`
+finishes with 100 passed, six skipped and one failure: the reproducibility test's
+`/usr/bin/python3.12` interpreter cannot import `pytest_split`. This is a test
+environment limitation, not a successful reproducibility check. The unpublished
+graph was generated separately; its collection comparison is recorded above.
+Final generated-file reproducibility and inventory checks remain due after V2
+regeneration, including the new ownership-measurement input shards.
 
-For example, the following query returned both named wait targets:
+## Prior checkpoint evidence
 
-```sh
-bazel query 'kind("py_test rule", rdeps(set(//tests:test_wait_migration //tests:test_wait_listener), //src/waits:adapters/timer.py))' --output=label --noshow_progress
-```
-
-The source-path query returned the target and its direct source dependency:
-
-```sh
-bazel query 'somepath(//tests:task_graph__layout__test_order_key, //src/task_graph:layout/order_key.py)' --output=label --noshow_progress
-```
-
-The query executable was `/tmp/aq-b2-bazel-8.3.1`, SHA-256
-`17247e8a84245f59d3bc633d0cfe0a840992a7760a11af1a30012d03da31604c`.
-Queries do not execute tests. Interrupted full-universe queries supply no usable
-selection count and are excluded from the evidence.
+Before recovery, the previous worker recorded focused checks (432 passed),
+consumer checks (180 passed, one skipped), and manifest/catalogue checks
+(96 passed, six optional skips). Its admitted Bazel order-key execution passed
+four nodes with exact independent legacy collection identity parity. These are
+historical results; the current submission's checks are recorded separately.
+They do not prove full-suite execution parity, cache-hit parity, or a speedup.
