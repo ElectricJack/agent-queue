@@ -83,6 +83,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.event_bus import EventBus
 from src.git.github import GitHubAccess, GitHubClient
 from src.git.manager import GitManager
+from src.git.repository_lock import RepositoryLock
 from src.jobs.policy import JobError
 from src.llm_logger import LLMLogger
 from src.messaging.types import (
@@ -719,10 +720,10 @@ class Orchestrator(
         self._slot_starved_pauses: dict[str, str] = {}
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
-        """Get or create an asyncio.Lock for shared git operations on a workspace."""
+        """Get the shared repository mutex, honoring claim acquisition bounds."""
         workspace_path = os.path.normcase(os.path.realpath(workspace_path))
         if workspace_path not in self._git_mutexes:
-            self._git_mutexes[workspace_path] = asyncio.Lock()
+            self._git_mutexes[workspace_path] = RepositoryLock()
         return self._git_mutexes[workspace_path]
 
     def _resolve_git_lock(self, cwd: str) -> asyncio.Lock | None:
