@@ -1353,6 +1353,7 @@ exports_files([
         "docs/superpowers/specs/2026-10-20-strict-preference-refusals.md",
         "docs/superpowers/specs/2026-10-23-daemon-latency.md",
         "docs/superpowers/specs/2026-10-23-pool-deletion.md",
+        "docs/superpowers/specs/2026-10-27-bazel-narrow-test-inputs.md",
         "docs/superpowers/specs/README.md",
         "docs/templates/spec.md",
         "docs/tutorials/README.md",
