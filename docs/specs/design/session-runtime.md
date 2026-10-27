@@ -367,6 +367,16 @@ holds, pinned jobs and integration-owned delegates are not automatically requeue
 the same preservation and release. Command callers must pass `dry_run: false` to
 apply. Preview performs no publication, detach, release or audit writes.
 
+Session-bound managed ref leases remain `reserved` after attachment. Owner
+recovery includes these rows, even after TTL expiry, with the same fresh provider
+stop proof and preservation requirements. The session's recorded work directory
+must resolve to one project slot when the lease has no workspace binding; the
+existing origin, claim-time and sentinel checks still apply. Recovery holds the
+ref acquisition lock through preservation and release, revalidates the captured
+lease and stopped instance, clears its holder/session, expires it and advances
+both fence counters. A changed lease or live writer refuses recovery. An unbound
+reservation remains outside routine owner recovery.
+
 Preservation requires a local task ref and its live, materialized
 `task_branch_origins` record. Each candidate must descend from the recorded filing
 base; every unpublished
@@ -407,6 +417,44 @@ worker is confirmed stopped by its provider, its instance and claim generation
 still match, all sessions for that task and agent are stopped, and no integration
 owner remains. It preserves task status, retry budgets, workspaces and other
 frontier guards; releasing an integration-owned hold never clears its assignment.
+
+`aq project recover-retained-holder` repairs historical stopped-holder bindings
+left by failed publication. It is an operator/live global supervisor control, with a
+read-only preview by default. The caller names the project, task and historical
+session, and optionally a retained workspace. Apply requires the exact preview
+digest and a reason. The digest binds task status/assignment/claim epoch, session
+instances, workspace generations, owner fences, job pins, waits, continuations,
+repository identity and Git source contents. Changed evidence refuses apply.
+
+This repair requires positive identity: the named session must still have a
+recorded task binding or task attempt, every related session must be stopped in
+both state and intent, and fresh provider and strict local process probes must
+prove quiescence. Missing sessions, unknown process inventory, successor claims,
+foreign source sentinels and live/nonterminal or cleanup-blocked jobs refuse
+repair. Terminal leftover job pins additionally require exact job, workspace,
+generation, submitter and nonce/process proof. Attached task-owned branch rows
+must name the proved session and retained workspace; modern Git authority rows,
+integration delegates and publications in flight retain their existing recovery owner.
+
+Before releasing ownership, capture full local Git checkpoints (HEAD, index,
+unstaged and untracked work) without changing the live index or files. Protect
+every saved continuation HEAD and local task-branch tip with immutable local
+refs in the registered repository; a missing object refuses repair. Checkpoints
+and their exact refs are recorded in the atomic audit event. This path does not
+depend on GitHub availability and never claims publication. All recovered source
+workspaces remain disabled for explicit operator salvage/re-enable; no reset,
+clean, source deletion or forced publication is authorized. Existing source
+markers and checkouts remain in place.
+
+Under task-control, graph, project and row fences, revalidate the snapshot and
+source after preservation, then retire only the proved stopped attachments,
+terminal job pins and task waits/continuations. Increment released owner fences
+and workspace generations. Clear only that holder's assignment and agent/session
+claim binding, preserving task status, retry counters, routing, recovery holds and
+other admission guards. Operators inspect the audited checkpoint refs and salvage
+the disabled source before explicitly returning that workspace to service.
+Preview never creates refs,
+checkpoints, audits or ownership writes, and a stale apply performs no release.
 
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long

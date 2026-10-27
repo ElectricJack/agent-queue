@@ -243,9 +243,11 @@ class HibernationTransaction:
                 raise WaitError("continuation.stale_generation", "task is no longer suspendable")
             recovering_stop = (intent["resume_state"] == "held"
                                and intent["hold_reason"] == "stop_uncertain")
+            recovering_push = (intent["resume_state"] == "held"
+                               and intent["hold_reason"] == "push_failed")
             state = dict(intent["facts"].get("hibernation", {}))
             if intent["resume_state"] == "held" and (
-                    not recovering_stop or not stop_retry_due(state, now)):
+                    not recovering_push and (not recovering_stop or not stop_retry_due(state, now))):
                 return {"success": True, "held": True, "hold_reason": intent["hold_reason"]}
             session = await suspension_writer(conn, task, wait, intent)
             if intent["summary"] is None and not intent["summary_degraded"]:
@@ -269,6 +271,8 @@ class HibernationTransaction:
             # delivery after this point. External stop/save effects are idempotent.
             state = dict(intent["facts"].get("hibernation", {}))
             if now < state.get('push_retry_at', 0):
+                if recovering_push:
+                    return {'success': True, 'held': True, 'hold_reason': 'push_failed'}
                 return {'success': True, 'push_pending': True}
             state.setdefault("stop_started_at", now)
             if recovering_stop:
@@ -286,7 +290,7 @@ class HibernationTransaction:
             remaining = policy.transition_budget_seconds - elapsed
             # A null token is not a safe signal target (tmux treats it as a
             # wildcard). Expiry and hold recovery only observe; never re-stop.
-            if remaining > 0 and handle.instance_token and not recovering_stop:
+            if remaining > 0 and handle.instance_token and not (recovering_stop or recovering_push):
                 async with asyncio.timeout(remaining):
                     await provider.stop(handle)
                     record = await self.db.get_session(session["id"])
@@ -301,6 +305,12 @@ class HibernationTransaction:
         async with self.db._engine.begin() as conn:
             task, wait, intent = await locked_suspension(conn, wait_id)
             if not stopped:
+                if recovering_push:
+                    state = dict(intent["facts"].get("hibernation", {}))
+                    state["push_retry_at"] = self.clock() + 30
+                    await conn.execute(update(continuations).where(c.id == intent["id"]).values(
+                        facts={**intent["facts"], "hibernation": state}, version=c.version + 1))
+                    return {"success": True, "held": True, "hold_reason": "push_failed"}
                 if recovering_stop:
                     return {"success": True, "held": True, "hold_reason": "stop_uncertain"}
                 state = dict(intent["facts"].get("hibernation", {}))
@@ -334,6 +344,9 @@ class HibernationTransaction:
         if repository is None:
             async with self.db._engine.begin() as conn:
                 task, wait, intent = await locked_suspension(conn, wait_id)
+                state = {**intent['facts'].get('hibernation', {}),
+                         'push_retry_at': self.clock() + 30}
+                intent['facts'] = {**intent['facts'], 'hibernation': state}
                 return await self.hold(conn, task, wait, intent, "push_failed", handler,
                                        detail="Task repository binding is unavailable")
         if intent["saved_head"]:
@@ -384,6 +397,17 @@ class HibernationTransaction:
                     return {'success': True, 'push_pending': True}
                 return await self.hold(conn, task, wait, {**intent, "facts": facts}, "push_failed",
                                        handler, detail=saved.error or "No published head proof")
+            if recovering_push:
+                incident_id = intent["facts"].get("hold_escalation_id")
+                if incident_id:
+                    resolved = await self.service.decisions.resolve_escalation(
+                        conn, {"escalation_id": incident_id, "wait_id": wait_id,
+                               "continuation_id": intent["id"]},
+                        {"note": "Fresh stop proof and successful publication recovered the hold"},
+                        outcome="satisfied", now=self.clock(),
+                    )
+                    if not resolved["success"]:
+                        raise WaitError("wait.unavailable", "publication recovery incident changed")
             if not detached:
                 return await self.hold(conn, task, wait, intent, "detach_uncertain", handler)
             await self.db.park_task_for_continuation(
