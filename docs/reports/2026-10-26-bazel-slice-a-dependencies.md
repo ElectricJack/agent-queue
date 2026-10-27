@@ -1,120 +1,136 @@
 # Slice A dependency assessment
 
-Task: `clear-beacon-42`. Current base: dev `266ddce1f`. This submission is blocked
-awaiting PR #2103's V2 manifest factoring. Supervisor decision
-`msg-3b1c8fb5793b4c968f999329bbfee4c4` authorizes publishing owned source, the
-approved ownership reconciliation, and this report only. Regenerated Bazel
-outputs remain local evidence; no shared analyzer or formatter change is included.
+Task: `clear-beacon-42`. Settled base: dev `512996c47`. This submission applies
+slice D's shared V2 generator and additive declaration hook to 122 existing
+modules: 83 integration, 24 wait/delivery and 15 task-graph modules. No root
+`test_train*` or `test_stack*` module currently exists; the audit includes those
+prefixes for future modules. CI, legacy commands and selection policy are unchanged.
 
-The slice targets 122 existing modules: 83 `test_integration_*`, 24 root
-`test_wait*` / `test_delivery*`, and 15 under `tests/task_graph/`. There are no
-matching root `test_train*` or `test_stack*` modules. The performance-only train
-selection module remains outside this slice. CI and smart-selection policy
-remain unchanged.
+## Acceptance and result
 
-The graph facade defers authoring services until requested while preserving its
-public exports. Its isolated-interpreter regression exercises deferred imports,
-export identity, and unknown attributes. Explicit source-tree inspection inputs
-remain beside integration-size and delivery-retirement consumers.
+The supervisor's recorded acceptance is Bazel dependency containment of legacy's
+real mandatory set `M`, plus collection and named-command parity. Shadow-only
+fallback `S` is not a precision target. The reusable audit is
+`scripts/bazel/slice_a_dependencies.py`; it evaluates complete synthetic
+single-modified-file observations through the public `mandatory_set` API.
 
-## Current acceptance and handoff
+The audit checks all 1,223 tracked source Python paths against the 122-module
+slice. Additive declarations preserve every mandatory edge even where import
+analysis alone would select fewer tests. They also retain runtime reads: source
+inspection scans, ownership dashboard scans, the wait-fault dashboard JSON,
+trust manifests, historical replay fixtures and containment documentation.
 
-Acceptance requires Bazel reverse dependencies to contain legacy's real
-mandatory set `M`, together with collection and named-command parity. The
-shadow-only static fallback `S` is not a precision target.
+All 122 modules currently retain a conservative full-source closure. The shared
+analyzer reports unresolved dynamic imports in
+`src/plugins/internal/__init__.py` and an unresolved file import in
+`src/plugins/loader.py`. Integration-size additionally reaches escaped helper
+code. **This submission does not demonstrate narrower source-change selection.**
+It preserves mandatory coverage and documents the shared precision limitation;
+no local analyzer overlay is included.
 
-Independent synthetic single-modified-file observations use the public
-`mandatory_set` API and a complete observation, without static fallback:
+Pinned Bazel 8.3.1 queries agree exactly with the manifest and omit no mandatory
+module. Counts below are within the indicated slice group, not across the whole
+repository:
 
-| Changed source | Mandatory modules across the catalogue | Mandatory modules in the audited group |
-| --- | ---: | ---: |
-| `src/task_graph/layout/order_key.py` | 39 | All 15 graph modules |
-| `src/integration/models.py` | 103 | 65 of 83 integration modules |
+| Modified source | Group | Mandatory M | Bazel selected |
+| --- | --- | ---: | ---: |
+| `src/task_graph/layout/order_key.py` | graph | 15 | 15 |
+| `src/task_graph/creator.py` | graph | 1 | 15 |
+| `src/task_graph/parser.py` | graph | 0 | 15 |
+| `src/integration/models.py` | integration | 65 | 83 |
+| `src/waits/adapters/timer.py` | wait/delivery | 19 | 24 |
 
-Both graph-layout and task-graph-creation ownership rules apply to order-key.
-A proposed nine-module graph subset would omit six mandatory modules under the
-current rules: active-expansion, cost, flow, layering, ordering, and view. Final
-precision work must retain `M`; import-closure precision alone is insufficient.
+The common audit exits zero for all 1,223 source checks and all five queries.
+The slice contains 6,474 independently collected nodes with identical markers
+and order. The settled manifest SHA-256 is
+`86b9364e919ebeee1c0829f7c75ee80cda9f15cff3e67157cd6d5df1a89f09af`;
+the tests BUILD SHA-256 is
+`a6d1f543d72eb688684781a50272ebd558671ee39ff73a085f28e86b44a5693c`.
 
-Slice D is not an ancestor of this base. The current analyzer still treats
-`startswith("src/")` as a source-tree data read, so raw reverse dependencies
-remain overdeclared. No successful narrowing or source-selection cutover is
-claimed. The shared-hook handoff must:
+Independent group audits also retain 11,166 integration mandatory edges, nine
+integration runtime-reader sets and 143 schema inputs. Additional integration
+probes select 83 modules for candidate-baseline M=50 and trust-manifest M=56.
+Four wait probes each select 24 for M=19. Wait/delivery closure checks preserve
+both complete source scans, 47 wait sources, dashboard JSON, containment spec,
+142 schema inputs per module and 51 direct helper-import obligations. No runtime
+input omission was found. All dedicated query servers were shut down afterwards.
 
-1. Merge settled dev after #2103 and use its additive JSON declaration hook.
-2. Preserve the delivery source scans, integration-size source/dashboard scans,
-   the wait fault-accounting dashboard JSON, imported test helpers, and exact
-   schema-hash inputs, including hierarchy migration and every migration file.
-3. Regenerate, compare named-command node identities, and re-run source-change
-   proofs against `M` with the same generated graph. Keep conservative paths
-   unless their actual dependencies are proven.
+The graph facade defers authoring services until requested while preserving all
+20 public exports. Its isolated-interpreter regression covers deferred imports,
+export identity, caching and unknown attributes. This runtime improvement does
+not overcome the analyzer's conservative fixture/plugin closure.
 
-The current V1 generation produces `tests/BUILD.bazel` at 89,781,545 bytes and
-`tools/bazel/test_suites.json` at 110,245,748 bytes. The latter exceeds GitHub's
-100 MiB limit; both exceed the approved 40 MB generated-file budget. The source-only
-publication deliberately retains dev's generated graph. After #2103 lands, the
-supervisor will reopen this task for V2 regeneration and final proofs.
+## Collection and workflow parity
 
-Independent collection contains 39,110 nodes: all 39,109 dev nodes plus the new
-facade regression. The diagnostic generation opts in 122 slice modules, increasing
-fine-grained modules from 26 to 148. Comparison found no missing identities and
-preserved commands, markers, PostgreSQL requirements, ordering and non-default
-obligations. These unpublished artifacts establish collection parity, not a
-completed dependency rollout.
+Independent collection exits zero with 39,236 nodes: every one of dev's 39,235
+identities and marker sets, plus the facade regression. All 1,013 modules retain
+prior node obligations and non-default workflow memberships. Existing named
+commands, marker expressions, PostgreSQL requirements and collection ordering
+are retained. The eight timing-balanced default splits redistribute after the
+new node; their union retains every old obligation. This changes 364 empty/filled
+module-split target memberships out and 358 in, with zero non-default target
+removals. It is not a loss of tests or a CI change.
 
-Diagnostic Bazel queries selected all 83 integration targets for `models.py`,
-retaining all 65 mandatory targets with 18 extras. Both delivery scans retain all
-1,221 source Python files; the containment spec, 47 wait source files, schema
-inputs, migrations and fixture helpers are retained. The wait-fault dashboard JSON
-is missing from the generated dependency graph and remains a required correction
-through slice D's shared hook. Timer reverse dependencies select all 24 wait and
-delivery targets. Three graph queries timed out during cold external-repository
-preparation; a fourth confirmed the unwanted direct dependency on `creator.py`.
-Graph reverse-dependency and retention proofs remain incomplete. No current Bazel
-build or execution-parity claim is made.
-
-Detailed evidence is under
-`.aq/tmp/slice-a-resume/`, `.aq/tmp/slice-a-resume-graph/`,
-`.aq/tmp/slice-a-resume-wait/`, and `.aq/tmp/slice-a-resume-integration/`.
-
-The heartbeat still reports `stack_stale_input` after the current dev merge; the
-supervisor identified this as prerequisite-identity bug `steady-vault-53`.
+Fine-grained opt-ins increase from 638 to 760. The V2 manifest and generated
+BUILD files replace the previously unpublished oversized V1 artifacts.
+`tools/bazel/test_suites.json` is 27,107,459 bytes, `tests/BUILD.bazel` is
+17,098,536 bytes and `checks/BUILD.bazel` is 353,504 bytes. Large generated-line
+deletions reflect shared-input factoring; the audit verifies retained obligations
+across all 1,013 modules.
 
 ## Ownership reconciliation
 
-The previously approved +314 shared owned lines, +0 engine lines and +0 tables
-are applied once to dev's 159,166 / 83,653 / 45 ledger, yielding exactly
-159,480 / 83,653 / 45 with no headroom. The composition remains +43 facade
+The existing approved +314 shared owned lines, +0 engine lines and +0 tables
+are applied once to dev's 159,208 / 83,653 / 45 ledger, yielding exactly
+159,522 / 83,653 / 45 with zero headroom. The composition remains +43 facade
 lines plus 132 unchanged parser lines and 139 unchanged validator lines newly
-reached through aliases. Original decision `6679052c`, grant history and the
-original measurement remain intact. A separate merge remeasurement references
-the original composition and explicitly creates no new grant.
+reached through aliases. Original decision `6679052c`, every historical grant
+and earlier measurement remain intact. The separate
+`bazel_slice_a_v2_merge_measurement` records this composition on current dev;
+it creates no new grant.
 
-The live inventory has no budget errors. `scripts/bookkeeping_sources.py --check`
-passes, and `aq test tests/test_integration_size.py -q` passes 136 tests.
+## Verification
 
-## Current verification
+The focused graph-command, integration-size, documentation-coverage and generated
+command-contract check passes 276 tests. The area check covering task graph,
+wait faults/migration, delivery consumers/retirement and integration documentation
+passes 592 tests with one skip. Tests use the project virtualenv to run
+the same AQ wrapper (`python "$(command -v aq)" test ...`), retaining box admission
+and worker caps. The installed `/usr/bin/python3.12` AQ interpreter lacks
+`pytest_split`; no package installation or shared environment change was needed.
+The disposable PostgreSQL test service is `:5534`; operator settings remain intact.
 
-The isolated graph-command check passes eight tests, and documentation coverage
-passes seven. Ruff on changed Python files and `git diff --check` pass.
-The area check across `tests/task_graph/`, `test_task_graph.py`, wait faults and
-migration, delivery retirement and consumers, and the troubleshooting document
-passes 592 tests with one skip. These checks use the separate disposable
-PostgreSQL service; operator database settings remain unchanged.
+The final Bazel-manifest, selection-catalogue, documentation-coverage and
+generated-command-contract check passes 242 tests with six skips, including
+generator reproducibility (173.69 seconds), catalogue regeneration, new-file
+ownership and locked generator inputs. Ruff, bookkeeping projection drift,
+generator-input drift and Git whitespace checks pass. No tests were weakened.
 
-`aq test tests/test_bazel_manifest.py tests/test_selection_catalogue.py -q`
-finishes with 100 passed, six skipped and one failure: the reproducibility test's
-`/usr/bin/python3.12` interpreter cannot import `pytest_split`. This is a test
-environment limitation, not a successful reproducibility check. The unpublished
-graph was generated separately; its collection comparison is recorded above.
-Final generated-file reproducibility and inventory checks remain due after V2
-regeneration, including the new ownership-measurement input shards.
+Current evidence is under `.aq/tmp/slice-a-final-*`, including the independent
+collection, retained dev manifest, M audit, query logs and test outputs. No full
+suite, Bazel execution/cache parity or performance speedup is claimed.
 
-## Prior checkpoint evidence
+## Reproduction
 
-Before recovery, the previous worker recorded focused checks (432 passed),
-consumer checks (180 passed, one skipped), and manifest/catalogue checks
-(96 passed, six optional skips). Its admitted Bazel order-key execution passed
-four nodes with exact independent legacy collection identity parity. These are
-historical results; the current submission's checks are recorded separately.
-They do not prove full-suite execution parity, cache-hit parity, or a speedup.
+Stage authored inputs before generation; source discovery snapshots the Git index.
+Retain the dev manifest independently before regenerating. Collect without running
+tests, then generate and audit:
+
+```bash
+git show 512996c47:tools/bazel/test_suites.json > .aq/tmp/slice-a-dev-manifest.json
+python scripts/bazel/inventory.py collect --output .aq/tmp/slice-a-final-collection.json
+python scripts/bazel/generate_targets.py --collection .aq/tmp/slice-a-final-collection.json \
+  --area 'tests/test_integration_*' --area 'tests/test_wait*' \
+  --area 'tests/test_delivery*' --area 'tests/task_graph/*'
+python tools/bazel/generator_inputs.py --write
+python scripts/bazel/slice_a_dependencies.py \
+  --baseline .aq/tmp/slice-a-dev-manifest.json \
+  --collection .aq/tmp/slice-a-final-collection.json \
+  --bazel /path/to/pinned/bazel-8.3.1 \
+  --output-base /tmp/aq-slice-a-audit-bazel --output .aq/tmp/slice-a-final-audit
+```
+
+The audit performs read-only queries with a 2 GiB JVM limit. It records source,
+catalogue, policy, manifest and BUILD digests; asserts mandatory-set containment,
+direct imports and parity; and reports actual selection breadth. Required test
+execution continues through `aq test`.
