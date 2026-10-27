@@ -21,7 +21,7 @@ def test_initialized_database_survives_row_reset_and_new_event_loop(monkeypatch,
 
     from src.database import Database
     from src.models import Project
-    from tests.db_fixtures import InitializedDatabases
+    from tests.reuse_databases import InitializedDatabases
 
     dsn = lease_dsn("reused")
     cache = InitializedDatabases()

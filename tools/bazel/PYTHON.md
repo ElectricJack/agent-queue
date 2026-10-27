@@ -3,7 +3,9 @@
 `scripts/bazel/generate_targets.py` owns the generated `src/**/BUILD.bazel`,
 `tests/BUILD.bazel`, `test_suites.json`, and marked sections in the root,
 `tools/bazel`, and `checks` BUILD files. The other sections belong to their
-respective generators. Refresh after changing tests or fixtures:
+respective generators. The `swift-meadow-43` path-filter fix is merged: directory
+data exclusions are relative to the checkout, so generation and verification also
+work in `.aq` worktrees. Refresh after changing tests or fixtures:
 
 ```bash
 python scripts/generate-selection-catalogue.py
@@ -18,6 +20,15 @@ catalogue identity, workflow commands, markers, and the installed reference
 `pytest-split` version used for the eight duration-balanced default groups.
 Node references are indices into one collection table. A module's parametrized
 IDs are emitted once in its shared Bazel obligation file.
+
+Discovery snapshots `git ls-files --cached` at the repository root. Ignored and
+untracked files do not change analyzer inputs, generated output, collection
+fingerprints, or test discovery. Stage new source files before collecting. A
+source archive must carry `.aq/bazel-source-files.json` with
+`{"schema_version": 1, "files": ["relative/path", "..."]}`, populated from the
+source checkout's tracked paths. The archive uses that explicit inventory.
+Pytest's Python imports and automatic conftest loading still follow pytest's
+normal rules; run collection in a trusted checkout.
 
 ## Per-area dependency migration
 
@@ -51,21 +62,30 @@ from `python_repository_data`. Readers retain documentation inputs; unresolved
 dynamic consumers may conservatively retain them. Selection proofs should inspect
 both the selected modules and their recorded conservative reasons.
 
-The initial knowledge slice does **not** narrow source selection yet. Its root
-conftest imports `src.database`; the PostgreSQL adapter reaches `job_queries`,
-playbook authority, command inventory, and the plugin registry/loader. Unresolved
-plugin discovery therefore retains all Python inputs and documentation. The
-supervisor explicitly deferred that bootstrap decoupling to `fair-glacier-79`;
-this foundation must not be reported as a measured selection or speed improvement.
-The analyzer's synthetic regressions demonstrate narrower declarations when a
-module has a resolvable closure, and record why real modules still widen.
+The database bootstrap refactor (`fair-glacier-79`) makes the package and query
+exports lazy and separates reusable database adapters from lease bookkeeping.
+DSN diagnostics import a small helper directly, without requesting a lazy adapter
+export. Root conftest imports database configuration and adapter helpers inside
+the fixtures that use them. Production package exports retain their identities.
 
-Initial validation of `rdeps(//tests:all, //src/knowledge:budget.py)` selected all
-8,509 generated test rules, including all 26 opted-in focused knowledge targets.
-Each of those modules retained 1,218 application source files. Their recorded
-reasons were unresolved dynamic discovery in `src/plugins/internal/__init__.py`
-and unresolved file imports in `src/plugins/loader.py`. This is retained evidence
-of the bootstrap gap, not a successful narrowing proof.
+The real analyzer from `stark-orbit-64`, merged from dev `0d13d9185`, resolves
+`tests/test_knowledge_inventory.py` to 92 application files, five test/support
+files and four other Python files, with no conservative fallback. The original
+foundation retained 1,219 application files for every knowledge module. The
+repository regression in `tests/test_bazel_test_dependencies.py` verifies that the
+leaf keeps its actual inventory source and root conftest while excluding the
+PostgreSQL adapter, job queries and plugins.
+
+This removes shared bootstrap fan-out, not genuine application dependencies.
+For example, `tests/test_knowledge_budget.py` imports configuration; its closure
+still reaches playbooks, integration and plugins and conservatively retains all
+1,221 current application files. Unmigrated legacy areas also retain broad
+package declarations. Query evidence must distinguish resolved leaf targets,
+conservative targets and legacy targets; this does not make global selection precise
+or establish an execution-time improvement. Literal directory data inputs also
+retain broad resources in the resolved leaf targets. The initial query counts
+were invalidated by the `.aq`-path generation bug; see the correction and validation
+in [the bootstrap assessment](../../docs/reports/2026-10-26-bazel-database-bootstrap.md).
 
 On the shared host, run execution through `aq test --aq-backend bazel`. It clamps
 execution and loading/analysis concurrency to at most two, respecting a lower
@@ -137,3 +157,44 @@ Unset executable settings visibly skip this opt-in check; a skip is not isolated
 backend acceptance. The supervisor-authorized B1 extension supplies H1's pinned
 ELF loader/glibc sysroot and H2's restricted read-only ABI mappings. See
 `ENVIRONMENT.md` for its refusal and native execution checks.
+
+## Audited static input declarations
+
+The per-module analyzer follows literal Python subprocess snippets and explicit
+repository path readers without executing code. Bare directory assignments and
+prefix/comparison strings do not request directory contents. Unknown Python
+execution retains a visible conservative fallback.
+
+Inputs that syntax cannot express can be added in
+`scripts/bazel/test_dependency_inputs.json`, keyed by test module path:
+
+```json
+{
+  "tests/test_example.py": {
+    "imports": ["src.example.entry"],
+    "data": ["tests/fixtures/example/**/*.json"]
+  }
+}
+```
+
+Declarations add to discovered imports, fixtures and resources. Import entries
+include package initializers and transitive imports. Data globs track added and
+removed members; an unknown import or unmatched glob stops generation. These
+entries cannot remove a discovered dependency or suppress a conservative reason.
+
+## Manifest dependency lists
+
+`test_suites.json` schema version two stores distinct ordered dependency lists
+in `dependency_sets`. The key is SHA-256 of the list's compact JSON encoding
+(`ensure_ascii=False`, separators `,` and `:`), encoded as UTF-8. Module fields
+`source_files`, `test_sources`, `other_sources` and `data_files` contain an
+`{"input_set": "<hash>"}` reference. Expansion preserves ordering and duplicates.
+Collection evidence, target identities and suite obligations retain their
+existing shapes. Every dependency remains represented.
+
+Readers use `src/test_selection/bazel_manifest.py::hydrate_manifest`, which
+accepts version one and validates every version-two list and reference before
+returning the expanded logical version-one document. Invalid hashes or unknown
+references fail before test admission, including corruption in unselected
+modules. Generated BUILD filegroups partition labels by identical consumers;
+expanding them preserves each target's exact input set.
