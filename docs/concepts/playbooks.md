@@ -57,6 +57,14 @@ Options:
 
 ## Inputs and outputs
 
+Promotion playbooks read each project's `promotion_flow` step policy. Its
+`ci: reuse_source` default uses green source CI; `ci: rerun` requests fresh
+validation for that step. Hosted reruns dispatch `ci_workflow` on the pinned
+promotion ref. Admission freezes the mode and checks, so changing policy affects
+subsequent requests without changing workflow code. See
+[promotion CI policy](../guides/promotion-flow.md#ci-policy-for-each-promotion-step)
+for configuration, dispatch recovery and activation.
+
 Artifact compatibility is pinned per definition in optional `required_features`.
 Proposal assembly derives the pins from the typed graph and live command
 contracts: generated command contracts, collection expressions, nested foreach
