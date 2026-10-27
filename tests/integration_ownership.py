@@ -932,7 +932,28 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'task_id': 'stark-orbit-64',
+HAND_INTEGRATION_RECONCILIATION = {'incoming_child_batch_composition': {'authorized_engine_delta': 20,
+                                      'authorized_owned_delta': 43,
+                                      'authorized_shared_owned_delta': 23,
+                                      'authorized_table_delta': 0,
+                                      'decision_message_id': 'msg-a8972b49541b431e9146cd95001f18b4',
+                                      'dev_source_revision': 'c10b5b6f9',
+                                      'operator_decision': '6679052c',
+                                      'previous_measured_engine_lines': 82542,
+                                      'previous_measured_owned_total': 157803,
+                                      'previous_measured_table_count': 45,
+                                      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2017',
+                                      'reason': 'Exact supervisor-approved incoming-child-batch '
+                                                'ownership and fresh-head recovery footprint after '
+                                                'merging dev and its setup-script test fix. '
+                                                'Preserve original baselines, every historical '
+                                                'grant and ownership classification, with zero '
+                                                'remaining headroom and no new storage category.',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'source_revision': '3c4ccef55c93e3b400a35485e4ebd70ad016931a',
+                                      'task_id': 'solid-forge-85',
+                                      'thread_id': 'solid-forge-85-ci-size'},
+ 'bazel_dependency_dsn_helper_composition': {'task_id': 'stark-orbit-64',
  'pull_request': 2094,
  'referenced_decision': 'size-cap-delegation-2026-10-23',
  'operator_decision': '6679052c',
@@ -1039,7 +1060,7 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3658,
+ 'authorized_owned_delta': 3701,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1610,8 +1631,8 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83667,
- 'measured_owned_total': 159157,
+ 'measured_engine_lines': 83687,
+ 'measured_owned_total': 159200,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -2548,20 +2569,17 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_dependency_dsn_helper_composition': {'
                                           'authorized_table_delta': 0,
                                           'charged_files': {'src/integration/stacked_branches.py': 34},
                                           'decision_message_id': 'msg-638b9b5121704677b422ee767b531238',
-                                          'dev_source_revision': '0d13d9185eefffde0d9541e7c4cd2165d28c071d',
-                                          'measured_engine_lines': 83667,
-                                          'measured_owned_total': 159157,
+                                          'dev_source_revision': '0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3',
+                                          'measured_engine_lines': 83687,
+                                          'measured_owned_total': 159200,
                                           'measured_table_count': 45,
                                           'operator_decision': '6679052c',
-                                          'previous_measured_engine_lines': 83633,
-                                          'previous_measured_owned_total': 159123,
+                                          'previous_measured_engine_lines': 83653,
+                                          'previous_measured_owned_total': 159166,
                                           'previous_measured_table_count': 45,
-                                          'reason': 'Exact supervisor-approved containment proof '
-                                                    'for delivered legacy stack prerequisites '
-                                                    'after branch cleanup. Preserve every '
-                                                    'historical grant, baseline and ownership '
-                                                    'classification; zero remaining headroom and '
-                                                    'no new storage.',
+                                          'reason': 'Exact supervisor-approved containment proof for delivered legacy stack prerequisites '
+                                                    'after branch cleanup. Preserve every historical grant, baseline and ownership '
+                                                    'classification; zero remaining headroom and no new storage.',
                                           'recomposition_message_id': 'msg-245ae393b72b41ed8408886d15c5b2d9',
                                           'referenced_decision': 'size-cap-delegation-2026-10-23',
                                           'task_id': 'steady-vault-53',

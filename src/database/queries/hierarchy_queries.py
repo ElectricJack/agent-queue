@@ -38,6 +38,7 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.ingest_hold import not_ingest_held
+from src.database.queries.integration_train_queries import open_target_batches
 from src.database.queries.task_queries import (
     INTEGRATION_REWORK_AT_KEY,
     STALE_OPEN_ATTENTION,
@@ -229,7 +230,7 @@ def _settlement_clauses() -> list:
     Container flag ∧ not an ingestion batch member awaiting fidelity review
     (design §4: a held container never auto-settles) ∧ no live session holds
     it ∧ no non-COMPLETED child ∧ not a childless held-open container ∧ no
-    hierarchy/train collection episode owns its completion.  The caller
+    hierarchy/train collection episode or incoming train batch owns its completion. The caller
     joins ``projects`` and adds the status.
     """
     child = tasks.alias("child")
@@ -253,6 +254,12 @@ def _settlement_clauses() -> list:
             )
         ),
         ~childless_held_open_container(),
+        ~open_target_batches(
+            tasks.c.project_id,
+            func.coalesce(tasks.c.repo_id, projects.c.integration_repository_id),
+            literal("refs/heads/") + func.regexp_replace(
+                tasks.c.branch_name, "^refs/heads/", ""),
+        ).exists(),
         or_(
             ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
             ~exists(
