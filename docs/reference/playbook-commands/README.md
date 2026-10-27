@@ -486,6 +486,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
 | [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
 | [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
+| [`recover_retained_holder`](recover_retained_holder.md) | Recover Retained Holder | Execute the recover_retained_holder command. |
 | [`release_project_constraint`](release_project_constraint.md) | Release Project Constraint | Release (remove) the scheduling constraint from a project. |
 | [`release_workspace`](release_workspace.md) | Release Workspace | Release only after rechecking the checkout's independent fences. |
 | [`reload_config`](reload_config.md) | Reload Config | Manually trigger a config hot-reload from disk. |

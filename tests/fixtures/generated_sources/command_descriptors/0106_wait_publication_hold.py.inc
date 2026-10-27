@@ -6,9 +6,12 @@ def _publication_hold_changes():
     )
 
 
-def _before_publication_hold_catalogue():
+def _before_publication_hold_catalogue(catalogue=None):
     evidence = _publication_hold_changes()
-    catalogue = json.loads(render_command_catalogue())
+    if catalogue is None:
+        catalogue = _before_retained_holder_repair_catalogue(
+            json.loads(render_command_catalogue())
+        )
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["definition"]
     definition.clear()
@@ -39,4 +42,7 @@ def test_publication_hold_only_adds_fenced_continuation_retirement():
     assert current == previous
     before = json.dumps(_before_publication_hold_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(before.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    rendered = json.dumps(
+        _before_retained_holder_repair_catalogue(json.loads(render_command_catalogue())), indent=2
+    ) + "\n"
+    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]

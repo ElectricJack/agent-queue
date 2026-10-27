@@ -1956,6 +1956,36 @@ def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
+def _retained_holder_repair_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/retained-holder-repair-contract-changes.json").read_text()
+    )
+
+
+def _before_retained_holder_repair_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = _before_publication_hold_catalogue(json.loads(render_command_catalogue()))
+    evidence = _retained_holder_repair_changes()
+    [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
+    assert definition == evidence["explicit_entry"]
+    catalogue["explicit"].remove(definition)
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_retained_holder_repair_only_adds_evidence_fenced_recovery_command():
+    evidence = _retained_holder_repair_changes()
+    assert evidence["command"] == "recover_retained_holder"
+    assert evidence["source_base"] == "8333fd66a4a58abe6396a2841df4a63a6e7532f4"
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    rendered = json.dumps(
+        _before_publication_hold_catalogue(json.loads(render_command_catalogue())), indent=2
+    ) + "\n"
+    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    previous = json.dumps(_before_retained_holder_repair_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
 
 
 def _publication_hold_changes():
@@ -1964,9 +1994,12 @@ def _publication_hold_changes():
     )
 
 
-def _before_publication_hold_catalogue():
+def _before_publication_hold_catalogue(catalogue=None):
     evidence = _publication_hold_changes()
-    catalogue = json.loads(render_command_catalogue())
+    if catalogue is None:
+        catalogue = _before_retained_holder_repair_catalogue(
+            json.loads(render_command_catalogue())
+        )
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["definition"]
     definition.clear()
@@ -1997,4 +2030,7 @@ def test_publication_hold_only_adds_fenced_continuation_retirement():
     assert current == previous
     before = json.dumps(_before_publication_hold_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(before.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    rendered = json.dumps(
+        _before_retained_holder_repair_catalogue(json.loads(render_command_catalogue())), indent=2
+    ) + "\n"
+    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
