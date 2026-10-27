@@ -574,6 +574,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_children`](task_children.md) | Task Children | Direct or recursive children of a task.  Backs ``aq task children``. |
 | [`task_claim`](task_claim.md) | Task Claim | Execute the task_claim command. |
+| [`task_claim_abort`](task_claim_abort.md) | Task Claim Abort | Cancel one exact preparation without waiting for its task-control lock. |
 | [`task_close`](task_close.md) | Task Close | Close a task with an outcome.  Backs ``aq task close``. |
 | [`task_comment`](task_comment.md) | Task Comment | Execute the task_comment command. |
 | [`task_comment_delete`](task_comment_delete.md) | Task Comment Delete | Execute the task_comment_delete command. |

@@ -389,6 +389,7 @@ async def mark_stopped_integration_pool_handoff_released(
     *,
     workspace,
     session_instance_token: str,
+    expected_task_status: TaskStatus = TaskStatus.READY,
     confirmed_later_sessions: dict[str, tuple[str, float]] | None = None,
 ) -> bool:
     """Release an exact, stopped pool claim without replaying its task transition.
@@ -397,8 +398,9 @@ async def mark_stopped_integration_pool_handoff_released(
     requeued. In that state ``release_claim`` is deliberately the wrong tool:
     its normal READY transition would need to rediscover the old claim epoch,
     and must never overwrite the successor claim. This is the narrow repair
-    for that stranded attachment. It requires the requeued task to still be
-    unassigned, the stopped session/retired worker/slot to be unchanged, and
+    for that stranded attachment, including a closed task before reopen.
+    It requires the task to retain the expected status and remain unassigned,
+    the stopped session/retired worker/slot to be unchanged, and
     no later session for that worker. It then releases only those old rows;
     the task row (including its newer claim epoch) is left untouched.
     """
@@ -489,7 +491,7 @@ async def mark_stopped_integration_pool_handoff_released(
                 workspace_row["locked_by_task_id"] != owner_row["owner_id"]
                 or workspace_row["locked_by_agent_id"] != agent_id
             ))
-            or task_row["status"] != "READY"
+            or task_row["status"] != expected_task_status.value
             or task_row["assigned_agent_id"] is not None
             or agent_row["state"] != AgentState.RETIRED.value
             or agent_row["current_task_id"] != owner_row["owner_id"]
