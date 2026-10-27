@@ -488,6 +488,7 @@ areas:
     match:
       - tests/test_integration_lock.py
       - tests/test_integration_ownership.py
+      - tests/test_retained_holder_repair.py
       - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py
       - tests/test_integration_stale_owners.py

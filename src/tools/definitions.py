@@ -47,6 +47,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "project_doctor": "project",
     "repair_repository_checkout": "project",
     "repair_workspace_checkout": "project",
+    "recover_retained_holder": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -919,6 +920,28 @@ _ALL_TOOL_DEFINITIONS = [
                 "apply": {"type": "boolean", "default": False},
             },
             "required": ["project_id", "workspace_id", "expected_path", "replacement_path", "reason"],
+        },
+    },
+    {
+        "name": "recover_retained_holder",
+        "description": (
+            "Preview or apply recovery of a positively stopped historical task holder. "
+            "Preserves local Git work before releasing exact legacy owner/job pins and stale "
+            "assignment. Leaves recovered workspaces disabled. Apply requires expected_proof "
+            "from preview. Local operator or live global supervisor only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "workspace_id": {"type": "string"},
+                "reason": {"type": "string"},
+                "expected_proof": {"type": "string"},
+                "apply": {"type": "boolean", "default": False},
+            },
+            "required": ["project_id", "task_id", "session_id", "reason"],
         },
     },
     {

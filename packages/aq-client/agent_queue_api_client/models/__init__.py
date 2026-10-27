@@ -1567,6 +1567,12 @@ from .record_show_request import RecordShowRequest
 from .record_show_response import RecordShowResponse
 from .record_show_response_422 import RecordShowResponse422
 from .record_show_response_snapshot import RecordShowResponseSnapshot
+from .recover_retained_holder_request import RecoverRetainedHolderRequest
+from .recover_retained_holder_response import RecoverRetainedHolderResponse
+from .recover_retained_holder_response_422 import RecoverRetainedHolderResponse422
+from .recover_retained_holder_response_checkpoints_item import RecoverRetainedHolderResponseCheckpointsItem
+from .recover_retained_holder_response_evidence_type_0 import RecoverRetainedHolderResponseEvidenceType0
+from .recover_retained_holder_response_snapshot_type_0 import RecoverRetainedHolderResponseSnapshotType0
 from .redaction_row_dto import RedactionRowDTO
 from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .reflow_failed_scope import ReflowFailedScope
@@ -3848,6 +3854,12 @@ __all__ = (
     "RecordShowResponse",
     "RecordShowResponse422",
     "RecordShowResponseSnapshot",
+    "RecoverRetainedHolderRequest",
+    "RecoverRetainedHolderResponse",
+    "RecoverRetainedHolderResponse422",
+    "RecoverRetainedHolderResponseCheckpointsItem",
+    "RecoverRetainedHolderResponseEvidenceType0",
+    "RecoverRetainedHolderResponseSnapshotType0",
     "RedactionRowDTO",
     "RedactionRowDTOPolicy",
     "ReflowFailedScope",
