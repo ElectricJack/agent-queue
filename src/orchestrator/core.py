@@ -2993,6 +2993,11 @@ class Orchestrator(
         for row in await self.db.list_sessions(live_only=True):
             if row.agent_id:
                 protected_agents.add(row.agent_id)
+        # Resume admission owns a fresh agent before its session is persisted.
+        # Preserve that reservation and its workspace across daemon restarts.
+        from src.waits.occupancy import continuation_agent_ids
+
+        protected_agents.update(await continuation_agent_ids(self.db))
 
         # Reset BUSY agents to IDLE
         await self.db.normalize_agent_state_casing()

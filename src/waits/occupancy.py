@@ -4,6 +4,28 @@ from sqlalchemy import literal, select
 from src.database.tables import sessions, tasks, wait_records
 
 
+async def continuation_agent_ids(db):
+    """Agents retained by resume admission, including before a session exists.
+
+    Workspace provisioning may outlast an ordinary launch heartbeat. Only the
+    continuation lifecycle can release these grants and their assigned agents;
+    stale-agent reconciliation must not erase the next writer's claim binding.
+    """
+    from src.database.tables import admission_reservations, continuations
+
+    async with db._engine.connect() as conn:
+        return set((await conn.execute(select(tasks.c.assigned_agent_id).select_from(
+            tasks.join(continuations, continuations.c.task_id == tasks.c.id).join(
+                admission_reservations,
+                admission_reservations.c.continuation_id == continuations.c.id,
+            ),
+        ).where(
+            tasks.c.status == "RESUME_PENDING", tasks.c.assigned_agent_id.is_not(None),
+            continuations.c.resume_state.in_(("reserved", "launching", "delivered", "held")),
+            admission_reservations.c.state.in_(("granted", "consumed")),
+        ))).scalars())
+
+
 async def evictable_sessions(db, config):
     from src.waits.holding import execution_waits
 
