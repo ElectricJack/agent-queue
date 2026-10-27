@@ -42,8 +42,8 @@ navigation goes in the URL; everything else is component or module memory. There
 browser fallback and no migration: while the server is unavailable the dashboard renders
 defaults.
 
-`src/deviceLocal.ts` is the only module that may touch browser persistence, and only for
-these device-local transport keys:
+`src/deviceLocal.ts` is the only module that may touch browser persistence. Its
+`DEVICE_LOCAL_KEYS` registry contains only these device-local transport keys:
 
 | Key | Owner | Why it stays in the browser |
 |---|---|---|
@@ -51,12 +51,28 @@ these device-local transport keys:
 | `aq:ws:epoch` | `ws/useEventStream.ts` | Event-stream epoch; a change after the daemon's database is replaced invalidates the local cursor. |
 | `aq:session:id` | `panes/console-stream/index.tsx` | Read-only connection-identity stub (production never writes it) that rejects a console stream addressed to another session. |
 
+**Explicit Metrics exception — Jack request 2026-10-27 on smart-harbor-20.** The
+four section disclosures are remembered per browser, rather than synchronized across
+devices. `METRICS_SECTION_KEYS` keeps these UI preferences separate from transport keys:
+
+| Key | Owner | Default |
+|---|---|---|
+| `aq:metrics:stat-tiles:open` | `pages/metrics/MetricsSection.tsx` | Expanded |
+| `aq:metrics:graphs:open` | `pages/metrics/MetricsSection.tsx` | Expanded |
+| `aq:metrics:provider-usage:open` | `pages/metrics/MetricsSection.tsx` | Expanded |
+| `aq:metrics:delivery-latency:open` | `pages/metrics/MetricsSection.tsx` | Expanded |
+
+Reads and writes use the guarded helpers in `deviceLocal.ts`. Unavailable storage or
+an invalid value defaults to expanded; a failed write still allows toggling in memory.
+This exception does not authorize browser persistence for any other UI choice.
+
 `tests/test_dashboard_browser_storage.py` enforces this in CI (the vitest suite does not
 run there): any other production file referencing `localStorage`, `sessionStorage`,
 IndexedDB, cookies, Cache Storage or `navigator.storage` fails, as does a
-`DEVICE_LOCAL_KEYS` entry missing from this table or the test's allowlist, or a retired
+registry entry missing from these tables or the test's exact allowlists, or a retired
 feature key reappearing anywhere under `src/`. A new key needs a transport justification
-of the same kind in all three places; a remembered UI choice never qualifies.
+of the same kind in all three places; remembered UI choices require explicit authorization
+such as the four-key Metrics exception above.
 
 History-entry state is navigation, not storage: `shell/navigationHistory.tsx` records the
 pane each entry showed in that entry's `history.state` so Back / Forward restore it, even

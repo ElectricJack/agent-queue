@@ -24,6 +24,13 @@ dashboard-side consumption rules precisely enough that the backend and dashboard
 proceed in parallel. Where a downstream task has latitude, the section says so explicitly;
 everything else is normative.
 
+**Narrow exception added 2026-10-27:** Jack request 2026-10-27 on smart-harbor-20
+explicitly requires per-browser persistence for the four Metrics section disclosures
+(Stat tiles, Graphs, Provider usage, Delivery latency). These use the four exact
+`METRICS_SECTION_KEYS` in `dashboard/src/deviceLocal.ts`, with guarded reads/writes and
+expanded defaults. They are UI preferences, separate from device-local transport state;
+they do not use a server namespace. The rest of this contract remains unchanged.
+
 ## 1. Principles
 
 1. **The server is authoritative from first use.** A dashboard renders a namespace's
