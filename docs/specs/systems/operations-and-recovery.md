@@ -629,8 +629,9 @@ class (`src/orphan_workflow_recovery.py`) is never constructed (§5).
 
 **Integration owner recovery** (`src/integration/owner_recovery.py`; behaviour
 owned by [integration-and-delivery](integration-and-delivery.md)).
-- It releases an `attached` or `handoff_pending` branch owner only with proof
-  that the writer is gone.
+- It releases an `attached`, `handoff_pending` or session-bound `reserved`
+  branch owner only with proof that the writer is gone. Unbound reservations
+  remain outside routine recovery.
 - It pushes the writer's work without forcing.
 - It releases with a compare-and-set.
 - It is reached from `integration_release_owner`, `restore_task_origin`,
