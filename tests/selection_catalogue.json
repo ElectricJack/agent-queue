@@ -7682,7 +7682,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:71ad48995a804f32f2464630ab912db53675f1301b11f7420d02cc81cb870ab0",
+      "digest": "sha256:4978f6182fd32633f14d054123413df86a0d1c22dea46e1fb29ec2d9feb8f1e0",
       "imports": [
         "src.config",
         "src.git.askpass_broker",
@@ -7690,6 +7690,7 @@
         "src.git.github_app",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.git.repository_lock",
         "src.integration.service",
         "src.logging_config",
         "src.metrics.operation_profile",
@@ -15378,7 +15379,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:7addf5dccf6208210bc37e8291730e19c9cd79c6b77d41cbc5001040ef1ac7d6",
+      "digest": "sha256:c7117e8ab55e598075037b5ff6e5cb3fc73f29895521d123f0cede5ed5cd4b3a",
       "imports": [
         "src.cli.app",
         "src.commands.contracts",
@@ -15396,6 +15397,7 @@
         "src.integration.promotion_steps",
         "src.integration.provenance",
         "src.integration.train",
+        "src.integration.train_sources",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -15596,7 +15598,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:2c4863611309b1238749fee922d9d6f80f384fcd8ac150fb0faeb6d87a1e29bf",
+      "digest": "sha256:196e23c6d4c58bd4bbefdbe3efac820b0ab1f4cc3e91ffc9cd8bcba8683fc5df",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -15610,6 +15612,7 @@
         "src.integration.batches",
         "src.integration.checks",
         "src.integration.ci",
+        "src.integration.ci_producers",
         "src.integration.git_truth",
         "src.integration.models",
         "src.integration.promotion_steps",
