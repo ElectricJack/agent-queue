@@ -21,7 +21,7 @@ from src.waits.conditions import WaitError
 from src.waits.admission import AdmissionReader
 
 from src.waits.graph import background_graph_work, lock_graph
-from src.wait_runtime.hibernate import locked_suspension
+from src.wait_runtime.hibernate import locked_suspension, suspension_writer
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
 from src.wait_runtime.legacy_parking import parked
@@ -348,6 +348,28 @@ class ResumeTransaction:
             if (intent['id'], intent['suspension_generation']) != (
                     args['continuation_id'], args['expected_generation']):
                 raise WaitError('continuation.stale_generation', 'held resume generation changed')
+            if (intent['resume_state'] == 'held' and intent['hold_reason'] == 'push_failed'
+                    and intent['stopped_at'] is None and task['status'] in {'WAITING', 'IN_PROGRESS'}
+                    and wait['cleared_at'] is None):
+                # The stored session can still say running after its process died.
+                # Requeue only schedules suspension; advance repeats provider death
+                # proof before any publication or checkout release.
+                await suspension_writer(conn, task, wait, intent)
+                audit = {'wait_id': wait['id'], 'continuation_id': intent['id'],
+                         'generation': intent['suspension_generation'], 'at': self.clock(),
+                         'note': args['note'], 'principal_kind': principal.kind,
+                         'session_id': principal.session_id, 'hold_reason': intent['hold_reason']}
+                await conn.execute(update(continuations).where(
+                    continuations.c.id == intent['id'],
+                ).values(version=intent['version'] + 1, facts={
+                    **intent['facts'], 'resume_requeue': audit,
+                    'hibernation': {**intent['facts'].get('hibernation', {}), 'push_retry_at': 0},
+                }))
+                await conn.execute(insert(events).values(
+                    event_type='wait.resume_requeued', project_id=task['project_id'],
+                    task_id=task['id'], timestamp=audit['at'], payload=json.dumps(audit)))
+                return {'success': True, 'wait_id': wait['id'], 'decision': 'requeue',
+                        'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
             if (intent['resume_state'] != 'held' or task['status'] != 'RESUME_PENDING'
                     or intent['hold_reason'] not in {'resume_workspace_failed', 'resume_launch_failed'}
                     or wait['outcome'] == 'pending' or wait['cleared_at'] is not None):
