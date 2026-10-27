@@ -109,6 +109,7 @@
       "description": "Pinned toolchain, dependency lock and Linux ABI integrity boundaries.",
       "modules": [
         "tests/test_bazel_manifest.py",
+        "tests/test_bazel_subprocess_dependencies.py",
         "tests/test_bazel_test_dependencies.py"
       ]
     },
@@ -3337,12 +3338,13 @@
         "cli-test-runner"
       ],
       "default_arm": true,
-      "digest": "sha256:44115f6bc7de42464a8bdcc794f8e48fb45baac07b69801ff3dba5c39561c99e",
+      "digest": "sha256:9f150dac9a0823346606493d1989de94a58f151b313b2448cac5e3498dfb1271",
       "imports": [
         "src.cli.app",
         "src.cli.test_runner",
         "src.resources.box_lock",
-        "src.resources.semaphore"
+        "src.resources.semaphore",
+        "src.test_selection.bazel_manifest"
       ],
       "markers": [
         "parametrize"
@@ -3398,14 +3400,28 @@
       ],
       "summary": "H5 contracts: real pytest lifecycles with synthetic time, never timing benchmarks."
     },
+    "tests/test_bazel_subprocess_dependencies.py": {
+      "areas": [
+        "bazel-toolchains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:23259458e82f26c9a3cb84172672687c7037f77e27cd0eb36bd288a6369e48c4",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Python subprocess imports must remain present in narrowed Bazel runfiles."
+    },
     "tests/test_bazel_test_dependencies.py": {
       "areas": [
         "bazel-toolchains"
       ],
       "default_arm": true,
-      "digest": "sha256:cad60e4e27d2421bde11d37843c9a85b8ab3cdab735e117c25ee449d9acd7aa6",
+      "digest": "sha256:390f5c0279f298ffd03d4a7cb7ef7bd7601445d06788a5f55c9160325727b272",
       "imports": [],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Per-test Bazel dependency discovery preserves runtime inputs without global fanout."
     },
     "tests/test_blocked_state.py": {
@@ -7666,7 +7682,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:71ad48995a804f32f2464630ab912db53675f1301b11f7420d02cc81cb870ab0",
+      "digest": "sha256:4978f6182fd32633f14d054123413df86a0d1c22dea46e1fb29ec2d9feb8f1e0",
       "imports": [
         "src.config",
         "src.git.askpass_broker",
@@ -7674,6 +7690,7 @@
         "src.git.github_app",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.git.repository_lock",
         "src.integration.service",
         "src.logging_config",
         "src.metrics.operation_profile",
@@ -7776,7 +7793,7 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:10df1072d05de1a4708d823523162b72d251d9163fcfc4d3b58188bd6206fbc8",
+      "digest": "sha256:ca0f6d725cdb60af97822e79522e3b48a575adaca4aaa18733100e034bd4c804",
       "imports": [
         "src.event_bus",
         "src.git",
@@ -7784,6 +7801,7 @@
         "src.git.locks",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.models",
         "src.orchestrator.git_ops",
         "src.orchestrator.workspace_attachments"
@@ -8419,15 +8437,18 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:f0b10a0e8c03f195536275254473db34bcd7ff454a8324b1cc3aca4d781e3d61",
+      "digest": "sha256:5af86b8e94e9f5f4f70221ec03c0ebea3c29e91b0452095c16a36e2fc76ef168",
       "imports": [
+        "src.install",
         "src.install.engine",
         "src.install.platform",
         "src.install.prerequisites",
         "src.install.redaction",
+        "src.install.registry",
         "src.install.results",
         "src.install.state",
-        "src.install.steps"
+        "src.install.steps",
+        "src.install.wizard"
       ],
       "markers": [],
       "summary": "The installer engine: ordering, idempotent reruns, resume and secrecy."

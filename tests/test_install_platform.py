@@ -7,6 +7,8 @@ WSL2 proves nothing about the macOS rows.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,26 @@ from src.install.platform import (
 @pytest.fixture(autouse=True)
 def _pg_backend():
     """Pure detection tests never allocate a database."""
+
+
+def test_platform_import_does_not_load_installer_adapters():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "from src.install.platform import detect_platform\n"
+            "assert callable(detect_platform)\n"
+            "assert 'src.install.registry' not in sys.modules\n"
+            "assert 'src.install.onboarding' not in sys.modules\n"
+            "assert 'src.install.postgres' not in sys.modules\n"
+            "assert 'src.commands' not in sys.modules\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class _Uname:
