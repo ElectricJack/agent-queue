@@ -21768,6 +21768,53 @@
         }
       }
     },
+    "/api/task/claim-abort": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+        "description": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+        "operationId": "task_claim_abort",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskClaimAbortRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskClaimAbortResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/close": {
       "post": {
         "tags": [
@@ -81983,6 +82030,139 @@
           "children"
         ],
         "title": "TaskChildrenResponse"
+      },
+      "TaskClaimAbortRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Preparing task ID."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Exact preparing session ID."
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "instance_token": {
+            "type": "string",
+            "title": "Instance Token",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "session_id",
+          "claim_epoch",
+          "instance_token",
+          "reason"
+        ],
+        "title": "TaskClaimAbortRequest"
+      },
+      "TaskClaimAbortResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "cleanup_pending",
+                  "settled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "claim_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "TaskClaimAbortResponse",
+        "description": "Exact preparation cancellation, including cleanup still in progress."
       },
       "TaskClaimRequest": {
         "properties": {

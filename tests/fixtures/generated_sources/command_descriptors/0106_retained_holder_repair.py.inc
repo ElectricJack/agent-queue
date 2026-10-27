@@ -4,8 +4,9 @@ def _retained_holder_repair_changes():
     )
 
 
-def _before_retained_holder_repair_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+def _before_retained_holder_repair_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = _before_claim_abort_catalogue()
     evidence = _retained_holder_repair_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["explicit_entry"]
@@ -21,7 +22,7 @@ def test_retained_holder_repair_only_adds_evidence_fenced_recovery_command():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    rendered = render_command_catalogue()
+    rendered = json.dumps(_before_claim_abort_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
     previous = json.dumps(_before_retained_holder_repair_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]

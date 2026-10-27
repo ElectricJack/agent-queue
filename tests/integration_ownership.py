@@ -1202,7 +1202,7 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4575,
+ 'authorized_owned_delta': 4703,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1774,7 +1774,7 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83864,
- 'measured_owned_total': 160074,
+ 'measured_owned_total': 160202,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -2790,7 +2790,39 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                                       'source_revision': '2c8b9ef98bdd108dbd9b07907a70f691784e0191',
                                                       'supervisor_decision_message_id': 'msg-6c6199d3fc8c4821986b8c3ede7f3ea2',
                                                       'task_id': 'fresh-ridge-27',
-                                                      'thread_id': 'fresh-ridge-27-size-disposition'}}
+                                                      'thread_id': 'fresh-ridge-27-size-disposition'},
+ 'claim_preparation_reopen_composition': {'authorized_engine_delta': 0,
+                                          'authorized_owned_delta': 128,
+                                          'authorized_shared_owned_delta': 128,
+                                          'authorized_table_delta': 0,
+                                          'charged_files': {'src/commands/claim_commands.py': 78,
+                                                            'src/commands/task_commands.py': 6,
+                                                            'src/orchestrator/workspace.py': 42,
+                                                            'src/orchestrator/workspace_attachments.py': 2},
+                                          'dev_source_revision': 'b0875405bdcd9e7c589a66206f1d271b9754cdb3',
+                                          'measured_engine_lines': 83864,
+                                          'measured_owned_total': 160202,
+                                          'measured_table_count': 45,
+                                          'operator_decision': '6679052c',
+                                          'previous_measured_engine_lines': 83864,
+                                          'previous_measured_owned_total': 160074,
+                                          'previous_measured_table_count': 45,
+                                          'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2129',
+                                          'reason': 'Exact supervisor-approved +128 shared '
+                                                    'owned/+0 engine/+0 tables for bounded claim '
+                                                    'preparation, drained predecessor reopen '
+                                                    'handoff and the shared foreign-session abort '
+                                                    'fence. Preserve every earlier approval, '
+                                                    'original baseline and ownership '
+                                                    'classification, zero remaining headroom, '
+                                                    's4_modules expiry and no code compression or '
+                                                    'new storage category.',
+                                          'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                          'request_message_id': 'msg-a1c4622bc4fc4e74989dda2144085685',
+                                          'source_revision': 'c0441df3ca97b009541902623979e2c96a93a8ef',
+                                          'supervisor_decision_message_id': 'msg-753d51c3263e4a05afeaba14020f619b',
+                                          'task_id': 'eager-bridge-18',
+                                          'thread_id': 'eager-bridge-18-ownership-revision'}}
 
 
 def integration_table(name: str) -> bool:
