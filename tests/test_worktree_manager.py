@@ -241,7 +241,9 @@ def kind() -> WorkspaceKind:
 # ──────────────────────────── §2.4 exclude block ─────────────────────────
 
 
-@pytest.mark.parametrize("operation", ["provision", "reset", "restore", "idle_detach", "handoff"])
+@pytest.mark.parametrize(
+    "operation", ["provision", "reset", "transfer", "restore", "idle_detach", "handoff"],
+)
 async def test_slow_origin_fsck_does_not_refuse_epic_slot_preparation(
     mgr, base_ws, kind, monkeypatch, operation,
 ):
@@ -249,6 +251,7 @@ async def test_slow_origin_fsck_does_not_refuse_epic_slot_preparation(
     incoming = await mgr.create_slot(base_ws, kind, 1)
     await mgr.reset_slot_for_task(outgoing, FakeTask(id="outgoing"))
     _git(["push", "origin", "aq/outgoing"], outgoing.workspace_path)
+    destination = await mgr.create_slot(base_ws, kind, 2) if operation == "transfer" else None
     base = _git(["rev-parse", "HEAD"], base_ws.workspace_path)
     source = Path(_git(["remote", "get-url", "origin"], base_ws.workspace_path))
     lock = RepositoryLock()
@@ -283,6 +286,8 @@ async def test_slow_origin_fsck_does_not_refuse_epic_slot_preparation(
             return await mgr.create_slot(base_ws, kind, 2)
         if operation == "reset":
             return await mgr.reset_slot_for_task(outgoing, FakeTask(id="replacement"))
+        if operation == "transfer":
+            return await mgr.reset_slot_for_task(destination, FakeTask(id="outgoing"))
         if operation == "restore":
             return await mgr.restore_slot_after_task(outgoing)
         if operation == "idle_detach":
@@ -306,13 +311,43 @@ async def test_slow_origin_fsck_does_not_refuse_epic_slot_preparation(
         assert _git(["rev-parse", "HEAD"], incoming.workspace_path) == base
         release.set()
         await asyncio.wait_for(refresh, 10)
-        if operation in {"restore", "idle_detach", "handoff"}:
+        if operation in {"transfer", "restore", "idle_detach", "handoff"}:
             assert _git(["branch", "--show-current"], outgoing.workspace_path) == ""
         assert not lock.locked()
     finally:
         release.set()
         refresh.cancel()
         await asyncio.gather(refresh, return_exceptions=True)
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+async def test_new_branch_holder_after_refresh_is_not_detached(
+    mgr, base_ws, kind, monkeypatch, fenced,
+):
+    holder = await mgr.create_slot(base_ws, kind, 0)
+    incoming = await mgr.create_slot(base_ws, kind, 1)
+    original = mgr._refresh_branch_holder_origin
+
+    async def holder_appears(slot_dir, branch, **kwargs):
+        refreshed = await original(slot_dir, branch, **kwargs)
+        assert not refreshed
+        await mgr.git._arun(["switch", "-c", branch], cwd=holder.workspace_path)
+        return refreshed
+
+    monkeypatch.setattr(mgr, "_refresh_branch_holder_origin", holder_appears)
+    kwargs = {}
+    if fenced:
+        base = _git(["rev-parse", "HEAD"], base_ws.workspace_path)
+        refreshed = await mgr.prefetch_slot_for_task(
+            incoming, base_branch=base, target_branch="aq/raced",
+        )
+        assert refreshed is False
+        monkeypatch.setattr(mgr, "_refresh_branch_holder_origin", original)
+        kwargs = dict(base_branch=base, target_branch="aq/raced", fetch_origin=False,
+                      origin_refreshed=refreshed)
+    with pytest.raises(GitError, match="gained a worktree holder"):
+        await mgr.reset_slot_for_task(incoming, FakeTask(id="raced"), **kwargs)
+    assert _git(["branch", "--show-current"], holder.workspace_path) == "aq/raced"
 
 
 @pytest.mark.parametrize("operation", ["restore", "idle_detach", "handoff"])

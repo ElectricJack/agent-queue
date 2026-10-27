@@ -986,10 +986,12 @@ async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp
         # Exceed the real 30s fence deadline without shortening SQL lock budgets.
         await asyncio.sleep(40)
         assert not inside
+        return True
 
     async def reset(*args, **kwargs):
         assert inside
         assert kwargs["fetch_origin"] is False
+        assert kwargs["origin_refreshed"] is True
         return env.target.branch
 
     slots.prefetch_slot_for_task.side_effect = slow_fetch
@@ -997,6 +999,9 @@ async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp
     result = await settled_claim(env.handler, {"next": True}, timeout=60)
     assert result["result"] == "claimed", result
     slots.prefetch_slot_for_task.assert_awaited_once()
+    assert slots.prefetch_slot_for_task.await_args.kwargs["target_branch"] == (
+        env.target.branch.removeprefix("refs/heads/")
+    )
     slots.reset_slot_for_task.assert_awaited_once()
 
 

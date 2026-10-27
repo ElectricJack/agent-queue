@@ -37,8 +37,10 @@ Slot provisioning, reset, restore, idle detachment and handoff refresh origin
 before entering the shared base-repository mutex. Local ref resolution and all
 checkout/holder proofs and mutations run under that mutex after refresh; a failed
 refresh cannot authorize detachment. Detaching an abandoned holder preserves its
-branch and commits and uses the live holder/binding proof, without another fetch
-inside the mutex. These slot lifecycle paths must allow an independent bounded
+branch and commits. Its publication evidence is refreshed before the mutex,
+then its live holder/binding and exact published HEAD are rechecked inside it.
+A holder appearing after preflight is refused until a fresh attempt; no fetch
+runs inside the mutex. These slot lifecycle paths must allow an independent bounded
 epic-branch preparation while full lender verification is in progress.
 
 A failed full verification is retried up to three times with one-, two- and

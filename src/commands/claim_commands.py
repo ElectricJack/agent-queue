@@ -1986,7 +1986,7 @@ class ClaimCommandsMixin:
                 if preserve_branch:
                     reset_kwargs["preserve_branch"] = True
                 if hierarchy_enabled:
-                    reset_kwargs["fetch_origin"] = False
+                    reset_kwargs.update(fetch_origin=False, origin_refreshed=origin_refreshed is True)
                 stage = "slot_reset"
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
@@ -2113,8 +2113,9 @@ class ClaimCommandsMixin:
                         cwd=slot.workspace_path,
                     )
                 stage = "slot_prefetch"
-                await self.orchestrator._worktree_slots().prefetch_slot_for_task(
-                    slot, base_branch=base_sha, preserve_branch=preparation_args["preserve_branch"],
+                origin_refreshed = await self.orchestrator._worktree_slots().prefetch_slot_for_task(
+                    slot, base_branch=base_sha, target_branch=fence.target.branch,
+                    preserve_branch=preparation_args["preserve_branch"],
                 )
                 stage = "integration_attach"
                 if not hierarchy_attached:
