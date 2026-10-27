@@ -8947,7 +8947,7 @@
     ],
     "review_notes": " Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. ",
     "schema_quality": "typed",
-    "source_digest": "sha256:efd60403d26552c20855a735fa69eade3daac41d00e4f90a033b9cf7c33639b5",
+    "source_digest": "sha256:8b7719f6e85b21e840dccb6c40a7332eef683eb85fcae068e87f7b84f8257547",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
