@@ -1970,7 +1970,7 @@ async def test_worktree_base_fetch_passes_project_repository_to_authenticated_gi
         "/checkout", "main", required=True, project_id="project-1"
     ) == "origin/main"
     git.afetch_origin.assert_awaited_once_with(
-        "/checkout", repository_url="git@github.com:acme/widgets.git", lock_held=True
+        "/checkout", repository_url="git@github.com:acme/widgets.git"
     )
 
 
