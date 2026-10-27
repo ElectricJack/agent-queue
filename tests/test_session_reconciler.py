@@ -1164,6 +1164,9 @@ class TestExitHandling:
         class Git:
             detached = False
 
+            async def _arun(self, args, *, cwd):
+                return await self._arun_unlocked(args, cwd=cwd)
+
             async def aget_current_branch(self, _path, *, strict=False):
                 return "HEAD" if self.detached else "aq/t1"
 
