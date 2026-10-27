@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "f3b2b8a466fde5fb3b36e8c91a78efcb02a81f3f",
+      "source_head": "e408769e15ea0f58fcc2a24b3bb6577fef88ef5b",
       "tool_sha256": "edf71529d50a5c985c9ca33513ebee75a078b8d021bf06ea1b00a6a51e7cddf7"
     },
     "nodes": [
@@ -39650,7 +39650,7 @@
       "tests/test_delivery_integration.py": "8c3e6df1a2a2fcdfe65e1ddd19eefc91427ddb9c9f5e751e70c84420ac17178b",
       "tests/test_delivery_latency.py": "8e269620a83a9187b325a2061c1ec30e7a6f36ac32ac50992989eb25c91769be",
       "tests/test_delivery_precondition_refusals.py": "d2382e49acad8392c91e18c12fd5a019a80e5b3fe7327db79ffd771dda56f588",
-      "tests/test_delivery_receipt_retirement.py": "513469ab026340c5384b1f54969248e00ba558dbe8f35716670c4d8ec5a50725",
+      "tests/test_delivery_receipt_retirement.py": "9f0466ad4b9c9583f59851cfb6bfe8dd3e52afcc0d8ddde551b8d77cc6b9fd32",
       "tests/test_dependency_queries.py": "2e46f3e1a19bda12778fd9c0acbc1ce2db997a33fd21f9a48d4239b0c16ccc05",
       "tests/test_development_integration.py": "838537186027afbef6ae990df69a2e43053fb1f92a17dc9997706488f2b5c8e2",
       "tests/test_development_subjects.py": "901b74f44de868e80eff92126b7d6af43accefe2c513da0570841fe2cfe3379b",
@@ -39828,7 +39828,7 @@
       "tests/test_integration_git_truth.py": "8a8e359fea689923b900cc0c37663e914345509ce04c25160092a2c70631b68f",
       "tests/test_integration_gitops.py": "f5851f17bcc61468a5d3860afb2b88a1063dd35e5ccf2ee42d594c6a0913c408",
       "tests/test_integration_hierarchy.py": "95af10d477420d503e64fa91155b828b786b5eb3e17f3079ed73b8dc84a22992",
-      "tests/test_integration_legacy_backfill.py": "eee37353bda0b9b68da17237c25184cb9d838e6e4a166fee51a8d3c826bd39d2",
+      "tests/test_integration_legacy_backfill.py": "7b7bb132f45449fd0aaec973b2354c27d68c1f229ad04eb82cbb19fcafdfe55d",
       "tests/test_integration_legacy_park_retirement.py": "d0aaa3878548f1af49c44f3b38b97436a324264a696683b6749cce0f3f17ed8e",
       "tests/test_integration_lock.py": "034b40eb1fd72c0370d3ad13616ba93539cdb2c911976b25f2eaa5b661cb1c1a",
       "tests/test_integration_manual_control.py": "84a06f4e3bd5efc2f291f6fdd7e97580f6e98e65986796cdbd089c53785c1a87",
