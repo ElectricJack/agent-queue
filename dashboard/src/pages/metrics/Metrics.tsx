@@ -12,6 +12,7 @@ import { ArrowPathIcon } from "@heroicons/react/24/outline";
 import { RANGES, type RangeKey } from "../../api/metrics";
 import { useEventStreamStatus } from "../../ws/EventStreamProvider";
 import DeliveryLatency from "./DeliveryLatency";
+import MetricsSection from "./MetricsSection";
 import ProviderUsage from "./ProviderUsage";
 import StatTiles from "./StatTiles";
 import SustainedLagBanner from "./SustainedLagBanner";
@@ -106,55 +107,63 @@ export default function Metrics() {
 
       <SustainedLagBanner samples={feed.samples} />
 
-      <StatTiles sample={feed.latest} />
+      <MetricsSection title="Stat tiles">
+        <StatTiles sample={feed.latest} />
+      </MetricsSection>
 
-      <ProviderUsage />
-
-      <DeliveryLatency />
-
-      {feed.isLoading ? (
-        <p className="text-sm text-gray-500">Loading history…</p>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {charts.map((chart) => (
-            <div key={chart.id} className="space-y-2">
-              <TimeSeriesChart
-                title={chart.title}
-                unit={chart.unit}
-                samples={feed.samples as unknown as Array<Record<string, unknown>>}
-                series={chart.series}
-                hidden={hidden[chart.id]}
-              />
-              <div className="flex flex-wrap gap-1.5 px-1">
-                {chart.series.map((series) => {
-                  const off = hidden[chart.id]?.has(series.key) ?? false;
-                  return (
-                    <button
-                      key={series.key}
-                      type="button"
-                      onClick={() => toggle(chart.id, series.key)}
-                      aria-pressed={!off}
-                      className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${
-                        off
-                          ? "border-gray-800 text-gray-600"
-                          : "border-gray-700 text-gray-300 hover:border-gray-600"
-                      }`}
-                    >
-                      <span
-                        aria-hidden
-                        className="h-2 w-2 rounded-full"
-                        style={{ backgroundColor: off ? "transparent" : series.color,
-                                 border: `1px solid ${series.color}` }}
-                      />
-                      {series.label}
-                    </button>
-                  );
-                })}
+      <MetricsSection title="Graphs">
+        {feed.isLoading ? (
+          <p className="text-sm text-gray-500">Loading history…</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {charts.map((chart) => (
+              <div key={chart.id} className="space-y-2">
+                <TimeSeriesChart
+                  title={chart.title}
+                  unit={chart.unit}
+                  samples={feed.samples as unknown as Array<Record<string, unknown>>}
+                  series={chart.series}
+                  hidden={hidden[chart.id]}
+                />
+                <div className="flex flex-wrap gap-1.5 px-1">
+                  {chart.series.map((series) => {
+                    const off = hidden[chart.id]?.has(series.key) ?? false;
+                    return (
+                      <button
+                        key={series.key}
+                        type="button"
+                        onClick={() => toggle(chart.id, series.key)}
+                        aria-pressed={!off}
+                        className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${
+                          off
+                            ? "border-gray-800 text-gray-600"
+                            : "border-gray-700 text-gray-300 hover:border-gray-600"
+                        }`}
+                      >
+                        <span
+                          aria-hidden
+                          className="h-2 w-2 rounded-full"
+                          style={{ backgroundColor: off ? "transparent" : series.color,
+                                   border: `1px solid ${series.color}` }}
+                        />
+                        {series.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </MetricsSection>
+
+      <MetricsSection title="Provider usage">
+        <ProviderUsage />
+      </MetricsSection>
+
+      <MetricsSection title="Delivery latency">
+        <DeliveryLatency />
+      </MetricsSection>
     </div>
   );
 }
