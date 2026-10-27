@@ -32,6 +32,9 @@ from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion
 from tests.db_fixtures import lease_dsn
 from tests.git_seed_helpers import clone_seed, init_bare_seed
 
+# The retirement assertions inspect the complete source tree as data.
+BAZEL_DATA = ("src/",)
+
 CHILDREN = ("done", "wrong", "missing", "reopened")
 
 

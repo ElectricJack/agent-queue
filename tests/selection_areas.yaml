@@ -19,7 +19,7 @@ areas:
     match: [tests/test_bazel_environment.py]
   - id: bazel-toolchains
     description: "Pinned toolchain, dependency lock and Linux ABI integrity boundaries."
-    match: [tests/test_bazel_manifest.py, tests/test_bazel_test_dependencies.py]
+    match: [tests/test_bazel_manifest.py, tests/test_bazel_test_dependencies.py, tests/test_bazel_subprocess_dependencies.py]
   - id: bazel-metrics
     description: "Verification obligation inventory and exact-identity delivery metric accounting."
     match: [tests/test_bazel_metrics.py]
