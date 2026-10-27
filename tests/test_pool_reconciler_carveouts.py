@@ -428,11 +428,15 @@ class TestExits:
         await reconciler._apply_pool_verdict(row, verdict, None, time.time())
         assert (await db.get_session(sid)).state == "stopped"
 
-    async def test_idle_pool_drain_ack_stops_session(self, db, reconciler):
+    async def test_idle_pool_drain_ack_stops_session(self, db, reconciler, provider):
         sid = await held_pool_session(db)
         await db.release_claim(sid, task_status=TaskStatus.READY, context="x", now=time.time())
         assert (await db.get_session(sid)).task_id is None
         await db.update_session(sid, desired_state="stopped")
+        await provider.start(SessionSpec(
+            session_name=sid, work_dir="/wd/agent-1", command=("claude",), instance_token="t",
+        ))
+        await provider.set_meta(SessionHandle(sid, "fake", "t"), DRAIN_ACK_KEY, "1")
         live, now = await observe(reconciler)
         await reconciler._step_drain_ack(live, now)
         assert (await db.get_session(sid)).state == "stopped"
@@ -455,6 +459,13 @@ class TestExits:
 
         live, now = await observe(reconciler)
         await reconciler._step_drain_ack(live, now)
+
+        session = await db.get_session(sid)
+        assert (session.state, session.task_id, session.claim_phase) == (
+            "draining", None, None
+        )
+        provider.stop.assert_not_awaited()
+        await reconciler._step_drain_ack([session], now + 61)
 
         session = await db.get_session(sid)
         task = await db.get_task("t1")
