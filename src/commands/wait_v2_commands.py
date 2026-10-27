@@ -380,6 +380,16 @@ class WaitV2CommandsMixin:
             return None
         if filters is None:
             filters = await self._wait_v2_read_filter(args)
+        if args.get("decision") == "retire":
+            from src.database.tables import continuations
+
+            async with self.db._engine.connect() as conn:
+                wait_id = await conn.scalar(select(continuations.c.wait_id).where(
+                    continuations.c.id == args["continuation_id"],
+                ))
+            if wait_id is None or args.get("wait_id", wait_id) != wait_id:
+                raise WaitError("continuation.stale_generation", "continuation target changed")
+            args["wait_id"] = wait_id
         record = await self._wait_v2_row(args["wait_id"]) if args.get("wait_id") else None
         if args.get("wait_id") and record is None:
             raise WaitError("wait.source_unresolved", "wait not found")

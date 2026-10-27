@@ -627,6 +627,22 @@ class Worker:
             "session", "drain-ack", "--session-id", self.session_id, check_ok=False
         )
 
+    def drain_and_wait(self) -> dict:
+        """Finish the worker protocol and prove its execution seat was released."""
+        self.drain_ack()
+
+        def stopped():
+            shown = api_checked("session_show", {"session_id": self.session_id})
+            row = shown.get("session") or shown
+            return row if row.get("state") == "stopped" else None
+
+        row = wait_for(stopped, what=f"session {self.session_id} to reach state=stopped")
+        check(
+            row.get("end_reason") == "drained",
+            f"fresh-context session stopped for {row.get('end_reason')!r}, not 'drained'",
+        )
+        return row
+
 
 def claim_fixture(
     worker: Worker, task_ids: str | list[str], *, what: str, targeted: bool = False,
@@ -900,8 +916,6 @@ def s2_claim_loop(state: dict) -> str:
     check(nxt["session"]["claims"] == 1, f"claim counter should be 1: {nxt['session']}")
     check(task_show(first_task)["status"] in ("COMPLETED", "DONE"), "first task did not close")
 
-    worker.drain_ack()
-
     # The reconciler now retires the agent, frees the workspace, and the
     # sizer starts a replacement for the still-unclaimed third task.
     #
@@ -910,16 +924,7 @@ def s2_claim_loop(state: dict) -> str:
     # three consequences that do: the session row goes terminal, the slot it
     # held comes back, and `pools.orphan_agents` (which *does* read agent
     # rows) stays clean, which it would not if the agent were left behind.
-    def _retired():
-        shown = api_checked("session_show", {"session_id": worker.session_id})
-        row = shown.get("session") or shown
-        return row if row.get("state") == "stopped" else None
-
-    stopped = wait_for(_retired, what=f"session {worker.session_id} to reach state=stopped")
-    check(
-        stopped.get("end_reason") == "drained",
-        f"fresh-context session stopped for {stopped.get('end_reason')!r}, not 'drained'",
-    )
+    worker.drain_and_wait()
 
     orphan_check = _swarm_checks().get("pools.orphan_agents", {})
     check(
@@ -1037,10 +1042,10 @@ def s3_worker_filed_work(state: dict) -> str:
     check(not left, f"{filed_id} is still gate-blocked after routing: {left}")
 
     worker.close(summary="S3 held task")
-    # This runner is the fake worker: finish the completion protocol before
-    # leaving it. Without the ack, its live session and a pool replacement
-    # occupy S4's extra seat until the daemon's idle-stop grace expires.
-    worker.drain_ack()
+    # This runner is the fake worker: it must acknowledge its own drain.
+    # A closed task leaves a live process until that handshake completes;
+    # carrying it into S4 consumes the seat reserved for formula children.
+    worker.drain_and_wait()
     return f"{filed_id} DEFINED + discovered-from {held} + routing gate {gate_id} resolved"
 
 
