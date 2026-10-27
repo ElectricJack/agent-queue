@@ -13,6 +13,18 @@ _SKIP = {
 }
 
 SOURCE_INVENTORY = ".aq/bazel-source-files.json"
+_PATH_NAMES = {"Path", "PurePath", "PurePosixPath", "__file__"}
+_PATH_ATTRIBUTES = _PATH_NAMES | {"glob", "rglob", "iterdir", "is_dir", "walk", "listdir"}
+
+
+def _path_syntax(nodes) -> bool:
+    """Conservatively recognize syntax that can reach the path resolver."""
+    return any(
+        isinstance(node, ast.Name) and node.id in _PATH_NAMES
+        or isinstance(node, ast.Attribute) and node.attr in _PATH_ATTRIBUTES
+        or isinstance(node, ast.alias) and node.name.rsplit(".", 1)[-1] in _PATH_ATTRIBUTES
+        for node in nodes
+    )
 
 
 def repository_files(root: Path) -> frozenset[str]:
@@ -64,6 +76,7 @@ def repository_files(root: Path) -> frozenset[str]:
 def repository_data(
     root: Path, path: str, nodes: list[ast.AST], *, context: ast.AST | None = None,
     source_files: frozenset[str] | None = None,
+    context_cache: dict | None = None,
 ) -> set[str]:
     """Resolve literal Path expressions without executing repository code.
 
@@ -74,7 +87,22 @@ def repository_data(
     """
     root = root.resolve()
     source_files = repository_files(root) if source_files is None else source_files
+    cached = None
+    if context is not None and context_cache is not None:
+        if context not in context_cache and not _path_syntax(ast.walk(context)):
+            context_cache[context] = False, frozenset(
+                id(node) for node in ast.iter_child_nodes(context)
+            )
+        cached = context_cache.get(context)
+        if cached is not None and cached[0] is False and all(
+            id(node) in cached[1] or node is context for node in nodes
+        ):
+            return set()
     walked = [node for top in nodes for node in ast.walk(top)]
+    # Selected nodes can be supplied separately from their binding context.
+    # Check both before omitting an index that cannot resolve any paths.
+    if cached is not None and cached[0] is False and not _path_syntax(walked):
+        return set()
     explicit_reads = set()
     for node in walked:
         if not isinstance(node, ast.Call):
@@ -131,8 +159,15 @@ def repository_data(
         for child in ast.iter_child_nodes(node):
             index(child, scope)
 
-    for top in [context] if context is not None else nodes:
-        index(top, 0)
+    if cached is not None and cached[0] is not False:
+        scopes, parents, node_scopes = cached
+    else:
+        for top in [context] if context is not None else nodes:
+            index(top, 0)
+        if context is not None and context_cache is not None:
+            # Fixture batches share immutable syntax, but resolve paths separately
+            # for each reader. The owning analyzer discards this index after its run.
+            context_cache[context] = scopes, parents, node_scopes
 
     def bindings(node: ast.Name):
         scope = node_scopes.get(id(node), 0)
@@ -266,4 +301,7 @@ def repository_data(
                     add(candidate, explicit=True)
             except (OSError, ValueError, RuntimeError):
                 continue
+    # These recursive functions otherwise retain each other and their AST indexes
+    # until cyclic GC runs. Graph generation temporarily pauses that collector.
+    index = qualified = resolve = None
     return result

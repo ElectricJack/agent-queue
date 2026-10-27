@@ -224,6 +224,8 @@ def _manifest():
     return targets.hydrate_manifest(json.loads((ROOT / "tools/bazel/test_suites.json").read_text()))
 
 
+# azure-cascade-11: full-graph regeneration measured ~178s under load; allow headroom.
+@pytest.mark.timeout(300)
 def test_graph_is_reproducible_and_matches_catalogue():
     manifest = _manifest()
     catalogue = json.loads((ROOT / "tests/selection_catalogue.json").read_text())
@@ -597,6 +599,59 @@ def test_generated_exports_preserve_authored_public_exports(tmp_path):
     assert targets.authored_exports(rendered["BUILD.bazel"]) == {"openapi.json"}
 
 
+def test_interned_manifest_hashes_each_distinct_input_list_once(monkeypatch):
+    shared = ["src/café.py", "src/a.py", "src/a.py"]
+    manifest = {"schema_version": 1, "modules": {
+        "tests/test_a.py": {"source_files": shared, "data_files": list(shared)},
+        "tests/test_b.py": {"source_files": list(shared), "test_sources": []},
+    }}
+    expected = targets.intern_manifest(manifest)
+    encoded = []
+    original = targets.json.dumps
+
+    def dumps(value, *args, **kwargs):
+        if isinstance(value, list) and kwargs.get("separators") == (",", ":"):
+            encoded.append(tuple(value))
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(targets.json, "dumps", dumps)
+    assert targets.intern_manifest(manifest) == expected
+    assert encoded == [tuple(shared), ()]
+    assert targets.hydrate_manifest(expected) == manifest
+
+
+def test_generate_reads_existing_manifest_once_and_validates_references(tmp_path, monkeypatch):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/selection_catalogue.json").write_text('{"modules": {}}')
+    manifest_path = tmp_path / targets.MANIFEST
+    manifest_path.parent.mkdir(parents=True)
+    encoded = targets.intern_manifest({
+        "schema_version": 1, "collection": {"source_files": {}},
+        "modules": {"tests/test_a.py": {"source_files": ["src/a.py"]}},
+    })
+    manifest_path.write_text(json.dumps(encoded))
+    sentinel = {"rendered": "unchanged"}
+    monkeypatch.setattr(targets, "collection_inputs", lambda root: {})
+    monkeypatch.setattr(targets, "graph", lambda *args: ({}, {}))
+    monkeypatch.setattr(targets, "make_manifest", lambda *args: {})
+    monkeypatch.setattr(targets, "render", lambda *args: sentinel)
+    reads = []
+    original = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == manifest_path:
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert targets.generate(tmp_path) is sentinel
+    assert reads == [manifest_path]
+    encoded["modules"]["tests/test_a.py"]["source_files"] = {"input_set": "missing"}
+    manifest_path.write_text(json.dumps(encoded))
+    with pytest.raises(ValueError, match="unknown dependency set reference"):
+        targets.generate(tmp_path)
+
+
 def test_interned_manifest_dependency_arrays_round_trip_exactly():
     shared = ["src/a.py", "src/b.py"]
     manifest = {
@@ -621,6 +676,34 @@ def test_interned_manifest_dependency_arrays_round_trip_exactly():
     assert targets.hydrate_manifest(manifest) == manifest
     assert '["src/a.py","src/b.py"]' in serialized
     assert targets.manifest_json(encoded) == serialized
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_graph_restores_garbage_collection_policy(tmp_path, monkeypatch, enabled, fails):
+    gc = targets.gc
+    original = gc.isenabled()
+    modules = {"tests/test_behavior.py": {}}
+    selected = set(modules)
+
+    def build(root, received_modules, fine_grained):
+        assert (root, received_modules, fine_grained) == (tmp_path, modules, selected)
+        assert not gc.isenabled()
+        if fails:
+            raise ValueError("invalid input")
+        return {}, {}
+
+    monkeypatch.setattr(targets, "_graph", build)
+    try:
+        (gc.enable if enabled else gc.disable)()
+        if fails:
+            with pytest.raises(ValueError, match="invalid input"):
+                targets.graph(tmp_path, modules, fine_grained=selected)
+        else:
+            assert targets.graph(tmp_path, modules, fine_grained=selected) == ({}, {})
+        assert gc.isenabled() == enabled
+    finally:
+        (gc.enable if original else gc.disable)()
 
 
 def test_directory_data_is_independent_of_worker_root(tmp_path):

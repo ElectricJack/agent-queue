@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import gc
 import hashlib
 import importlib.util
 import json
@@ -41,13 +42,13 @@ EXCLUDE = ["**/__pycache__/**", "**/*.pyc", "**/BUILD.bazel", "**/node_modules/*
 PURE_MODULES = {"tests/test_env_scrub.py"}
 
 
-def dependency_analyzer(root: Path):
+def dependency_analyzer(root: Path, trees: dict[str, ast.Module] | None = None):
     spec = importlib.util.spec_from_file_location(
         "aq_bazel_test_dependencies", ROOT / "scripts/bazel/test_dependencies.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.DependencyAnalyzer(root)
+    return module.DependencyAnalyzer(root, trees=trees)
 
 
 def select_areas(modules: dict, areas: list[str]) -> set[str]:
@@ -83,9 +84,20 @@ def file_label(
     return "//:" + path
 
 
-def reads_docs(root: Path, paths: list[str], cache: dict | None = None) -> bool:
+def source_tree(root: Path, path: str, trees: dict[str, ast.Module]) -> ast.Module:
+    """Parse each path once within one immutable generation snapshot."""
+    if path not in trees:
+        trees[path] = ast.parse((root / path).read_text(encoding="utf-8"))
+    return trees[path]
+
+
+def reads_docs(
+    root: Path, paths: list[str], cache: dict | None = None,
+    *, trees: dict[str, ast.Module] | None = None,
+) -> bool:
     """Conservatively recognize documentation inputs, excluding docstrings."""
     cache = {} if cache is None else cache
+    trees = {} if trees is None else trees
     for path in paths:
         if path in cache:
             if cache[path]:
@@ -93,7 +105,7 @@ def reads_docs(root: Path, paths: list[str], cache: dict | None = None) -> bool:
             continue
         if not path.endswith(".py") or not (root / path).is_file():
             continue
-        tree = ast.parse((root / path).read_text(encoding="utf-8"))
+        tree = source_tree(root, path, trees)
         for node in ast.walk(tree):
             if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.BinOp)) and any(
                     isinstance(child, ast.Constant) and isinstance(child.value, str)
@@ -138,9 +150,11 @@ def module_name(path: str) -> str:
     return name.removesuffix(".__init__")
 
 
-def imports(path: Path, relative: str, known: dict[str, str]) -> tuple[set[str], bool]:
+def imports(
+    path: Path, relative: str, known: dict[str, str], *, tree: ast.Module | None = None,
+) -> tuple[set[str], bool]:
     """Resolve static and literal dynamic imports; unknown dynamic loads widen."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8")) if tree is None else tree
     found: set[str] = set()
     unknown = False
     package = module_name(relative).split(".")
@@ -207,6 +221,20 @@ def closure(seeds: set[str], edges: dict[str, set[str]]) -> set[str]:
 
 
 def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tuple[dict, dict]:
+    # Repeated AST parsing makes cyclic scans costly during this bounded build.
+    # Restore the caller's GC policy even when input analysis fails.
+    enabled = gc.isenabled()
+    if enabled:
+        gc.disable()
+    try:
+        return _graph(root, modules, fine_grained)
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def _graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tuple[dict, dict]:
+    trees: dict[str, ast.Module] = {}
     inputs = repository_files(root)
     files = source_files(root, inputs)
     python = [p for p in files if p.endswith(".py")]
@@ -217,7 +245,9 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
     edges, dynamic = {}, set()
     fixtures = {p for p in support if not Path(p).name.startswith("test_")}
     for path in python + sorted(fixtures):
-        edges[path], unknown = imports(root / path, path, known)
+        edges[path], unknown = imports(
+            root / path, path, known, tree=source_tree(root, path, trees)
+        )
         if unknown:
             dynamic.add(path)
     # A dynamic common fixture already requires every source/test input. Parsing
@@ -225,7 +255,9 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
     # work while retaining the full generator_inputs filegroup for these tests.
     if not closure(fixtures, edges) & dynamic:
         for path in sorted(set(support) - fixtures):
-            edges[path], unknown = imports(root / path, path, known)
+            edges[path], unknown = imports(
+                root / path, path, known, tree=source_tree(root, path, trees)
+            )
             if unknown:
                 dynamic.add(path)
     packages = defaultdict(list)
@@ -244,7 +276,7 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
             "source_packages": sorted({owner(p) for p in reached if p.startswith("src/")}),
         }
     tests = {}
-    analyzer = dependency_analyzer(root) if fine_grained else None
+    analyzer = dependency_analyzer(root, trees) if fine_grained else None
     docs_cache = {}
     for path in sorted(modules):
         reached = closure({path, *fixtures}, edges)
@@ -276,13 +308,15 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
             # The legacy source closure remains unchanged until its area opts in.
             # Documentation is a separate input and only follows actual readers.
             if path not in edges:
-                edges[path], _ = imports(root / path, path, known)
+                edges[path], _ = imports(
+                    root / path, path, known, tree=source_tree(root, path, trees)
+                )
             conftests = [
                 p for p in fixtures if Path(p).name == "conftest.py"
                 and Path(p).parent in Path(path).parents
             ]
             tests[path]["docs"] = reads_docs(
-                root, sorted(closure({path, *conftests}, edges)), docs_cache
+                root, sorted(closure({path, *conftests}, edges)), docs_cache, trees=trees
             )
     return libraries, tests
 
@@ -524,13 +558,18 @@ def intern_manifest(manifest: dict) -> dict:
     """Losslessly intern dependency path lists; collection and obligations stay explicit."""
     manifest = hydrate_manifest(manifest)
     input_sets = {}
+    input_hashes: dict[tuple[str, ...], str] = {}
     modules = {}
     for path, info in manifest["modules"].items():
         modules[path] = dict(info)
         for key in ("source_files", "test_sources", "other_sources", "data_files"):
             if key in info:
-                payload = json.dumps(info[key], ensure_ascii=False, separators=(",", ":"))
-                digest = hashlib.sha256(payload.encode()).hexdigest()
+                paths = tuple(info[key])
+                digest = input_hashes.get(paths)
+                if digest is None:
+                    payload = json.dumps(info[key], ensure_ascii=False, separators=(",", ":"))
+                    digest = hashlib.sha256(payload.encode()).hexdigest()
+                    input_hashes[paths] = digest
                 input_sets[digest] = info[key]
                 modules[path][key] = {"input_set": digest}
     return {**manifest, "schema_version": 2, "modules": modules,
@@ -835,7 +874,7 @@ def generate(
     selected.update(select_areas(catalogue["modules"], areas or []))
     selected.intersection_update(catalogue["modules"])
     if collection is None:
-        collection = json.loads((root / MANIFEST).read_text())["collection"]
+        collection = existing["collection"]
     else:
         collection = compact_collection(collection)
     if collection["source_files"] != collection_inputs(root):

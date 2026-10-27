@@ -586,3 +586,97 @@ def test_invalid_declared_inputs_fail_instead_of_silently_narrowing(
 
     with pytest.raises(ValueError, match=diagnostic):
         discover(tmp_path, "tests/test_sample.py")
+
+
+def test_overlapping_scan_batches_reuse_nodes_with_full_lexical_context(tmp_path, monkeypatch):
+    write(tmp_path, "src/used.py", "VALUE = 1")
+    write(tmp_path, "src/other.py", "VALUE = 2")
+    write(tmp_path, "docs/example.md", "example")
+    path = "tests/test_sample.py"
+    write(tmp_path, path, """
+        import subprocess
+        import sys
+        SCRIPT = "from src import used"
+        def first(request):
+            subprocess.run([sys.executable, "-c", SCRIPT])
+            request.getfixturevalue("needed")
+            resource = "docs/example.md"
+        def second(SCRIPT):
+            subprocess.run([sys.executable, "-c", SCRIPT])
+        class Nested:
+            SCRIPT = "from src import other"
+            def third(self):
+                subprocess.run([sys.executable, "-c", SCRIPT])
+    """)
+    baseline = DependencyAnalyzer(tmp_path)
+    expected = baseline._scan_nodes(path, baseline.tree(path).body)
+    analyzer = DependencyAnalyzer(tmp_path)
+    tree = analyzer.tree(path)
+    calls = []
+    original = analyzer._scan_nodes
+
+    def scan(current_path, nodes, aliases_from=None):
+        calls.extend(id(node) for node in nodes)
+        return original(current_path, nodes, aliases_from)
+
+    monkeypatch.setattr(analyzer, "_scan_nodes", scan)
+    assert analyzer._scan(path, tree.body) == expected
+    assert analyzer._scan(path, list(reversed(tree.body))) == expected
+    analyzer._scan(path, tree.body[-2:])
+    assert all(calls.count(id(node)) == 1 for node in tree.body)
+    assert {"src/used.py", "src/other.py"} <= expected[0]
+    assert expected[2] == {"needed"}
+    assert expected[3]  # The parameter shadows SCRIPT in second().
+    assert "docs/example.md" in expected[4] and expected[5]
+    assert len(analyzer.scan_contexts) == 3  # Source and two literal subprocess trees.
+    assert analyzer._scan_context(path, tree)[0] is analyzer.parents[path]
+
+
+def test_shared_generator_trees_initialize_parents_and_refresh_per_graph(tmp_path, monkeypatch):
+    from scripts.bazel import generate_targets as targets
+
+    write(tmp_path, "src/used.py", "VALUE = 1")
+    write(tmp_path, "src/other.py", "VALUE = 2")
+    path = "tests/test_sample.py"
+    write(tmp_path, path, "from src.used import VALUE")
+    snapshots = []
+    original = targets.dependency_analyzer
+
+    def analyzer(root, trees=None):
+        instance = original(root, trees)
+        assert trees and instance.trees is trees
+        shared = trees["src/used.py"]
+        assert instance.tree("src/used.py") is shared
+        assert "src/used.py" in instance.parents
+        snapshots.append(trees)
+        return instance
+
+    monkeypatch.setattr(targets, "dependency_analyzer", analyzer)
+    _, before = targets.graph(tmp_path, {path: {}}, fine_grained={path})
+    write(tmp_path, "src/used.py", "from src.other import VALUE")
+    _, after = targets.graph(tmp_path, {path: {}}, fine_grained={path})
+    assert "src/other.py" not in before[path]["source_files"]
+    assert "src/other.py" in after[path]["source_files"]
+    assert snapshots[0] is not snapshots[1]
+    assert snapshots[0]["src/used.py"] is not snapshots[1]["src/used.py"]
+
+
+def test_node_scan_cache_includes_lazy_package_recursion_guard(tmp_path):
+    write(tmp_path, "src/pkg/__init__.py", """
+        def __getattr__(name):
+            from src import lazy_input
+            return lazy_input
+    """)
+    write(tmp_path, "src/lazy_input.py", "VALUE = 1")
+    path = "tests/test_sample.py"
+    write(tmp_path, path, "from src.pkg import dynamic")
+    analyzer = DependencyAnalyzer(tmp_path)
+    nodes = analyzer.tree(path).body
+    analyzer.lazy_scanning.add("src/pkg/__init__.py")
+    guarded = analyzer._scan(path, nodes)
+    assert "src/lazy_input.py" not in guarded[0]
+    analyzer.lazy_scanning.clear()
+    unguarded = analyzer._scan(path, nodes)
+    assert "src/lazy_input.py" in unguarded[0]
+    analyzer.lazy_scanning.add("src/pkg/__init__.py")
+    assert analyzer._scan(path, nodes) == guarded

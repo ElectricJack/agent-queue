@@ -10,6 +10,7 @@ import ast
 import json
 import re
 import textwrap
+from collections import deque
 from pathlib import Path
 
 from scripts.bazel.dependency_paths import repository_data, repository_files
@@ -133,10 +134,26 @@ def _walk(node: ast.AST):
         yield from _walk(child)
 
 
+def _definition_inputs(node):
+    inputs = list(node.decorator_list)
+    if isinstance(node, _FUNCTIONS):
+        inputs.extend(node.args.defaults)
+        inputs.extend(x for x in node.args.kw_defaults if x)
+    elif isinstance(node, ast.ClassDef):
+        inputs.extend(node.bases)
+        inputs.extend(keyword.value for keyword in node.keywords)
+        for child in node.body:
+            if isinstance(child, (*_FUNCTIONS, ast.ClassDef)):
+                inputs.extend(_definition_inputs(child))
+            else:
+                inputs.append(child)
+    return inputs
+
+
 class DependencyAnalyzer:
     """Reusable index; create a fresh instance after changing repository inputs."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, trees: dict[str, ast.Module] | None = None):
         self.root = Path(root).resolve()
         self.repository_files = repository_files(self.root)
         self.files = sorted(
@@ -149,12 +166,18 @@ class DependencyAnalyzer:
         for path in self.files:
             if path.startswith("packages/aq-client/agent_queue_api_client/"):
                 self.known[_module(path.split("packages/aq-client/", 1)[1])] = path
-        self.trees: dict[str, ast.Module] = {}
+        self.trees = {} if trees is None else trees
+        self.scan_contexts: dict[tuple, tuple] = {}
+        self.snippet_contexts: dict[tuple, tuple] = {}
+        self.path_contexts: dict = {}
         self.full_scans: dict[str, tuple] = {}
         self.scans: dict[tuple, tuple] = {}
         self.fixture_imports: dict[str, dict] = {}
+        self.support_templates: dict[str, tuple[dict, tuple[ast.AST, ...]]] = {}
         self.lazy_scanning: set[str] = set()
         self.data_paths: dict[str, set[str]] = {}
+        self.import_paths: dict[str, frozenset[str]] = {}
+        self.relative_data_paths: dict[tuple[str, str], frozenset[str]] = {}
         self.parents: dict[str, dict[int, ast.AST]] = {}
         self.subprocess_trees: dict[str, ast.Module] = {}
         declarations = self.root / "scripts/bazel/test_dependency_inputs.json"
@@ -166,19 +189,22 @@ class DependencyAnalyzer:
     def tree(self, path: str) -> ast.Module:
         if path not in self.trees:
             self.trees[path] = ast.parse((self.root / path).read_text(encoding="utf-8"))
+        if path not in self.parents:
             self.parents[path] = {
                 id(child): parent for parent in ast.walk(self.trees[path])
                 for child in ast.iter_child_nodes(parent)
             }
         return self.trees[path]
 
-    def _resolve(self, name: str) -> set[str]:
-        pieces = name.split(".")
-        return {
-            self.known[prefix]
-            for i in range(1, len(pieces) + 1)
-            if (prefix := ".".join(pieces[:i])) in self.known
-        }
+    def _resolve(self, name: str) -> frozenset[str]:
+        if name not in self.import_paths:
+            pieces = name.split(".")
+            self.import_paths[name] = frozenset(
+                self.known[prefix]
+                for i in range(1, len(pieces) + 1)
+                if (prefix := ".".join(pieces[:i])) in self.known
+            )
+        return self.import_paths[name]
 
     def _support_references(self, target: str, seen: set[str] | None = None) -> set[str]:
         """Follow a used test-helper binding through renamed reexports."""
@@ -220,86 +246,36 @@ class DependencyAnalyzer:
             self.data_paths[value] = found
         return self.data_paths[value]
 
-    def _path_data(self, path: str, value: str) -> set[str]:
-        if value.split("/", 1)[0] in _DATA_ROOTS:
-            return self._data_files(value)
-        # __file__-relative fixtures may be rooted at any enclosing test package.
-        # Keep every existing interpretation rather than guess the parent depth.
-        found = set()
-        if value and not Path(value).is_absolute():
-            for parent in Path(path).parents:
-                candidate = (self.root / parent / value).resolve()
-                if candidate.is_relative_to(self.root) and candidate != self.root:
-                    found.update(self._data_files(candidate.relative_to(self.root).as_posix()))
-        return found
+    def _path_data(self, path: str, value: str) -> frozenset[str]:
+        key = path, value
+        if key not in self.relative_data_paths:
+            found = set()
+            if value.split("/", 1)[0] in _DATA_ROOTS:
+                found.update(self._data_files(value))
+            # __file__-relative fixtures may be rooted at any enclosing test package.
+            # Keep every existing interpretation rather than guess the parent depth.
+            elif value and not Path(value).is_absolute():
+                for parent in Path(path).parents:
+                    candidate = (self.root / parent / value).resolve()
+                    if candidate.is_relative_to(self.root) and candidate != self.root:
+                        found.update(self._data_files(candidate.relative_to(self.root).as_posix()))
+            self.relative_data_paths[key] = frozenset(found)
+        return self.relative_data_paths[key]
 
-    def _scan(self, path: str, nodes: list[ast.AST], aliases_from: ast.AST | None = None) -> tuple:
-        key = (path, tuple(id(node) for node in nodes), id(aliases_from))
-        if key in self.scans:
-            return self.scans[key]
-        imports, names, fixture_names, reasons, data = set(), set(), set(), set(), set()
-        docs = False
+    def _scan_context(self, path: str, tree: ast.AST) -> tuple:
+        """Index aliases once in ast.walk order; scan batches never mutate this index."""
+        key = path, id(tree)
+        if key in self.scan_contexts:
+            return self.scan_contexts[key]
         package = _module(path).split(".")
         if not path.endswith("/__init__.py"):
             package = package[:-1]
         aliases = {}
         alias_candidates: dict[str, set[str]] = {}
-        tree = aliases_from if aliases_from is not None else self.tree(path)
-        parents = {
+        parents = self.parents[path] if self.trees.get(path) is tree else {
             id(child): parent for parent in ast.walk(tree)
             for child in ast.iter_child_nodes(parent)
-        } if aliases_from is not None else self.parents[path]
-        scope_nodes = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
-
-        def scope_of(node):
-            while node is not None and not isinstance(node, scope_nodes):
-                node = parents.get(id(node))
-            return node
-
-        bindings = {}
-        for binding in ast.walk(tree):
-            scope = scope_of(parents.get(id(binding)))
-            if isinstance(binding, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                targets = binding.targets if isinstance(binding, ast.Assign) else [binding.target]
-                for target in targets:
-                    for name in ast.walk(target):
-                        if isinstance(name, ast.Name):
-                            value = binding.value if isinstance(target, ast.Name) and not isinstance(
-                                binding, ast.AugAssign
-                            ) else None
-                            bindings.setdefault((id(scope), name.id), []).append(value)
-            elif isinstance(binding, ast.arg):
-                # Parameters shadow any enclosing constant with the same name.
-                owner = scope_of(binding)
-                bindings.setdefault((id(owner), binding.arg), []).append(None)
-            elif isinstance(binding, (ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr)):
-                for name in ast.walk(binding.target):
-                    if isinstance(name, ast.Name):
-                        bindings.setdefault((id(scope), name.id), []).append(None)
-            elif isinstance(binding, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                bindings.setdefault((id(scope), binding.name), []).append(None)
-            elif isinstance(binding, (ast.Import, ast.ImportFrom)):
-                for alias in binding.names:
-                    name = alias.asname or alias.name.split(".")[0]
-                    bindings.setdefault((id(scope), name), []).append(None)
-            elif isinstance(binding, (ast.With, ast.AsyncWith)):
-                for item in binding.items:
-                    if item.optional_vars is not None:
-                        for name in ast.walk(item.optional_vars):
-                            if isinstance(name, ast.Name):
-                                bindings.setdefault((id(scope), name.id), []).append(None)
-            elif isinstance(binding, ast.ExceptHandler) and binding.name:
-                bindings.setdefault((id(scope), binding.name), []).append(None)
-
-        def snippet_assignments(call):
-            result = {}
-            scope = scope_of(call)
-            while scope is not None:
-                for (owner, name), values in bindings.items():
-                    if owner == id(scope):
-                        result.setdefault(name, values)
-                scope = scope_of(parents.get(id(scope)))
-            return result
+        }
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
@@ -316,6 +292,117 @@ class DependencyAnalyzer:
                     binding = alias.asname or alias.name
                     aliases[binding] = alias.name
                     alias_candidates.setdefault(binding, set()).add(alias.name)
+        result = parents, aliases, alias_candidates
+        self.scan_contexts[key] = result
+        return result
+
+    def _snippet_context(self, path: str, tree: ast.AST) -> tuple:
+        """Build lexical bindings only for Python snippets that need name resolution."""
+        key = path, id(tree)
+        if key in self.snippet_contexts:
+            return self.snippet_contexts[key]
+        scope_nodes = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        scopes, by_scope = {}, {}
+
+        def bind(scope, name, value):
+            by_scope.setdefault(id(scope), {}).setdefault(name, []).append(value)
+
+        # Breadth-first order matches ast.walk. Carry the nearest enclosing
+        # scope instead of walking each node's parent chain. Only calls and
+        # scope owners need retained links.
+        pending = deque([(tree, None)])
+        while pending:
+            node, scope = pending.popleft()
+            owns_scope = isinstance(node, scope_nodes)
+            if owns_scope or isinstance(node, ast.Call):
+                scopes[id(node)] = scope
+            child_scope = node if owns_scope else scope
+            pending.extend((child, child_scope) for child in ast.iter_child_nodes(node))
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    for name in ast.walk(target):
+                        if isinstance(name, ast.Name):
+                            value = node.value if isinstance(target, ast.Name) and not isinstance(
+                                node, ast.AugAssign
+                            ) else None
+                            bind(scope, name.id, value)
+            elif isinstance(node, ast.arg):
+                # Parameters shadow any enclosing constant with the same name.
+                bind(scope, node.arg, None)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr)):
+                for name in ast.walk(node.target):
+                    if isinstance(name, ast.Name):
+                        bind(scope, name.id, None)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bind(scope, node.name, None)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    bind(scope, alias.asname or alias.name.split(".")[0], None)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        for name in ast.walk(item.optional_vars):
+                            if isinstance(name, ast.Name):
+                                bind(scope, name.id, None)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bind(scope, node.name, None)
+        by_scope = {
+            owner: {name: tuple(values) for name, values in bindings.items()}
+            for owner, bindings in by_scope.items()
+        }
+        result = scopes, by_scope
+        self.snippet_contexts[key] = result
+        return result
+
+    def _scan(self, path: str, nodes: list[ast.AST], aliases_from: ast.AST | None = None) -> tuple:
+        # Every output is a union over independent top nodes. Bindings come from
+        # the complete fixed context, including assignments outside this batch.
+        # Lazy-package recursion guards are part of the effective scan context.
+        if not path.startswith("tests/"):
+            # Production modules are consumed in full once. Batch their path
+            # discovery, retaining node-level reuse for overlapping test helpers.
+            key = path, tuple(id(node) for node in nodes), id(aliases_from), frozenset(
+                self.lazy_scanning
+            )
+            if key not in self.scans:
+                result = self._scan_nodes(path, nodes, aliases_from)
+                self.scans[key] = (*map(frozenset, result[:5]), result[5])
+            return self.scans[key]
+        outputs = [set() for _ in range(5)]
+        docs = False
+        for top in nodes:
+            key = path, id(top), id(aliases_from), frozenset(self.lazy_scanning)
+            if key not in self.scans:
+                result = self._scan_nodes(path, [top], aliases_from)
+                self.scans[key] = (*map(frozenset, result[:5]), result[5])
+            result = self.scans[key]
+            for output, values in zip(outputs, result[:5]):
+                output.update(values)
+            docs |= result[5]
+        return *outputs, docs
+
+    def _scan_nodes(
+        self, path: str, nodes: list[ast.AST], aliases_from: ast.AST | None = None,
+    ) -> tuple:
+        imports, names, fixture_names, reasons, data = set(), set(), set(), set(), set()
+        docs = False
+        package = _module(path).split(".")
+        if not path.endswith("/__init__.py"):
+            package = package[:-1]
+        tree = aliases_from if aliases_from is not None else self.tree(path)
+        parents, aliases, alias_candidates = self._scan_context(path, tree)
+        context_tree = tree
+
+        def snippet_assignments(call):
+            scopes, bindings = self._snippet_context(path, context_tree)
+            result = {}
+            scope = scopes.get(id(call))
+            while scope is not None:
+                for name, values in bindings.get(id(scope), {}).items():
+                    result.setdefault(name, values)
+                scope = scopes.get(id(scope))
+            return result
         for top in nodes:
             if (isinstance(top, _FUNCTIONS) and top.name == "__getattr__"
                     and path.endswith("/__init__.py")):
@@ -371,10 +458,11 @@ class DependencyAnalyzer:
                         # importing an engine can declare this even if a pure
                         # fixture override prevents migrations in that test.
                         imports.update(self.migration_sources)
-                    python_child, snippet = _subprocess_snippet(
-                        node, aliases, snippet_assignments(node)
-                        if _qualified(node.func, aliases).startswith("subprocess.") else {},
-                    )
+                    python_child, snippet = _subprocess_snippet(node, aliases, {})
+                    if python_child and snippet is None:
+                        python_child, snippet = _subprocess_snippet(
+                            node, aliases, snippet_assignments(node),
+                        )
                     if python_child:
                         if snippet is None:
                             reasons.add(f"{path}: unresolved dynamic import in subprocess Python execution")
@@ -505,10 +593,9 @@ class DependencyAnalyzer:
         data.update(repository_data(
             self.root, path, nodes,
             context=aliases_from if aliases_from is not None else self.tree(path),
-            source_files=self.repository_files,
+            source_files=self.repository_files, context_cache=self.path_contexts,
         ))
-        self.scans[key] = imports, names, fixture_names, reasons, data, docs
-        return self.scans[key]
+        return imports, names, fixture_names, reasons, data, docs
 
     def _imported_fixtures(self, path: str, seen: set[str] | None = None) -> dict:
         """Pytest exposes imported fixture functions under their local binding."""
@@ -540,6 +627,21 @@ class DependencyAnalyzer:
         if cacheable:
             self.fixture_imports[path] = found
         return found
+
+    def _support_template(self, path: str) -> tuple[dict, tuple[ast.AST, ...]]:
+        """Cache fixed definitions/startup syntax; discovery copies mutable queues."""
+        if path not in self.support_templates:
+            definitions, startup = {}, []
+            for node in self.tree(path).body:
+                if isinstance(node, (*_FUNCTIONS, ast.ClassDef)):
+                    definitions[node.name] = node
+                    startup.extend(_definition_inputs(node))
+                    if node.name.startswith("pytest_"):
+                        startup.append(node)
+                else:
+                    startup.append(node)
+            self.support_templates[path] = definitions, tuple(startup)
+        return self.support_templates[path]
 
     def discover(self, test_path: str | Path) -> dict:
         test_path = Path(test_path)
@@ -595,6 +697,7 @@ class DependencyAnalyzer:
         scopes = list(dict.fromkeys(plugins + scopes))
         fixtures, definitions, special, active = {}, {}, {}, set()
         requested, referenced, references_seen = set(), set(), set()
+        pending_reference_batches = []
         for scope in scopes:
             tree = self.tree(scope)
             for binding, definition in self._imported_fixtures(scope).items():
@@ -629,38 +732,28 @@ class DependencyAnalyzer:
                 for node in ast.walk(tree):
                     if isinstance(node, _FUNCTIONS) and node.name.startswith("test"):
                         requested.update(arg.arg for arg in node.args.args + node.args.kwonlyargs)
+        definition_owners = {}
+        for scope, defs in definitions.items():
+            for name, node in defs.items():
+                definition_owners.setdefault(name, []).append((scope, node))
         requested.update(name for name, (_, _, autouse) in fixtures.items() if autouse)
         pending = list(dict.fromkeys(scopes + sorted(self._resolve(_module(path)) | extra_imports)))
-
-        def definition_inputs(node):
-            inputs = list(node.decorator_list)
-            if isinstance(node, _FUNCTIONS):
-                inputs.extend(node.args.defaults)
-                inputs.extend(x for x in node.args.kw_defaults if x)
-            elif isinstance(node, ast.ClassDef):
-                inputs.extend(node.bases)
-                inputs.extend(keyword.value for keyword in node.keywords)
-                for child in node.body:
-                    if isinstance(child, (*_FUNCTIONS, ast.ClassDef)):
-                        inputs.extend(definition_inputs(child))
-                    else:
-                        inputs.append(child)
-            return inputs
 
         def register_support(scope):
             # Test support follows the same named-helper mechanism as
             # conftests. Importing lease_dsn must not execute every unrelated
             # helper body; decorators, defaults, class initialization and hooks run.
-            special[scope] = []
-            definitions[scope] = {}
-            for node in self.tree(scope).body:
-                if isinstance(node, (*_FUNCTIONS, ast.ClassDef)):
-                    definitions[scope][node.name] = node
-                    special[scope].extend(definition_inputs(node))
-                    if node.name.startswith("pytest_"):
-                        special[scope].append(node)
-                else:
-                    special[scope].append(node)
+            defs, startup = self._support_template(scope)
+            definitions[scope] = defs
+            special[scope] = list(startup)
+            for name, node in definitions[scope].items():
+                definition_owners.setdefault(name, []).append((scope, node))
+            # Only new support definitions need the complete history. Current
+            # owners are activated immediately below after every scan. Defer the
+            # large history unions until this reader actually needs them.
+            for names in pending_reference_batches:
+                references_seen.update(names)
+            pending_reference_batches.clear()
             referenced.update(references_seen & definitions[scope].keys())
 
         while pending or requested or referenced:
@@ -677,10 +770,10 @@ class DependencyAnalyzer:
                     pending.append(scope)
             while referenced:
                 name = referenced.pop()
-                for scope, defs in definitions.items():
-                    if name in defs and (scope, name) not in active:
+                for scope, node in definition_owners.get(name, ()):
+                    if (scope, name) not in active:
                         active.add((scope, name))
-                        special.setdefault(scope, []).append(defs[name])
+                        special.setdefault(scope, []).append(node)
                         pending.append(scope)
             if not pending:
                 continue
@@ -703,8 +796,8 @@ class DependencyAnalyzer:
             reached.add(current)
             imports, names, fixture_names, unknown, resources, reads_docs = scan
             pending.extend(imports - reached)
-            references_seen.update(names)
-            referenced.update(names)
+            pending_reference_batches.append(names)
+            referenced.update(names & definition_owners.keys())
             requested.update(fixture_names)
             reasons.update(unknown)
             data.update(resources)

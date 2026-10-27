@@ -14,6 +14,25 @@ def write(root: Path, path: str, source: str = "") -> None:
     target.write_text(dedent(source), encoding="utf-8")
 
 
+def test_cached_path_context_keeps_reader_relative_paths_separate(tmp_path):
+    import ast
+
+    from scripts.bazel.dependency_paths import repository_data
+
+    source = "from pathlib import Path\n(Path(__file__).parent / 'input.json').read_text()\n"
+    tree = ast.parse(source)
+    cache = {}
+    for directory in ("one", "two"):
+        reader = f"tests/{directory}/test_reader.py"
+        resource = f"tests/{directory}/input.json"
+        write(tmp_path, reader, source)
+        write(tmp_path, resource, "{}")
+        assert repository_data(
+            tmp_path, reader, tree.body, context=tree, context_cache=cache,
+        ) == {resource}
+    assert len(cache) == 1
+
+
 @pytest.mark.parametrize("command", [
     'subprocess.run([sys.executable, "-I", "-c", "import src.child"])',
     'subprocess.check_output(args=("python3.12", "-c", "import src.child"))',
