@@ -3974,6 +3974,7 @@ GENERATOR_INPUTS = [
     "src/git/locks.py",
     "src/git/manager.py",
     "src/git/process.py",
+    "src/git/repository_lock.py",
     "src/handoffs.py",
     "src/install/__init__.py",
     "src/install/command.py",
