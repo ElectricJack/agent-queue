@@ -249,6 +249,7 @@ start code work, tests or QA from a digest author turn.
     "project_doctor",
     "repair_repository_checkout",
     "repair_workspace_checkout",
+    "recover_retained_holder",
     "rebind_workspace",
     "digest_facts",
     "digest_post",

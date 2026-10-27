@@ -319,6 +319,34 @@ Nothing about the task changes. The stopped session keeps its claim, checkout an
 binding, so this owner recovery, run by hand or by the sweep below, passes the
 writer check, snapshots unpushed work and then releases the branch.
 
+**Historical stopped task holders.** If binding audit reports “no unique current
+session proves the retained holder”, or a READY task still names a dead agent
+and restart reports “saved continuation branch is unavailable”, a local operator
+or live global supervisor can preview the exact historical binding:
+
+```bash
+aq project recover-retained-holder --project-id <project> --task-id <task> \
+  --session-id <historical-session> --workspace-id <workspace> \
+  --reason "Historical failed-publication holder"
+```
+
+Inspect the returned snapshot, Git identities, commit inventory and `proof`.
+Repeat with `--apply --expected-proof <proof>` and the same identities and reason.
+Changed evidence requires a fresh preview. The workspace argument is optional;
+the command also discovers task-locked, continuation-stage and historical-session
+workspaces. Missing historical identity, live/unknown provider or process state,
+foreign bindings, active jobs and modern Git authority/delegation refuse repair.
+Those owners retain their existing recovery protocol.
+
+Apply preserves HEAD, index and unstaged/untracked files under immutable local
+refs before atomically releasing exact legacy owner fences, terminal job pins,
+task waits and continuation bindings, and the stale assignment. The audit event
+`project.retained_holder_recovered` records the original rows and checkpoint refs.
+Task status, retries and recovery holds stay unchanged. Source workspaces remain
+disabled with an `operator:` reason, with their files and claim markers intact.
+Inspect/salvage the recorded refs before re-enabling a source or restarting work;
+this command does not publish commits or restore checkpoints automatically.
+
 **Automatic sweep.** The daemon runs this same guarded recovery every 300 s
 against every candidate row quiet for at least 600 s. It ships on by default
 (`integration.owner_recovery_sweep: true`): stranded-owner recovery is routine,

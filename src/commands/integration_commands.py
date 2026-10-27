@@ -1967,7 +1967,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationReleaseOwnerArgs
         from src.database.tables import integration_branch_owners
-        from src.integration.owner_recovery import RECOVERABLE_STATES, owner_recovery_for
+        from src.integration.owner_recovery import owner_recovery_for, recoverable_owner_clause
 
         try:
             request = IntegrationReleaseOwnerArgs.model_validate(args)
@@ -1981,7 +1981,7 @@ class IntegrationCommandsMixin:
             else:
                 statement = statement.where(
                     integration_branch_owners.c.owner_id == request.task_id,
-                    integration_branch_owners.c.handoff_state.in_(RECOVERABLE_STATES),
+                    recoverable_owner_clause(),
                 )
             rows = [dict(row) for row in (await conn.execute(statement)).mappings().all()]
 
