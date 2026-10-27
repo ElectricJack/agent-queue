@@ -156,7 +156,7 @@ class TestLockProvider:
         await mgr._arun(["fetch", "origin"], cwd=git_repo["clone"])
 
     @pytest.mark.asyncio
-    async def test_arun_no_lock_when_cwd_is_none(self, git_repo):
+    async def test_arun_no_lock_when_cwd_is_none(self, git_repo, monkeypatch):
         """When cwd is None, the lock provider should not be called."""
         mgr = GitManager()
         calls = []
@@ -167,12 +167,10 @@ class TestLockProvider:
 
         mgr.set_lock_provider(provider)
 
-        # cwd=None -- provider should not be called
-        # (git will use the process cwd, but lock provider can't resolve it)
-        try:
-            await mgr._arun(["fetch", "origin"])
-        except Exception:
-            pass  # May fail since cwd might not be a git repo
+        # cwd=None uses the process cwd. Keep the fetch inside the disposable
+        # fixture instead of contacting the checkout's real origin.
+        monkeypatch.chdir(git_repo["clone"])
+        await mgr._arun(["fetch", "origin"])
 
         assert len(calls) == 0
 
