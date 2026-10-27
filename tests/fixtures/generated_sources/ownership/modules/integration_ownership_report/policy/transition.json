@@ -14,7 +14,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 83687,
+    "engine_cap": 83702,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -59,7 +59,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3701,
+      "authorized_owned_delta": 3771,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -128,6 +128,29 @@
         "supervisor_decision_comment_id": "comment-ccb6fb19a24f447c97da075bc800a9a2",
         "task_id": "wise-crest-14",
         "thread_id": "wise-crest-14-ci-size"
+      },
+      "cold_restart_deadline_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 42,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/commands/task_commands.py": 14,
+          "src/wait_runtime/restart.py": 28
+        },
+        "dev_source_revision": "0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3",
+        "evidence_path": "docs/reports/2026-10-26-cold-restart-ownership.json",
+        "measured_engine_lines": 83653,
+        "measured_owned_total": 159208,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83653,
+        "previous_measured_owned_total": 159166,
+        "previous_measured_table_count": 45,
+        "reason": "Exact measured +42 shared-owned/+0 engine/+0 tables within the supervisor pre-approved +90/+90/+0 bound for a bounded cold restart, external proofs outside database transactions, and fenced readmission after continuation retirement. Preserve original baselines, every historical grant and ownership classification, zero remaining headroom, s4_modules expiry and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "9dd471a3ae39eb2494dac5d19945b21a18f4cf7f",
+        "supervisor_decision_message_id": "msg-064ace8754d34bb98fd36c97c2d60fd2",
+        "task_id": "calm-ember-15"
       },
       "dashboard_retirement_overlap": {
         "applied_owned_reduction": 26,
@@ -476,8 +499,29 @@
         "task_id": "steady-vault-53",
         "thread_id": "steady-vault-53-size"
       },
-      "measured_engine_lines": 83687,
-      "measured_owned_total": 159200,
+      "legacy_stack_recompletion_composition": {
+        "authorized_engine_delta": 15,
+        "authorized_owned_delta": 28,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/database/queries/hierarchy_queries.py": 13,
+          "src/integration/stacked_branches.py": 15
+        },
+        "decision_message_id": "msg-5cc8eba6d38647c8ab3160f6c56873e7",
+        "dev_source_revision": "2bbf568cd0cd1545ff46dd739141231d31138e1c",
+        "measured_engine_lines": 83702,
+        "measured_owned_total": 159270,
+        "measured_table_count": 45,
+        "merged_dev_revision": "c00df14336a31dc9576fd4466f19d8084676a1b7",
+        "previous_measured_engine_lines": 83687,
+        "previous_measured_owned_total": 159242,
+        "previous_measured_table_count": 45,
+        "reason": "Exact incremental current-source containment and source-less checkpoint fallback for re-completed/retired stack prerequisites, plus preparation stack proof. Composed on dev 159208/83653/45 after original approved +34 owned/+34 engine. Within pre-approved +60 owned/+60 engine/+0 tables; zero remaining headroom or new storage.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "task_id": "steady-vault-53"
+      },
+      "measured_engine_lines": 83702,
+      "measured_owned_total": 159270,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -1082,7 +1126,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159200,
+    "owned_total_cap": 159270,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [

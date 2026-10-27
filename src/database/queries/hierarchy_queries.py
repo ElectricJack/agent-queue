@@ -957,6 +957,7 @@ class HierarchyQueryMixin:
         dependency = task_dependencies.alias("delivery_head_dependency")
         prerequisite = tasks.alias("delivery_head_prerequisite")
         from src.integration.delivery_observer import prerequisite_observer
+        from src.integration.stacked_branches import observe_stacks, stacked_policy
         from src.git.manager import GitError
 
         observer = prerequisite_observer(self)
@@ -971,6 +972,14 @@ class HierarchyQueryMixin:
                 return None
             if not await view.fresh():
                 raise ValueError("hierarchy prerequisite target moved during preparation")
+            project = await self.get_project(task.project_id)
+            stack_view = (await observe_stacks(observer, task.project_id, task_id=task_id)
+                          if stacked_policy(project) else None)
+            stack_state = await stack_view.currentness() if stack_view else None
+            if stack_state and stack_state.state == "changed":
+                raise ValueError("hierarchy prerequisite stack moved during preparation")
+            if stack_state and not stack_state.current:
+                stack_view = None  # unavailable evidence still permits ordinary preparation
             async with self._engine.connect() as conn:
                 current = (await conn.execute(select(tasks).where(
                     tasks.c.id == task_id,
@@ -990,6 +999,7 @@ class HierarchyQueryMixin:
                 if not ids:
                     return None
                 verified = await view.verified_on(conn, ids)
+                stackable = await stack_view.verified_on(conn, ids) if stack_view else {}
                 origin = (await conn.execute(select(task_branch_origins).where(
                     task_branch_origins.c.task_id == task_id,
                     task_branch_origins.c.reserved.is_(True),
@@ -1016,6 +1026,9 @@ class HierarchyQueryMixin:
                         or target.repository_id != current["repo_id"]
                         or target.target_ref != "refs/heads/" + parent_branch.removeprefix(
                             "refs/heads/")):
+                        if tid in stackable:
+                            unknown.add(tid)
+                            continue
                         raise ValueError("hierarchy prerequisite delivery is not current")
                 if unknown:
                     return None

@@ -154,6 +154,16 @@ absent truth-bearing observer permits `blocks` preparation without a receipt fal
 The agent merges prerequisite state from Git; ancestry at publication remains
 the delivery authority. Non-hierarchy projects keep their source admission policy.
 
+Stack verification tolerates deleted prerequisite branches, retired origins and
+changed completion identities when the current passing, authorized completion's
+exact source is contained in the child or its delivery target (including the
+project default branch). A checkpoint may locate a source only when that
+completion has neither an immutable Git source nor a reported final source;
+it never overrides a conflicting immutable binding. Reopened, abandoned and
+unproven sources still withhold the stack. Preparation may use this same fresh,
+identity-revalidated stack proof instead of requiring sibling delivery to the
+parent; this supplies an overlay, not publication authority.
+
 Pool claims first try candidates without `blocks`, `delivery-of` or `waits-for`
 sources. These candidates pass the same frontier predicates and locked input
 revalidation, without waiting for unrelated Git observations. If that pass has
