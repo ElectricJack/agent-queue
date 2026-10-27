@@ -8867,7 +8867,9 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
     await reconciler.tick(case.now[0])
     async with db._engine.connect() as conn:
-        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
+        assert await train_cleanup_hold(
+            conn, repository_id="r", ref=case.target.target_ref,
+        ) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])
