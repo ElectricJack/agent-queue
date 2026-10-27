@@ -3814,7 +3814,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:9ace42c8f337bef0c865d2c66f7a22fa464fe446212c79c3c522e4bdf5bc07f6",
+      "digest": "sha256:8bf98a566598f1dab419cdcae4772bd926786786b3b92cdd88925ec4b1c474d6",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3826,6 +3826,7 @@
         "src.commands",
         "src.commands.claim_commands",
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.ingest_hold",
@@ -3861,6 +3862,7 @@
         "src.orchestrator.workspace_claim_recovery",
         "src.orchestrator.worktree_manager",
         "src.preparation_failure",
+        "src.profiles.capabilities",
         "src.scheduler",
         "src.sessions",
         "src.sessions.fake",

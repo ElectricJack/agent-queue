@@ -360,6 +360,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
+    "task_claim_abort": "task",
     "memory_save": "memory",
     "memory_search": "memory",
     "knowledge_create": "knowledge",
@@ -5896,6 +5897,25 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
+        },
+    },
+    {
+        "name": "task_claim_abort",
+        "description": (
+            "Abort one exact hung pool claim preparation (operator or live supervisor only). "
+            "Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains "
+            "the claim and branch ownership; active workers are refused."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Preparing task ID."},
+                "session_id": {"type": "string", "description": "Exact preparing session ID."},
+                "claim_epoch": {"type": "integer", "minimum": 1},
+                "instance_token": {"type": "string", "minLength": 1},
+                "reason": {"type": "string", "minLength": 1},
+            },
+            "required": ["task_id", "session_id", "claim_epoch", "instance_token", "reason"],
         },
     },
     {

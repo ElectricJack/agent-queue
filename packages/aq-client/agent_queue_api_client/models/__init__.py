@@ -1981,6 +1981,8 @@ from .task_batch_validate_response_hard_item import TaskBatchValidateResponseHar
 from .task_children_request import TaskChildrenRequest
 from .task_children_response import TaskChildrenResponse
 from .task_children_response_422 import TaskChildrenResponse422
+from .task_claim_abort_request import TaskClaimAbortRequest
+from .task_claim_abort_response_422 import TaskClaimAbortResponse422
 from .task_claim_request import TaskClaimRequest
 from .task_claim_response import TaskClaimResponse
 from .task_claim_response_422 import TaskClaimResponse422
@@ -4260,6 +4262,8 @@ __all__ = (
     "TaskChildrenRequest",
     "TaskChildrenResponse",
     "TaskChildrenResponse422",
+    "TaskClaimAbortRequest",
+    "TaskClaimAbortResponse422",
     "TaskClaimRequest",
     "TaskClaimResponse",
     "TaskClaimResponse422",

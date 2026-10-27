@@ -392,6 +392,7 @@ start code work, tests or QA from a digest author turn.
     "task_handoff",
     "task_heartbeat",
     "task_claim",
+    "task_claim_abort",
     "task_recover",
     "task_route",
     "task_route_override",
