@@ -651,6 +651,116 @@
     "referenced_decision": "size-cap-delegation-2026-10-23",
     "task_id": "quick-pinnacle-97"
   },
+  "bazel_slice_a_lazy_task_graph_exports_measurement": {
+    "authorized_engine_delta": 0,
+    "authorized_owned_delta": 314,
+    "authorized_shared_owned_delta": 314,
+    "authorized_table_delta": 0,
+    "charged_files": {
+      "src/task_graph/__init__.py": 43,
+      "src/task_graph/parser.py": 132,
+      "src/task_graph/validator.py": 139
+    },
+    "dev_source_revision": "0d13d9185",
+    "groups": {
+      "companions": 10349,
+      "engine": 83633,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 63046,
+      "ui": 262
+    },
+    "measured_engine_lines": 83633,
+    "measured_owned_total": 159437,
+    "measured_table_count": 45,
+    "operator_decision": "6679052c",
+    "previous_measured_engine_lines": 83633,
+    "previous_measured_owned_total": 159123,
+    "previous_measured_table_count": 45,
+    "reason": "Exact supervisor-approved +314 owned/+0 engine/+0 tables for the lazy task-graph package export seam: +43 net facade lines and +132 unchanged parser/+139 unchanged validator lines newly reached by the existing whole-function token/import closure. Preserve all historical grants, original baselines, ownership classifications, zero remaining headroom, the s4_modules expiry and all other caps. If the dev ledger moves before landing, only dev plus this exact 314/0/0 composition is preapproved.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "source_revision_basis": "087e4fa6e24994e21bb93996b8565877cb567bed",
+    "supervisor_decision_message_id": "msg-bb71c846812341e68b2a81bd464d39ef",
+    "task_id": "clear-beacon-42",
+    "working_tree_source_sha256": {
+      "src/task_graph/__init__.py": "998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06"
+    }
+  },
+  "bazel_slice_a_lazy_task_graph_exports_merge_measurement": {
+    "applied_existing_engine_delta": 0,
+    "applied_existing_owned_delta": 314,
+    "applied_existing_table_delta": 0,
+    "charged_files": {
+      "src/task_graph/__init__.py": 43,
+      "src/task_graph/parser.py": 132,
+      "src/task_graph/validator.py": 139
+    },
+    "dev_source_revision": "266ddce1fefd043e39e18c10449b2e2adb3b0e02",
+    "existing_composition": "hand_integration_reconciliation.bazel_slice_a_lazy_task_graph_exports_composition",
+    "groups": {
+      "companions": 10365,
+      "engine": 83653,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 63053,
+      "ui": 262
+    },
+    "measured_engine_lines": 83653,
+    "measured_owned_total": 159480,
+    "measured_table_count": 45,
+    "new_grant": false,
+    "operator_decision": "6679052c",
+    "previous_measured_engine_lines": 83653,
+    "previous_measured_owned_total": 159166,
+    "previous_measured_table_count": 45,
+    "previous_measurement": "bazel_slice_a_lazy_task_graph_exports_measurement",
+    "reason": "Remeasure the recovered Slice A implementation after merging current dev. Apply the existing approved +314 shared owned/+0 engine/+0 tables composition once to the dev ledger; this measurement creates no second grant. Preserve the original composition and measurement, every dev grant, original baselines, ownership classifications, zero remaining headroom and the s4_modules expiry.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "supervisor_decision_message_id": "msg-bb71c846812341e68b2a81bd464d39ef",
+    "task_id": "clear-beacon-42",
+    "working_tree_source_sha256": {
+      "src/task_graph/__init__.py": "998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06"
+    }
+  },
+  "bazel_slice_a_v2_merge_measurement": {
+    "applied_existing_engine_delta": 0,
+    "applied_existing_owned_delta": 314,
+    "applied_existing_table_delta": 0,
+    "charged_files": {
+      "src/task_graph/__init__.py": 43,
+      "src/task_graph/parser.py": 132,
+      "src/task_graph/validator.py": 139
+    },
+    "dev_source_revision": "512996c4738a348ac2a6372697f184e20a955a8c",
+    "existing_composition": "hand_integration_reconciliation.bazel_slice_a_lazy_task_graph_exports_composition",
+    "groups": {
+      "companions": 10365,
+      "engine": 83653,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 63095,
+      "ui": 262
+    },
+    "measured_engine_lines": 83653,
+    "measured_owned_total": 159522,
+    "measured_table_count": 45,
+    "new_grant": false,
+    "operator_decision": "6679052c",
+    "previous_measured_engine_lines": 83653,
+    "previous_measured_owned_total": 159208,
+    "previous_measured_table_count": 45,
+    "previous_measurement": "bazel_slice_a_lazy_task_graph_exports_merge_measurement",
+    "reason": "Remeasure Slice A after merging the settled V2 generator on current dev. Apply the existing approved +314 shared owned/+0 engine/+0 tables once to the dev ledger; no new grant. Preserve original measurements, all dev grants, classifications and zero headroom.",
+    "referenced_decision": "size-cap-delegation-2026-10-23",
+    "supervisor_decision_message_id": "msg-bb71c846812341e68b2a81bd464d39ef",
+    "task_id": "clear-beacon-42",
+    "working_tree_source_sha256": {
+      "src/task_graph/__init__.py": "998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06"
+    }
+  },
   "ci_wait_repository_mapping_review": {
     "authorized_owned_delta": 1,
     "decision_message_id": "msg-3bed5d5db4ed4c7fa1ef9150b1c3dd8c",
@@ -2820,7 +2930,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3835,
+    "authorized_owned_delta": 4149,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -2870,6 +2980,33 @@
       "source_revision": "ebb3ef033b417486c329fe8c202b2f9348daf719",
       "supervisor_decision_message_id": "msg-216d06694f694f32a600007228ac11cc",
       "task_id": "stark-orbit-64"
+    },
+    "bazel_slice_a_lazy_task_graph_exports_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 314,
+      "authorized_shared_owned_delta": 314,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/task_graph/__init__.py": 43,
+        "src/task_graph/parser.py": 132,
+        "src/task_graph/validator.py": 139
+      },
+      "dev_source_revision": "0d13d9185",
+      "measured_engine_lines": 83633,
+      "measured_owned_total": 159437,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83633,
+      "previous_measured_owned_total": 159123,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +314 owned/+0 engine/+0 tables for the lazy task-graph package export seam: +43 net facade lines and +132 unchanged parser/+139 unchanged validator lines newly reached by the existing whole-function token/import closure. Preserve all historical grants, original baselines, ownership classifications, zero remaining headroom, the s4_modules expiry and all other caps. If the dev ledger moves before landing, only dev plus this exact 314/0/0 composition is preapproved.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision_basis": "087e4fa6e24994e21bb93996b8565877cb567bed",
+      "supervisor_decision_message_id": "msg-bb71c846812341e68b2a81bd464d39ef",
+      "task_id": "clear-beacon-42",
+      "working_tree_source_sha256": {
+        "src/task_graph/__init__.py": "998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06"
+      }
     },
     "claim_marker_recovery_composition": {
       "authorized_engine_delta": 0,
@@ -3239,7 +3376,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 83743,
-    "measured_owned_total": 159334,
+    "measured_owned_total": 159648,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -17157,7 +17294,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 3835,
+      "authorized_owned_delta": 4149,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -17207,6 +17344,33 @@
         "source_revision": "ebb3ef033b417486c329fe8c202b2f9348daf719",
         "supervisor_decision_message_id": "msg-216d06694f694f32a600007228ac11cc",
         "task_id": "stark-orbit-64"
+      },
+      "bazel_slice_a_lazy_task_graph_exports_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 314,
+        "authorized_shared_owned_delta": 314,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/task_graph/__init__.py": 43,
+          "src/task_graph/parser.py": 132,
+          "src/task_graph/validator.py": 139
+        },
+        "dev_source_revision": "0d13d9185",
+        "measured_engine_lines": 83633,
+        "measured_owned_total": 159437,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83633,
+        "previous_measured_owned_total": 159123,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +314 owned/+0 engine/+0 tables for the lazy task-graph package export seam: +43 net facade lines and +132 unchanged parser/+139 unchanged validator lines newly reached by the existing whole-function token/import closure. Preserve all historical grants, original baselines, ownership classifications, zero remaining headroom, the s4_modules expiry and all other caps. If the dev ledger moves before landing, only dev plus this exact 314/0/0 composition is preapproved.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision_basis": "087e4fa6e24994e21bb93996b8565877cb567bed",
+        "supervisor_decision_message_id": "msg-bb71c846812341e68b2a81bd464d39ef",
+        "task_id": "clear-beacon-42",
+        "working_tree_source_sha256": {
+          "src/task_graph/__init__.py": "998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06"
+        }
       },
       "claim_marker_recovery_composition": {
         "authorized_engine_delta": 0,
@@ -17576,7 +17740,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 83743,
-      "measured_owned_total": 159334,
+      "measured_owned_total": 159648,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -18208,7 +18372,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 159334,
+    "owned_total_cap": 159648,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
