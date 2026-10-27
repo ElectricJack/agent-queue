@@ -2,7 +2,10 @@
 
 The listener must renew during its initial drain and run independently of maintenance.
 It queues briefly for the graph fence before releasing its connection on contention.
-Each source transaction has a five second work budget. A timed out transaction rolls
+Unlocked source selection and preparation have a thirty second aggregate budget,
+including sequential fresh observations for all subscribers. After preparation,
+graph acquisition and fenced application have a separate five second work budget.
+Each individual remote observation retains its own timeout. A timed out transaction rolls
 back completely; a separate leased cursor CAS may advance past that event, leaving
 its undispatched row as durable retry ownership. Later events may proceed. Cancellation
 and lease loss never authorize this advance. Retry passes are bounded and back off.
@@ -92,14 +95,22 @@ against current subscriptions. Preparation never authorizes an outcome itself.
 supervisor or local operator reobserve one persisted source through normal dispatch.
 The command requires a project, fences the leader lease, preserves the forward cursor,
 filters wait and lifecycle effects to that project, and records an audit event. It
-never trusts caller-supplied evidence. After validating project and source scope,
+never trusts caller-supplied evidence. Fresh observation preparation includes
+every matching verified subscriber in that
+project, including service-owned integration waits as well as task-owned waits.
+After validating project and source scope,
 an already dispatched source returns success with outcome `already_dispatched` and
 its `dispatched_at` timestamp, without acquiring the listener lock or lease,
 preparing observations, dispatching, retiring history or writing an audit event.
 Recheck dispatch state after acquiring the listener lock. For pending sources, a
+supervisor waits up to sixty seconds for the listener lock, independently of its
+thirty second preparation and five second fenced application budgets. Lock contention
+cannot consume the preparation/application allowance. Every timeout releases ownership
+and reports the budget for the phase that expired. A
 work-budget refusal includes the source sequence, phase, budget and elapsed seconds,
 and dispatch attempt count; an observation's own timeout is reported separately.
-Missing sources,
+Background dispatch deferrals likewise log the phase, failure reason and elapsed
+attempt time, including failures before acquiring the graph fence. Missing sources,
 contention and absent leadership return a refusal; no wake is fabricated.
 For a CI, pool, config or workspace source, the command also retires retained events
 of that source/generation through the requested sequence when no pending verified
