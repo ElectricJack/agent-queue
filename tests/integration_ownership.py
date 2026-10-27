@@ -954,6 +954,27 @@ HAND_INTEGRATION_RECONCILIATION = {'stopped_terminal_claim_owner_recovery_compos
            'retaining lifecycle, terminal-status and ownership guards. Preserve original '
            'baselines, historical grants and ownership classifications, zero remaining headroom, '
            'the s4_modules expiry and no new storage category.'},
+ 'incoming_child_batch_composition': {'authorized_engine_delta': 20,
+                                      'authorized_owned_delta': 43,
+                                      'authorized_shared_owned_delta': 23,
+                                      'authorized_table_delta': 0,
+                                      'decision_message_id': 'msg-a8972b49541b431e9146cd95001f18b4',
+                                      'dev_source_revision': 'c10b5b6f9',
+                                      'operator_decision': '6679052c',
+                                      'previous_measured_engine_lines': 82542,
+                                      'previous_measured_owned_total': 157803,
+                                      'previous_measured_table_count': 45,
+                                      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2017',
+                                      'reason': 'Exact supervisor-approved incoming-child-batch '
+                                                'ownership and fresh-head recovery footprint after '
+                                                'merging dev and its setup-script test fix. '
+                                                'Preserve original baselines, every historical '
+                                                'grant and ownership classification, with zero '
+                                                'remaining headroom and no new storage category.',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'source_revision': '3c4ccef55c93e3b400a35485e4ebd70ad016931a',
+                                      'task_id': 'solid-forge-85',
+                                      'thread_id': 'solid-forge-85-ci-size'},
  'bazel_dependency_dsn_helper_composition': {'task_id': 'stark-orbit-64',
  'pull_request': 2094,
  'referenced_decision': 'size-cap-delegation-2026-10-23',
@@ -1061,7 +1082,7 @@ HAND_INTEGRATION_RECONCILIATION = {'stopped_terminal_claim_owner_recovery_compos
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3636,
+ 'authorized_owned_delta': 3679,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1632,8 +1653,8 @@ HAND_INTEGRATION_RECONCILIATION = {'stopped_terminal_claim_owner_recovery_compos
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83645,
- 'measured_owned_total': 159135,
+ 'measured_engine_lines': 83665,
+ 'measured_owned_total': 159178,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
