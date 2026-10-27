@@ -1,0 +1,10 @@
+{
+  "import_globs": [
+    "src/plugins/internal/*.py",
+    "src/plugins/internal/*/__init__.py"
+  ],
+  "reason": "pkgutil.iter_modules walks every top-level module and package init under this package; submodules of a package init (e.g. inbox/*) are already reached via that init's own static imports.",
+  "resolves": [
+    "src/plugins/internal/__init__.py: unresolved dynamic import"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "data": [
+    "src/cli/*.py",
+    "src/cli/AGENTS.md"
+  ],
+  "reason": "The module-map ratchet reads AGENTS.md and enumerates Python filenames using assembled paths."
+}
