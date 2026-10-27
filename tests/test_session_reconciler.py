@@ -1629,6 +1629,7 @@ class TestIdleStopIntent:
         )
         detach = pool_reconciler.test_orch._detach_idle_pool_branch = AsyncMock()
         await pool_reconciler._step_drain_ack([row], NOW)
+        await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
         detach.assert_awaited_once()
         assert len(provider.sent_nudges) == 1
         assert "aq session drain-ack" in provider.sent_nudges[0][1]
@@ -1641,6 +1642,46 @@ class TestIdleStopIntent:
         await pool_reconciler._step_drain_ack([row], NOW + (59 if acknowledge else 61))
         assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
         assert (await db.get_session(row.id)).state == "stopped"
+
+    async def test_slow_branch_release_never_holds_the_tick(
+        self, db, provider, pool_reconciler, tmp_path,
+    ):
+        # 2026-10-27: drain-ack awaited an origin fetch queued ~160s behind a
+        # slot preparation; every tick hit its stage bound and exits, stalls
+        # and orphans never ran anywhere in the fleet.
+        row = await self._finished_worker(
+            db, provider, tmp_path, claims=0, failed_preparation={"task_id": "t1"},
+        )
+        fetching, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def slow_detach(session):
+            calls.append(session.id)
+            fetching.set()
+            await release.wait()
+
+        pool_reconciler.test_orch._detach_idle_pool_branch = slow_detach
+        ran = []
+        for name in ("_step_exits", "_step_stall_ladder"):
+            step = getattr(pool_reconciler, name)
+
+            async def recorded(live, now, step=step, name=name):
+                ran.append(name)
+                return await step(live, now)
+
+            setattr(pool_reconciler, name, recorded)
+        try:
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW), 5)
+            await asyncio.wait_for(fetching.wait(), 5)
+            assert ran == ["_step_exits", "_step_stall_ladder"]
+            assert len(provider.sent_nudges) == 1
+            # The next pass neither waits on nor duplicates the release in flight.
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW + 1), 5)
+            assert calls == [row.id]
+        finally:
+            release.set()
+            await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
+        assert pool_reconciler._branch_detaches == {}
 
     @pytest.mark.parametrize("deferred", [False, True])
     async def test_taskless_drain_retries_submission_without_extending_grace(
