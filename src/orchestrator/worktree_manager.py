@@ -1966,6 +1966,7 @@ class WorktreeSlotManager:
                         sessions.c.agent_id == holder.locked_by_agent_id
                         if holder.locked_by_agent_id else True,
                         sessions.c.state == "stopped", sessions.c.desired_state == "stopped",
+                        sessions.c.task_id.is_(None),
                     ).order_by(sessions.c.started_at.desc()).limit(1).with_for_update(
                         nowait=True,
                     ))).mappings().all()

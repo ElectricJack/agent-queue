@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "ff1bc9f4cdfc5598b8f480b855ae55b9c471b4b7",
+      "source_head": "ee32eb75b62526ecfc82e71c390a0e3a8d386b4c",
       "tool_sha256": "50719aace6bcb916a8c81be1958fdba6fd79957d75e5392095f8c076135c1199"
     },
     "nodes": [
@@ -39899,10 +39899,10 @@
       "tests/test_pool_agent_routing.py": "275e69ad1d91d198156ae90bccc48e07b2112f1d3cee12e150c8f1bc9e08f0a2",
       "tests/test_pool_api_postgres.py": "3c1e1ca041c70b64d3b485c6c3510a824f0c8a62d79d0308f07e9438bcea3382",
       "tests/test_pool_doctor.py": "004395053d5e3867a960ff7f1fa93926b81a22ed8fddadff202b95fa9b3314c3",
-      "tests/test_pool_lifecycle_integration.py": "484cef24aaf7f5511a14a188516fafdacda279fb1a2bb0053f495b5569de7d34",
+      "tests/test_pool_lifecycle_integration.py": "d52402f31db940e72f709af9188af1ab732356088edae5b57ad544bd1792098a",
       "tests/test_pool_placement.py": "0b8f43af71ccb76e43a0ac755e3f1407f15a275cec76a24bc9411734b0d27385",
       "tests/test_pool_reconciler.py": "e03c14fc57a5e1fd3b010e9eb5eb3849c02f484f1e6314fe08ac38e77ddf492c",
-      "tests/test_pool_reconciler_carveouts.py": "49a7b7ee885990a54db7cf8846e4964c74cd8ab565699f5c2af89a1726d686fe",
+      "tests/test_pool_reconciler_carveouts.py": "77cbe0e1d6533e334ab348aaba7a074dfd270cca756317405e313b3746f9f76b",
       "tests/test_pool_sizing.py": "8a9c670f914a663f826d2e20906ef6a32f77acd3452aa3d13c68e914d1f18368",
       "tests/test_portable_config.py": "c85234560540bf98d00ef70f1a9d258c2fcda1aac0f4e1ace73959667ba0cbfc",
       "tests/test_postgres_test_substrate.py": "d099ab9acde08e788d76a58bf651fcdc2a8b03a9775375dd150ca6e99ba208b4",
