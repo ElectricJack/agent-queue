@@ -486,6 +486,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
 | [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
 | [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
+| [`recover_retained_holder`](recover_retained_holder.md) | Recover Retained Holder | Execute the recover_retained_holder command. |
 | [`release_project_constraint`](release_project_constraint.md) | Release Project Constraint | Release (remove) the scheduling constraint from a project. |
 | [`release_workspace`](release_workspace.md) | Release Workspace | Release only after rechecking the checkout's independent fences. |
 | [`reload_config`](reload_config.md) | Reload Config | Manually trigger a config hot-reload from disk. |
@@ -573,6 +574,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_children`](task_children.md) | Task Children | Direct or recursive children of a task.  Backs ``aq task children``. |
 | [`task_claim`](task_claim.md) | Task Claim | Execute the task_claim command. |
+| [`task_claim_abort`](task_claim_abort.md) | Task Claim Abort | Cancel one exact preparation without waiting for its task-control lock. |
 | [`task_close`](task_close.md) | Task Close | Close a task with an outcome.  Backs ``aq task close``. |
 | [`task_comment`](task_comment.md) | Task Comment | Execute the task_comment command. |
 | [`task_comment_delete`](task_comment_delete.md) | Task Comment Delete | Execute the task_comment_delete command. |

@@ -299,6 +299,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/task_subtask_commands.py"], areas: ["task-subtasks"] }
   - { paths: ["src/commands/workflow_commands.py"], areas: ["orchestrator"] }
   - { paths: ["src/commands/worktree_commands.py"], areas: ["worktree-slots", "workspaces"] }
+  - { paths: ["src/commands/retained_holder_repair.py"], areas: ["integration-ownership", "workspaces", "agent-waits"] }
 
   - { paths: ["src/dashboard_assets/**", "src/dashboard_server/**"], areas: ["dashboard-server"] }
   - { paths: ["src/dashboard_state/**"], areas: ["dashboard-state"] }
