@@ -1037,6 +1037,10 @@ def s3_worker_filed_work(state: dict) -> str:
     check(not left, f"{filed_id} is still gate-blocked after routing: {left}")
 
     worker.close(summary="S3 held task")
+    # This runner is the fake worker: finish the completion protocol before
+    # leaving it. Without the ack, its live session and a pool replacement
+    # occupy S4's extra seat until the daemon's idle-stop grace expires.
+    worker.drain_ack()
     return f"{filed_id} DEFINED + discovered-from {held} + routing gate {gate_id} resolved"
 
 
