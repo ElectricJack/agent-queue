@@ -932,7 +932,36 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'incoming_child_batch_composition': {'authorized_engine_delta': 20,
+HAND_INTEGRATION_RECONCILIATION = {'wip_push_hold_repair_composition': {'task_id': 'fresh-bridge-88',
+                                      'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2106',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'operator_decision': '6679052c',
+                                      'supervisor_decision_message_id': 'msg-997bcf77e9054e199df186493399fd65',
+                                      'dev_source_revision': '0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3',
+                                      'source_revision': '5dd0ea0647eaef153905382c9a556dbe6d61b45e',
+                                      'previous_measured_owned_total': 159166,
+                                      'previous_measured_engine_lines': 83653,
+                                      'previous_measured_table_count': 45,
+                                      'authorized_owned_delta': 22,
+                                      'authorized_shared_owned_delta': 22,
+                                      'authorized_engine_delta': 0,
+                                      'authorized_table_delta': 0,
+                                      'measured_owned_total': 159188,
+                                      'measured_engine_lines': 83653,
+                                      'measured_table_count': 45,
+                                      'charged_files': {'src/wait_runtime/hibernate.py': 13,
+                                                        'src/wait_runtime/resume.py': 9,
+                                                        'src/orchestrator/stranded_work.py': 0},
+                                      'ordinary_audit_sink': 'HibernationTransaction.requeue_push::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8',
+                                      'reason': 'Exact supervisor-approved WIP refusal and fenced '
+                                                'push_failed requeue/save-park repair. The '
+                                                'wait.resume_requeued audit is ordinary metadata, '
+                                                'the same disposition as '
+                                                'ResumeTransaction.requeue. Preserve all '
+                                                'historical baselines, grants, engine/table caps '
+                                                'and classifications; zero remaining headroom, '
+                                                's4_modules expiry and no new storage category.'},
+ 'incoming_child_batch_composition': {'authorized_engine_delta': 20,
                                       'authorized_owned_delta': 43,
                                       'authorized_shared_owned_delta': 23,
                                       'authorized_table_delta': 0,
@@ -1060,7 +1089,7 @@ HAND_INTEGRATION_RECONCILIATION = {'incoming_child_batch_composition': {'authori
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3667,
+ 'authorized_owned_delta': 3689,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1632,7 +1661,7 @@ HAND_INTEGRATION_RECONCILIATION = {'incoming_child_batch_composition': {'authori
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83653,
- 'measured_owned_total': 159166,
+ 'measured_owned_total': 159188,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,

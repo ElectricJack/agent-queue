@@ -56,6 +56,13 @@
       ],
       "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
     },
+    "src/wait_runtime/resume.py::ResumeTransaction.requeue": {
+      "landing_span": [
+        337,
+        382
+      ],
+      "reason": "Supervisor-approved PR2106 push_failed requeue routing; remains charged under the exact +22 owned-line composition."
+    },
     "src/wait_runtime/resume.py::ResumeTransaction.reserve": {
       "landing_span": [
         45,

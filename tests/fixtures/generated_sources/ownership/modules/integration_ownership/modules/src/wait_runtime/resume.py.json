@@ -42,6 +42,13 @@
       ],
       "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
     },
+    "src/wait_runtime/resume.py::ResumeTransaction.requeue": {
+      "landing_span": [
+        337,
+        382
+      ],
+      "reason": "Supervisor-approved PR2106 push_failed requeue routing; remains charged under the exact +22 owned-line composition."
+    },
     "src/wait_runtime/resume.py::ResumeTransaction.reserve": {
       "landing_span": [
         45,
@@ -92,10 +99,10 @@
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 352,
+      "line": 378,
       "owner": "ResumeTransaction.requeue",
-      "owner_fingerprint": "785accff5b08eddd30f89fe135c9ff1dbe62d6cb730226a4ef5fbd4d575f7f68",
-      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+      "owner_fingerprint": "83c455d7602ff7487b3c696877de0496c84f99879797edae9fe2067637c62e11",
+      "reason": "Supervisor-approved fresh-bridge-88 / PR2106, msg-997bcf77e9054e199df186493399fd65: ordinary wait.resume_requeued audit; never replayable delivery truth."
     }
   }
 }

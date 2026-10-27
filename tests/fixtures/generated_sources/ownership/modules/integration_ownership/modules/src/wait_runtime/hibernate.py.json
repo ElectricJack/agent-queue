@@ -42,5 +42,16 @@
       ],
       "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
     }
+  },
+  "storage_sinks": {
+    "src/wait_runtime/hibernate.py::HibernationTransaction.requeue_push::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 223,
+      "owner": "HibernationTransaction.requeue_push",
+      "owner_fingerprint": "3393436d1e3948531ac1ea0fbe379321958d1b0fd503d797cf386a64960706c9",
+      "reason": "Supervisor-approved fresh-bridge-88 / PR2106, msg-997bcf77e9054e199df186493399fd65: ordinary wait.resume_requeued audit; never replayable delivery truth."
+    }
   }
 }

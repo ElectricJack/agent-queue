@@ -2063,7 +2063,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 3667,
+    "authorized_owned_delta": 3689,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -2459,7 +2459,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 83653,
-    "measured_owned_total": 159166,
+    "measured_owned_total": 159188,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -3061,6 +3061,32 @@
       "referenced_decision": "size-cap-delegation-2026-10-23",
       "source_revision": "93c9d12a6f87dbd119b9736279023b73500f68c1",
       "task_id": "stark-horizon-78"
+    },
+    "wip_push_hold_repair_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 22,
+      "authorized_shared_owned_delta": 22,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/orchestrator/stranded_work.py": 0,
+        "src/wait_runtime/hibernate.py": 13,
+        "src/wait_runtime/resume.py": 9
+      },
+      "dev_source_revision": "0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3",
+      "measured_engine_lines": 83653,
+      "measured_owned_total": 159188,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "ordinary_audit_sink": "HibernationTransaction.requeue_push::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8",
+      "previous_measured_engine_lines": 83653,
+      "previous_measured_owned_total": 159166,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2106",
+      "reason": "Exact supervisor-approved WIP refusal and fenced push_failed requeue/save-park repair. The wait.resume_requeued audit is ordinary metadata, the same disposition as ResumeTransaction.requeue. Preserve all historical baselines, grants, engine/table caps and classifications; zero remaining headroom, s4_modules expiry and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "5dd0ea0647eaef153905382c9a556dbe6d61b45e",
+      "supervisor_decision_message_id": "msg-997bcf77e9054e199df186493399fd65",
+      "task_id": "fresh-bridge-88"
     }
   },
   "landing": {
@@ -17218,6 +17244,13 @@
       ],
       "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget."
     },
+    "src/wait_runtime/resume.py::ResumeTransaction.requeue": {
+      "landing_span": [
+        337,
+        382
+      ],
+      "reason": "Supervisor-approved PR2106 push_failed requeue routing; remains charged under the exact +22 owned-line composition."
+    },
     "src/wait_runtime/resume.py::ResumeTransaction.reserve": {
       "landing_span": [
         45,
@@ -21010,6 +21043,15 @@
       "owner_fingerprint": "001b9fe77f07c2555eec510d1804540fbccf64361f136ef7c2ff1b8ea07dc934",
       "reason": "Removes only the failed worker native resume key under exact task epoch/session instance/failure-record guards; ordinary continuation state, no ref replay or integration lifecycle authority."
     },
+    "src/wait_runtime/hibernate.py::HibernationTransaction.requeue_push::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "call": "insert",
+      "disposition": "ordinary",
+      "integration_signal": false,
+      "line": 223,
+      "owner": "HibernationTransaction.requeue_push",
+      "owner_fingerprint": "3393436d1e3948531ac1ea0fbe379321958d1b0fd503d797cf386a64960706c9",
+      "reason": "Supervisor-approved fresh-bridge-88 / PR2106, msg-997bcf77e9054e199df186493399fd65: ordinary wait.resume_requeued audit; never replayable delivery truth."
+    },
     "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
       "disposition": "ordinary",
@@ -21032,10 +21074,10 @@
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 352,
+      "line": 378,
       "owner": "ResumeTransaction.requeue",
-      "owner_fingerprint": "785accff5b08eddd30f89fe135c9ff1dbe62d6cb730226a4ef5fbd4d575f7f68",
-      "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
+      "owner_fingerprint": "83c455d7602ff7487b3c696877de0496c84f99879797edae9fe2067637c62e11",
+      "reason": "Supervisor-approved fresh-bridge-88 / PR2106, msg-997bcf77e9054e199df186493399fd65: ordinary wait.resume_requeued audit; never replayable delivery truth."
     },
     "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
       "call": "log_event",
