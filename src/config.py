@@ -3186,7 +3186,7 @@ class SwarmConfig:
     max_starts_per_tick: int = 2
     max_drains_per_tick: int = 5
     scale_down_grace: int = 120  # seconds of surplus before a drain
-    prepare_timeout: int = 120  # claim_phase='preparing' older than this is released
+    prepare_timeout: int = 120  # owner/lease deadline and abandoned preparation recovery age
     max_filings_per_task: int = 20  # worker-filed tasks per held task
 
     def validate(self) -> list[ConfigError]:

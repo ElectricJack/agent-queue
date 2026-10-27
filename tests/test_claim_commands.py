@@ -9364,3 +9364,194 @@ async def test_activation_lock_refusal_keeps_original_guard_diagnostics(
     assert "admission_lock_unavailable" in (
         await db.get_task_meta("incoming", "prepare_failure")
     )["reason"]
+
+
+@pytest.mark.parametrize("blocked_at", ["control_lock", "owner_lease"])
+async def test_preparation_deadline_settles_hung_owner_lease(
+    handler, db, config, tmp_path, monkeypatch, blocked_at,
+):
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    config.swarm.prepare_timeout = 0.1
+    never = asyncio.Event()
+    entered = asyncio.Event()
+
+    @asynccontextmanager
+    async def blocked_lock(_task_id):
+        entered.set()
+        await never.wait()
+        yield
+
+    async def blocked_owner(*args, **kwargs):
+        entered.set()
+        await never.wait()
+
+    if blocked_at == "control_lock":
+        monkeypatch.setattr(handler.orchestrator, "_task_control_lock", blocked_lock)
+    else:
+        monkeypatch.setattr(handler, "_prepare_and_activate_locked", blocked_owner)
+    with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
+        initial = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert initial["result"] == "claim_in_progress"
+    await entered.wait()
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    result = await asyncio.wait_for(asyncio.shield(job), timeout=5)
+    assert result["result"] == "prepare_failed"
+    assert "swarm.prepare_timeout" in result["reason"]
+    assert not handler.orchestrator.claim_preparations
+    assert (await db.get_task("t1")).status is TaskStatus.READY
+    assert (await db.get_session(sid)).task_id is None
+    record = await db.get_task_meta("t1", "prepare_failure")
+    assert record["stage"] == "owner_lease" and record["disposition"] == "released"
+    # Concurrent callers get the actual one charged refusal, not another preparation.
+    replay = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert replay["result"] == "prepare_failed" and replay["refusal_count"] == 1
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+
+@pytest.mark.parametrize("retained", ["handoff", "cleanup", "activated"])
+async def test_preparation_deadline_preserves_unproved_or_activated_claim(
+    handler, db, config, tmp_path, monkeypatch, retained,
+):
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    config.swarm.prepare_timeout = 0.1
+    release = AsyncMock(return_value=False if retained == "handoff" else None)
+    monkeypatch.setattr(handler.orchestrator, "arelease_integration_writer_for_retry", release)
+
+    async def hang(session, row, task, *args, **kwargs):
+        if retained == "cleanup":
+            await db.set_task_meta("t1", "prepare_cleanup_unproved", {"writer": "unknown"})
+        elif retained == "activated":
+            await db.update_session(sid, claim_phase="active")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(handler, "_prepare_and_activate_locked", hang)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == ("claimed" if retained == "activated" else "prepare_failed")
+    assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+    assert (await db.get_session(sid)).task_id == "t1"
+    if retained != "handoff":
+        release.assert_not_awaited()
+    if retained != "activated":
+        assert (await db.get_task_meta("t1", "prepare_failure"))["disposition"] == "retained"
+
+
+@pytest.mark.parametrize("stale", [None, "epoch", "instance", "active", "worker"])
+async def test_supervisor_claim_abort_fences_exact_preparation(
+    handler, db, tmp_path, monkeypatch, stale,
+):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    entered = asyncio.Event()
+
+    async def hang(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(handler, "_prepare_and_activate_locked", hang)
+    with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
+        initial = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    await entered.wait()
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    args = dict(task_id="t1", session_id=sid, claim_epoch=initial["claim_epoch"],
+                instance_token="t", reason="owner lease stuck")
+    if stale == "epoch":
+        args["claim_epoch"] += 1
+    elif stale == "instance":
+        args["instance_token"] = "replacement"
+    elif stale == "active":
+        await db.update_session(sid, claim_phase="active")
+    await db.create_session(SessionRecord(
+        id="supervisor", project_id=PROJECT_ID, profile_id="supervisor", harness="codex",
+        provider="fake", name="supervisor", lifecycle="named", work_dir=str(tmp_path),
+        epoch="e", instance_token="supervisor-token", started_at=NOW, state="running",
+    ))
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="supervisor", project_id=PROJECT_ID,
+        elevated=stale != "worker",
+    )
+    with principal_context(principal):
+        result = await handler._cmd_task_claim_abort(args)
+    if stale is None:
+        assert result["success"] and result["outcome"] == "settled"
+        assert result["result"] == "prepare_failed"
+        assert job.done() and (await db.get_task("t1")).status is TaskStatus.READY
+    else:
+        assert not result["success"], result
+        assert not job.done()
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+
+async def test_abort_during_deadline_cleanup_does_not_cancel_it_again(
+    handler, db, config, tmp_path, monkeypatch,
+):
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    config.swarm.prepare_timeout = 0.1
+    cleanup_entered, cleanup_release = asyncio.Event(), asyncio.Event()
+
+    async def hang(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    async def cleanup(*args, **kwargs):
+        cleanup_entered.set()
+        await cleanup_release.wait()
+        return None
+
+    monkeypatch.setattr(handler, "_prepare_and_activate_locked", hang)
+    monkeypatch.setattr(handler.orchestrator, "arelease_integration_writer_for_retry", cleanup)
+    with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
+        initial = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    await asyncio.wait_for(cleanup_entered.wait(), timeout=5)
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    abort_waiting = asyncio.Event()
+    real_wait = asyncio.wait
+
+    async def observe_wait(*args, **kwargs):
+        abort_waiting.set()
+        return await real_wait(*args, **kwargs)
+
+    monkeypatch.setattr("src.commands.claim_commands.asyncio.wait", observe_wait)
+    abort = asyncio.create_task(handler._cmd_task_claim_abort(dict(
+        task_id="t1", session_id=sid, claim_epoch=initial["claim_epoch"],
+        instance_token="t", reason="still waiting",
+    )))
+    await asyncio.wait_for(abort_waiting.wait(), timeout=5)
+    cleanup_release.set()
+    result = await asyncio.wait_for(abort, timeout=5)
+    assert result["outcome"] == "settled" and result["result"] == "prepare_failed"
+    assert not job.cancelled()
+    assert (await db.get_task("t1")).status is TaskStatus.READY
+    assert "swarm.prepare_timeout" in (await db.get_task_meta("t1", "prepare_failure"))["reason"]
+
+
+async def test_owner_deadline_preserves_configured_slot_reset_budget(
+    handler, db, config, tmp_path,
+):
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    config.swarm.prepare_timeout = 0.1
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def reset(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+        return "aq/t1"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
+    with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
+        progress = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    job = handler.orchestrator.claim_preparations[(sid, "t1", progress["claim_epoch"])]
+    try:
+        await asyncio.sleep(0.15)
+        assert not job.done(), "owner wait budget must not truncate the slot reset budget"
+    finally:
+        finish.set()
+    result = await asyncio.wait_for(asyncio.shield(job), timeout=5)
+    assert result["result"] == "claimed"
+    assert (await db.get_session(sid)).claim_phase == "active"
