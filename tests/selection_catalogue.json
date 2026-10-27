@@ -7227,7 +7227,7 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:d93f104691b83337695ff52e4dd10291fa3a7d0fba60716299e3c8e9ace75545",
+      "digest": "sha256:482848c267dc1a68e3de8c1ad3789bb39d9a05c5ed4aaffa74cb22c61e81feb6",
       "imports": [
         "src.api.websocket",
         "src.config",
@@ -7238,7 +7238,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "timeout"
       ],
       "summary": "Work-graph WG-4: event replay + registry invariant."
     },
