@@ -17463,7 +17463,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:7affc7c4999839f9c914545c658dbd4f50cebff943685e40e43fdd73e10dce74",
+      "digest": "sha256:085ee4377086bece67aec60fb5959cd5453ad23e152db5651d76b870631c9e68",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -17503,6 +17503,7 @@
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.spec",
+        "src.sessions.tmux",
         "src.vault"
       ],
       "markers": [

@@ -746,6 +746,22 @@ the `sessions.stuck_composer` doctor check. Its `--fix` presses the same Enter a
 operator would send by hand. For AQ text the composer shows collapsed or windowed, it
 clears the text instead (see below).
 
+Before pasting or recovering pending input, Codex and Claude busy chrome (including
+`esc to interrupt`, `tab to queue message`, and Codex's model-row spinner) defers the
+nudge without typing. An empty composer alone does not prove the turn is idle. If a
+turn starts after that check, AQ clears its own identifiable injection and reports
+whether any input remains. Codex's `[Pasted Content N chars]` is attributed only to a
+persisted injection with that character count, and follows the same clear-and-replace
+path as Claude's collapsed input. Unattributed or edited drafts remain untouched.
+
+`aq session nudge <id> --submit-pending` recovers a verbatim AQ injection without
+typing new text. It uses the provider's instance fence and input lock, refuses busy,
+attached or recently edited panes, and never submits an unattributed draft. A
+collapsed AQ injection is cleared and reported as `cleared`, so its sender can retry.
+Command results expose `state` (`submitted`, `deferred`, `pasted_pending`,
+`not_submitted`, `cleared`, or `no_pending`) and `composer_dirty`; successful new
+nudges also report `pending_action` when older AQ input was submitted or cleared.
+
 **Recognising an empty composer.** The guard accepts only layouts it knows: a bare
 prompt with nothing after it, Claude's prompt between its two borders, or Codex's
 dim `Ask Codex to do anything` placeholder above its footer. The Codex footer is

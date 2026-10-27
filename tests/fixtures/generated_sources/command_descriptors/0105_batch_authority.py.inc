@@ -21,7 +21,9 @@ def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_unread_inbox_catalogue(json.loads(render_command_catalogue()))
+    catalogue = _before_session_nudge_recovery_catalogue(
+        _before_unread_inbox_catalogue(json.loads(render_command_catalogue()))
+    )
     rendered = json.dumps(catalogue, indent=2) + "\n"
     previous = json.dumps(_before_batch_authority_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]

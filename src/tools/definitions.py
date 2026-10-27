@@ -617,6 +617,10 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             "task_id": {"type": "string", "description": "Resolve session from this task id"},
             "text": {"type": "string", "description": "Text to inject and submit"},
             "message": {"type": "string", "description": "Alias for text"},
+            "submit_pending": {
+                "type": "boolean",
+                "description": "Recover pending AQ input without new text; clears collapsed input for retry",
+            },
         },
     },
     "session_logs": {

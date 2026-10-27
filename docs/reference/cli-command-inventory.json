@@ -14780,10 +14780,11 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "session_id",
-          "text"
+          "session_id"
         ],
         "optional": [
+          "text",
+          "--submit-pending",
           "--json",
           "--brief",
           "--save-output",
