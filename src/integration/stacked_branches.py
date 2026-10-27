@@ -1104,12 +1104,14 @@ class StackedBranches:
             ),
             task_id,
         )
+        if not stack and not rows:
+            return True
         proofs = {row["task_id"]: _identity(row) for row in rows}
         if (not stack or _bindings(proofs) != _bindings(stack["prerequisites"])
                 or any(proof.get("checkpoint_bound") and proof["checkpoint_sha"] !=
                        proofs[tid]["checkpoint_sha"]
                        for tid, proof in stack["prerequisites"].items())):
-            if (snapshot is None or source_sha is None
+            if (self.observer is None or snapshot is None or source_sha is None
                     or stack and (stack.get("hold") or stack.get("repair_task_id"))):
                 return False
             # Reclose/retirement changes the identity, not necessarily the work

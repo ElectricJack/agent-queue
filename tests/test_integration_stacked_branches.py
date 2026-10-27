@@ -1824,8 +1824,15 @@ async def test_stack_publication_recovers_checkpoint_from_current_git_completion
     ) is (constraint == "none")
 
 
-@pytest.mark.parametrize("changed", [False, True])
-async def test_lost_stack_projection_still_proves_current_prerequisite_ancestry(stack, changed):
+@pytest.mark.parametrize("changed,observer_available", [
+    pytest.param(False, True, id="False"),
+    pytest.param(True, True, id="True"),
+    pytest.param(False, False, id="current-without-observer"),
+    pytest.param(True, False, id="changed-without-observer"),
+])
+async def test_lost_stack_projection_still_proves_current_prerequisite_ancestry(
+    stack, changed, observer_available,
+):
     async with stack.db._engine.begin() as conn:
         await conn.execute(update(task_branch_origins).where(
             task_branch_origins.c.task_id == "child",
@@ -1833,9 +1840,11 @@ async def test_lost_stack_projection_still_proves_current_prerequisite_ancestry(
     if changed:
         head = stack.origin.work("first", "new-prerequisite")
         await close(stack.db, "first", [head], close_id="new-prerequisite", origin=stack.origin)
+    if not observer_available:
+        stack.service.observer = None
     assert await stack.service.current(
         "child", source_sha=stack.child, snapshot=await snapshot(stack.world),
-    ) is (not changed)
+    ) is (observer_available and not changed)
 
 
 @pytest.mark.parametrize("locator", ["missing", "moved", "generation"])
