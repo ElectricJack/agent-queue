@@ -17,6 +17,7 @@ from src.cli.app import cli
 from src.cli.test_runner import _bazel_plan, _run_forwarding_signals
 from src.resources.box_lock import BoxLock
 from src.resources.semaphore import SlotSemaphore, full_suite_lock_dir
+from src.test_selection.bazel_manifest import hydrate_manifest
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +144,96 @@ def test_explicit_marker_and_all_markers_map_exact_node_sets(setup):
     result = invoke(setup, "--aq-all-markers", "tests/test_m0.py")
     assert result.exit_code == 0, result.output
     assert setup.calls[-1][0][-1] == "//tests:m0__all_nodes"
+
+
+def version_two_document(setup):
+    path = setup.root / "tools/bazel/test_suites.json"
+    document = json.loads(path.read_text())
+    inputs = ["src/a.py", "src/café.py", "src/a.py"]
+    digest = hashlib.sha256(
+        json.dumps(inputs, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    for info in document["modules"].values():
+        info["source_files"] = {"input_set": digest}
+    document.update(schema_version=2, dependency_sets={digest: inputs})
+    return document
+
+
+@pytest.mark.parametrize(
+    ("args", "all_markers"),
+    [
+        (("tests/test_m0.py",), False),
+        (("tests/test_m0.py", "-m", "slow"), False),
+        (("tests/test_m0.py",), True),
+        (("tests/",), False),
+        (("cli",), False),
+        (("migration_slow",), False),
+    ],
+)
+def test_version_two_manifest_preserves_exact_selection_and_input_values(setup, args, all_markers):
+    expected = _bazel_plan(args, markers="not slow", all_markers=all_markers)
+    document = version_two_document(setup)
+    expanded = hydrate_manifest(document)
+    assert expanded["schema_version"] == 1
+    assert "dependency_sets" not in expanded
+    for info in expanded["modules"].values():
+        assert info["source_files"] == ["src/a.py", "src/café.py", "src/a.py"]
+    # Decoding does not mutate the versioned document or its shared list table.
+    assert document["schema_version"] == 2
+    assert "input_set" in document["modules"]["tests/test_m0.py"]["source_files"]
+    (setup.root / "tools/bazel/test_suites.json").write_text(json.dumps(document))
+
+    assert _bazel_plan(args, markers="not slow", all_markers=all_markers) == expected
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_table", "unknown_reference", "missing_reference", "extra_reference_key",
+        "inline_list", "nonstring_path", "wrong_digest", "invalid_digest",
+        "invalid_module", "unknown_version",
+    ],
+)
+def test_malformed_version_two_manifest_refuses_before_admission(setup, corruption):
+    document = version_two_document(setup)
+    digest = next(iter(document["dependency_sets"]))
+    # Corrupt an unselected module too: all references must be validated before admission.
+    entry = document["modules"]["tests/test_m5.py"]
+    if corruption == "missing_table":
+        del document["dependency_sets"]
+    elif corruption == "unknown_reference":
+        entry["source_files"] = {"input_set": "0" * 64}
+    elif corruption == "missing_reference":
+        entry["source_files"] = {}
+    elif corruption == "extra_reference_key":
+        entry["source_files"]["extra"] = digest
+    elif corruption == "inline_list":
+        entry["source_files"] = ["src/a.py"]
+    elif corruption == "nonstring_path":
+        document["dependency_sets"][digest] = [1]
+    elif corruption == "wrong_digest":
+        document["dependency_sets"][digest] = ["src/changed.py"]
+    elif corruption == "invalid_digest":
+        document["dependency_sets"]["not-a-sha256"] = []
+    elif corruption == "invalid_module":
+        document["modules"]["tests/test_m5.py"] = []
+    elif corruption == "unknown_version":
+        document["schema_version"] = 3
+    (setup.root / "tools/bazel/test_suites.json").write_text(json.dumps(document))
+
+    result = invoke(setup, "tests/test_m0.py")
+
+    assert result.exit_code == 2, result.output
+    assert "cannot read Bazel suite manifest" in result.output
+    assert "Nothing was run" in result.output
+    assert not setup.calls
+    assert not setup.report.exists()
+
+
+def test_version_one_manifest_remains_accepted_without_rewriting(setup):
+    document = json.loads((setup.root / "tools/bazel/test_suites.json").read_text())
+    assert hydrate_manifest(document) is document
+    assert invoke(setup, "tests/test_m0.py").exit_code == 0
 
 
 @pytest.mark.parametrize("name", ["cli", "//checks:cli"])
@@ -351,6 +442,6 @@ assert postgres_test_dsn_error({"POSTGRES_TEST_DSN": "postgresql://host/base"}) 
 assert not any(name == "src.cli" or name.startswith("src.cli.") for name in sys.modules)
 """
     result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=15, check=False
     )
     assert result.returncode == 0, result.stderr

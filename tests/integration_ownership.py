@@ -958,6 +958,33 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_slice_a_lazy_task_graph_exports_compos
  'supervisor_decision_message_id': 'msg-bb71c846812341e68b2a81bd464d39ef',
  'task_id': 'clear-beacon-42',
  'working_tree_source_sha256': {'src/task_graph/__init__.py': '998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06'}},
+ 'cold_restart_deadline_composition': {'task_id': 'calm-ember-15',
+                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                       'operator_decision': '6679052c',
+                                       'supervisor_decision_message_id': 'msg-064ace8754d34bb98fd36c97c2d60fd2',
+                                       'dev_source_revision': '0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3',
+                                       'source_revision': '9dd471a3ae39eb2494dac5d19945b21a18f4cf7f',
+                                       'previous_measured_owned_total': 159166,
+                                       'previous_measured_engine_lines': 83653,
+                                       'previous_measured_table_count': 45,
+                                       'authorized_owned_delta': 42,
+                                       'authorized_engine_delta': 0,
+                                       'authorized_table_delta': 0,
+                                       'measured_owned_total': 159208,
+                                       'measured_engine_lines': 83653,
+                                       'measured_table_count': 45,
+                                       'charged_files': {'src/commands/task_commands.py': 14,
+                                                         'src/wait_runtime/restart.py': 28},
+                                       'evidence_path': 'docs/reports/2026-10-26-cold-restart-ownership.json',
+                                       'reason': 'Exact measured +42 shared-owned/+0 engine/+0 '
+                                                 'tables within the supervisor pre-approved '
+                                                 '+90/+90/+0 bound for a bounded cold restart, '
+                                                 'external proofs outside database transactions, '
+                                                 'and fenced readmission after continuation '
+                                                 'retirement. Preserve original baselines, every '
+                                                 'historical grant and ownership classification, '
+                                                 'zero remaining headroom, s4_modules expiry and '
+                                                 'no new storage category.'},
  'incoming_child_batch_composition': {'authorized_engine_delta': 20,
                                       'authorized_owned_delta': 43,
                                       'authorized_shared_owned_delta': 23,
@@ -1086,7 +1113,7 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_slice_a_lazy_task_graph_exports_compos
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3981,
+ 'authorized_owned_delta': 4023,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1658,7 +1685,7 @@ HAND_INTEGRATION_RECONCILIATION = {'bazel_slice_a_lazy_task_graph_exports_compos
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83653,
- 'measured_owned_total': 159480,
+ 'measured_owned_total': 159522,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
