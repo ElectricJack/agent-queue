@@ -932,7 +932,38 @@ TS_START = re.compile(
 
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
-HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch4_composition': {'task_id': 'sound-falcon-86',
+HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch6_composition': {'task_id': 'sound-falcon-86',
+                                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                       'operator_decision': '6679052c',
+                                                       'supervisor_decision_message_id': 'msg-753ed33f5aae40cfa23a343221437e4e',
+                                                       'request_message_id': 'msg-ab688ce593b84a02bada1c74dadd112c',
+                                                       'thread_id': 'sound-falcon-86-epoch6-size',
+                                                       'dev_source_revision': '3f6e5052e',
+                                                       'source_revision': 'e1c6538d6a7e47ecc2cbadbfe0842fed653adf6f',
+                                                       'previous_measured_owned_total': 159522,
+                                                       'previous_measured_engine_lines': 83653,
+                                                       'previous_measured_table_count': 45,
+                                                       'authorized_owned_delta': 4,
+                                                       'authorized_shared_owned_delta': 4,
+                                                       'authorized_engine_delta': 0,
+                                                       'authorized_table_delta': 0,
+                                                       'measured_owned_total': 159526,
+                                                       'measured_engine_lines': 83653,
+                                                       'measured_table_count': 45,
+                                                       'reason': 'Supervisor-confirmed '
+                                                                 'carry-forward of the unchanged '
+                                                                 'attached-owner close grant onto '
+                                                                 'dev 3f6e5052e. Count the same +4 '
+                                                                 'shared owned/+0 engine/+0 tables '
+                                                                 'once; preserve every dev and '
+                                                                 'task grant and ownership '
+                                                                 'classification, zero headroom, '
+                                                                 's4_modules expiry and no new '
+                                                                 'storage. Re-recording this exact '
+                                                                 '+4/0/0 over a later merged dev '
+                                                                 'ledger is preapproved by the '
+                                                                 'same decision.'},
+ 'attached_owner_close_atomicity_epoch4_composition': {'task_id': 'sound-falcon-86',
                                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
                                                        'operator_decision': '6679052c',
                                                        'supervisor_decision_message_id': 'msg-b3701b15ca354004b598df7187ddf22e',
@@ -1011,6 +1042,32 @@ HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch4_compos
                                                           'grant and ownership classification, '
                                                           'zero remaining headroom, the s4_modules '
                                                           'expiry and no new storage category.'},
+ 'bazel_slice_a_lazy_task_graph_exports_composition': {'authorized_engine_delta': 0,
+ 'authorized_owned_delta': 314,
+ 'authorized_shared_owned_delta': 314,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/task_graph/__init__.py': 43,
+                   'src/task_graph/parser.py': 132,
+                   'src/task_graph/validator.py': 139},
+ 'dev_source_revision': '0d13d9185',
+ 'measured_engine_lines': 83633,
+ 'measured_owned_total': 159437,
+ 'measured_table_count': 45,
+ 'operator_decision': '6679052c',
+ 'previous_measured_engine_lines': 83633,
+ 'previous_measured_owned_total': 159123,
+ 'previous_measured_table_count': 45,
+ 'reason': 'Exact supervisor-approved +314 owned/+0 engine/+0 tables for the lazy task-graph '
+           'package export seam: +43 net facade lines and +132 unchanged parser/+139 unchanged '
+           'validator lines newly reached by the existing whole-function token/import closure. '
+           'Preserve all historical grants, original baselines, ownership classifications, zero '
+           'remaining headroom, the s4_modules expiry and all other caps. If the dev ledger moves '
+           'before landing, only dev plus this exact 314/0/0 composition is preapproved.',
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'source_revision_basis': '087e4fa6e24994e21bb93996b8565877cb567bed',
+ 'supervisor_decision_message_id': 'msg-bb71c846812341e68b2a81bd464d39ef',
+ 'task_id': 'clear-beacon-42',
+ 'working_tree_source_sha256': {'src/task_graph/__init__.py': '998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06'}},
  'cold_restart_deadline_composition': {'task_id': 'calm-ember-15',
                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
                                        'operator_decision': '6679052c',
@@ -1166,7 +1223,7 @@ HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch4_compos
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 3713,
+ 'authorized_owned_delta': 4027,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1738,7 +1795,7 @@ HAND_INTEGRATION_RECONCILIATION = {'attached_owner_close_atomicity_epoch4_compos
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83653,
- 'measured_owned_total': 159212,
+ 'measured_owned_total': 159526,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
