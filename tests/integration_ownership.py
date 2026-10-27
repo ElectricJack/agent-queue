@@ -1202,7 +1202,7 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4156,
+ 'authorized_owned_delta': 4484,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1774,7 +1774,7 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83773,
- 'measured_owned_total': 159655,
+ 'measured_owned_total': 159983,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -2705,7 +2705,36 @@ HAND_INTEGRATION_RECONCILIATION = {'abort_recovery_composition': {'authorized_en
                                                         'storage category.',
                                               'referenced_decision': 'size-cap-delegation-2026-10-23',
                                               'source_revision': '93c9d12a6f87dbd119b9736279023b73500f68c1',
-                                              'task_id': 'stark-horizon-78'}}
+                                              'task_id': 'stark-horizon-78'},
+ 'retained_holder_repair_composition': {'authorized_engine_delta': 0,
+                                        'authorized_owned_delta': 328,
+                                        'authorized_shared_owned_delta': 328,
+                                        'authorized_table_delta': 0,
+                                        'charged_files': {'src/commands/retained_holder_repair.py': 302,
+                                                          'src/commands/workspace_checkout_repair.py': 21,
+                                                          'src/commands/worktree_commands.py': 5},
+                                        'dev_source_revision': '8333fd66a4a58abe6396a2841df4a63a6e7532f4',
+                                        'implementation_commit': 'ac6db1f25c361fabdc42f6983a5fd487370f5dc1',
+                                        'measured_engine_lines': 83773,
+                                        'measured_owned_total': 159983,
+                                        'measured_table_count': 45,
+                                        'operator_decision': '6679052c',
+                                        'previous_measured_engine_lines': 83773,
+                                        'previous_measured_owned_total': 159655,
+                                        'previous_measured_table_count': 45,
+                                        'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2124',
+                                        'reason': 'Exact supervisor-approved shared-owned '
+                                                  'footprint for evidence-fenced historical '
+                                                  'dead-holder repair after merging dev. Preserve '
+                                                  'every historical grant, original baseline and '
+                                                  'ownership classification, zero remaining '
+                                                  'headroom, s4_modules expiry and no new storage '
+                                                  'category.',
+                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                        'source_revision': '18d90209a3bc0cdd1822ed3f67884a9380d388e4',
+                                        'supervisor_decision_message_id': 'msg-2b7bf1d8c34446ccafa4cfe2a3bf8106',
+                                        'task_id': 'noble-stone-27',
+                                        'thread_id': 'noble-stone-27-reopen-size'}}
 
 
 def integration_table(name: str) -> bool:
