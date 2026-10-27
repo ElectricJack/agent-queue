@@ -37,8 +37,11 @@ records the branch and SHA so a human can find it.  Callers must not treat
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import stat
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 from src.git.process import ProcessCleanupError
 from src.git.manager import GitError, RemoteRefState
@@ -216,6 +219,62 @@ WIP_SAVED_PREFIX = "WIP saved by AQ: "
 #: that still contains the saved commit.  Consumed by the launch it prepares.
 RESUME_POINT_META = "failover_resume_checkpoint"
 
+# Conservative automatic-save ceiling, including for repositories without a
+# configured forge. Refuse before staging, so repair never requires a rewrite.
+WIP_MAX_FILE_BYTES = 100 * 1024 * 1024
+WIP_DO_NOT_COMMIT = ".aq/wip-do-not-commit"
+
+
+def _wip_path_refusal(workspace: str, paths: list[str]) -> str | None:
+    root = Path(workspace)
+    declaration = root / WIP_DO_NOT_COMMIT
+    try:
+        entries = declaration.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        entries = []
+    excluded = []
+    for entry in entries:
+        if not entry or entry.startswith("#"):
+            continue
+        path = PurePosixPath(entry)
+        if path.is_absolute() or ".." in path.parts or str(path) == ".":
+            return f"Invalid repository-relative path in {WIP_DO_NOT_COMMIT}: {entry!r}"
+        excluded.append((str(path), entry.endswith("/")))
+    for name in paths:
+        if any(name == path or directory and name.startswith(path + "/")
+               for path, directory in excluded):
+            return f"WIP save refused: {name!r} is declared in {WIP_DO_NOT_COMMIT}"
+        try:
+            info = (root / name).lstat()
+        except FileNotFoundError:
+            continue  # Deleted paths have no blob in the next commit.
+        if stat.S_ISREG(info.st_mode) and info.st_size > WIP_MAX_FILE_BYTES:
+            return (f"WIP save refused: {name!r} is {info.st_size} bytes; "
+                    f"automatic-save limit is {WIP_MAX_FILE_BYTES} bytes")
+    return None
+
+
+async def _wip_save_refusal(git, workspace: str) -> str | None:
+    # Keep NUL framing and leading status columns; _arun strips whitespace.
+    result = await git.arun_git_result(
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=workspace,
+    )
+    if result.returncode:
+        raise GitError(f"Could not inspect WIP paths: {result.stderr.strip()}")
+    if "\ufffd" in result.stdout:
+        # GitManager replaces undecodable filename bytes. Never inspect a
+        # different path and accidentally publish the uninspected original.
+        return "WIP save refused: a dirty path could not be inspected without filename decoding loss"
+    records = iter(result.stdout.split("\0"))
+    paths = []
+    for record in records:
+        if not record:
+            continue
+        paths.append(record[3:])
+        if "R" in record[:2] or "C" in record[:2]:
+            paths.append(next(records))  # The original name also honors declarations.
+    return await asyncio.to_thread(_wip_path_refusal, workspace, paths)
+
 
 async def record_resume_point(db, task_id: str, repository_id: str, branch: str, sha) -> bool:
     """Record where the next exact-origin preparation of *task_id* continues.
@@ -255,7 +314,7 @@ async def save_wip_to_task_branch(
     event_bus=None,
     project_id: str | None = None,
 ) -> StrandedWork:
-    """Commit everything in *workspace* and fast-forward ``origin/<branch>`` to it.
+    """Save publishable WIP and fast-forward ``origin/<branch>`` to it.
 
     For a writer that was stopped for it -- usage ran out, an operator ran
     ``aq task stop`` -- so the next worker resumes on the task's own branch
@@ -298,6 +357,14 @@ async def save_wip_to_task_branch(
         remote_sha = remote.oid if remote.state is RemoteRefState.PRESENT else None
         committed = False
         if await git.ahas_uncommitted_changes(workspace, strict=True):
+            refusal = await _wip_save_refusal(git, workspace)
+            if refusal:
+                return StrandedWork(
+                    status="push_failed", branch=branch,
+                    commit=await git.arev_parse(workspace, "HEAD"),
+                    error=refusal + "; no paths were staged or committed. "
+                    "Preserve the checkout and repair it before retrying the save.",
+                )
             committed = bool(
                 await git.acommit_all(
                     workspace,
@@ -325,7 +392,7 @@ async def save_wip_to_task_branch(
             project_id=project_id,
             repository_url=repository_url,
         )
-    except (GitError, OSError) as exc:
+    except (GitError, OSError, UnicodeError) as exc:
         logger.warning("Could not save WIP for %s onto %s: %s", workspace, branch, exc)
         return StrandedWork(status="push_failed", branch=branch, error=str(exc))
     logger.info("Saved WIP from %s onto origin/%s (%s): %s", workspace, branch, head[:12], reason)

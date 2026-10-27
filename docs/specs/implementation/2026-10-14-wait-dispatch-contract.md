@@ -483,9 +483,34 @@ exhausted retries create the existing `resume_workspace_failed` incident.
 A live owning supervisor or local operator can issue `wait_decide` with
 `decision=requeue`, `wait_id`, `continuation_id`, `expected_generation` and a
 nonblank note. The transaction repeats project, generation, stopped-writer,
-branch and resolved-wait fences. Only workspace/launch resume holds are eligible;
-suspension, pause and uncertain-stop holds require their own recovery. Requeue
+branch and resolved-wait fences. Workspace/launch resume holds are eligible;
+push suspension repair is specified below. Pause and uncertain-stop holds
+require their own recovery. Requeue
 preserves the source and checkout, records actor/reason/time in facts and an audit
 event, and resets the retry budget. It does not acknowledge the outcome. The hold
 incident is withdrawn when the fresh process receives prime, atomically with
 outcome delivery; failed retries retain the incident.
+
+## Suspension publication safety and repair — 2026-10-26
+
+Automatic WIP saves refuse before staging or committing when a dirty regular
+file exceeds 100 MiB, or when a dirty path is declared in the checkout-local
+UTF-8 `.aq/wip-do-not-commit` file. Entries are exact repository-relative paths,
+one per line; a trailing `/` includes descendants. Blank lines and lines starting
+with `#` are ignored. Rename source and destination paths both count. Invalid
+declarations or unavailable inspection refuse the save. Refusals retain HEAD,
+the index and working files and record an actionable push error on the held
+continuation. No excluded work is silently lost during checkout release.
+
+`wait_decide decision=requeue` also accepts a suspension `push_failed` hold,
+before parking, with the same exact continuation/generation and supervisor
+authority. It repeats the original session, token, claim and branch binding,
+proves the exact writer and any same-named successor absent without signaling,
+and refuses any additional live task process. Observation runs outside the
+graph lock; the transaction repeats identity and version fences afterwards.
+The continuation returns to `sleeping` with a fresh publication retry budget;
+the wait outcome, old claim and checkout ownership remain intact. Saved-head
+proof is cleared so a repaired checkout must pass publication and detach again.
+The existing requeue audit records the actor and repair note. The push incident
+is withdrawn only when successful publication and parking commit together.
+

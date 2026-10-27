@@ -3046,6 +3046,130 @@ async def test_supervisor_requeue_generation_fence_audit_and_resumed_incident(en
         assert incident['state'] == 'cancelled' and incident['terminal_outcome'] == 'source_satisfied'
 
 
+async def push_hold(env, monkeypatch):
+    from tests.test_wait_dispatch import runtime
+
+    case = await suspension_case(env, monkeypatch, 'push')
+    service = runtime(env, clock=case.driver.clock, registry=build_registry())
+    case.driver.service = service
+    service.lifecycle.hibernate = case.driver
+    handler = service.orch._command_handler
+    assert (await case.driver.advance(env.wait_id, handler=handler))['hold_reason'] == 'push_failed'
+    args = dict(wait_id=env.wait_id, decision='requeue', continuation_id='c',
+                expected_generation=1, note='Generated files preserved; checkout repaired')
+    return case, service, handler, args
+
+
+@pytest.mark.parametrize('outcome', ['pending', 'satisfied'])
+async def test_repaired_push_hold_retries_save_and_park_without_releasing_early(
+    env, monkeypatch, outcome,
+):
+    import json
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import escalations, events
+
+    case, service, handler, args = await push_hold(env, monkeypatch)
+    async with env.db._engine.begin() as conn:
+        if outcome != 'pending':
+            await conn.execute(update(wait_records).values(outcome=outcome, resolved_at=NOW + 1))
+    held = await intent(env)
+    stops = case.provider.stop.await_count
+    with principal_context(TRUSTED_LOCAL):
+        stale = await handler.execute('wait_decide', {**args, 'expected_generation': 2})
+        assert stale['error_code'] == 'continuation.stale_generation'
+        assert await intent(env) == held
+        result = await handler.execute('wait_decide', args)
+        assert result['success'], result
+        assert not (await handler.execute('wait_decide', args))['success']
+    row = await intent(env)
+    assert row['resume_state'] == 'sleeping' and row['hold_reason'] is None
+    assert row['saved_head'] is None and row['facts']['local_head'] == 'a' * 40
+    assert row['suspension_generation'] == held['suspension_generation']
+    assert (await env.db.get_task('owner')).claim_epoch == 1
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == outcome
+        assert await conn.scalar(select(escalations.c.state)) == 'needs_human'
+        audit = json.loads(await conn.scalar(select(events.c.payload).where(
+            events.c.event_type == 'wait.resume_requeued')))
+        assert audit['hold_reason'] == 'push_failed' and audit['note'] == args['note']
+    # A subsequent transient failure gets a fresh retry window and keeps the incident.
+    assert (await case.driver.advance(env.wait_id, handler=handler))['push_pending']
+    case.save.return_value = SimpleNamespace(status='pushed', commit='b' * 40, error=None)
+    case.driver.clock = lambda: NOW + 5
+    assert (await case.driver.advance(env.wait_id, handler=handler))['parked']
+    assert case.provider.stop.await_count == stops  # Requeue observes; it never re-signals.
+    case.orch._release_workspace_and_cleanup.assert_awaited_once()
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(wait_records.c.outcome)) == outcome
+        assert await conn.scalar(select(escalations.c.state)) == 'cancelled'
+    assert (await intent(env))['saved_head'] == 'b' * 40
+
+
+@pytest.mark.parametrize('failure', [
+    'alive', 'successor', 'foreign', 'paused', 'branch', 'epoch', 'token', 'extra_process', 'race',
+])
+async def test_push_hold_requeue_refuses_unproved_or_changed_writer(env, monkeypatch, failure):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    case, service, handler, args = await push_hold(env, monkeypatch)
+    if failure == 'alive':
+        case.provider.process_alive.return_value = True
+    elif failure == 'successor':
+        case.provider.confirm_stopped.return_value = False
+    elif failure == 'foreign':
+        principal = ExecutionPrincipal(kind=PrincipalKind.SESSION,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=['wait_decide']),
+            session_id='foreign', session_instance_token='token',
+            project_id='foreign', profile_id='supervisor', elevated=True)
+    elif failure in {'paused', 'branch', 'epoch', 'token'}:
+        async with env.db._engine.begin() as conn:
+            if failure == 'token':
+                await conn.execute(update(sessions).where(sessions.c.id == 's').values(
+                    instance_token='replacement'))
+            else:
+                change = {'paused': {'status': 'PAUSED'}, 'branch': {'branch_name': 'aq/other'},
+                          'epoch': {'claim_epoch': 2}}[failure]
+                await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(**change))
+    elif failure == 'extra_process':
+        from dataclasses import replace
+        await env.db.create_session(replace(await env.db.get_session('s'),
+            id='unexpected', name='unexpected', instance_token='unexpected'))
+    else:
+        async def changed_during_proof(*_):
+            async with env.db._engine.begin() as conn:
+                await conn.execute(update(continuations).values(version=continuations.c.version + 1))
+            return True
+        case.provider.confirm_instance_stopped.side_effect = changed_during_proof
+    held = await intent(env)
+    with principal_context(principal if failure == 'foreign' else TRUSTED_LOCAL):
+        result = await handler.execute('wait_decide', args)
+    assert not result['success'], result
+    row = await intent(env)
+    if failure == 'race':
+        assert row == {**held, 'version': held['version'] + 1}
+    else:
+        assert row == held
+    case.orch._release_workspace_and_cleanup.assert_not_awaited()
+
+
+async def test_cancelled_push_requeue_rolls_back_hold_and_audit(env, monkeypatch):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.wait_runtime import hibernate
+
+    _, _, handler, args = await push_hold(env, monkeypatch)
+    held = await intent(env)
+    def cancelled_insert(*_):
+        raise asyncio.CancelledError()
+    with monkeypatch.context() as patch:
+        patch.setattr(hibernate, 'insert', cancelled_insert)
+        with principal_context(TRUSTED_LOCAL), pytest.raises(asyncio.CancelledError):
+            await handler.execute('wait_decide', args)
+    assert await intent(env) == held
+    with principal_context(TRUSTED_LOCAL):
+        assert (await handler.execute('wait_decide', args))['success']
+
+
 async def test_requeue_of_a_launch_hold_returns_to_the_capacity_queue(env):
     from src.commands.principal import TRUSTED_LOCAL
 

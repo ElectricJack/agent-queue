@@ -104,8 +104,20 @@ aq wait decide --wait-id WAIT_ID --decision requeue \
   --note 'Infrastructure repaired; retry this saved continuation'
 ```
 
-Pause and uncertain-stop holds require their own recovery. Requeue is audited;
-the hold incident resolves when the fresh session receives its resume context.
+The same command retries a `push_failed` suspension hold after the operator
+repairs the checkout. It proves the old writer stopped and retries save/park,
+retaining the claim and checkout until publication and detach succeed. The wait
+outcome is preserved. Its push incident resolves after successful parking.
+Workspace/launch incidents resolve when the fresh session receives resume context.
+Pause and uncertain-stop holds require their own recovery. Requeue is audited.
+
+Automatic WIP saves refuse dirty regular files over 100 MiB before staging
+anything. To keep generated output or local overlays out of automatic commits,
+list their exact repository-relative paths in `.aq/wip-do-not-commit`, one per
+line. A trailing `/` covers a directory; blank lines and `#` comments are allowed.
+Keep `.aq/` ignored by Git. A matching dirty path holds the save with a diagnostic;
+preserve that work outside the checkout and repair the dirty state before a
+supervisor requeues it. AQ retains the entire checkout until the save succeeds.
 
 ## Deadlines and human input
 
