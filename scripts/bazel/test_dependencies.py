@@ -47,13 +47,16 @@ def _module(path: str) -> str:
 
 def _walk(node: ast.AST):
     """TYPE_CHECKING branches cannot execute in the test interpreter."""
-    yield node
-    if isinstance(node, ast.If) and _name(node.test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}:
-        children = node.orelse
-    else:
-        children = ast.iter_child_nodes(node)
-    for child in children:
-        yield from _walk(child)
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        yield current
+        if (isinstance(current, ast.If)
+                and _name(current.test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}):
+            children = current.orelse
+        else:
+            children = list(ast.iter_child_nodes(current))
+        pending.extend(reversed(children))
 
 
 class DependencyAnalyzer:
@@ -76,6 +79,8 @@ class DependencyAnalyzer:
         self.scans: dict[tuple, tuple] = {}
         self.fixture_imports: dict[str, dict] = {}
         self.lazy_scanning: set[str] = set()
+        self.aliases: dict[str, dict[str, str]] = {}
+        self.data_inputs: dict[str, set[str]] = {}
 
     def tree(self, path: str) -> ast.Module:
         if path not in self.trees:
@@ -90,15 +95,9 @@ class DependencyAnalyzer:
             if (prefix := ".".join(pieces[:i])) in self.known
         }
 
-    def _scan(self, path: str, nodes: list[ast.AST]) -> tuple:
-        key = (path, tuple(id(node) for node in nodes))
-        if key in self.scans:
-            return self.scans[key]
-        imports, names, fixture_names, reasons, data = set(), set(), set(), set(), set()
-        docs = False
-        package = _module(path).split(".")
-        if not path.endswith("/__init__.py"):
-            package = package[:-1]
+    def _aliases(self, path: str, package: list[str]) -> dict[str, str]:
+        if path in self.aliases:
+            return self.aliases[path]
         aliases = {}
         for node in ast.walk(self.tree(path)):
             if isinstance(node, ast.ImportFrom):
@@ -111,6 +110,36 @@ class DependencyAnalyzer:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     aliases[alias.asname or alias.name] = alias.name
+        self.aliases[path] = aliases
+        return aliases
+
+    def _data_inputs(self, value: str) -> set[str]:
+        if value not in self.data_inputs:
+            candidate = self.root / value
+            files = set()
+            if candidate.is_file():
+                files.add(value)
+            elif candidate.is_dir():
+                for path in candidate.rglob("*"):
+                    relative = path.relative_to(self.root)
+                    if (path.is_file() and path.name not in {"BUILD", "BUILD.bazel"}
+                            and not any(part in _SKIP for part in relative.parts)):
+                        files.add(relative.as_posix())
+            self.data_inputs[value] = files
+        return self.data_inputs[value]
+
+    def _scan(self, path: str, nodes: list[ast.AST]) -> tuple:
+        key = (path, tuple(id(node) for node in nodes))
+        if key in self.scans:
+            return self.scans[key]
+        imports, names, fixture_names, reasons, data = set(), set(), set(), set(), set()
+        docs = False
+        package = _module(path).split(".")
+        if not path.endswith("/__init__.py"):
+            package = package[:-1]
+        aliases = self._aliases(path, package)
+        literal_nodes = set()
+        values = set()
         for top in nodes:
             if (isinstance(top, _FUNCTIONS) and top.name == "__getattr__"
                     and path.endswith("/__init__.py")):
@@ -211,22 +240,15 @@ class DependencyAnalyzer:
                                 reasons.add(f"{path}: unresolved fixture request")
                 # Literal repository paths are data, even when they are subsequently
                 # read by a helper. Docstrings and bare messages do not count.
-                if isinstance(node, (ast.BinOp, ast.Call, ast.Assign, ast.AnnAssign)):
-                    values = [child.value for child in ast.walk(node)
-                              if isinstance(child, ast.Constant) and isinstance(child.value, str)]
-                    for value in values:
-                        if value == "docs" or value.startswith("docs/"):
-                            docs = True
-                        if value.startswith(("src/", "tests/", "docs/", "scripts/", "tools/")):
-                            candidate = self.root / value
-                            if candidate.is_file():
-                                data.add(value)
-                            elif candidate.is_dir():
-                                data.update(p.relative_to(self.root).as_posix()
-                                            for p in candidate.rglob("*") if p.is_file()
-                                            and p.name not in {"BUILD", "BUILD.bazel"}
-                                            and not any(part in _SKIP
-                                                        for part in p.relative_to(self.root).parts))
+                if (isinstance(node, (ast.BinOp, ast.Call, ast.Assign, ast.AnnAssign))
+                        and node not in literal_nodes):
+                    # An assignment/call already covers its nested expressions.
+                    # Retain ast.walk's conservative literal union, visiting each
+                    # covered subtree only once instead of once per ancestor.
+                    for child in ast.walk(node):
+                        literal_nodes.add(child)
+                        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                            values.add(child.value)
                 for target in targets:
                     imports.update(self._resolve(target))
                     parent = self.known.get(target.rpartition(".")[0])
@@ -243,6 +265,11 @@ class DependencyAnalyzer:
                             reasons.update(extra[3])
                             data.update(extra[4])
                             docs |= extra[5]
+        for value in values:
+            if value == "docs" or value.startswith("docs/"):
+                docs = True
+            if value.startswith(("src/", "tests/", "docs/", "scripts/", "tools/")):
+                data.update(self._data_inputs(value))
         self.scans[key] = imports, names, fixture_names, reasons, data, docs
         return self.scans[key]
 

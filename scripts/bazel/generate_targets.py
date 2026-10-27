@@ -73,7 +73,17 @@ def file_label(path: str, libraries: dict, root: Path = ROOT) -> str:
     return "//:" + path
 
 
-def reads_docs(root: Path, paths: list[str], cache: dict | None = None) -> bool:
+def parsed_tree(path: Path, relative: str, trees: dict | None = None) -> ast.Module:
+    if trees is None:
+        return ast.parse(path.read_text(encoding="utf-8"))
+    if relative not in trees:
+        trees[relative] = ast.parse(path.read_text(encoding="utf-8"))
+    return trees[relative]
+
+
+def reads_docs(
+    root: Path, paths: list[str], cache: dict | None = None, trees: dict | None = None,
+) -> bool:
     """Conservatively recognize documentation inputs, excluding docstrings."""
     cache = {} if cache is None else cache
     for path in paths:
@@ -83,16 +93,16 @@ def reads_docs(root: Path, paths: list[str], cache: dict | None = None) -> bool:
             continue
         if not path.endswith(".py") or not (root / path).is_file():
             continue
-        tree = ast.parse((root / path).read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.BinOp)):
-                if any(
-                    isinstance(child, ast.Constant) and isinstance(child.value, str)
-                    and (child.value == "docs" or child.value.startswith("docs/"))
-                    for child in ast.walk(node)
-                ):
-                    cache[path] = True
-                    return True
+        tree = parsed_tree(root / path, path, trees)
+        pending = [(tree, False)]
+        while pending:
+            node, expression = pending.pop()
+            expression |= isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.BinOp))
+            if (expression and isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and (node.value == "docs" or node.value.startswith("docs/"))):
+                cache[path] = True
+                return True
+            pending.extend((child, expression) for child in ast.iter_child_nodes(node))
         cache[path] = False
     return False
 
@@ -132,9 +142,11 @@ def module_name(path: str) -> str:
     return name.removesuffix(".__init__")
 
 
-def imports(path: Path, relative: str, known: dict[str, str]) -> tuple[set[str], bool]:
+def imports(
+    path: Path, relative: str, known: dict[str, str], trees: dict | None = None,
+) -> tuple[set[str], bool]:
     """Resolve static and literal dynamic imports; unknown dynamic loads widen."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = parsed_tree(path, relative, trees)
     found: set[str] = set()
     unknown = False
     package = module_name(relative).split(".")
@@ -201,6 +213,10 @@ def closure(seeds: set[str], edges: dict[str, set[str]]) -> set[str]:
 
 
 def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tuple[dict, dict]:
+    analyzer = dependency_analyzer(root) if fine_grained else None
+    # Legacy imports, documentation readers and fine-grained fixture discovery
+    # inspect the same immutable sources during one graph generation.
+    trees = analyzer.trees if analyzer else {}
     files = source_files(root)
     python = [p for p in files if p.endswith(".py")]
     support = [
@@ -212,7 +228,7 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
     edges, dynamic = {}, set()
     fixtures = {p for p in support if not Path(p).name.startswith("test_")}
     for path in python + sorted(fixtures):
-        edges[path], unknown = imports(root / path, path, known)
+        edges[path], unknown = imports(root / path, path, known, trees)
         if unknown:
             dynamic.add(path)
     # A dynamic common fixture already requires every source/test input. Parsing
@@ -220,7 +236,7 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
     # work while retaining the full generator_inputs filegroup for these tests.
     if not closure(fixtures, edges) & dynamic:
         for path in sorted(set(support) - fixtures):
-            edges[path], unknown = imports(root / path, path, known)
+            edges[path], unknown = imports(root / path, path, known, trees)
             if unknown:
                 dynamic.add(path)
     packages = defaultdict(list)
@@ -239,7 +255,6 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
             "source_packages": sorted({owner(p) for p in reached if p.startswith("src/")}),
         }
     tests = {}
-    analyzer = dependency_analyzer(root) if fine_grained else None
     docs_cache = {}
     for path in sorted(modules):
         reached = closure({path, *fixtures}, edges)
@@ -271,13 +286,13 @@ def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tu
             # The legacy source closure remains unchanged until its area opts in.
             # Documentation is a separate input and only follows actual readers.
             if path not in edges:
-                edges[path], _ = imports(root / path, path, known)
+                edges[path], _ = imports(root / path, path, known, trees)
             conftests = [
                 p for p in fixtures if Path(p).name == "conftest.py"
                 and Path(p).parent in Path(path).parents
             ]
             tests[path]["docs"] = reads_docs(
-                root, sorted(closure({path, *conftests}, edges)), docs_cache
+                root, sorted(closure({path, *conftests}, edges)), docs_cache, trees
             )
     return libraries, tests
 
