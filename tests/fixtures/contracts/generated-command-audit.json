@@ -17536,6 +17536,33 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "recover_retained_holder": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/worktree_commands.py:WorktreeCommandsMixin._cmd_recover_retained_holder",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "await repair(self, args)"
+      }
+    ],
+    "review_notes": "Reviewed retained-holder repair: explicit boolean outcomes from the delegated repair producer; original principal must be operator or live global supervisor. Preview is observational. Apply requires unchanged exact proof, positive stopped-provider/process evidence, and preserved Git refs before ownership release; failures retain reservations. No outcome is inferred from diagnostic keys.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:34756710eb605069754b11356c7c1c7f7c0a6bed12443f04c91f471460060017",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_retained_holder_repair.py"
+    ]
+  },
   "release_project_constraint": {
     "argument_reads_diagnostic_only": [
       "fields",

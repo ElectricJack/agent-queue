@@ -612,7 +612,8 @@
         "tests/test_integration_ownership.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
-        "tests/test_integration_workspace_handoff.py"
+        "tests/test_integration_workspace_handoff.py",
+        "tests/test_retained_holder_repair.py"
       ]
     },
     "integration-promotion": {
@@ -16682,6 +16683,31 @@
         "asyncio"
       ],
       "summary": "A resume key must name a session the harness can actually resume."
+    },
+    "tests/test_retained_holder_repair.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "digest": "sha256:7ea3cb5a6e3689599188506beab08ab3650c3d75b1cf53db61cf968770602cc2",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.claim_file",
+        "src.commands",
+        "src.commands.principal",
+        "src.commands.retained_holder_repair",
+        "src.database.tables",
+        "src.git.manager",
+        "src.models",
+        "src.orchestrator.worktree_manager",
+        "src.profiles.capabilities",
+        "src.wait_runtime.restart"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Historical failed-push damage, with real Git objects and PostgreSQL fences."
     },
     "tests/test_retired_defaults.py": {
       "areas": [
