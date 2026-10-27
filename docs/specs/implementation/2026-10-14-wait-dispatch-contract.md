@@ -1,5 +1,33 @@
 # Wait outcome integration contract
 
+## Publication hold recovery — 2026-10-27
+
+Continuation maintenance retries `push_failed` suspension holds using their persisted,
+capped publication backoff, including after daemon restart and source resolution.
+Every attempt freshly proves the original writer stopped before saving or publishing;
+recovery never signals it again. The claim and checkout remain owned until publication
+and detachment succeed. Successful publication withdraws its bound hold incident.
+Other infrastructure holds retain their existing recovery rules.
+
+`wait_decide requeue` also accepts an uncleared `push_failed` hold before parking,
+with either a pending or resolved source. It preserves generation, saved work,
+outcome and ownership and makes the same suspension protocol immediately eligible;
+it never queues resume admission before parking proof.
+
+`aq wait retire CONTINUATION_ID --expected-generation N --note REASON` dispatches
+`wait_decide` with decision `retire`. A live project supervisor or local operator
+may retire an unacknowledged continuation by id, without a pending source wait or
+an escalation decision. The command takes the task-control and graph fences,
+checks generation, project, branch and current writer ownership, and records an
+audit. It cancels that wait's continuation, deadlines, edges and reservations,
+preserves any resolved outcome and checkpoint, requests the exact holder stop,
+and leaves the task PAUSED using the durable manual-pause snapshot and claim fence.
+It neither wakes nor releases a writer or checkout; normal manual-pause cleanup
+owns eventual stopped-writer release. Terminal, acknowledged,
+superseded or foreign continuations refuse without mutation.
+After cleanup, explicit task Resume returns ordinary work to the frontier rather
+than restoring a suspended status whose continuation has been retired.
+
 ## Resume admission during source backlogs — 2026-10-25
 
 Each resume attempt captures fresh delivery and Git observations for its own

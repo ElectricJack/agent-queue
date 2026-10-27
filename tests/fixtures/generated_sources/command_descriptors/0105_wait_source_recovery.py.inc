@@ -8,7 +8,11 @@ def _wait_source_recovery_changes():
 
 def _before_wait_source_recovery_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_publication_hold_catalogue(
+            _before_retained_holder_repair_catalogue(
+                _before_claim_abort_catalogue(json.loads(render_command_catalogue()))
+            )
+        )
     evidence = _wait_source_recovery_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
     assert definition == evidence["definition"]
@@ -30,7 +34,11 @@ def test_wait_source_recovery_only_extends_existing_scoped_command():
     assert set(schema["properties"]) - set(evidence["previous_definition"]["input_schema"][
         "properties"]) == {"action", "limit"}
     catalogue = _before_unread_inbox_catalogue(
-        _before_batch_authority_catalogue(json.loads(render_command_catalogue()))
+        _before_batch_authority_catalogue(_before_publication_hold_catalogue(
+            _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue(
+                json.loads(render_command_catalogue())
+            ))
+        ))
     )
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"])

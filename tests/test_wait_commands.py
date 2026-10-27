@@ -1385,6 +1385,23 @@ def test_cli_requeue_sends_continuation_and_generation(cli_transport):
         expected_generation=2, note='Infrastructure repaired'))
 
 
+@pytest.mark.parametrize('missing', ['continuation_id', 'expected_generation'])
+def test_retire_requires_explicit_continuation_generation(missing):
+    args = dict(decision='retire', continuation_id='c', expected_generation=1, note='Retire')
+    args.pop(missing)
+    with pytest.raises(ValidationError, match='retire requires'):
+        WaitDecideArgs.model_validate(args)
+
+
+def test_cli_retire_dispatches_supervisor_decision_by_continuation_id(cli_transport):
+    group, calls = cli_transport
+    result = CliRunner().invoke(group, ['retire', 'c', '--expected-generation', '2',
+                                      '--note', 'Stranded holder', '--project', 'p'])
+    assert result.exit_code == 0, result.output
+    assert calls[0] == ('wait_decide', dict(decision='retire', continuation_id='c',
+        expected_generation=2, note='Stranded holder', project_id='p'))
+
+
 @pytest.mark.parametrize("action", ["redispatch", "blockers", "retire"])
 async def test_source_redispatch_requires_live_scoped_supervisor(commands, env, action):
     name = "wait_source_redispatch"
