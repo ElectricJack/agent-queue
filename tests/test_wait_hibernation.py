@@ -2031,6 +2031,120 @@ async def test_cold_restart_waits_for_resume_workspace_transaction(cold_restart_
     assert (await restart)['success']
 
 
+@pytest.mark.parametrize('status', ['WAITING', 'HIBERNATED', 'RESUME_PENDING'])
+async def test_cold_restart_readmits_after_continuation_retirement(env, status):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.models import TaskStatus
+
+    await park(env)
+    await env.db.update_session('s', state='stopped', desired_state='stopped')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state='cancelled', facts={}))
+        await conn.execute(update(wait_records).values(
+            outcome='cancelled', cleared_at=NOW + 30, blocking=False))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(status=status))
+    before = await env.db.get_task('owner')
+    command = SimpleNamespace(db=env.db)
+    result = await TaskCommandsMixin._cmd_restart_task(command, {'task_id': 'owner'})
+    assert result['success'], result
+    task = await env.db.get_task('owner')
+    assert task.status is TaskStatus.READY and task.assigned_agent_id is None
+    assert task.claim_epoch == before.claim_epoch
+
+
+@pytest.mark.parametrize('blocker', ['task_control', 'task_row', 'recovery_guard'])
+async def test_cold_restart_deadline_reports_lock_and_releases_resources(
+    env, monkeypatch, caplog, blocker,
+):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.wait_runtime import restart
+
+    monkeypatch.setattr(restart, 'RESTART_TIMEOUT_SECONDS', 1)
+    lock = asyncio.Lock()
+    command = SimpleNamespace(db=env.db, orchestrator=SimpleNamespace(
+        _task_control_lock=lambda _: lock))
+    if blocker == 'recovery_guard':
+        async def stalled(*_):
+            await asyncio.Event().wait()
+        monkeypatch.setattr(env.db, 'guard_restart_recovery_hold', stalled)
+    async with env.db._engine.begin() as holder:
+        if blocker == 'task_control':
+            await lock.acquire()
+        elif blocker == 'task_row':
+            await holder.execute(select(tasks).where(tasks.c.id == 'owner').with_for_update())
+        result = await TaskCommandsMixin._cmd_restart_task(command, {'task_id': 'owner'})
+        assert not result['success'] and result['error_code'] == 'task_restart.timeout', result
+        phase = 'task-control lock' if blocker == 'task_control' else 'recovery hold guard'
+        assert phase in result['error'] and phase in caplog.text
+        assert 'task_id=owner' in caplog.text
+        if blocker == 'task_control':
+            lock.release()
+    assert not lock.locked()
+    assert env.db._engine.pool.checkedout() == 0
+    # Cancellation rolled back and returned the connection; the row is usable.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(select(tasks).where(tasks.c.id == 'owner').with_for_update(nowait=True))
+
+
+@pytest.mark.parametrize('blocker', ['repository', 'graph'])
+async def test_cold_restart_cleanup_deadline_retains_ownership(
+    cold_restart_checkout, monkeypatch, caplog, blocker,
+):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.wait_runtime import restart
+    from src.waits.graph import lock_graph
+
+    case = cold_restart_checkout
+    # Allow the real Git proofs, then expire promptly on the selected lock.
+    monkeypatch.setattr(restart, 'RESTART_TIMEOUT_SECONDS', 5)
+    mutex = case.command.orchestrator._git_mutex(str(case.base))
+    async with case.env.db._engine.begin() as holder:
+        if blocker == 'repository':
+            await mutex.acquire()
+        else:
+            await lock_graph(holder)
+        try:
+            result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+        finally:
+            if blocker == 'repository':
+                mutex.release()
+    assert result['error_code'] == 'task_restart.timeout', result
+    phase = 'repository lock/Git' if blocker == 'repository' else 'wait graph lock'
+    assert phase in result['error'] and phase in caplog.text
+    assert not case.command.orchestrator._task_control_lock('owner').locked()
+    assert (await case.env.db.get_workspace('slot-0')).locked_by_task_id == 'owner'
+    assert (await intent(case.env))['resume_state'] == 'held'
+    assert case.env.db._engine.pool.checkedout() == 0
+    # Detach is idempotent; a timeout must leave the next restart able to finish.
+    monkeypatch.setattr(restart, 'RESTART_TIMEOUT_SECONDS', 20)
+    assert (await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'}))['success']
+
+
+@pytest.mark.parametrize('drift', ['task', 'workspace', 'session'])
+async def test_cold_restart_revalidates_after_external_proofs(cold_restart_checkout, drift):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.tables import workspaces
+
+    case = cold_restart_checkout
+    epoch = (await case.env.db.get_task('owner')).claim_epoch
+    table, key, values = {
+        'task': (tasks, 'owner', {'claim_epoch': epoch + 1}),
+        'workspace': (workspaces, 'slot-0', {'generation': 2}),
+        'session': (sessions, 's', {'instance_token': 'replacement'}),
+    }[drift]
+
+    async def stopped(_):
+        async with case.env.db._engine.begin() as conn:
+            await conn.execute(update(table).where(table.c.id == key).values(**values))
+        return True
+
+    case.provider.confirm_stopped.side_effect = stopped
+    result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
+    assert result['error_code'] == 'continuation.stale_generation', result
+    assert (await case.env.db.get_workspace('slot-0')).locked_by_task_id == 'owner'
+    assert (await intent(case.env))['resume_state'] == 'held'
+
+
 @pytest.mark.parametrize('blocker', [
     'live', 'unknown_stop', 'stop_error', 'dirty', 'unpushed', 'head_drift',
     'reused', 'reused_agent', 'pinned',
@@ -2745,19 +2859,37 @@ async def test_slow_scheduler_observation_does_not_exhaust_resume_graph_retry(en
         await asyncio.wait_for(scan, 5)
 
 
-async def test_cold_restart_provider_stop_proof_leaves_graph_free(cold_restart_checkout):
+async def test_cold_restart_external_proofs_leave_transactions_closed(
+    cold_restart_checkout, monkeypatch,
+):
     from src.commands.task_commands import TaskCommandsMixin
+    from src.wait_runtime import restart
     from src.waits.graph import lock_graph
 
     case = cold_restart_checkout
 
     async def stopped(handle):
-        # A slow external proof can hold this task's rows, but must leave the
-        # global fence available to unrelated continuation reservations.
+        # Neither graph nor task rows can be held while awaiting the provider.
+        assert case.env.db._engine.pool.checkedout() == 0
         async with case.env.db._engine.begin() as conn:
             await lock_graph(conn, timeout=0.05)
+            for table in (tasks, wait_records, continuations, sessions):
+                await conn.execute(select(table).with_for_update(nowait=True))
         return True
 
+    original_ancestor = case.git.ais_ancestor
+    original_detach = restart.detach_task_slot
+
+    async def ancestor(*args, **kwargs):
+        assert case.env.db._engine.pool.checkedout() == 0
+        return await original_ancestor(*args, **kwargs)
+
+    async def detach(*args, **kwargs):
+        assert case.env.db._engine.pool.checkedout() == 0
+        return await original_detach(*args, **kwargs)
+
+    monkeypatch.setattr(case.git, 'ais_ancestor', ancestor)
+    monkeypatch.setattr(restart, 'detach_task_slot', detach)
     case.provider.confirm_stopped.side_effect = stopped
     result = await TaskCommandsMixin._cmd_restart_task(case.command, {'task_id': 'owner'})
     assert result['success'], result

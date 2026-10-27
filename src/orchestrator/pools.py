@@ -1412,6 +1412,17 @@ class PoolsMixin:
             locks = self._pool_teardown_locks = {}
         return locks.setdefault(session_id, asyncio.Lock())
 
+    async def _detach_idle_pool_branch(self, session) -> None:
+        """Best-effort branch release; the slot manager rechecks every ownership fence."""
+        slot = await self._slot_workspace_at(session.work_dir)
+        if slot is not None:
+            try:
+                await self._worktree_slots().detach_idle_slot_branch(slot)
+            except Exception:
+                logger.warning(
+                    "pool session %s: branch release deferred", session.id, exc_info=True,
+                )
+
     async def _terminate_pool_session(
         self,
         session,
@@ -1572,14 +1583,7 @@ class PoolsMixin:
                 session.id, state="stopped", desired_state="stopped", end_reason=reason,
             )
         if not other_live and still_owned:
-            slot = await self._slot_workspace_at(session.work_dir)
-            if slot is not None:
-                try:
-                    await self._worktree_slots().detach_idle_slot_branch(slot)
-                except Exception:
-                    logger.warning(
-                        "pool session %s: branch release deferred", session.id, exc_info=True,
-                    )
+            await self._detach_idle_pool_branch(session)
         if session.agent_id and not other_live and still_owned:
             await self.db.update_agent(session.agent_id, state=AgentState.IDLE, current_task_id=None)
         await self.bus.emit(
