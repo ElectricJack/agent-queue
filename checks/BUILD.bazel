@@ -1083,6 +1083,7 @@ test_suite(
         "//tests:test_collaboration_message_wait__default_7",
         "//tests:test_collaboration_message_wait__default_8",
         "//tests:test_collaboration_messages__default_1",
+        "//tests:test_collaboration_messages__default_2",
         "//tests:test_collaboration_messages__default_3",
         "//tests:test_collaboration_messages__default_4",
         "//tests:test_collaboration_messages__default_6",
