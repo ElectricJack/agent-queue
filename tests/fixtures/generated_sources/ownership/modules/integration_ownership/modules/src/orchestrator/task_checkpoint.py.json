@@ -1,7 +1,9 @@
 {
   "generic_dependencies": {
     "src/orchestrator/task_checkpoint.py::CHECKPOINT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/task_checkpoint.py::_add_worktree": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::_lock_sentinel_ignored": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/task_checkpoint.py::isolated_index": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::prepare_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::restore_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently."
   },

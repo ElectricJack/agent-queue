@@ -51,6 +51,8 @@ def test_guide_names_every_refusal_reason_and_its_fix():
         "stale_fence",
         "not_found",
         "not_recoverable_state",
+        "operation_in_progress",
+        "recovery_failed",
     ):
         assert reason in section, f"the guide does not cover the refusal {reason!r}"
 

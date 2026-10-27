@@ -60,13 +60,10 @@ import contextlib
 import json
 import logging
 import os
-import shutil
-import tempfile
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import and_, case, insert, not_, or_, select, update
@@ -86,7 +83,8 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, GitManager, RemoteRefState, commit_identity
+from src.git.manager import GitError, RemoteRefState, commit_identity
+from src.git.worktree_operation import operation_in_progress, unkeepable
 from src.integration.finished_owners import (
     StopConfirmer,
     _live_task_session,
@@ -133,6 +131,8 @@ STALE_FENCE = "stale_fence"
 NOT_FOUND = "not_found"
 NOT_RECOVERABLE_STATE = "not_recoverable_state"
 UNPROVEN_TASK_WORK = "unproven_task_work"
+OPERATION_IN_PROGRESS = "operation_in_progress"
+RECOVERY_FAILED = "recovery_failed"
 
 RECOVERED_EVENT = "integration.owner_recovered"
 REFUSED_EVENT = "integration.owner_recovery_refused"
@@ -400,7 +400,7 @@ class OwnerRecovery:
         """:meth:`recover` each row in turn.
 
         A row whose check raises (a local Git failure outside the named
-        refusals) is logged and left out of the result; the others still run.
+        refusals) is logged and reported as ``recovery_failed``; the others still run.
         """
         results = []
         for owner_row_id in owner_row_ids:
@@ -410,8 +410,10 @@ class OwnerRecovery:
                         owner_row_id, principal=principal, dry_run=dry_run, no_push=no_push,
                     )
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning("Owner recovery of %s failed", owner_row_id, exc_info=True)
+                results.append(RecoveryOutcome(owner_row_id, NOT_ELIGIBLE, RECOVERY_FAILED,
+                                               {"detail": f"{type(exc).__name__}: {exc}"}, dry_run))
         return results
 
     async def restore_task_origin(self, request, *, principal: str) -> dict:
@@ -700,6 +702,7 @@ class OwnerRecovery:
         planned: list[dict[str, Any]] = []
         preserve: list[tuple[str, str | None, str]] = []  # (kind, worktree, sha)
         detach: list[str] = []
+        merge_heads: dict[str, list[str]] = {}  # worktree -> MERGE_HEAD parents
         workspace_clean = True
         retain_checkout = False
         row_inspected = False
@@ -784,7 +787,16 @@ class OwnerRecovery:
                     continue
                 if local_sha is None:
                     continue
-                if dirty:
+                if (operation := await operation_in_progress(self.git, path)) is not None:
+                    evidence.setdefault("operations_in_progress", []).append(operation)
+                    if state := unkeepable(operation):
+                        raise _Refusal(OPERATION_IN_PROGRESS, f"{path} holds {state}, which "
+                                       "recovery cannot preserve; finish or abort it, then retry")
+                    if no_push and holds:
+                        raise _Refusal(OPERATION_IN_PROGRESS, "--no-push cannot keep the merge "
+                                       f"at {path}; rerun without it, or finish or abort the merge")
+                    merge_heads[path] = operation["merge_heads"]
+                if dirty or path in merge_heads:
                     preserve.append(("snapshot", path, head))
                 elif head and not await self._on_origin(checkout, head, origin_sha, default_branch):
                     preserve.append(("commit", path, head))
@@ -834,7 +846,7 @@ class OwnerRecovery:
                 try:
                     await self._prove_task_work(
                         row, checkout, branch, local_sha, origin_sha, default_branch,
-                        preserve, evidence,
+                        preserve, evidence, merge_heads,
                     )
                 except GitError as exc:
                     raise _Refusal(UNPROVEN_TASK_WORK, f"task work cannot be proved: {exc}") from exc
@@ -856,7 +868,7 @@ class OwnerRecovery:
                 shas = []
                 for kind, path, sha in preserve:
                     if kind == "snapshot":
-                        sha = await self._snapshot(path, sha, row["id"])
+                        sha = await self._snapshot(path, sha, row["id"], merge_heads.get(path, ()))
                     shas.append(sha)
                 tip = origin_sha
                 snapshots = list(evidence.get("snapshots") or [])
@@ -910,8 +922,13 @@ class OwnerRecovery:
                         raise _Refusal(ORIGIN_UNREACHABLE, "pending recovery publication is unproved")
             for path in detach:
                 if dry_run:
+                    if path in merge_heads:
+                        planned.append({"action": "quit_merge", "worktree": path})
                     planned.append({"action": "detach", "worktree": path})
                 else:
+                    if path in merge_heads:  # the snapshot keeps MERGE_HEAD; --quit, the tree
+                        await self.git._arun(["merge", "--quit"], cwd=path)
+                        evidence.setdefault("merges_quit", []).append(path)
                     # Never reset or clean: the checkout keeps the writer's work.
                     await self.git._arun(["switch", "--detach"], cwd=path)
                     evidence.setdefault("detached", []).append(path)
@@ -933,6 +950,7 @@ class OwnerRecovery:
 
     async def _prove_task_work(
         self, row, checkout, branch, local_sha, origin_sha, default_branch, preserve, evidence,
+        merge_heads,
     ) -> None:
         async with self.db._engine.connect() as conn:
             origin = (await conn.execute(select(task_branch_origins).where(
@@ -983,7 +1001,10 @@ class OwnerRecovery:
             stamps = await self.git._arun(
                 ["log", "--format=%ct", sha, "--not", *exclusions], cwd=checkout,
             )
-            if any(int(stamp) < int(claim_at) for stamp in stamps.splitlines()):
+            if path in merge_heads:  # an in-progress merge's side parents origin lacks
+                stamps += "\n" + await self.git._arun(["log", "--format=%ct", *merge_heads[path],
+                    "--not", sha, *exclusions, "--remotes=origin"], cwd=checkout)
+            if any(int(stamp) < int(claim_at) for stamp in stamps.split()):
                 raise _Refusal(UNPROVEN_TASK_WORK, "candidate contains commits made before claim")
 
     async def _checkout_for(self, row: dict[str, Any]) -> tuple[str | None, str, str | None, str]:
@@ -1106,30 +1127,19 @@ class OwnerRecovery:
             await self.git.ais_ancestor(checkout, sha, f"refs/remotes/origin/{default_branch}")
         )
 
-    async def _snapshot(self, path: str, head: str, owner_row_id: str) -> str:
+    async def _snapshot(self, path: str, head: str, owner_row_id: str, merge_heads=()) -> str:
         """Commit HEAD plus every change and untracked file, leaving the checkout as is.
 
         A copy of the live index is extended through ``GIT_INDEX_FILE``, the
         pattern ``task_checkpoint.capture_checkpoint`` uses, so neither the
-        working tree nor the writer's staged state changes.
+        working tree nor the writer's staged state changes; *merge_heads* add parents.
         """
-        from src.orchestrator.task_checkpoint import _lock_sentinel_ignored
+        from src.orchestrator.task_checkpoint import _add_worktree, isolated_index
 
-        with tempfile.TemporaryDirectory(prefix="aq-owner-recovery-") as temp:
-            index = Path(temp) / "index"
-            live_index = Path(await self.git._arun(["rev-parse", "--git-path", "index"], cwd=path))
-            if not live_index.is_absolute():
-                live_index = Path(path) / live_index
-            if live_index.exists():
-                shutil.copyfile(live_index, index)
-            isolated = GitManager()
-            isolated._SUBPROCESS_ENV = {**self.git._SUBPROCESS_ENV, "GIT_INDEX_FILE": str(index)}
-            pathspec = ["--", "."]
-            if not await _lock_sentinel_ignored(self.git, path):
-                pathspec.append(f":(exclude){_LOCK_SENTINEL}")
-            await isolated._arun(["add", "--all", *pathspec], cwd=path)
+        async with isolated_index(self.git, path) as isolated:
+            await _add_worktree(isolated, path)
             tree = await isolated._arun(["write-tree"], cwd=path)
-        return await self._commit(path, tree, [head], owner_row_id)
+        return await self._commit(path, tree, [head, *merge_heads], owner_row_id)
 
     async def _commit(self, cwd: str, tree: str, parents: list[str], owner_row_id: str) -> str:
         """A preservation commit, dated from its first parent so a rerun is identical."""
@@ -1140,19 +1150,9 @@ class OwnerRecovery:
             args += ["-p", parent]
         args += ["-m", f"aq: preserved by owner recovery {owner_row_id}"]
         identity = self.git.resolve_commit_identity()
-        name, email = identity.name, identity.email
-        result = await self.git.arun_git_result(
-            args,
-            cwd=cwd,
-            env={
-                "GIT_AUTHOR_NAME": name,
-                "GIT_AUTHOR_EMAIL": email,
-                "GIT_AUTHOR_DATE": date,
-                "GIT_COMMITTER_NAME": name,
-                "GIT_COMMITTER_EMAIL": email,
-                "GIT_COMMITTER_DATE": date,
-            },
-        )
+        result = await self.git.arun_git_result(args, cwd=cwd, env={
+            **identity.env(), "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date,
+        })
         if result.returncode != 0:
             raise GitError(f"git commit-tree failed: {(result.stderr or '').strip()}")
         return result.stdout.strip()
