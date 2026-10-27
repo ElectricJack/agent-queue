@@ -41,7 +41,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 4114,
+    "authorized_owned_delta": 4215,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -486,8 +486,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 83744,
-    "measured_owned_total": 159613,
+    "measured_engine_lines": 83838,
+    "measured_owned_total": 159714,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -617,6 +617,35 @@
       "supersedes_decision_message_id": "msg-8a308cadb20142e38c2692c762734e85",
       "task_id": "swift-forge-67",
       "thread_id": "swift-forge-67-ci-size"
+    },
+    "promotion_ci_policy_composition": {
+      "authorized_engine_delta": 94,
+      "authorized_owned_delta": 101,
+      "authorized_shared_owned_delta": 7,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/commands/promote_commands.py": 7,
+        "src/integration/checks.py": 12,
+        "src/integration/ci.py": 11,
+        "src/integration/ci_producers.py": 5,
+        "src/integration/promotion_steps.py": 61,
+        "src/integration/train_sources.py": 5
+      },
+      "dev_source_revision": "3f6e5052e51eba1777323c00f9618e5dafe17a24",
+      "measured_engine_lines": 83747,
+      "measured_owned_total": 159623,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83653,
+      "previous_measured_owned_total": 159522,
+      "previous_measured_table_count": 45,
+      "pull_request": "https://github.com/ElectricJack/agent-queue/pull/2088",
+      "reason": "Exact supervisor-approved promotion CI policy composition: reuse green source evidence or dispatch fresh promotion checks per frozen step policy. Preserve all historical grants, original baselines and ownership classifications, with zero remaining headroom and no new storage category.",
+      "recomposition_decision_message_id": "msg-2f539a57e0734d5f9c5e94fdc9a89119",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "03a30e91b1374d1b91e3c04fc6d2a63825cf9565",
+      "supervisor_decision_message_id": "msg-e2b6f604ca564c87b63159d46b56b709",
+      "task_id": "sound-flare-80"
     },
     "reason": "Separate exact reconciliation of the operator's 2026-10-23 hand integration of approximately 25 individually approved PRs, A5 bookkeeping shards and PR 1780 retirement. Preserves the original baseline, every historical grant and retired exception; includes this task's check/refusal composition fix. No automatic cap growth or new storage category.",
     "reconciled_inventory": "/tmp/smart-nexus-83-final-inventory.json",
