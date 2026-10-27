@@ -1,0 +1,19 @@
+{
+  "tests/test_cli_module_entry.py": {
+    "reason": "Subprocess -m, runpy and embedded Python execute the CLI; the duplicate-registration check enumerates its modules.",
+    "imports": ["src.cli.app"],
+    "data": ["src/cli/*.py"]
+  },
+  "tests/test_cli_module_map.py": {
+    "reason": "The module-map ratchet reads AGENTS.md and enumerates Python filenames using assembled paths.",
+    "data": ["src/cli/*.py", "src/cli/AGENTS.md"]
+  },
+  "tests/test_playbook_collections.py": {
+    "reason": "The backend collection projection is checked against the dashboard's shared fixture.",
+    "data": ["dashboard/src/pages/playbook-graph-v2/__tests__/collections.fixture.json"]
+  },
+  "tests/test_playbook_v2_api_dtos.py": {
+    "reason": "tests.playbook_v2_helpers reads the dashboard graph contract fixture through assembled paths.",
+    "data": ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"]
+  }
+}
