@@ -259,11 +259,11 @@ def fallback_text(deterministic: str, facts: dict[str, Any]) -> str:
     deterministic renderer declined -- which can still be *held* when something
     needs Jack and nothing else moved -- needs a fallback that says that much, so
     the one-line needs-you form is composed from the frozen counts rather than
-    invented prose.
+    invented prose. An unhealthy needs-you source returns no text; the caller
+    suppresses the window instead of posting a refresh notice.
     """
     if (facts.get("needs_you") or {}).get("source_health", "refreshing") != "healthy":
-        return render_authored_digest(
-            "Needs you is refreshing; open the inbox for current requests.", facts=facts)
+        return ""
     if deterministic.strip():
         if waiting_on_you_text(facts):
             lines = deterministic.strip().splitlines()

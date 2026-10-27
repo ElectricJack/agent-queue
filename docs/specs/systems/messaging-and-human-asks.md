@@ -661,6 +661,9 @@ post but not fact collection. An unchanged facts hash skips the window, with
 a quiet line after three skips. A window that speaks waits
 `author_fallback_minutes` (default 10) for `aq digest post`. If nothing
 arrives, the deterministic text goes out.
+When the frozen `needs_you` source is unhealthy, the fallback is suppressed
+with no payload or author request, and nothing is posted to Discord. Outside
+quiet hours, its suppression reason is `asks_refreshing`.
 
 ### 2.12 Hourly and morning reports
 

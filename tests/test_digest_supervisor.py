@@ -798,10 +798,56 @@ async def test_turning_the_flag_off_releases_a_held_window_to_the_fallback(db, e
     assert released["success"] is True
 
 
-def test_incomplete_asks_never_announce_a_false_zero():
-    brief = _idle_brief(asks={"items": [], "count": 0, "source_health": "degraded"})
+@pytest.mark.parametrize("health", ["degraded", "refreshing", None])
+@pytest.mark.parametrize("deterministic", ["", "Completed work. Needs you: nothing."])
+def test_incomplete_asks_have_no_fallback(health, deterministic):
+    asks = {"items": [], "count": 0}
+    if health is not None:
+        asks["source_health"] = health
+    brief = _idle_brief(asks=asks)
     assert _decide(brief, consecutive_skips=100).action == "hold"
-    assert "nothing needs you" not in fallback_text("No activity", brief).lower()
+    assert fallback_text(deterministic, brief) == ""
+
+
+@pytest.mark.parametrize("health", ["degraded", "refreshing", None])
+@pytest.mark.parametrize("has_activity", [False, True])
+async def test_unhealthy_needs_you_source_never_posts(db, monkeypatch, health, has_activity):
+    if has_activity:
+        await complete(db, "t1")
+    collect = db.collect_digest_supervisor_facts
+
+    async def unhealthy_facts(*args, **kwargs):
+        facts = await collect(*args, **kwargs)
+        if health is None:
+            facts["asks"].pop("source_health", None)
+        else:
+            facts["asks"]["source_health"] = health
+        return facts
+
+    monkeypatch.setattr(db, "collect_digest_supervisor_facts", unhealthy_facts)
+    clock = Clock()
+    transport = SinkTransport()
+    service = make_service(db, transport, clock=clock)
+
+    report = await service.tick()
+    assert report.evaluated == 1
+    assert report.suppressed == 1
+    assert report.sent == 0
+    window = await only_window(db)
+    assert window["send_status"] == "suppressed"
+    assert window["suppression_reason"] == "asks_refreshing"
+    assert window["payload"] is None
+    found = await db.find_digest_request(
+        destination=f"discord:{CHANNEL}",
+        generation=window["config_generation"],
+        window_start=float(window["window_start"]),
+    )
+    assert found is not None
+    assert found[1] == {}, "a suppressed window must not have an author request"
+
+    clock.advance(FALLBACK)
+    assert (await service.tick()).sent == 0
+    assert transport.messages == {}
 
 
 def test_digest_hash_includes_the_full_pending_set_not_the_visible_cap():
