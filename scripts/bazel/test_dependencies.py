@@ -125,13 +125,15 @@ def _module(path: str) -> str:
 
 def _walk(node: ast.AST):
     """TYPE_CHECKING branches cannot execute in the test interpreter."""
-    yield node
-    if isinstance(node, ast.If) and _name(node.test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}:
-        children = node.orelse
-    else:
-        children = ast.iter_child_nodes(node)
-    for child in children:
-        yield from _walk(child)
+    pending = [node]
+    while pending:
+        node = pending.pop()
+        yield node
+        if isinstance(node, ast.If) and _name(node.test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}:
+            children = node.orelse
+        else:
+            children = list(ast.iter_child_nodes(node))
+        pending.extend(reversed(children))
 
 
 def _definition_inputs(node):
@@ -169,6 +171,8 @@ class DependencyAnalyzer:
         self.trees = {} if trees is None else trees
         self.scan_contexts: dict[tuple, tuple] = {}
         self.snippet_contexts: dict[tuple, tuple] = {}
+        self.reference_positions: dict[str, int] = {}
+        self.reference_masks: dict[frozenset[str], int] = {}
         self.path_contexts: dict = {}
         self.full_scans: dict[str, tuple] = {}
         self.scans: dict[tuple, tuple] = {}
@@ -190,10 +194,7 @@ class DependencyAnalyzer:
         if path not in self.trees:
             self.trees[path] = ast.parse((self.root / path).read_text(encoding="utf-8"))
         if path not in self.parents:
-            self.parents[path] = {
-                id(child): parent for parent in ast.walk(self.trees[path])
-                for child in ast.iter_child_nodes(parent)
-            }
+            self.parents[path] = self._scan_context(path, self.trees[path])[0]
         return self.trees[path]
 
     def _resolve(self, name: str) -> frozenset[str]:
@@ -205,6 +206,20 @@ class DependencyAnalyzer:
                 if (prefix := ".".join(pieces[:i])) in self.known
             )
         return self.import_paths[name]
+
+    def _reference_mask(self, names: set[str] | frozenset[str]) -> int:
+        """Intern scan-name sets once; discoveries retain their exact union as bits."""
+        key = frozenset(names)
+        if key not in self.reference_masks:
+            mask = 0
+            for name in key:
+                position = self.reference_positions.get(name)
+                if position is None:
+                    position = len(self.reference_positions)
+                    self.reference_positions[name] = position
+                mask |= 1 << position
+            self.reference_masks[key] = mask
+        return self.reference_masks[key]
 
     def _support_references(self, target: str, seen: set[str] | None = None) -> set[str]:
         """Follow a used test-helper binding through renamed reexports."""
@@ -272,11 +287,10 @@ class DependencyAnalyzer:
             package = package[:-1]
         aliases = {}
         alias_candidates: dict[str, set[str]] = {}
-        parents = self.parents[path] if self.trees.get(path) is tree else {
-            id(child): parent for parent in ast.walk(tree)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = {}
         for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[id(child)] = node
             if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     base = (
@@ -696,8 +710,8 @@ class DependencyAnalyzer:
                             plugins.append(self.known[name])
         scopes = list(dict.fromkeys(plugins + scopes))
         fixtures, definitions, special, active = {}, {}, {}, set()
-        requested, referenced, references_seen = set(), set(), set()
-        pending_reference_batches = []
+        requested, referenced = set(), set()
+        reference_history = 0
         for scope in scopes:
             tree = self.tree(scope)
             for binding, definition in self._imported_fixtures(scope).items():
@@ -748,13 +762,14 @@ class DependencyAnalyzer:
             special[scope] = list(startup)
             for name, node in definitions[scope].items():
                 definition_owners.setdefault(name, []).append((scope, node))
-            # Only new support definitions need the complete history. Current
-            # owners are activated immediately below after every scan. Defer the
-            # large history unions until this reader actually needs them.
-            for names in pending_reference_batches:
-                references_seen.update(names)
-            pending_reference_batches.clear()
-            referenced.update(references_seen & definitions[scope].keys())
+            # Current owners are activated immediately after each scan. New
+            # owners consult the exact historical union without materializing
+            # every scanned production name into a per-discovery Python set.
+            referenced.update(
+                name for name in definitions[scope]
+                if (position := self.reference_positions.get(name)) is not None
+                and reference_history & (1 << position)
+            )
 
         while pending or requested or referenced:
             while requested:
@@ -796,7 +811,7 @@ class DependencyAnalyzer:
             reached.add(current)
             imports, names, fixture_names, unknown, resources, reads_docs = scan
             pending.extend(imports - reached)
-            pending_reference_batches.append(names)
+            reference_history |= self._reference_mask(names)
             referenced.update(names & definition_owners.keys())
             requested.update(fixture_names)
             reasons.update(unknown)

@@ -1,207 +1,156 @@
 # Bazel dependency slice D
 
-Task: `swift-pinnacle-16`. This slice migrates the remaining root test modules,
-`tests/llm` and `tests/perf`, and repairs the dashboard build/typecheck graph.
-The migration preserves the existing workflow arms; it does not change CI.
+Task: `swift-pinnacle-16`; PR #2103. This slice migrates the remaining root
+test modules, `tests/llm` and `tests/perf`, and repairs the dashboard
+build/typecheck graph. Existing workflow arms remain represented; CI is unchanged.
+The final graph includes `origin/dev` at `c00df1433`.
 
-## Input corrections
+## Input discovery
 
-The analyzer recognizes complete composed paths such as
-`ROOT / "dashboard" / "src"` and `ROOT / "src" / "database" / "schema.py"`.
-Explicit `glob`/`rglob` calls retain matching members; directory iteration retains
-the subtree conservatively. A directory assignment does not read its contents.
-Bare strings, comparisons and `startswith`/`removeprefix` predicates do not
-imply directory reads.
-`__file__`-relative fixture paths retain every existing enclosing-package
-interpretation. These rules cover the knowledge export JSON, dashboard source
-inspection and pane fixtures, and the TypeScript client package manifest.
+The analyzer follows composed repository paths, literal Python `-c` subprocess
+imports, Alembic execution inputs, imported test helpers and fixture dependencies.
+Explicit globbing retains matching files; directory iteration conservatively
+retains its subtree. Assigning a directory or comparing a path does not read it.
+`__file__`-relative fixtures retain each existing enclosing-package interpretation.
+Module and class initialization, decorators, defaults and pytest hooks remain
+inputs. Unused helper method bodies do not execute during import.
 
-The separate worktree-ancestor exclusion repair belongs to `swift-meadow-43`.
-It was merged from `dev` at `974dbb33b` before regeneration. An independent archive checkout supplied the initial regeneration. The final
-regeneration and reproduction use the worker root with its original ignored
-package artifacts present, after merging `dev` at `0cc15c4a7`. The earlier
-`/tmp/aq-bazel-regen-swift-pinnacle-16` preserves the frozen before/after
-factoring specimen.
+Dynamic helper dispatch keeps a visible conservative fallback. Additive audited
+declarations in `scripts/bazel/test_dependency_inputs.json` cover inputs syntax
+cannot reveal; unknown imports and unmatched declarations fail generation.
+Production modules remain fully scanned.
 
-Literal Python `-c` subprocess snippets contribute their transitive imports.
-Unambiguous literal bindings resolve within their lexical scope; conflicting,
-mutated or shadowed code stays visibly conservative. Alembic command calls
-retain the migration environment and revisions as executable Python inputs.
-`scripts/bazel/test_dependency_inputs.json` supplies additive audited `imports`
-and `data` glob declarations for inputs syntax cannot reveal. Unknown imports
-and unmatched declarations fail generation instead of silently narrowing it.
+Discovery snapshots the Git index. Ignored artifacts, untracked files and worker
+control files stay outside generator inputs and collection fingerprints. Source
+archives provide `.aq/bazel-source-files.json`. Tests retain normal pytest imports
+and conftest loading; collection filtering does not provide execution isolation.
+The original ignored package artifacts remain present in the worker root.
 
-Imported test support follows referenced functions and classes, including
-renamed reexports and aliases. Module initialization, class initialization,
-function decorators/defaults and pytest hooks remain inputs. Unused method
-bodies do not execute on import. Dynamic helper dispatch keeps a visible
-conservative fallback; production modules remain fully scanned.
+The slice is the complement of the reserved A integration/train/wait/delivery/
+stack/task-graph modules, B migration/install/database/PostgreSQL modules, and C
+CLI/API/task/playbook/agent/session/claim modules. The independent audit covers
+638 D modules, 24,705 node occurrences, 6,768 direct imports and 12,687 detected
+file-read inputs, with no missing imports, reads, markers, labels or memberships.
+The exact `c00df1433` baseline has 24,613 D occurrences; all survive.
+
+All sixteen LLM/performance modules retain their conservative fallback, 1,223
+source inputs per module and 143 baseline obligations. Knowledge inventory and evaluation resolve without that
+fallback. Workspace naming and project paths still reach shared PostgreSQL
+fixture/plugin discovery; their conservative result remains explicit.
+
+## Representation and invalidation
+
+Shared filegroups partition labels with identical consumers. Expanding a
+module's groups must recover its complete original input set and workflow
+metadata. Schema version two interns each distinct ordered dependency list by
+the SHA-256 of compact UTF-8 JSON. Strict hydration preserves ordered paths,
+duplicates, collection evidence, target labels and workflow arms. Version-one
+baselines remain readable through the shared decoder.
+
+The final manifest is 22,242,285 bytes and `tests/BUILD.bazel` is 19,333,947
+bytes. All 67 generated files total 42,610,635 bytes, compared with 60,648,254
+bytes for those same files on `c00df1433`; every file is below 40 MB.
+Independent direct V2 expansion, the shared decoder and a complete re-interning
+round trip agree across 1,013 modules, 39,235 nodes and eighteen suites. The
+canonical logical SHA-256 is
+`9c3192be278564ed3dda31477ff6fbc4d6ebc7e32b9ef2e7634ae8060925d0a4`.
+
+The complete original factoring specimen remains preserved separately. Its
+actual Bazel reverse-dependency maps agree across all 8,523 `py_test` targets
+and 9,676 reachable source leaves: all 9,677 canonical rows have SHA-256
+`e31ec0d5421391c3901d0ee4ac502b41ba425ab39d6f04c7161d92e0b4a5be0e`.
+Declared edges decrease from 34,741,145 to 3,316,036; the only 39 added targets
+are shared filegroups, with zero unresolved references. All 42 bounded queries
+exit zero under the same 2 GB heap budget. Whole-graph XML and graphless
+traversal exceeded that budget, so the successful proof extracts complete
+dependency frontiers in bounded queries. This is historical factoring evidence,
+distinct from the final merged-source checks below.
 
 Dashboard client generation consumes committed `openapi.json`, matching the
-legacy npm `--from-file` command. The generated-artifact checks still regenerate
-the backend schema. An unused backend fixture dependency is removed from
-`dashboard_inputs`. Both dashboard obligations keep frontend and OpenAPI inputs.
+legacy npm `--from-file` command. Both dashboard obligations retain frontend
+and OpenAPI inputs. Generated exports preserve authored exports; the shared
+OpenAPI export permits both frontend and test consumers.
 
-## Scope and retained obligations
+## Generator performance
 
-The slice is the complement of these reserved test-path patterns:
+Profiling the real repository reproduction test located repeated AST parsing,
+lexical-index construction, path resolution and large name-history unions.
+Each graph now shares parsed trees and caches immutable scan results, import
+resolution, reader-relative paths and support templates. Lexical snippet
+bindings are built only when a recognized Python subprocess needs them.
+Parent and alias indexing share one breadth-first traversal; iterative scanning
+preserves depth-first order and `TYPE_CHECKING` pruning. Exact bitsets retain
+reference history while preserving existing helper-activation boundaries.
+Caches belong to one analyzer/graph invocation, so subsequent generations see
+changed source files. Manifest encoding hashes each distinct ordered list once
+and reuses the already validated collection instead of decoding it twice.
 
-- A: `test_integration_*`, `test_train*`, `test_wait*`, `test_delivery*`,
-  `test_stack*`, and `tests/task_graph/`.
-- B: `test_migration_*`, `test_install*`, `test_database*`, `test_db*`,
-  `test_alembic*`, and the PostgreSQL integration modules.
-- C: `test_cli_*`, `test_api_*`, `test_task_*`, `test_playbook_*`,
-  `test_agent_*`, `test_session_*`, and `test_claim*`.
+The actual `test_graph_is_reproducible_and_matches_catalogue` passes in
+96.63 seconds for the test body, 98.07 seconds total, and reproduces all 67
+outputs byte for byte. Earlier measurements during this repair were 149.98
+seconds before the final traversal/history changes and 132.58 seconds under
+sampling. The measured result meets the supervisor's approximately 120-second
+loaded-machine target; it does not claim the historical 55-second quiet-box
+baseline. The test timeout is unchanged.
 
-`tools/bazel/test_suites.json` records the exact opted-in modules and independent
-collection. Proofs compare old node identities and marker obligations, module
-target labels, CLI/migration/PostgreSQL arms, and the union of eight default
-shards. Adding regression nodes may redistribute default shards; it must not
-drop an old obligation.
+A separate full comparison ran the reference and optimized implementations in
+sequential fresh processes against identical frozen source, index and collection
+inputs. Every one of the 67 returned files is byte-identical. Reference generation
+took 255.94 seconds; optimized generation took 109.10 seconds. Before/after
+bindings agree for both processes, with input-binding SHA-256
+`40bc63161d6423b509783c8ef907fcdb4cb7b8b425858de8e1b361f69722c2c7`.
+Independent semantic review also checked cache lifetime, lexical resolution,
+helper activation boundaries, alias overwrite order and traversal order.
 
-Most application tests still reach dynamic plugin discovery. Their conservative
-closures remain declared. In particular, all sixteen LLM/performance modules
-retain that fallback. Source counts alone do not establish narrow invalidation:
-query proofs must include files declared as data and the full selected universe.
-The final LLM/performance audit retains all sixteen modules and 143 baseline
-obligations, with 1,222 source inputs per conservative closure, including the
-shared manifest decoder. Three final actual queries for `src/llm/fake.py`,
-`src/llm/providers/adapters/gemini_adapter.py` and `tests/llm/fake_genai.py` each select exactly
-sixteen of sixteen declared module targets; all exit zero.
-The independent 638-module audit found zero missing direct imports or detected
-file reads across 12,680 inputs, and retained all baseline node occurrences,
-markers, target labels and suite memberships. The slice retains 24,679 node
-occurrences, including the 24,581 baseline occurrences. Knowledge inventory and
-evaluation resolve without the dynamic fallback. Workspace naming and project paths still activate the shared
-PostgreSQL fixture's `LeasePool`, whose migration path reaches plugin discovery.
-Their fallback is explicit; the analyzer does not infer the fixture's runtime
-early return from environment settings. Three final Bazel queries for
-`src/workspace_names.py`, `src/projects/paths.py` and
-`src/providers/availability.py` each retain exactly 75 of 75 focused module
-targets, matching the manifest with no missing or unexpected targets. These
-conservative results establish agreement and retention, without a narrowing claim.
+## Final validation
 
-## Repeated input representation
+Independent collection contains 39,235 nodes. Against exact merged dev
+`c00df1433` (39,143 nodes), zero node identities or markers are removed or
+changed, and 92 nodes are added. The older 39,087-node baseline has one
+upstream rename: `test_cold_restart_provider_stop_proof_leaves_graph_free`
+became `test_cold_restart_external_proofs_leave_transactions_closed` in
+`f0a9dca13713`, retaining its graph-lock assertion and adding transaction and
+task-row-lock checks. The reproduction timeout marker also changed upstream
+in `1fa74a7c58a4`; neither difference is a loss introduced by this slice.
 
-The first complete graph contained 3,971,356 BUILD lines (273,997,842 bytes).
-That measurement triggered the supervisor-authorized shared-filegroup factoring.
-Each group partitions labels with exactly the same consumers; expanding a
-module's groups must reproduce its original inputs and all workflow metadata.
+The final focused analyzer, subprocess/path, manifest, CLI, selection catalogue,
+documentation and integration-size checks pass 394 tests with six expected
+opt-in skips. Ruff, catalogue regeneration and generator-input drift checks pass.
+Independent source-only ownership inventories against `c00df1433` are identical:
+159,208 owned lines, 83,653 engine lines, 62,781 shared lines and 45 tables.
+Every category delta, source-span change and unknown/sink change is zero.
 
-The initial manifest was 282,438,676 bytes. Schema version two stores every
-distinct ordered dependency list once in `dependency_sets`, addressed by the
-SHA-256 of compact UTF-8 JSON. Each module's four dependency fields reference
-that table. Expanding the references reproduces the complete version-one
-manifest, including duplicates, collection evidence, targets and workflow arms.
-No dependency paths are removed. The installed CLI, generator, tests and audit
-script use the same strict decoder; version-one baselines remain readable.
+The final scoped proof checks thirteen actual Bazel queries sequentially with
+a 2 GB server budget and immutable source/graph bindings. The three provider/
+workspace sources each retain exactly 75 focused module targets. The three
+LLM/performance probes each retain exactly sixteen targets. The seven frontend
+queries check that App.tsx, index.css, tsconfig.json, scenarios/main.tsx and
+root openapi.json retain both dashboard build and typecheck obligations, while
+facts_parser.py and the unrelated quilt-health-watch fixture retain neither.
+These conservative results establish retention and manifest/query agreement;
+they do not claim narrow provider or LLM invalidation.
 
-On the first complete candidate, the factored manifest is 22,216,513 bytes and
-the BUILD file is 19,324,054 bytes, or 41,540,567 bytes combined. Independent
-decoding checks establish exact equality with the unfactored candidate across
-1,013 modules, 39,152 node IDs and eighteen suites. The final graph has a 22,228,917-byte manifest and a 19,329,693-byte BUILD
-file (41,558,610 bytes combined). All 67 generated files total 42,593,188 bytes,
-below the same files on `dev` at `0cc15c4a7` (60,615,575 bytes); every file is below 40 MB.
-Final regeneration binds the equivalence check to the final source and collection
-hashes.
+Manifest SHA-256:
+`18eebc0876cab10f85d13336410798375ba5142d35125d4bf31c6b4aea259cc0`.
+Test BUILD SHA-256:
+`2183e00fedb961c1ab502a893bdc076d5efb2046500a4610e4f498817cb26009`.
 
-Read-only query validation also exposed an overlapping OpenAPI export and a
-worktree `.git` control-file input. Generated exports preserve authored exports,
-and the shared OpenAPI export permits both frontend and test consumers. Ignored
-control files are excluded from literal discovery and the repository-data group.
-
-## Frontend query evidence
-
-All seven frontend read-only queries were refreshed against the merged-dev graph,
-bound to manifest SHA-256
-`e458f608e2c2d2bb882b964910ddaace45b41ce37bd836ac711f19a2bcd26d96`
-and test BUILD SHA-256
-`3ec4a9ea05afbe8a78015b779a265327adc3cb51c28b27ba893d8aed6da75dfc`.
-All thirteen scoped provider, frontend and LLM queries run sequentially with
-the same 2 GB server budget and immutable source/graph bindings.
-For each source, query:
-
-```text
-rdeps(deps(set(//dashboard:typecheck //dashboard:build)), SOURCE)
-  intersect set(//dashboard:typecheck //dashboard:build)
-```
-
-`src/App.tsx`, `src/index.css`, `tsconfig.json`, `scenarios/main.tsx` in the
-dashboard package and root `openapi.json` each retain both obligations.
-`src/facts_parser.py` and the unrelated quilt-health-watch Python fixture retain
-neither. The frontend graph decreases from 19,451 to 11,540 labels, including
-1,507 to zero labels from `//src` packages. These are graph measurements;
-two-root artifact execution parity is a separate opt-in acceptance check.
+Full Bazel test execution and two-root frontend artifact execution parity are
+separate opt-in acceptance checks and were not run for this slice.
 
 ## Reproduction
 
-Refresh the catalogue and collect without executing tests, then pass each
-selected module as a repeatable `--area` argument. The committed manifest retains
-these selections for normal regeneration and drift checks:
+Stage new source files before collecting. Refresh the catalogue, collect without
+executing tests, and retain selected areas through the committed manifest:
 
 ```bash
 python scripts/generate-selection-catalogue.py
 python scripts/bazel/inventory.py collect --output .aq/tmp/slice-d-collection.json
 python scripts/bazel/generate_targets.py --collection .aq/tmp/slice-d-collection.json
 python scripts/bazel/generate_targets.py --check
-python tools/bazel/generator_inputs.py --write
+python tools/bazel/generator_inputs.py
 ```
 
-Discovery snapshots the Git index, so ignored generated artifacts and untracked
-files do not enter analyzer inputs, generated outputs, collection fingerprints,
-or test discovery. Source archives use an explicit tracked-path inventory at
-`.aq/bazel-source-files.json`. Stage new sources before collecting. The
-regression compares full rendered outputs with ignored TypeScript artifacts,
-untracked Python/data files and an untracked BUILD boundary present. Runtime
-control files remain excluded, and actual worker metadata remains intact.
-Pytest's automatic imports and conftest loading retain their normal behavior;
-the collection traversal filter is not an execution-isolation layer.
-Use AQ admission
-for focused and area tests, and pinned Bazel 8.3.1 for read-only queries. `scripts/bazel/slice_d_llm_perf.py` audits explicit support/fixture inputs
-and compares retained obligations with a pre-migration manifest. Its optional
-`--bazel` flag checks manifest/query agreement without running Bazel tests.
-
-## Verification
-
-Final independent collection retained 39,191 nodes: every one of the 39,087
-baseline node IDs and its markers survives, with 104 nodes added across this
-slice and merged prerequisites. The focused analyzer, subprocess/path, manifest
-and CLI checks passed 184 tests, with six expected opt-in skips. Catalogue,
-documentation and integration-size checks passed 199 tests on the merged tree.
-Slice B’s eleven handed-off regressions match the current tests exactly; its
-fresh schema-cache diagnostic retains all 143 inputs, including all 136
-revisions and `hierarchy_migration.py`.
-
-The independent integration ownership inventory against `dev` at `0cc15c4a7`
-is identical: 159,166 owned lines, 83,653 engine lines, 62,739 shared lines and
-45 tables. All category deltas, source-span changes and unknown/sink changes
-are zero. The existing unknowns remain inherited.
-
-PR #2095 is delivered at `0cc15c4a7`; that exact dev revision and its current
-prerequisite `f1b5b5909` are merged before final generation. Slices A–C
-regenerate on top of this analyzer and renderer after delivery. The complete
-factoring proof below remains bound to its preserved original specimen; the
-thirteen scoped final queries and static audits bind to the merged-dev graph.
-The complete actual Bazel reverse-dependency maps match before and after
-factoring: 8,523 `py_test` targets and 9,676 reachable repository source leaves.
-All 9,677 canonical map rows are identical, with SHA-256
-`e31ec0d5421391c3901d0ee4ac502b41ba425ab39d6f04c7161d92e0b4a5be0e`.
-Declared edges decrease from 34,741,145 to 3,316,036; the only 39 added targets
-are shared filegroups. Both extracted graphs have zero unresolved references.
-
-Whole-graph XML and graphless traversal exceeded the 2 GB query heap budget.
-The successful proof extracts actual rules and their complete dependency
-frontiers in bounded queries, then computes the full source-leaf/test maps.
-All 42 query invocations exit zero within the same budget. The frozen specimen
-uses the same explicit root-export repair before and after factoring.
-
-Final full repository generation reproduced all 67 outputs byte for byte
-(`test_graph_is_reproducible_and_matches_catalogue`: one pass).
-Complete V1/V2 equality covers 1,013 modules, 39,191 nodes and eighteen suites;
-the canonical logical SHA-256 is
-`74ee379bfa5f5ae62c4a1cf07a0e7dad9894c43142ed56e696d6083e36ccff42`.
-The real committed-manifest CLI plan passed separately; the focused checks
-cover the remaining CLI contracts. Ruff, catalogue drift and generator-input
-drift checks pass. The old-input reproduction was stopped when dev changed;
-it is not counted as a pass. The inherited dev failure under the 120-second
-manifest-test deadline remains noted separately from this completed check.
+Use `aq test` for focused and area checks and pinned Bazel 8.3.1 for read-only
+queries. `scripts/bazel/slice_d_llm_perf.py` audits explicit support/fixture inputs
+and retained obligations; its optional `--bazel` flag checks query agreement.
