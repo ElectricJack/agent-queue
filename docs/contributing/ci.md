@@ -38,7 +38,7 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `dev`, `staging` or `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**`, `aq/batches/**`, `aq/parent/**`, `aq/promote/**` and `aq/backmerge/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `dev` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**`, `aq/batches/**`, `aq/parent/**` and `aq/backmerge/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
 | [`train-candidate.yml`](../../.github/workflows/train-candidate.yml) | Successful push-triggered `Tests` completion on `aq/integration/**` or `aq/batches/**` | Posts `aq-train/candidate` on the exact tested head SHA; runs no tests. |
 | [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `dev`, `staging` or `main` | Verifies the pushed SHA's branch attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
 | [`venv-cache.yml`](../../.github/workflows/venv-cache.yml) | After each `Main attestation` run (`workflow_run`); hourly `schedule`; `workflow_dispatch` | Saves `tests.yml`'s `.venv` cache entry on `main`. Installs dependencies and runs no tests. See [dependency cache](#dependency-cache). |
@@ -54,10 +54,10 @@ build](#there-is-no-documentation-build).
 
 ```mermaid
 flowchart TD
-    A[PR into dev, staging or main] --> S{draft, or a same-repo<br/>aq/integration head?}
-    S -->|yes| D[skipped: waits for ready_for_review,<br/>or the push run already tests the head]
+    A[PR into dev] --> S{draft, or a same-repo<br/>aq/integration or aq/promote head?}
+    S -->|yes| D[skipped: waits for ready_for_review,<br/>candidate push CI, or promotion CI policy]
     S -->|no| C[test matrix]
-    B[push to candidate, parent, promotion or backmerge ref,<br/>or workflow_dispatch] --> C
+    B[push to candidate, parent or backmerge ref,<br/>or workflow_dispatch] --> C
     C --> E[cli-conformance]
     C --> F[default: shards 1–8]
     C --> G[migration-and-slow]
@@ -68,8 +68,13 @@ flowchart TD
 
 ### Which pull requests run
 
-Every pull request into `dev`, `staging` or `main` runs the Python matrix, E2E groups and dashboard
-job, from a fork or a task branch alike, with two exceptions decided by each job's `if:`:
+PRs targeting staging or main do not start the test workflow. Same-repository
+`aq/promote/**` PR jobs also skip automatic CI. Each project step
+selects `ci: reuse_source` or `ci: rerun`; AQ dispatches `tests.yml` on the pinned
+ref only for a hosted rerun. See [promotion policy](../guides/promotion-flow.md#ci-policy-for-each-promotion-step).
+
+Every pull request into `dev` runs the Python matrix, E2E groups and dashboard
+job, from a fork or a task branch alike, with exceptions decided by each job's `if:`:
 
 * A **draft** runs nothing until it is marked ready for review; the
   `ready_for_review` event then starts the run.
@@ -77,6 +82,8 @@ job, from a fork or a task branch alike, with two exceptions decided by each job
   run, because the push to that branch already tested the same head SHA and
   those check runs appear on the PR. A fork's branch of the same name gets no
   push run here, so its PR still runs.
+* A **same-repository PR whose head is an `aq/promote/**` branch** skips its
+  test jobs. The step's CI policy determines reuse or explicit dispatch.
 
 The job checks out the exact event SHA (the PR's merge with its base, for a
 `pull_request` event) and asserts it with `git rev-parse HEAD`.
@@ -504,9 +511,10 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 | Input | Output |
 |---|---|
-| A PR into `dev`, `staging` or `main` opened, updated, reopened or marked ready | Sixteen check runs on the PR's merge with its base |
-| A push to `aq/integration/**`, `aq/batches/**`, `aq/parent/**`, `aq/promote/**` or `aq/backmerge/**` | Sixteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
+| A PR into `dev` opened, updated, reopened or marked ready | Sixteen check runs on the PR's merge with its base |
+| A push to `aq/integration/**`, `aq/batches/**`, `aq/parent/**` or `aq/backmerge/**` | Sixteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
 | A draft PR, or a same-repository PR from `aq/integration/**` | A skipped job; the push run covers the integration head |
+| A same-repository PR from `aq/promote/**` | Skipped test jobs; the step reuses source CI or AQ explicitly dispatches new CI |
 | `workflow_dispatch` | The same matrix, on demand, from the Actions tab |
 | A push to `main` | One `Main attestation` check run; with the Actions variables set and no valid attestation, also sixteen `unattested-ci / …` check runs; then one `Warm venv cache` run, which saves the venv cache only if `main`'s key is new |
 | The hourly schedule | One `Warm venv cache` run on `main`, which installs and saves only on a miss |

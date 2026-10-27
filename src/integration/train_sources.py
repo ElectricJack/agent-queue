@@ -3423,12 +3423,15 @@ class DaemonLanes:
             StepAdmission,
             StepPullRequestGate,
             frozen_required_checks,
+            promotion_observer_options,
             publish_step_attestation,
+            request_promotion_ci,
         )
 
         admission = StepAdmission(self.db, gitops, target.step)
         resolved = {}
-        local = ci is not None and ci.source_for("promotion") == "local"
+        local = (ci is not None and ci.source_for("promotion") == "local"
+                 and target.step.get("ci") != "reuse_source")
 
         async def resolve_local(batch, sha, meta):
             # S's manifest must still name this repository and App identity, but
@@ -3471,7 +3474,9 @@ class DaemonLanes:
             required = frozen_required_checks(meta)
             resolved[batch.id] = trust, client, StepPullRequestGate(client, binding)
             selected = trust.model_copy(update={"required_checks": required})
-            return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)),
+            await request_promotion_ci(admission, batch, meta, client, trust)
+            producer = HostedCIProducer(client, selected, **promotion_observer_options(meta))
+            return ExactChecks(self.db, HostedChecks(producer),
                                on_change=self._checks_changed)
 
         checks = PromotionChecks(admission, resolve, pull_request=lambda batch: resolved[batch.id][2])
