@@ -957,6 +957,7 @@ exports_files([
         "docs/reports/2026-10-25-daemon-handler-cost.md",
         "docs/reports/2026-10-26-bazel-database-bootstrap.md",
         "docs/reports/2026-10-26-bazel-dependencies-slice-d.md",
+        "docs/reports/2026-10-26-bazel-deps-slice-c.md",
         "docs/reports/2026-10-26-bazel-migration-install-database.md",
         "docs/reports/2026-10-26-bazel-slice-a-dependencies.md",
         "docs/reports/2026-10-26-cold-restart-ownership.json",
