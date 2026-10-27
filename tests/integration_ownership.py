@@ -933,6 +933,28 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'pool_observation_deduplication_composition': {'authorized_engine_delta': 0,
+  'authorized_owned_delta': 3,
+  'authorized_shared_owned_delta': 3,
+  'authorized_table_delta': 0,
+  'charged_files': {'src/orchestrator/pools.py': 3},
+  'dev_source_revision': 'b2b093cec535c421fa865295aab5935a30b87782',
+  'measured_engine_lines': 83880,
+  'measured_owned_total': 160366,
+  'measured_table_count': 45,
+  'operator_decision': '6679052c',
+  'previous_measured_engine_lines': 83880,
+  'previous_measured_owned_total': 160363,
+  'previous_measured_table_count': 45,
+  'reason': 'Exact supervisor-approved +3 shared-owned/+0 engine/+0 tables for the per-profile '
+            'pool observation hash/time cache on merged dev b2b093cec. Preserve every historical '
+            'grant, original baseline and ownership classification, zero remaining headroom, '
+            's4_modules expiry and existing storage categories.',
+  'referenced_decision': 'size-cap-delegation-2026-10-23',
+  'request_message_id': 'msg-89bc796c5d8d40c59cc8fe4773536efb',
+  'supervisor_decision_message_id': 'msg-944c59bb1e234ade907339fdf0ca70b8',
+  'task_id': 'nimble-ember-59',
+  'thread_id': 'nimble-ember-59-size'},
  'dead_pool_drain_composition': {'authorized_engine_delta': 15,
                                  'authorized_owned_delta': 18,
                                  'authorized_shared_owned_delta': 3,
@@ -1333,7 +1355,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4864,
+ 'authorized_owned_delta': 4867,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1905,7 +1927,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83880,
- 'measured_owned_total': 160363,
+ 'measured_owned_total': 160366,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,

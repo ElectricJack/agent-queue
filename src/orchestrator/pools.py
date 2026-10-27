@@ -668,7 +668,10 @@ class PoolsMixin:
         actions, self._pool_surplus_since = self._size_pool_actions(measurement, now)
         from src.waits.sources import record_pool_observations
 
-        await record_pool_observations(self.db, measurement, now)
+        self._pool_observations = getattr(self, "_pool_observations", {})
+        await record_pool_observations(
+            self.db, measurement, now, last_observations=self._pool_observations,
+        )
         self._wait_slot_pressure = {}
         for key, candidates in measurement.candidates.items():
             for candidate in candidates:
