@@ -222,6 +222,8 @@ def _manifest():
     return json.loads((ROOT / "tools/bazel/test_suites.json").read_text())
 
 
+# azure-cascade-11: full-graph regeneration measured ~178s under load; allow headroom.
+@pytest.mark.timeout(300)
 def test_graph_is_reproducible_and_matches_catalogue():
     manifest = _manifest()
     catalogue = json.loads((ROOT / "tests/selection_catalogue.json").read_text())
@@ -416,6 +418,58 @@ def test_fine_graph_only_carries_used_fixture_sources(tmp_path):
     assert '"//src:library"' not in build
     assert '":fixtures"' not in build
     assert '"//:python_documentation_data"' not in build
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_graph_restores_garbage_collection_policy(tmp_path, monkeypatch, enabled, fails):
+    gc = targets.gc
+    original = gc.isenabled()
+    modules = {"tests/test_behavior.py": {}}
+    selected = set(modules)
+
+    def build(root, received_modules, fine_grained):
+        assert (root, received_modules, fine_grained) == (tmp_path, modules, selected)
+        assert not gc.isenabled()
+        if fails:
+            raise ValueError("invalid input")
+        return {}, {}
+
+    monkeypatch.setattr(targets, "_graph", build)
+    try:
+        (gc.enable if enabled else gc.disable)()
+        if fails:
+            with pytest.raises(ValueError, match="invalid input"):
+                targets.graph(tmp_path, modules, fine_grained=selected)
+        else:
+            assert targets.graph(tmp_path, modules, fine_grained=selected) == ({}, {})
+        assert gc.isenabled() == enabled
+    finally:
+        (gc.enable if original else gc.disable)()
+
+
+def test_directory_data_is_independent_of_worker_root(tmp_path):
+    outputs = []
+    for root in (tmp_path / "plain", tmp_path / ".aq/worktrees/proof"):
+        modules = _fine_graph_fixture(root)
+        (root / "tests/test_behavior.py").write_text(
+            "from pathlib import Path\n"
+            "def test_behavior(): assert Path('src/').is_dir()\n"
+        )
+        (root / "src/prompt.md").write_text("prompt bytes\n")
+        (root / "src/BUILD.bazel").write_text("")
+        for directory in (".aq", ".git", ".venv", "__pycache__", "node_modules"):
+            skipped = root / "src" / directory
+            skipped.mkdir()
+            (skipped / "ignored.txt").write_text("excluded\n")
+        _, graph = targets.graph(root, modules, fine_grained=set(modules))
+        data = graph["tests/test_behavior.py"]["data_files"]
+        assert "src/prompt.md" in data
+        assert not any(path.endswith("ignored.txt") for path in data)
+        assert "src/BUILD.bazel" not in data
+        outputs.append(_render_graph(root, modules, set(modules)))
+        assert '"//src:prompt.md"' in outputs[-1]["tests/BUILD.bazel"]
+    assert outputs[0] == outputs[1]
 
 
 @pytest.mark.parametrize("fine", [False, True])
