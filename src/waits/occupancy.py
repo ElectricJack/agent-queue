@@ -1,6 +1,6 @@
-"""Live in-place waits are occupied seats with an eviction candidate marker."""
+"""Wait occupancy and queued continuation demand for fleet capacity observations."""
 
-from sqlalchemy import select
+from sqlalchemy import literal, select
 from src.database.tables import sessions, tasks, wait_records
 
 
@@ -24,28 +24,53 @@ async def continuation_occupancy(db, config, *, conn=None):
     origin session. Once a live new session exists its ordinary pool row owns the
     seat, so the synthetic reservation seat disappears in the same observation.
     """
+    resuming, pending, _ = await continuation_capacity(db, conn=conn)
+    return resuming, pending
+
+
+async def continuation_capacity(db, *, conn=None, pool_profiles=None, ready_projects=()):
+    """Observe occupied seats and queued resume demand in one database snapshot.
+
+    Pool sizing supplies compatible routes to include queued demand. Other seat
+    observers retain occupancy-only semantics. A single statement prevents a
+    queued-to-reserved transition from appearing in both demand and occupancy.
+    """
+    from src.database.queries.claim_queries import _pool_profiles_predicate, route_claimable_in
     from src.database.tables import admission_reservations, continuations
 
     if conn is None:
         async with db._engine.connect() as owned:
-            return await continuation_occupancy(db, config, conn=owned)
-    rows = (await conn.execute(select(
-            tasks.c.project_id, admission_reservations.c.scope,
-            continuations.c.new_session_id, sessions.c.state,
-        ).select_from(continuations.join(
-            tasks, tasks.c.id == continuations.c.task_id,
-        ).join(admission_reservations,
-               admission_reservations.c.continuation_id == continuations.c.id).outerjoin(
-            sessions, sessions.c.id == continuations.c.new_session_id,
-        )).where(
-            continuations.c.resume_state.in_(("reserved", "launching", "delivered", "acknowledged")),
-            admission_reservations.c.state.in_(("pending", "overdue", "granted", "consumed")),
-    ))).mappings().all()
-    resuming, pending = set(), {}
+            return await continuation_capacity(
+                db, conn=owned, pool_profiles=pool_profiles, ready_projects=ready_projects,
+            )
+    statement = select(
+        tasks.c.project_id, admission_reservations.c.scope["profile_id"].as_string().label("profile_id"),
+        continuations.c.new_session_id, sessions.c.state, literal(False).label("queued"),
+    ).select_from(continuations.join(
+        tasks, tasks.c.id == continuations.c.task_id,
+    ).join(admission_reservations,
+           admission_reservations.c.continuation_id == continuations.c.id).outerjoin(
+        sessions, sessions.c.id == continuations.c.new_session_id,
+    )).where(
+        continuations.c.resume_state.in_(("reserved", "launching", "delivered", "acknowledged")),
+        admission_reservations.c.state.in_(("pending", "overdue", "granted", "consumed")),
+    )
+    if pool_profiles:
+        statement = statement.union_all(select(
+            tasks.c.project_id, tasks.c.profile_id, literal(None), literal(None), literal(True),
+        ).select_from(tasks.join(continuations, continuations.c.task_id == tasks.c.id)).where(
+            tasks.c.status == "RESUME_PENDING",
+            continuations.c.resume_state == "queued", continuations.c.hold_reason.is_(None),
+            route_claimable_in(ready_projects), _pool_profiles_predicate(pool_profiles),
+        ))
+    rows = (await conn.execute(statement)).mappings().all()
+    resuming, pending, demand = set(), {}, {}
     for row in rows:
-        if row["new_session_id"] and row["state"] in {"starting", "running", "draining"}:
+        key = (row["project_id"], row["profile_id"])
+        if row["queued"]:
+            demand[key] = demand.get(key, 0) + 1
+        elif row["new_session_id"] and row["state"] in {"starting", "running", "draining"}:
             resuming.add(row["new_session_id"])
         elif row["state"] not in {"stopped", "failed"}:
-            key = (row["project_id"], row["scope"]["profile_id"])
             pending[key] = pending.get(key, 0) + 1
-    return frozenset(resuming), pending
+    return frozenset(resuming), pending, demand
