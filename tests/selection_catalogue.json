@@ -3366,10 +3366,11 @@
         "bazel-toolchains"
       ],
       "default_arm": true,
-      "digest": "sha256:2669f7605d8f5cbe70f349cfb090cbef8746aa7950d5e34ab0a9ed298fdd9e47",
+      "digest": "sha256:ebafdc0f026e86f51c24718a87a948f6976ec9b8dc9d5d3fb46cc6e1babc7bf7",
       "imports": [],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "timeout"
       ],
       "summary": "H1 lock/ABI boundaries and opt-in, admitted clean-root toolchain verification."
     },
@@ -7775,7 +7776,7 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:10df1072d05de1a4708d823523162b72d251d9163fcfc4d3b58188bd6206fbc8",
+      "digest": "sha256:ca0f6d725cdb60af97822e79522e3b48a575adaca4aaa18733100e034bd4c804",
       "imports": [
         "src.event_bus",
         "src.git",
@@ -7783,6 +7784,7 @@
         "src.git.locks",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.models",
         "src.orchestrator.git_ops",
         "src.orchestrator.workspace_attachments"
@@ -20383,7 +20385,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:602020802f41800f61ece44da1c6621716c9a1b0cf6658d4ea9d49a8e68d76dc",
+      "digest": "sha256:51ef42487f8a41667069f2b66146ca1c4ac0c7fa9bc882ee8867b326884976c9",
       "imports": [
         "src.claim_file",
         "src.cli.waits",
@@ -20414,6 +20416,7 @@
         "src.wait_runtime.hibernate",
         "src.wait_runtime.lifecycle",
         "src.wait_runtime.measurements",
+        "src.wait_runtime.restart",
         "src.wait_runtime.resume",
         "src.wait_runtime.scheduler",
         "src.waits",

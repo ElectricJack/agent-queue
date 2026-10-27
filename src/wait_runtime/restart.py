@@ -1,14 +1,16 @@
 """Release a stopped continuation before an operator cold restart admits work.
 
 The task-control lock serializes resume and restart. External proofs and detaches
-retain task/workspace row locks, but never the global graph fence. A second short
+retain workspace reservations, but no database transaction. A second short
 transaction takes that fence, rechecks every observed row, and commits retirement.
 Git effects are idempotent detaches; failed proofs retain database ownership.
 """
 
 import asyncio
+import logging
 import time
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 
@@ -27,6 +29,37 @@ from src.waits.conditions import WaitError
 from src.waits.graph import lock_graph
 from src.waits.sources import execute_workspace_release
 
+RESTART_TIMEOUT_SECONDS = 20.0
+logger = logging.getLogger(__name__)
+_restart_progress = ContextVar('restart_progress', default=None)
+
+
+def restart_phase(phase):
+    progress = _restart_progress.get()
+    if progress is not None:
+        progress['phase'] = phase
+
+
+@asynccontextmanager
+async def restart_attempt(task_id):
+    """Bound every restart await, including the locks before continuation cleanup."""
+    progress = {'phase': 'recovery hold guard'}
+    token = _restart_progress.set(progress)
+    deadline = asyncio.timeout(RESTART_TIMEOUT_SECONDS)
+    try:
+        async with deadline:
+            yield
+    except TimeoutError as exc:
+        if not deadline.expired():
+            raise
+        logger.warning('restart_task timeout task_id=%s phase=%s budget_seconds=%g',
+                       task_id, progress['phase'], RESTART_TIMEOUT_SECONDS)
+        raise WaitError('task_restart.timeout',
+                        f"Restart of {task_id} exceeded {RESTART_TIMEOUT_SECONDS:g}s "
+                        f"during {progress['phase']}; inspect task state before retrying") from exc
+    finally:
+        _restart_progress.reset(token)
+
 
 def restart_lock(handler, task_id):
     """Resume's task-control lock, held through cleanup and readmission."""
@@ -36,7 +69,8 @@ def restart_lock(handler, task_id):
 
 async def readmit(handler, task, released, *, hold_override=None):
     """Return *task* to READY; after a release, only from the generation released."""
-    if not released:
+    restart_phase('readmission (wait graph/task row locks)')
+    if not released and task.status not in SUSPENDED_TASK_STATUSES:
         await handler.db.transition_task(task.id, TaskStatus.READY, context='restart_task',
                                          retry_count=0, assigned_agent_id=None,
                                          _recovery_hold_override=hold_override)
@@ -59,17 +93,20 @@ async def release_continuations(handler, task):
 
 async def _release(handler, task):
     db = handler.db
+    restart_phase('continuation snapshot (task read)')
     async with db._engine.begin() as conn:
         current = (await conn.execute(select(tasks).where(
             tasks.c.id == task.id,
-        ).with_for_update())).mappings().one()
+        ))).mappings().one()
+        restart_phase('continuation snapshot (wait read)')
         waits = (await conn.execute(select(wait_records).where(
             wait_records.c.owner_id == task.id,
             wait_records.c.owner_kind.in_(('task', 'scheduler')),
-        ).order_by(wait_records.c.id).with_for_update())).mappings().all()
+        ).order_by(wait_records.c.id))).mappings().all()
+        restart_phase('continuation snapshot (continuation read)')
         history = (await conn.execute(select(continuations).where(
             continuations.c.task_id == task.id,
-        ).order_by(continuations.c.id).with_for_update())).mappings().all()
+        ).order_by(continuations.c.id))).mappings().all()
         intents = [row for row in history if row['resume_state'] not in ('acknowledged', 'failed')]
         already_released = any(row['facts'].get('restart_released_at') for row in intents)
         intents = [row for row in intents if row['resume_state'] != 'cancelled'
@@ -87,9 +124,10 @@ async def _release(handler, task):
             raise WaitError('wait.unavailable', 'continuation cleanup requires the orchestrator')
         stage_ids = [row['facts']['fresh_workspace']['workspace_id'] for row in intents
                      if row['facts'].get('fresh_workspace')]
+        restart_phase('continuation snapshot (workspace read)')
         rows = (await conn.execute(select(workspaces).where(or_(
             workspaces.c.locked_by_task_id == task.id, workspaces.c.id.in_(stage_ids),
-        )).order_by(workspaces.c.id).with_for_update())).mappings().all()
+        )).order_by(workspaces.c.id))).mappings().all()
         by_id = {row['id']: db._row_to_workspace(row) for row in rows}
         if any(row['job_pin_count'] for row in rows):
             raise WaitError('wait.unavailable', 'continuation workspace is pinned by a job')
@@ -99,45 +137,27 @@ async def _release(handler, task):
         candidates = {}
         for workspace in by_id.values():
             if (workspace.project_id != task.project_id
-                    or workspace.locked_by_task_id not in (None, task.id)
-                    or (workspace.locked_by_task_id is None and workspace.locked_by_agent_id)
+                    or workspace.locked_by_task_id != task.id
                     or not workspace.is_slot):
                 raise WaitError('wait.unavailable', 'continuation workspace ownership changed')
             candidates[workspace.workspace_path] = workspace
+        bases = {}
         for intent in intents:
             stage = intent['facts'].get('fresh_workspace')
             if not stage:
                 continue
             workspace = by_id[stage['workspace_id']]
-            base = await db.get_workspace(workspace.base_workspace_id)
+            base_row = (await conn.execute(select(workspaces).where(
+                workspaces.c.id == workspace.base_workspace_id,
+            ))).mappings().first()
+            base = db._row_to_workspace(base_row) if base_row else None
             if not base or base.project_id != task.project_id:
                 raise WaitError('wait.unavailable', 'continuation workspace base is unavailable')
-            expected = (Path(base.workspace_path) / '.aq' / 'worktrees'
-                        / f"resume-{intent['id']}-{stage['attempt']}")
-            if Path(stage['new_path']).resolve() != expected.resolve():
-                raise WaitError('wait.unavailable', 'continuation destination identity changed')
-            sources = {slot_path(base.workspace_path, workspace.slot_index).resolve()}
-            # A second hibernation starts from the previous resume checkout.
-            # Accept only destinations independently identified by its audit.
-            for prior in history:
-                prior_stage = prior['facts'].get('fresh_workspace')
-                if not prior_stage or prior_stage['workspace_id'] != workspace.id:
-                    continue
-                prior_path = (Path(base.workspace_path) / '.aq' / 'worktrees'
-                              / f"resume-{prior['id']}-{prior_stage['attempt']}")
-                if Path(prior_stage['new_path']).resolve() == prior_path.resolve():
-                    sources.add(prior_path.resolve())
-            if Path(stage['old_path']).resolve() not in sources:
-                raise WaitError('wait.unavailable', 'continuation source identity changed')
-            for path in (stage['old_path'], stage['new_path']):
-                paths.add(path)
-                # A completed relocation removes old_path; an interrupted one
-                # can still have both. Never discard either checkout's work.
-                if Path(path).exists():
-                    candidates[path] = replace(workspace, workspace_path=path)
+            bases[workspace.id] = base
+            paths.update((stage['old_path'], stage['new_path']))
         foreign = await conn.scalar(select(workspaces.c.id).where(
             workspaces.c.workspace_path.in_(paths), workspaces.c.id.not_in(by_id),
-        ).limit(1).with_for_update())
+        ).limit(1))
         if foreign:
             raise WaitError('wait.unavailable', 'continuation path has another workspace owner')
         wait_ids = {row['wait_id'] for row in intents}
@@ -146,40 +166,71 @@ async def _release(handler, task):
         if any(not row['session_id'] for row in waits if row['id'] in wait_ids):
             raise WaitError('continuation.stop_uncertain', 'continuation writer identity is missing')
         session_ids.update(row['new_session_id'] for row in intents if row['new_session_id'])
+        restart_phase('continuation snapshot (session read)')
         writers = (await conn.execute(select(sessions).where(or_(
             sessions.c.id.in_(session_ids), sessions.c.task_id == task.id,
             sessions.c.work_dir.in_(paths),
-        )).order_by(sessions.c.id).with_for_update())).mappings().all()
+        )).order_by(sessions.c.id))).mappings().all()
         if not session_ids <= {writer['id'] for writer in writers}:
             raise WaitError('continuation.stop_uncertain', 'continuation writer identity is missing')
-        for writer in writers:
-            if writer['state'] != 'stopped' or writer['desired_state'] != 'stopped':
-                raise WaitError('continuation.stop_uncertain', 'cold restart requires stopped writers')
-            try:
-                provider = orch.session_providers.create(writer['provider'], orch.config)
-                stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
-                    writer['name'], writer['provider'], writer['instance_token'],
-                )), timeout=10)
-            except Exception as exc:
-                raise WaitError('continuation.stop_uncertain',
-                                'writer stop proof is unavailable') from exc
-            if stopped is not True:
-                raise WaitError('continuation.stop_uncertain', 'writer stop proof is unavailable')
-        if candidates:
-            checkout = next(iter(candidates))
-            for intent in intents:
-                if await orch.git.ais_ancestor(
-                    checkout, intent['saved_head'], f'refs/heads/{task.branch_name}', strict=True,
-                ) is not True:
-                    raise WaitError('continuation.head_drift', 'saved continuation HEAD changed')
-        for path, workspace in sorted(candidates.items()):
-            if not await detach_task_slot(db, orch, task, workspace, task.branch_name,
-                                          allow_published_detached_head=True):
-                raise WaitError('continuation.head_drift',
-                                f'cannot release continuation checkout {path}: '
-                                'clean, published branch proof is unavailable')
-    # The first transaction has released its row locks before acquiring the
-    # graph fence, preserving graph -> task -> wait -> continuation lock order.
+    # Task control and durable reservations exclude resume/reuse. External
+    # operations must never retain a connection or block graph writers on rows.
+    restart_phase('continuation checkout identity')
+    for intent in intents:
+        stage = intent['facts'].get('fresh_workspace')
+        if not stage:
+            continue
+        workspace, base = by_id[stage['workspace_id']], bases[stage['workspace_id']]
+        expected = (Path(base.workspace_path) / '.aq' / 'worktrees'
+                    / f"resume-{intent['id']}-{stage['attempt']}")
+        if Path(stage['new_path']).resolve() != expected.resolve():
+            raise WaitError('wait.unavailable', 'continuation destination identity changed')
+        sources = {slot_path(base.workspace_path, workspace.slot_index).resolve()}
+        for prior in history:
+            prior_stage = prior['facts'].get('fresh_workspace')
+            if not prior_stage or prior_stage['workspace_id'] != workspace.id:
+                continue
+            prior_path = (Path(base.workspace_path) / '.aq' / 'worktrees'
+                          / f"resume-{prior['id']}-{prior_stage['attempt']}")
+            if Path(prior_stage['new_path']).resolve() == prior_path.resolve():
+                sources.add(prior_path.resolve())
+        if Path(stage['old_path']).resolve() not in sources:
+            raise WaitError('wait.unavailable', 'continuation source identity changed')
+        for path in (stage['old_path'], stage['new_path']):
+            if Path(path).exists():
+                candidates[path] = replace(workspace, workspace_path=path)
+    for writer in writers:
+        if writer['state'] != 'stopped' or writer['desired_state'] != 'stopped':
+            raise WaitError('continuation.stop_uncertain', 'cold restart requires stopped writers')
+        restart_phase(f"provider stop proof (session {writer['id']})")
+        try:
+            provider = orch.session_providers.create(writer['provider'], orch.config)
+            stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                writer['name'], writer['provider'], writer['instance_token'],
+            )), timeout=10)
+        except Exception as exc:
+            raise WaitError('continuation.stop_uncertain',
+                            'writer stop proof is unavailable') from exc
+        if stopped is not True:
+            raise WaitError('continuation.stop_uncertain', 'writer stop proof is unavailable')
+    restart_phase('saved branch proof (repository lock/Git)')
+    if candidates:
+        checkout = next(iter(candidates))
+        for intent in intents:
+            if await orch.git.ais_ancestor(
+                checkout, intent['saved_head'], f'refs/heads/{task.branch_name}', strict=True,
+            ) is not True:
+                raise WaitError('continuation.head_drift', 'saved continuation HEAD changed')
+    for path, workspace in sorted(candidates.items()):
+        restart_phase(f'checkout detach (repository lock/Git, {path})')
+        if not await detach_task_slot(db, orch, task, workspace, task.branch_name,
+                                      allow_published_detached_head=True):
+            raise WaitError('continuation.head_drift',
+                            f'cannot release continuation checkout {path}: '
+                            'clean, published branch proof is unavailable')
+    # Revalidate every observation under graph -> task -> wait -> continuation
+    # exclusion before retirement. Failed proofs retain all DB ownership.
+    restart_phase('wait graph lock')
     async with db._engine.begin() as conn:
         await lock_graph(conn)
         snapshots = (
@@ -193,6 +244,7 @@ async def _release(handler, task):
                            sessions.c.work_dir.in_(paths)), writers),
         )
         for table, predicate, expected in snapshots:
+            restart_phase(f'continuation revalidation ({table.name} row locks)')
             if table is wait_records:
                 predicate &= wait_records.c.owner_kind.in_(('task', 'scheduler'))
             fresh = (await conn.execute(select(table).where(predicate)
@@ -203,6 +255,7 @@ async def _release(handler, task):
         if await conn.scalar(select(workspaces.c.id).where(
                 workspaces.c.workspace_path.in_(paths), workspaces.c.id.not_in(by_id)).limit(1)):
             raise WaitError('wait.unavailable', 'continuation path has another workspace owner')
+        restart_phase('continuation ownership retirement')
         now = time.time()
         # Every live attachment still belongs to the writer proven stopped above.
         await retire_owner_attachments(
