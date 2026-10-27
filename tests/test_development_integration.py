@@ -1159,6 +1159,7 @@ async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records
             # The file-URL fixture needs no App credential broker.
             str(path), source_url=remote.as_uri(), token=None,
             refetch=kwargs.get("refetch", False),
+            lock_held=kwargs.get("lock_held", False),
         )
 
     monkeypatch.setattr(service.git, "afetch_origin", native_fetch)
@@ -2060,6 +2061,7 @@ async def test_retained_incremental_pack_reuses_full_verification(setup, monkeyp
                 # The file-URL fixture needs no App credential broker.
                 checkout_path, source_url=remote.as_uri(), token=None,
                 refetch=options.get('refetch', False),
+                lock_held=options.get('lock_held', False),
             )
         monkeypatch.setattr(service.git, 'afetch_origin', isolated)
     store = await service.store(repo)
