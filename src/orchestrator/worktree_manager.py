@@ -475,6 +475,9 @@ class WorktreeSlotManager:
         """
         base_path = base_ws.workspace_path
         default_branch = await self._default_branch(base_path, project_id=base_ws.project_id)
+        await self._fetch_and_resolve_start_ref(
+            base_path, default_branch, required=True, project_id=base_ws.project_id
+        )
 
         async with self._git_mutex(base_path):
             await self.ensure_git_exclude(base_path)
@@ -485,7 +488,8 @@ class WorktreeSlotManager:
                     logger.debug("worktree prune failed in %s: %s", base_path, e)
 
             start_ref = await self._fetch_and_resolve_start_ref(
-                base_path, default_branch, required=True, project_id=base_ws.project_id
+                base_path, default_branch, required=True, project_id=base_ws.project_id,
+                fetch_origin=False,
             )
 
             if target.exists() and any(target.iterdir()):
@@ -1275,6 +1279,14 @@ class WorktreeSlotManager:
 
         default_branch = await self._default_branch(base_path, project_id=slot_ws.project_id)
         start_point = base_branch or default_branch
+        # The authenticated refresh verifies the shared lender before taking
+        # its own repository transaction. Do not enclose that fsck in ours.
+        await self._fetch_and_resolve_start_ref(
+            base_path, start_point, required=preserve_branch, cwd=str(slot_dir),
+            project_id=slot_ws.project_id,
+            refresh_refs=preserve_branch or target_branch is None,
+            fetch_origin=fetch_origin,
+        )
 
         repository_lock = self._git_mutex(base_path)
         with claim_phase("repository_lock"):
@@ -1284,7 +1296,7 @@ class WorktreeSlotManager:
                 base_path, start_point, required=preserve_branch, cwd=str(slot_dir),
                 project_id=slot_ws.project_id,
                 refresh_refs=preserve_branch or target_branch is None,
-                fetch_origin=fetch_origin,
+                fetch_origin=False,
             )
 
             # Hard reset + clean.  The sentinel is exempted so a reset never
@@ -1401,6 +1413,16 @@ class WorktreeSlotManager:
             slot_ws, prev.task_id if prev else task_id, incoming_task_id=task_id
         )
 
+        origin_refreshed = False
+        if detach_pushed_branch and not salvaged and await self.git.ahas_remote(base_path):
+            try:
+                await self.git.afetch_origin(
+                    base_path, repository_url=await self._repository_url(slot_ws.project_id)
+                )
+                origin_refreshed = True
+            except GitError as exc:
+                logger.warning("Could not refresh origin before restoring %s: %s", slot_dir, exc)
+
         async with self._git_mutex(base_path):
             try:
                 await self.git._arun_unlocked(["reset", "--hard"], cwd=str(slot_dir))
@@ -1408,9 +1430,9 @@ class WorktreeSlotManager:
                     ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
                 )
                 branch = await self.git.aget_current_branch(str(slot_dir))
-                if detach_pushed_branch and not salvaged and branch.startswith(BRANCH_PREFIX):
+                if origin_refreshed and branch.startswith(BRANCH_PREFIX):
                     await self._detach_if_branch_is_pushed(
-                        slot_dir, base_path, branch, project_id=slot_ws.project_id
+                        slot_dir, base_path, branch, project_id=slot_ws.project_id,
                     )
             except GitError as e:
                 # Never fatal: the next reset_slot_for_task repeats this under
@@ -1424,17 +1446,12 @@ class WorktreeSlotManager:
     ) -> None:
         """Detach a clean slot only when its task branch matches origin.
 
-        A remote ref is fetched under the caller's base mutex, then compared
-        by object id. A missing remote or a differing local tip means the
-        branch contains unpushed work and must remain checked out for the
-        retry/forensic path.
+        The caller refreshes origin before taking the base mutex. Compare
+        refs by object id under that mutex. A missing remote or a differing
+        local tip means the branch contains unpushed work and must remain
+        checked out for the retry/forensic path.
         """
-        if not await self.git.ahas_remote(base_path):
-            return
         try:
-            await self.git.afetch_origin(
-                base_path, repository_url=await self._repository_url(project_id), lock_held=True
-            )
             remote_branch = f"origin/{branch}"
             if not await self._ref_exists(str(slot_dir), remote_branch):
                 return
@@ -1728,6 +1745,8 @@ class WorktreeSlotManager:
         non-fatal *if* the ref already exists locally; slot **creation**
         (``required=True``) still needs a resolvable start point or it fails
         so the task takes the no-workspace PAUSED backoff.
+        Refresh outside the caller's repository mutex, then call again with
+        ``fetch_origin=False`` under the mutex to resolve current local refs.
         """
         # Exact origins are already proved by the integration owner. If the
         # immutable commit is present in this shared object store, refetching
@@ -1742,7 +1761,6 @@ class WorktreeSlotManager:
                 await self.git.afetch_origin(
                     base_path,
                     repository_url=await self._repository_url(project_id),
-                    lock_held=True,
                 )
         except GitError as e:
             fetch_failed = True
@@ -1852,7 +1870,6 @@ class WorktreeSlotManager:
             if session.work_dir
         }
         mine = _norm_path(slot_dir)
-        origin_refreshed = False
         for entry in entries:
             path = entry.get("path")
             if not path or entry.get("branch") != branch or _norm_path(path) == mine:
@@ -1873,13 +1890,9 @@ class WorktreeSlotManager:
                     raise GitError(f"branch {branch} is already used by worktree at {path}")
             if not Path(path).exists():
                 raise GitError(f"branch {branch} retains a missing managed worktree at {path}")
-            if not origin_refreshed:
-                await self.git.afetch_origin(
-                    base_ws.workspace_path,
-                    repository_url=await self._repository_url(holder.project_id),
-                    lock_held=True, all_heads=True,
-                )
-                origin_refreshed = True
+            # Detachment preserves the branch and all its commits. Its proof
+            # uses holder liveness/bindings, not remote-tracking refs; no fetch
+            # belongs inside this repository-locked local mutation.
             async with self._idle_branch_holder(
                 holder, allow_disabled=True, allow_pool_reservation=True,
             ) as reservation:
@@ -1907,13 +1920,15 @@ class WorktreeSlotManager:
         base = await self._base_of(slot_ws)
         if base is None:
             return False
+        if await self.git.aget_current_branch(slot_ws.workspace_path) == "HEAD":
+            return False
+        await self.git.afetch_origin(
+            base.workspace_path, repository_url=await self._repository_url(slot_ws.project_id),
+            all_heads=True,
+        )
         async with self._git_mutex(base.workspace_path):
             if await self.git.aget_current_branch(slot_ws.workspace_path) == "HEAD":
                 return False
-            await self.git.afetch_origin(
-                base.workspace_path, repository_url=await self._repository_url(slot_ws.project_id),
-                lock_held=True, all_heads=True,
-            )
             async with self._idle_branch_holder(
                 slot_ws, allow_disabled=True, allow_pool_reservation=True,
             ) as reservation:

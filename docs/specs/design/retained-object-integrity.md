@@ -33,6 +33,14 @@ and its stronger compound-operation guarantees. Bounded repository-lock waiters
 (such as claim preparation and Git truth reconciliation) can acquire the lock
 while an ordinary pull's full integrity check is running.
 
+Slot provisioning, reset, restore, idle detachment and handoff refresh origin
+before entering the shared base-repository mutex. Local ref resolution and all
+checkout/holder proofs and mutations run under that mutex after refresh; a failed
+refresh cannot authorize detachment. Detaching an abandoned holder preserves its
+branch and commits and uses the live holder/binding proof, without another fetch
+inside the mutex. These slot lifecycle paths must allow an independent bounded
+epic-branch preparation while full lender verification is in progress.
+
 A failed full verification is retried up to three times with one-, two- and
 four-second backoff within the same integrity deadline (including lock waits
 and backoff). Verification and GitManager's foreground `gc`, `repack` and
