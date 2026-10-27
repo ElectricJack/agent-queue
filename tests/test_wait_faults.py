@@ -1195,6 +1195,7 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
         tick = service.listener.tick
 
     fault_budget = None
+    injected_budget = None
 
     def controlled_timeout(seconds):
         nonlocal fault_budget
@@ -1215,9 +1216,13 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
     monkeypatch.setattr(scheduler, "asyncio", scheduler_asyncio)
 
     def expire_on_query(conn, cursor, statement, parameters, context, executemany):
+        nonlocal injected_budget
         if interruption == "timeout" and "pg_sleep" in statement:
             assert fault_budget is not None
-            fault_budget.reschedule(asyncio.get_running_loop().time())
+            # Later listener housekeeping can create another budget of the same
+            # duration. Keep the exact timeout armed at the interrupted query.
+            injected_budget = fault_budget
+            injected_budget.reschedule(asyncio.get_running_loop().time())
 
     sql_event.listen(env.db._engine.sync_engine, "before_cursor_execute", expire_on_query)
     try:
@@ -1244,7 +1249,7 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
 
     assert entered.is_set()
     if interruption == "timeout":
-        assert fault_budget is not None and fault_budget.expired()
+        assert injected_budget is not None and injected_budget.expired()
     assert (await env.db.get_task("source")).title == original_title
     assert (await records(env))[0]["outcome"] == "pending"
     assert not await records(env, wait_measurements)
