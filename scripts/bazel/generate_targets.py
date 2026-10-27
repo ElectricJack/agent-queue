@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import gc
 import hashlib
 import importlib.util
 import json
@@ -213,6 +214,19 @@ def closure(seeds: set[str], edges: dict[str, set[str]]) -> set[str]:
 
 
 def graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tuple[dict, dict]:
+    # Repeated AST parsing makes cyclic scans costly during this bounded build.
+    # Restore the caller's GC policy even when input analysis fails.
+    enabled = gc.isenabled()
+    if enabled:
+        gc.disable()
+    try:
+        return _graph(root, modules, fine_grained)
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def _graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> tuple[dict, dict]:
     analyzer = dependency_analyzer(root) if fine_grained else None
     # Legacy imports, documentation readers and fine-grained fixture discovery
     # inspect the same immutable sources during one graph generation.
