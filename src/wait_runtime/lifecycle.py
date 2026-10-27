@@ -241,6 +241,12 @@ class WaitLifecycle:
                 wait_records.c.session_id.is_not(None),
                 or_(continuations.c.resume_state.in_(("sleeping", "queued")), and_(
                     continuations.c.resume_state == "held",
+                    continuations.c.hold_reason == "push_failed",
+                    continuations.c.stopped_at.is_(None),
+                    func.coalesce(cast(continuations.c.facts["hibernation"][
+                        "push_retry_at"].astext, Float), 0) <= self.clock(),
+                ), and_(
+                    continuations.c.resume_state == "held",
                     continuations.c.hold_reason == "stop_uncertain",
                     continuations.c.stopped_at.is_(None),
                     func.coalesce(cast(continuations.c.facts["hibernation"][

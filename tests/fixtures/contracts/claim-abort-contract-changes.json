@@ -1,0 +1,44 @@
+{
+  "source_base": "caab5f21274261ae590560cb10e51ea09483fd91",
+  "command": "task_claim_abort",
+  "explicit_entry": {
+    "name": "task_claim_abort",
+    "description": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Preparing task ID."
+        },
+        "session_id": {
+          "type": "string",
+          "description": "Exact preparing session ID."
+        },
+        "claim_epoch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "instance_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "task_id",
+        "session_id",
+        "claim_epoch",
+        "instance_token",
+        "reason"
+      ]
+    }
+  },
+  "tool_category": "task",
+  "contract_fingerprint": "sha256:03a19a23b32311eab261dfa0ac4027f071438306b0534945946d6a131c401948",
+  "previous_cli_catalogue_sha256": "9bdba69a2656181a1f707d27fb272d2e17b736caf8cab3353b70262054185f29",
+  "cli_catalogue_sha256": "3eab4d604262fef3c40202e432157114cdf83f4f865a516741bce6a5c6fa99c3"
+}
