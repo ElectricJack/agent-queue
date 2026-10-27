@@ -612,7 +612,8 @@
         "tests/test_integration_ownership.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
-        "tests/test_integration_workspace_handoff.py"
+        "tests/test_integration_workspace_handoff.py",
+        "tests/test_retained_holder_repair.py"
       ]
     },
     "integration-promotion": {
@@ -3814,7 +3815,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:9ace42c8f337bef0c865d2c66f7a22fa464fe446212c79c3c522e4bdf5bc07f6",
+      "digest": "sha256:8bf98a566598f1dab419cdcae4772bd926786786b3b92cdd88925ec4b1c474d6",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3826,6 +3827,7 @@
         "src.commands",
         "src.commands.claim_commands",
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.ingest_hold",
@@ -3861,6 +3863,7 @@
         "src.orchestrator.workspace_claim_recovery",
         "src.orchestrator.worktree_manager",
         "src.preparation_failure",
+        "src.profiles.capabilities",
         "src.scheduler",
         "src.sessions",
         "src.sessions.fake",
@@ -9758,7 +9761,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:d365abe971a426cfb0ba0e4e7da89c91763e5efa16381813bb911880979500db",
+      "digest": "sha256:652c700708674ababe9963a175ccb27b0db69f31f96b33f5352749d085dda8b3",
       "imports": [
         "src.api.auth",
         "src.claim_file",
@@ -9769,7 +9772,9 @@
         "src.database.tables",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.integration.delegate_release",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.owner_recovery",
         "src.integration.ownership",
@@ -16682,6 +16687,31 @@
         "asyncio"
       ],
       "summary": "A resume key must name a session the harness can actually resume."
+    },
+    "tests/test_retained_holder_repair.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "digest": "sha256:7ea3cb5a6e3689599188506beab08ab3650c3d75b1cf53db61cf968770602cc2",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.claim_file",
+        "src.commands",
+        "src.commands.principal",
+        "src.commands.retained_holder_repair",
+        "src.database.tables",
+        "src.git.manager",
+        "src.models",
+        "src.orchestrator.worktree_manager",
+        "src.profiles.capabilities",
+        "src.wait_runtime.restart"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Historical failed-push damage, with real Git objects and PostgreSQL fences."
     },
     "tests/test_retired_defaults.py": {
       "areas": [

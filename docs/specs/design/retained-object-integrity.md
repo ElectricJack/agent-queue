@@ -43,6 +43,13 @@ A holder appearing after preflight is refused until a fresh attempt; no fetch
 runs inside the mutex. These slot lifecycle paths must allow an independent bounded
 epic-branch preparation while full lender verification is in progress.
 
+Owner recovery and task-origin restoration likewise refresh origin before
+entering the shared checkout mutex. They read the remote head, local refs and
+worktree bindings after acquiring that mutex, retaining publication leases and
+owner-fence checks. A bounded repository-mutex timeout records the holder's
+elapsed ownership and coroutine await chain, without arguments or locals, so
+subsequent refusals identify the remaining critical section directly.
+
 A failed full verification is retried up to three times with one-, two- and
 four-second backoff within the same integrity deadline (including lock waits
 and backoff). Verification and GitManager's foreground `gc`, `repack` and

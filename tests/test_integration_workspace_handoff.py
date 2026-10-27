@@ -2889,3 +2889,53 @@ async def test_public_transfer_refuses_an_orphaned_attachment_with_newer_session
         ).transfer(Fence(target=target, owner_id="task", token=4), "operation", "collector")
 
     assert events == []
+
+
+@pytest.mark.parametrize("unsafe", [None, "live", "dirty", "reused", "hung"])
+async def test_reopen_settles_drained_pool_predecessor_before_ready(
+    orchestrator_factory, tmp_path, monkeypatch, unsafe,
+):
+    orch = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending",
+    )
+    db = orch.db
+    await db.update_task("task", status=TaskStatus.COMPLETED)
+    events = []
+    current_branch, run = _clean_git(events, dirty=unsafe == "dirty")
+    orch.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orch.git._arun_unlocked = AsyncMock(side_effect=run)
+    orch.git._arun = AsyncMock(side_effect=run)
+
+    async def confirm(_handle):
+        if unsafe == "hung":
+            await asyncio.Event().wait()
+        return unsafe != "live"
+
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(side_effect=confirm))
+    monkeypatch.setattr(orch.session_providers, "create", lambda *_args: provider)
+    if unsafe == "reused":
+        await db.create_task(Task(
+            id="another-task", project_id="p", title="Replacement", description="",
+        ))
+        await db.update_agent("agent", current_task_id="another-task")
+    if unsafe == "hung":
+        orch.config.swarm.prepare_timeout = 0.1
+    result = await asyncio.wait_for(orch._command_handler.execute(
+        "reopen_with_feedback", {"task_id": "task", "feedback": "Please fix the regression"},
+    ), timeout=5)
+    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch="aq/parent"))
+    if unsafe is None:
+        assert result["success"], result
+        assert (await db.get_task("task")).status is TaskStatus.READY
+        assert (await db.get_task("task")).claim_epoch == 3
+        assert owner["handoff_state"] == "reserved" and owner["fence_token"] > 4
+        assert (await db.get_session("session")).task_id is None
+        assert (await db.get_workspace("slot")).locked_by_task_id is None
+        assert "detach" in events
+    else:
+        assert not result["success"], result
+        assert (await db.get_task("task")).status is TaskStatus.COMPLETED
+        assert owner["handoff_state"] == "handoff_pending" and owner["fence_token"] == 4
+        assert (await db.get_session("session")).task_id == "task"
+        assert (await db.get_workspace("slot")).locked_by_task_id == "task"
+        assert "detach" not in events

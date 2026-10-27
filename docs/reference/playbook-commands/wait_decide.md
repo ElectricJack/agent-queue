@@ -14,15 +14,15 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:db3d6538532a23ac1b92892d72b76b39ba9f8fc25f79bfad921c6e6d9ddda2c2` |
+| Contract fingerprint | `sha256:6b0697ae4b8915f4d4c4233dd3e8d58728c8db223a3494c6f99deb89d02096e6` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `project_id` | `string \| null` | no | `null` | — |
-| `wait_id` | `string` | yes | — | — |
-| `decision` | `"extend" \| "wake" \| "cancel" \| "reroute" \| "escalate_to_human" \| "requeue"` | yes | — | — |
+| `wait_id` | `string \| null` | no | `null` | — |
+| `decision` | `"extend" \| "wake" \| "cancel" \| "reroute" \| "escalate_to_human" \| "requeue" \| "retire"` | yes | — | — |
 | `note` | `string` | yes | — | — |
 | `extend_seconds` | `number \| null` | no | `null` | — |
 | `to` | `string \| null` | no | `null` | — |
