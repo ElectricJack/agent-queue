@@ -308,7 +308,11 @@ class WaitLifecycle:
                 tasks.c.status == "RESUME_PENDING",
             ).order_by(tasks.c.effective_priority, continuations.c.created_at))).mappings()]
         for intent in ready:
-            if intent['facts'].get('workspace_retry', {}).get('due_at', 0) > self.clock():
+            # A refused reservation backs off durably: retrying it each tick
+            # would retake the graph lock only to observe the same blocker.
+            facts = intent['facts']
+            if max(facts.get('workspace_retry', {}).get('due_at', 0),
+                   (facts.get('reserve_retry') or {}).get('due_at', 0)) > self.clock():
                 continue
             key = (intent["id"], intent["suspension_generation"])
             pending = self._resume_tasks.get(key)

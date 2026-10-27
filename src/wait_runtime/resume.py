@@ -31,6 +31,10 @@ from src.wait_runtime.legacy_parking import parked
 WORKSPACE_ATTEMPTS = 3
 # Outlast one listener batch's 30-second lease budget, including its handoff.
 RESUME_GRAPH_LOCK_TIMEOUT = 35.0
+# (base, ceiling) seconds between reservation attempts after a refusal. A
+# capacity wait looks again soon; a policy, provider or budget hold rarely clears.
+RESERVE_CAPACITY_BACKOFF = (5, 30)
+RESERVE_HOLD_BACKOFF = (10, 300)
 
 
 def retryable_workspace_error(exc):
@@ -154,7 +158,7 @@ class ResumeTransaction:
                     if idle:
                         await conn.execute(update(sessions).where(sessions.c.id == idle).values(
                             desired_state='stopped'))
-                return None
+                return await self._back_off(conn, intent, blocked, now)
             agent = Agent(id=str(uuid.uuid4()), name=f"resume-{continuation_id}",
                           profile_id=task['profile_id'], state=AgentState.BUSY,
                           current_task_id=task['id'], last_heartbeat=now,
@@ -168,7 +172,7 @@ class ResumeTransaction:
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved', version=intent['version'] + 1,
                 launch_attempts=intent['launch_attempts'] + 1,
-                facts={**intent['facts'], 'resume_attempt_started_at': now},
+                facts={**intent['facts'], 'resume_attempt_started_at': now, 'reserve_retry': None},
             ))
             await conn.execute(update(tasks).where(tasks.c.id == task['id']).values(
                 assigned_agent_id=agent.id, updated_at=now,
@@ -220,6 +224,21 @@ class ResumeTransaction:
                     continuations.c.resume_state == 'held')),
             ).values(state='cancelled'))
             return result.rowcount
+
+    async def _back_off(self, conn, intent, blocked, now):
+        """Record when to look at a refused reservation again, and why it waits.
+
+        Retrying each tick would retake the graph lock only to observe the same
+        blocker. ``blocked`` lets occupancy drop a policy, provider or budget
+        hold from queued pool demand: only a capacity refusal wants a seat.
+        """
+        refusals = (intent['facts'].get('reserve_retry') or {}).get('refusals', 0) + 1
+        base, ceiling = (RESERVE_CAPACITY_BACKOFF if blocked <= {'slot', 'workspace'}
+                         else RESERVE_HOLD_BACKOFF)
+        await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+            facts={**intent['facts'], 'reserve_retry': {
+                'refusals': refusals, 'due_at': now + min(ceiling, base * 2 ** (refusals - 1)),
+                'blocked': sorted(blocked)}}))
 
     async def fresh_workspace(self, action, task, agent, intent):
         """A newly provisioned directory, even when reusing a numbered slot.

@@ -888,6 +888,46 @@ async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried
         await service.lifecycle.stop()
 
 
+async def test_refused_resume_reservation_waits_for_its_backoff(env):
+    # stark-ember-97: a policy-held resume retook the graph lock every tick.
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'reserve_retry': {
+            'refusals': 3, 'due_at': NOW + 40, 'blocked': ['policy_hold']}}))
+    now = [NOW + 39]
+    service = runtime(env, registry=build_registry(), clock=lambda: now[0])
+    service.command = AsyncMock(return_value={'success': True})
+    try:
+        await service.lifecycle.resume_pending()
+        assert service.command.await_count == 0 and not service.lifecycle._resume_tasks
+        now[0] = NOW + 40
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        assert service.command.await_args.args == (
+            'wait_resume_dispatch', {'continuation_id': 'c', 'generation': 1})
+    finally:
+        await service.lifecycle.stop()
+
+
+async def test_resume_policy_refusal_backs_off_longer_and_caps(env):
+    from src.wait_runtime.resume import ResumeTransaction
+
+    driver = ResumeTransaction(SimpleNamespace(orch=SimpleNamespace(db=env.db)))
+    await park(env)
+    for refusals, delay in [(1, 10), (2, 20), (6, 300), (9, 300)]:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(facts={'kept': True, **(
+                {'reserve_retry': {'refusals': refusals - 1}} if refusals > 1 else {})}))
+            row = dict((await conn.execute(select(continuations))).mappings().one())
+            await driver._back_off(conn, row, {'policy_hold'}, NOW)
+        assert (await intent(env))['facts'] == {'kept': True, 'reserve_retry': {
+            'refusals': refusals, 'due_at': NOW + delay, 'blocked': ['policy_hold']}}
+
+
 async def test_resume_graph_busy_streak_is_scoped_reset_and_retired(env, caplog):
     from tests.test_wait_dispatch import runtime
 
@@ -2807,13 +2847,19 @@ async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env
     [request] = await requests()
     assert (request['state'], request['created_at'], request['granted_at']) == (
         'pending', NOW + 30, None)
+    # ...and when to look again, so the resume loop stops retaking the graph lock.
+    assert (await intent(env))['facts']['reserve_retry'] == {
+        'refusals': 1, 'due_at': NOW + 35, 'blocked': ['slot']}
     now[0] = NOW + 60
     assert await driver.reserve('c', 1) is None  # Requested stop is not proof of free capacity.
     assert await requests() == [request]  # An idempotent retry keeps the first boundary.
+    assert (await intent(env))['facts']['reserve_retry'] == {
+        'refusals': 2, 'due_at': NOW + 70, 'blocked': ['slot']}
     await env.db.update_session('idle', state='stopped')
     now[0] = NOW + 90
     action = await driver.reserve('c', 1)
     assert action is not None and action.continuation_id == 'c'
+    assert (await intent(env))['facts']['reserve_retry'] is None
     now[0] = NOW + 120
     assert (await driver.reserve('c', 1)).agent_id == action.agent_id
     reservations = await requests()
