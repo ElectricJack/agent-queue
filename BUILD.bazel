@@ -964,6 +964,7 @@ exports_files([
         "docs/reports/2026-10-26-cold-restart-ownership.json",
         "docs/reports/2026-10-26-retained-store-maintenance-dev-refresh-ownership.json",
         "docs/reports/2026-10-26-retained-store-maintenance-ownership.json",
+        "docs/reports/2026-10-26-retained-store-maintenance-pair-refresh-ownership.json",
         "docs/reports/2026-10-26-retained-store-maintenance-reopen-ownership.json",
         "docs/reports/README.md",
         "docs/reports/cli-audit-2026-09-08/README.md",

@@ -4224,7 +4224,8 @@ async def test_train_recovers_empty_loose_object_and_delivers_sealed_batch(world
         async def fetch(store, *, repository_url, all_heads=False, lock_held=False,
                         refetch=False):
             await transport._afetch_origin_with_auth_to_url(
-                store, source_url=Path(repository_url).as_uri(), token=None, refetch=refetch)
+                store, source_url=Path(repository_url).as_uri(), token=None,
+                refetch=refetch, lock_held=lock_held)
         transport.afetch_origin = fetch
 
     delivered = await train.visit(MAIN)
