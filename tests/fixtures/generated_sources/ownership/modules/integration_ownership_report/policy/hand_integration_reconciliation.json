@@ -65,7 +65,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 4575,
+    "authorized_owned_delta": 4717,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -511,7 +511,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 83864,
-    "measured_owned_total": 160074,
+    "measured_owned_total": 160216,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -1187,6 +1187,44 @@
       "repair_task_id": "amber-journey-18",
       "source_revision": "42cc80377e3ca9d0bba7658d4afe958332a74e2d",
       "task_id": "keen-dune-16"
+    },
+    "wait_publication_hold_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 142,
+      "authorized_table_delta": 0,
+      "combined_source_revision": "5920449de643d85adaef05831da16a65a1465db8",
+      "dev_source_revision": "b0875405bdcd9e7c589a66206f1d271b9754cdb3",
+      "measured_engine_lines": 83864,
+      "measured_owned_total": 160216,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83864,
+      "previous_measured_owned_total": 160074,
+      "previous_measured_table_count": 45,
+      "previous_recording": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 142,
+        "authorized_table_delta": 0,
+        "combined_source_revision": "41bf1627c5a4909792beefc44598fcc7e1589304",
+        "dev_source_revision": "20338854f1d0961c9663890237fbbe2dd20f0ffa",
+        "measured_engine_lines": 83864,
+        "measured_owned_total": 159888,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "previous_measured_engine_lines": 83864,
+        "previous_measured_owned_total": 159746,
+        "previous_measured_table_count": 45,
+        "reason": "Exact source-CI repair after supervisor-directed merge of current dev: record the unchanged publication retry, requeue and continuation retirement implementation from PR #2127. Preserve original baselines, all historical grants and ownership classifications; zero remaining headroom and no new storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "acc0a66a4e13110539223288acc9d85dbc0d0a17",
+        "supervisor_decision_message_id": "msg-3e7d9957e9d2434098e45b8c49350b04",
+        "task_id": "agile-ember-72"
+      },
+      "reason": "Re-record the unchanged approved +142 owned/+0 engine/+0 tables after the supervisor-directed merge of dev b0875405b, composing retained_holder_repair_composition +328 and every incoming grant. Preserve prior recording, original baselines, all historical grants and ownership classifications, zero remaining headroom, s4_modules expiry and no new storage category.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "acc0a66a4e13110539223288acc9d85dbc0d0a17",
+      "supervisor_decision_message_id": "msg-3e7d9957e9d2434098e45b8c49350b04",
+      "task_id": "agile-ember-72"
     },
     "wait_resume_inherited_composition": {
       "authorized_engine_delta": 0,

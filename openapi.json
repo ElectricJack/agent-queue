@@ -88412,8 +88412,15 @@
             "title": "Project Id"
           },
           "wait_id": {
-            "type": "string",
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wait Id"
           },
           "decision": {
@@ -88424,7 +88431,8 @@
               "cancel",
               "reroute",
               "escalate_to_human",
-              "requeue"
+              "requeue",
+              "retire"
             ],
             "title": "Decision"
           },
@@ -88487,7 +88495,6 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "wait_id",
           "decision",
           "note"
         ],
