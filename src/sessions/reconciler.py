@@ -258,6 +258,7 @@ class SessionReconciler:
         #: breaks; a daemon restart costs at most one more grace, which is
         #: why ``sessions.stop_intent_pending`` exists.
         self._idle_stop_intent_seen: dict[tuple[str, str], float] = {}
+        self._drain_instruction_sent: set[tuple[str, str]] = set()
         #: (session id, instance token) -> (read at, the harness store's
         #: activity for that session, or ``None`` when unreadable).  The wedge
         #: check's own cache: a wedged TUI repaints forever, so without it the
@@ -577,6 +578,10 @@ class SessionReconciler:
         with the task still open is a *premature* drain and gets one nudge
         before being treated as an exit.
         """
+        self._drain_instruction_sent.intersection_update(
+            (row.id, row.instance_token) for row in live
+            if row.lifecycle == "pool" and row.desired_state == "stopped"
+        )
         profiles = {}
         for row in live:
             if row.lifecycle == "pool":
@@ -591,9 +596,9 @@ class SessionReconciler:
                             row, reason="profile_deleted"
                         )
                     continue
-                # Pool sessions never send a provider-side drain ack -- an
-                # idle one marked stopped or sleeping is torn down the pool
-                # way. A task pointer left from a released claim can name a
+                # Taskless stopped pools get a submitted drain instruction
+                # and bounded ack grace before guarded teardown. A task
+                # pointer left from a released claim can name a
                 # task already requeued or claimed by another worker; detach
                 # it using the current assignment before deciding to wait.
                 if row.desired_state not in ("stopped", "sleeping"):
@@ -619,6 +624,33 @@ class SessionReconciler:
                         "— skipping", row.id,
                     )
                     continue
+                if row.desired_state == "stopped":
+                    # A released preparation can leave its branch checked out
+                    # while the harness is idle. Free it before asking the
+                    # worker to leave, under the same fences as slot reset.
+                    instance_token = row.instance_token
+                    row = await self._still_live(row)
+                    if (row is None or row.desired_state != "stopped"
+                            or row.instance_token != instance_token
+                            or row.task_id or row.claim_phase is not None):
+                        continue
+                    detach = getattr(self.orchestrator, "_detach_idle_pool_branch", None)
+                    if detach is not None:
+                        await detach(row)
+                    key = (row.id, row.instance_token)
+                    if not await self._agent_acked_drain(row):
+                        first = self._idle_stop_intent_seen.setdefault(key, now)
+                        if key not in self._drain_instruction_sent:
+                            provider = self._provider_for(row)
+                            if provider is not None:
+                                outcome = await self._try_nudge(
+                                    provider, row, "Your pool session is draining and holds no task. "
+                                    "Run `aq session drain-ack` and exit 0.",
+                                )
+                                if outcome.delivered:
+                                    self._drain_instruction_sent.add(key)
+                        if now - first < self._idle_stop_grace():
+                            continue
                 reason = "sleeping" if row.desired_state == "sleeping" else "drained"
                 await self.orchestrator._terminate_pool_session(row, reason=reason)
                 continue
