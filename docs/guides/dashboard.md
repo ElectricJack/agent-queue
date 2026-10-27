@@ -254,7 +254,12 @@ derived delivery waits and withheld work. Missing or truncated evidence is label
 See [TaskWaitPanel.tsx](../../dashboard/src/components/TaskWaitPanel.tsx) and
 [WaitingOn.tsx](../../dashboard/src/pages/WaitingOn.tsx).
 
-**Metrics** includes pending waits (in-place, hibernated and human-escalated), slot
+**Metrics** keeps error and sustained-lag banners above four collapsible sections:
+Stat tiles, Graphs, Provider usage, then Delivery latency. Each header toggles its
+section, initially expanded; the browser remembers each disclosure independently.
+If browser storage is unavailable, toggling still works for the current page.
+
+Metrics includes pending waits (in-place, hibernated and human-escalated), slot
 seconds held/released, wake outcomes and resume latency. Token savings are an estimate,
 not measured usage. **Delivery latency** (`/metrics#delivery`) uses a separate 24-hour or
 7-day cohort, with optional `?project=:id` and `?task=:id` filters. It refreshes once a

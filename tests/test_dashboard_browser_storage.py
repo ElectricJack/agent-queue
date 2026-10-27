@@ -3,7 +3,8 @@
 The dashboard's feature state moved to the server-backed ``dashboard_state``
 namespaces (docs/superpowers/specs/2026-09-10-dashboard-state-contract-design.md)
 with no migration and no browser fallback. What may still persist in the
-browser is device-local transport state, and only through
+browser is device-local transport state and the four explicitly approved
+Metrics section preferences (Jack request 2026-10-27 on smart-harbor-20), only through
 ``dashboard/src/deviceLocal.ts``, whose keys must each be documented in
 ``dashboard/AGENTS.md``. The vitest suite does not run in CI, so this is where
 the rule is enforced.
@@ -27,6 +28,14 @@ ALLOWED_DEVICE_LOCAL_KEYS = {
     "aq:ws:last_seq",
     "aq:ws:epoch",
     "aq:session:id",
+}
+
+# Deliberate per-browser UI exception; do not broaden the transport registry.
+ALLOWED_METRICS_SECTION_KEYS = {
+    "aq:metrics:stat-tiles:open",
+    "aq:metrics:graphs:open",
+    "aq:metrics:provider-usage:open",
+    "aq:metrics:delivery-latency:open",
 }
 
 # Feature-state keys (and the in-page fan-out events that accompanied them)
@@ -72,10 +81,10 @@ def _is_test_code(path: Path) -> bool:
     )
 
 
-def _registry_keys() -> set[str]:
+def _registry_keys(registry: str = "DEVICE_LOCAL_KEYS") -> set[str]:
     text = DEVICE_LOCAL_MODULE.read_text(encoding="utf-8")
-    block = re.search(r"DEVICE_LOCAL_KEYS\s*=\s*\{(.*?)\}\s*as\s+const", text, re.DOTALL)
-    assert block, f"{DEVICE_LOCAL_MODULE.relative_to(ROOT)} lost its DEVICE_LOCAL_KEYS registry"
+    block = re.search(rf"{registry}\s*=\s*\{{(.*?)\}}\s*as\s+const", text, re.DOTALL)
+    assert block, f"{DEVICE_LOCAL_MODULE.relative_to(ROOT)} lost its {registry} registry"
     return set(re.findall(r'^\s*"([^"]+)"\s*:', block.group(1), re.MULTILINE))
 
 
@@ -97,7 +106,8 @@ def test_only_the_device_local_module_touches_browser_storage() -> None:
 
     assert violations == [], (
         "Persistent dashboard feature state belongs on the server (useDashboardDocument). "
-        "Device-local transport state goes through dashboard/src/deviceLocal.ts with a key "
+        "Device-local transport state and the approved Metrics preferences go through "
+        "dashboard/src/deviceLocal.ts with a key "
         "documented in dashboard/AGENTS.md. Offending references:\n  " + "\n  ".join(violations)
     )
 
@@ -118,3 +128,11 @@ def test_retired_feature_keys_are_gone_from_source_and_tests() -> None:
             if key in text:
                 violations.append(f"{path.relative_to(ROOT)}: {key}")
     assert violations == []
+
+
+def test_metrics_ui_exception_holds_only_the_four_approved_keys() -> None:
+    assert _registry_keys("METRICS_SECTION_KEYS") == ALLOWED_METRICS_SECTION_KEYS
+    docs = DASHBOARD_DOCS.read_text(encoding="utf-8")
+    assert "Jack request 2026-10-27 on smart-harbor-20" in docs
+    undocumented = sorted(key for key in ALLOWED_METRICS_SECTION_KEYS if f"`{key}`" not in docs)
+    assert undocumented == [], f"Metrics preference keys missing from dashboard/AGENTS.md: {undocumented}"
