@@ -13,6 +13,9 @@ import functools
 import re
 from pathlib import Path
 
+# The retirement assertions inspect the complete source tree as data.
+BAZEL_DATA = ("src/",)
+
 ROOT = Path(__file__).parents[1]
 TABLE = "task_delivery_receipts"
 WRITE_CALLS = {"insert", "update", "delete", "pg_insert"}
