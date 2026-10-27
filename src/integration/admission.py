@@ -477,30 +477,22 @@ class AdmissionSnapshot:
         if lock and (self.lock_ids or task_id):
             try:
                 async with conn.begin_nested():
-                    await conn.execute(
-                        select(tasks.c.id)
-                        .where(tasks.c.id.in_(self.lock_ids | ({task_id} if task_id else set())))
-                        .order_by(tasks.c.id)
-                        .with_for_update(read=True, nowait=True)
-                    )
-                    # Freeze integration configuration until activation commits.
-                    await conn.execute(
-                        select(projects.c.id)
-                        .where(projects.c.id.in_([p[0] for p in self.inputs[5]]))
-                        .order_by(projects.c.id)
-                        .with_for_update(read=True, nowait=True)
-                    )
-                    await conn.execute(
-                        select(repos.c.id)
-                        .where(or_(
+                    # Freeze task inputs and integration configuration until activation commits.
+                    lock_queries = (
+                        (tasks, tasks.c.id.in_(self.lock_ids | ({task_id} if task_id else set()))),
+                        (projects, projects.c.id.in_([p[0] for p in self.inputs[5]])),
+                        (repos, or_(
                             repos.c.id.in_([r[0] for r in self.inputs[6]]),
                             repos.c.id.in_(select(projects.c.integration_repository_id).where(
                                 projects.c.id.in_([p[0] for p in self.inputs[5]]),
                             )),
-                        ))
-                        .order_by(repos.c.id)
-                        .with_for_update(read=True, nowait=True)
+                        )),
                     )
+                    for table, condition in lock_queries:
+                        await conn.execute(
+                            select(table.c.id).where(condition).order_by(table.c.id)
+                            .with_for_update(read=True, nowait=True)
+                        )
             except DBAPIError as exc:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
                     return self.record_change(
@@ -514,18 +506,11 @@ class AdmissionSnapshot:
         current = await _inputs(self.db, self.candidate_ids, conn)
         if self.policy_inputs:
             policy, _ = await _frontier_inputs(conn, self.candidate_ids)
-            before_policy = self.policy_inputs
-            if task_id is not None:
-                # Initial selection fences every candidate; activation only
-                # depends on the selected candidate's route/parent identity.
-                # Other candidates may be rerouted while this claim prepares.
-                before_policy = (
-                    tuple(row for row in before_policy[0] if row[0] == task_id),
-                    *before_policy[1:],
-                )
-                policy = (
-                    tuple(row for row in policy[0] if row[0] == task_id), *policy[1:],
-                )
+            # Scope candidate identity to activation; retain every other policy fence.
+            before_policy, policy = (
+                (tuple(row for row in inputs[0] if task_id is None or row[0] == task_id),
+                 *inputs[1:]) for inputs in (self.policy_inputs, policy)
+            )
             if policy != before_policy:
                 groups = ("candidate routing/parent", "project/repository policy", "edges",
                           "sources", "completions", "metadata")
@@ -719,9 +704,8 @@ async def _frontier_inputs(conn, ids):
     """Fence routing, hierarchy policy and graph without fencing our own take.
 
     READY -> IN_PROGRESS, branch preparation and route evidence refreshes are
-    expected mutations. Route identity, parent, edges, policy and completion
-    generation are not. Keep candidate tuples addressable by task ID so a
-    selected claim need not fence other candidates' routing changes.
+    expected mutations; route identity, parent, edges, policy and generation are not.
+    Candidate tuples stay addressable by task ID to scope activation's route fence.
     """
     rows = (await conn.execute(select(
         tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id, tasks.c.profile_id,
