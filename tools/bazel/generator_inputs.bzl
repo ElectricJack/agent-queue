@@ -5080,6 +5080,7 @@ GENERATOR_INPUTS = [
     "tests/fixtures/generated_sources/command_descriptors/0103a007a017_wait_source_redispatch.py.inc",
     "tests/fixtures/generated_sources/command_descriptors/0104_task_list_limit.py.inc",
     "tests/fixtures/generated_sources/command_descriptors/0105_batch_authority.py.inc",
+    "tests/fixtures/generated_sources/command_descriptors/0106_wait_publication_hold.py.inc",
     "tests/fixtures/generated_sources/ownership/integration_ownership.json",
     "tests/fixtures/generated_sources/ownership/integration_ownership_report.json",
     "tests/fixtures/generated_sources/ownership/modules/integration_ownership/fingerprints/owned_file_fingerprints/0.json",
