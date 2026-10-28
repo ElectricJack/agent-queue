@@ -9,7 +9,7 @@ def _batch_authority_changes():
 def _before_batch_authority_catalogue(catalogue=None):
     evidence = _batch_authority_changes()
     if catalogue is None:
-        catalogue = json.loads(render_command_catalogue())
+        catalogue = _before_publication_hold_catalogue()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
 
@@ -22,7 +22,7 @@ def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
         evidence["contract_fingerprint"]
     )
     catalogue = _before_session_nudge_recovery_catalogue(
-        _before_unread_inbox_catalogue(json.loads(render_command_catalogue()))
+        _before_unread_inbox_catalogue(_before_publication_hold_catalogue())
     )
     rendered = json.dumps(catalogue, indent=2) + "\n"
     previous = json.dumps(_before_batch_authority_catalogue(catalogue), indent=2) + "\n"
