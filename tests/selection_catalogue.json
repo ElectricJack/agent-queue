@@ -253,8 +253,9 @@
       ]
     },
     "database": {
-      "description": "The PostgreSQL database layer: adapter CRUD and channels, engine startup safeguards, backend selection, immediate transactions, metadata-cast safety, model round trips and the SQLite removal ratchet.",
+      "description": "The PostgreSQL database layer: adapter CRUD and channels, engine startup safeguards, backend selection, immediate transactions, advisory locks held without an idle transaction, metadata-cast safety, model round trips and the SQLite removal ratchet.",
       "modules": [
+        "tests/test_advisory_locks.py",
         "tests/test_database.py",
         "tests/test_database_backend_selection.py",
         "tests/test_database_channels.py",
@@ -2123,6 +2124,24 @@
       ],
       "summary": "Release migration checks use literal source, never execute branch code."
     },
+    "tests/test_advisory_locks.py": {
+      "areas": [
+        "database"
+      ],
+      "default_arm": true,
+      "digest": "sha256:bd96486a0f2fba799c9ca1754c7f985a0663ce67bc97ca8c8445827780a0cb8a",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.config",
+        "src.database.advisory_locks",
+        "src.doctor.models",
+        "src.integration.source_ci"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Advisory locks held across slow work never leave a backend idle in a transaction."
+    },
     "tests/test_agent_cron.py": {
       "areas": [
         "agent-cron"
@@ -3815,7 +3834,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:8bf98a566598f1dab419cdcae4772bd926786786b3b92cdd88925ec4b1c474d6",
+      "digest": "sha256:7e2a1037c782663d3ce2b8a73fe9744e1342dbb623ad7d537a60809433086ff1",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3838,6 +3857,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.integration",
         "src.integration.admission",
         "src.integration.batches",
@@ -5590,7 +5610,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:eacbfc4d89974caf3f67483899b269221a2b1ba9cf28eec5aca575a1f0449ca5",
+      "digest": "sha256:6c9aa03aa56122385b7cc469abd339d7dd6ed5f0861f760c3824597dab9744c8",
       "imports": [
         "src.database",
         "src.database.engine",
@@ -5611,7 +5631,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:5fdd612e0751dd83ef4ed7ceb29ea8f2aec8269078f4abcc5bb74931c8b401d7",
+      "digest": "sha256:d5a6671cce35c8247dbde15b63b63e553e64f5016e85bc01638f52517d1572d2",
       "imports": [
         "src.config",
         "src.database"
@@ -5626,7 +5646,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:b8181f795c8f55d89dfb8e2da4e9c0edc779530b7f342f807cd8a1004396a93e",
+      "digest": "sha256:2c2db7b5f4864346aca7f4c53243ab835eedf690f0eca9da16cab9dfa1fc04ed",
       "imports": [
         "src.models"
       ],
@@ -5638,7 +5658,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:af0363c207f0408c8c48a543184fcf849627f0ac84773fdedbbf1948c4ce72f0",
+      "digest": "sha256:521833935016bcf5764adabdd2358c6c1cde92b980e4eb45446cbb53e8f261e2",
       "imports": [
         "src.database.engine"
       ],
@@ -5650,7 +5670,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:34cb3babe70a76f89505cd7d4af0b043c347c0ac62829382bcd9df1854a9cf08",
+      "digest": "sha256:70d4ec59d91c27fd06ad550dd801846b1bbe6db4efb73649721046a0339f2b64",
       "imports": [],
       "markers": [
         "parametrize"
@@ -5662,7 +5682,7 @@
         "database"
       ],
       "default_arm": false,
-      "digest": "sha256:c4e3e85c3abcb2a82c2a4ce8329d35bacff9c1ae2b7a3bccabe2b85a91f8d700",
+      "digest": "sha256:dcb5887ea4687c239f6b43578090210a5a0d877ac80d76bac531cdbc39b7625d",
       "imports": [
         "src.database.adapters.postgresql",
         "src.models"
@@ -5698,7 +5718,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:eb64f324e3aa63ec0f162706945c6b00da674099554dacb4f855c4fe4c2de4ee",
+      "digest": "sha256:f578583c36c76196379bdffefd3d97acd03c49cfd28f72cb22344652cb36c600",
       "imports": [
         "src.database",
         "src.models"
@@ -6450,7 +6470,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:302e8e61e11b2fca38dd5f5c3c5ed85ccd5c9af0b60914dbbc92e24b8d8a2a65",
+      "digest": "sha256:16847542347371cfb4045ac5901eedb2328b59f2690c61c58eb6e6b93a9173ce",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
@@ -6459,6 +6479,7 @@
         "src.database.queries.proposal_queries",
         "src.database.tables",
         "src.doctor",
+        "src.doctor.advisory_lock_checks",
         "src.doctor.ask_checks",
         "src.doctor.builtin",
         "src.doctor.capability_checks",
@@ -7596,9 +7617,10 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:4ecaf7ef37fa6585db32ded1f5dbf2e81432e06b2959c5918cf67d5637a54866",
+      "digest": "sha256:aeef4b38a8e350480e3e17fc5bbc978227754eeae797deee07a39c7524eaa558",
       "imports": [
         "src.git.manager",
+        "src.integration",
         "src.integration.bookkeeping_guard",
         "src.integration.development",
         "src.integration.gitops",
@@ -9074,7 +9096,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:398a809497f69bc74c9d17b16eb712f4b0491b9a69bacd9acc04733a305e5a1e",
+      "digest": "sha256:30041691efa900abadf54922a8136b9824614dda023d8f0bec55e87bd202eb38",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9089,6 +9111,7 @@
         "src.integration.close_runtime",
         "src.integration.gitops",
         "src.integration.models",
+        "src.integration.regeneration",
         "src.models",
         "src.operator_decisions",
         "src.waits.adapters.ci",
@@ -12143,7 +12166,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:7605a5dadbcbb95f5fec07a311505f7618306acbde89736310c0ff762c450284",
+      "digest": "sha256:614a474069d4766b654930b60316e991bf04b9b090106e102d41ccea2e7f645b",
       "imports": [
         "src.database",
         "src.database.queries.claim_queries",
@@ -12285,7 +12308,7 @@
         "database"
       ],
       "default_arm": false,
-      "digest": "sha256:bf907b6ff6f75e3f92dc94c632614975cf92447b9525acc424e1d64d964d5592",
+      "digest": "sha256:7f1b9410ca74e409bae8936c2473ad11401c93d4ffb65a4fe341cadc57f18aec",
       "imports": [
         "src.database.adapters.postgresql",
         "src.database.legacy_sqlite_import",
@@ -12304,7 +12327,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:422284b8746d7a23a1d4fdcf3c359f5b897894ac7d4065f5080a070805201a9d",
+      "digest": "sha256:08dff0003e2993eee93d16af28d41aa40060c456874539c7f7fe47d85e01919d",
       "imports": [],
       "markers": [],
       "summary": "Tests for scripts/migrate_task_records.py."
@@ -13111,7 +13134,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:670696b76bdcd94bde5fa66ef83cf8f8a262fdd02500cde3a25f5ac48fecff5b",
+      "digest": "sha256:099c883ef43d6ef20944d5233b0fa8656dff6f3cdcaf3029910cf70a9910ece2",
       "imports": [
         "src.database.tables",
         "src.models"
@@ -13326,7 +13349,7 @@
         "projects"
       ],
       "default_arm": true,
-      "digest": "sha256:1bf2ea089d6900286ee72a72f8cabb2e826500501f2dfdd15ba0e24ead0a661f",
+      "digest": "sha256:0c69cd12214b74868c0086ec0ce55dc54c0552e1b9b4277ed19a6a96e845ecf4",
       "imports": [
         "src.config",
         "src.database",
@@ -13341,7 +13364,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:94dfb7eb9660e1ee7a2d10353947bb19eeca121ed7d1855a848973d0b88343b7",
+      "digest": "sha256:9ea170b4a6d5b917a6ec13d8c22cca66d54accdc25825cba04b8ec741abffe73",
       "imports": [
         "src.database",
         "src.database.operational_retention",
@@ -14641,7 +14664,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:9d5401310666ad691b3f912f2f6b37fee297fc1d071f51ea97462c4f44b41886",
+      "digest": "sha256:ff47ae06a9e5b7dd29aa0c5d2d7b4f0c3850c019a8f0ca171313f52cc566781d",
       "imports": [
         "src.claim_file",
         "src.config",
@@ -14656,6 +14679,7 @@
         "src.sessions.context",
         "src.sessions.exit_classifier",
         "src.sessions.fake",
+        "src.sessions.proctable",
         "src.sessions.provider",
         "src.sessions.reconciler"
       ],
@@ -17736,13 +17760,14 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:3c9c577db0aa7ae525ae014ec7e7457f02b74abc7af84e93efc8d558985e17f9",
+      "digest": "sha256:fe7c74b668bf246aeec4fbbfde076487e8e5a4f8fd475602272917efe2e3aaf4",
       "imports": [
         "src.agent_waits",
         "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.config",
+        "src.database.queries.claim_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.integration.lock",
@@ -17987,7 +18012,7 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:6c5d81a3bc081f04ac9234c609e88bcd6cb75b8f9cdd93bf80459bd4d9f423f9",
+      "digest": "sha256:c27be30d48bb1621737b906b3b4da8dbde459fe01044963eafc8b31fdce2b5b2",
       "imports": [
         "src.config"
       ],
@@ -20437,15 +20462,19 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:51ef42487f8a41667069f2b66146ca1c4ac0c7fa9bc882ee8867b326884976c9",
+      "digest": "sha256:3da935f1fa0774037644c6bdabb149890b21b52423c820d4b4eba2115f315122",
       "imports": [
+        "src.api.auth",
+        "src.api.scope",
         "src.claim_file",
         "src.cli.waits",
         "src.commands",
+        "src.commands.message_commands",
         "src.commands.principal",
         "src.commands.task_commands",
         "src.config",
         "src.database",
+        "src.database.queries.claim_queries",
         "src.database.queries.continuation_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
@@ -21270,9 +21299,11 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:74b628183e6aad59cac5d120ecb0c1254c0be3163f30edd3d6212629d54b5ec7",
+      "digest": "sha256:2e2a927700c1b60fb174961e06b9d4b8a023074e770fa3bd1e9bdbb04d66f997",
       "imports": [
+        "src.claim_file",
         "src.config",
+        "src.database.tables",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.execution",

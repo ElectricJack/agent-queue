@@ -12834,7 +12834,7 @@
     ],
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Unlimited source-CI recovery delegates to _reopen_source_ci for each changed head; the renamed delegate preserves exact-head duplicate refusal, the bound-writer guard and explicit success/failure envelopes. Reviewed all _record_integration_source_ci exits and the delegated reopening path against the source-CI recovery tests.",
     "schema_quality": "opaque",
-    "source_digest": "sha256:a8fb94b70615cefb465235e9a399bc6b4760ac82c4827e00ac46dc92fc67bbfa",
+    "source_digest": "sha256:b98ab9ae1102c5cb6ae1d70d4a2d36c9fda06770e01d93c23cbde9089523004a",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
@@ -18477,11 +18477,7 @@
     "return_branches": [
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'override_hold must be a boolean'}"
-      },
-      {
-        "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': 'override_hold requires a reason of 1 to 4000 characters'}"
+        "return": "{'success': False, 'error': error}"
       },
       {
         "protocol": "delegated_producer",
@@ -18489,14 +18485,14 @@
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error': refusal}"
+        "return": "{'success': False, 'error_code': 'task_recovery.held', 'error': str(exc), 'recovery_hold': exc.incident}"
       },
       {
         "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error_code': 'task_recovery.held', 'error': str(exc), 'recovery_hold': exc.incident}"
+        "return": "{'success': False, 'error_code': exc.code, 'error': str(exc)}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged. Merge repair: retain dev manual-pause Resume proofs, stale repair refusal and worker integration policy. Restart guards the hold before Resume and defers supersession through Resume until the audited restart READY transaction.",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled.  Restart hold correction: explain includes decided hold owner/reason; restart requires a reasoned authorized exact-hold override. Releasing actor and reason are audited; return protocol and project resource gates remain unchanged. Merge repair: retain dev manual-pause Resume proofs, stale repair refusal and worker integration policy. Restart guards the hold before Resume and defers supersession through Resume until the audited restart READY transaction. Bounded cold restart: restart_attempt covers hold validation and delegated restart; RecoveryHoldError and WaitError return explicit false with their recovery or wait error codes. _restart_task retains its return branches and adds phase diagnostics around the same guarded operations. Hold argument validation remains delegated to restart_hold_override; public arguments, effects and resource gates are unchanged.",
     "schema_quality": "declared",
     "source_digest": "sha256:44278f46943803e08ed4f248eb010b3173b48041f5bc1b24c23e28e8118c2e8b",
     "tests": [
@@ -18510,7 +18506,10 @@
       "tests/test_routing_router.py",
       "tests/test_wait_hibernation.py",
       "tests/test_supervisor_recovery.py",
-      "tests/test_task_controls.py"
+      "tests/test_task_controls.py",
+      "tests/test_wait_hibernation.py::test_cold_restart_deadline_reports_lock_and_releases_resources",
+      "tests/test_wait_hibernation.py::test_cold_restart_cleanup_deadline_retains_ownership",
+      "tests/test_wait_hibernation.py::test_cold_restart_external_proofs_leave_transactions_closed"
     ]
   },
   "resume_playbook": {
@@ -22464,7 +22463,7 @@
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_drain_missing_claim_session": "sha256:2e9c65d8d584fa5022c2c51dfd083036ffe417edf42613301360fddcc66638cd",
       "_extend_claim_reset_deadline": "sha256:90181d49b0d571533e785cdbee83ab334076670589377411a74ed16d5d867eec",
-      "_prepare_and_activate": "sha256:be0fa4fbff3836f4100ce2deeb83cdfacf1aa13bce2fde0fac5700bf2a1f5c51",
+      "_prepare_and_activate": "sha256:496091ca03be590f79bbf9f5d7980b564bb426c145da144293911527a28f860c",
       "_prepare_and_activate_locked": "sha256:c6e224e7cc34d67092a9fa110a549a75b3b3c66520af194a107d6a5dd722dd52",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
@@ -22578,7 +22577,7 @@
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
       "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
       "_drain_missing_claim_session": "sha256:2e9c65d8d584fa5022c2c51dfd083036ffe417edf42613301360fddcc66638cd",
-      "_prepare_and_activate": "sha256:be0fa4fbff3836f4100ce2deeb83cdfacf1aa13bce2fde0fac5700bf2a1f5c51",
+      "_prepare_and_activate": "sha256:496091ca03be590f79bbf9f5d7980b564bb426c145da144293911527a28f860c",
       "_prepare_and_activate_locked": "sha256:c6e224e7cc34d67092a9fa110a549a75b3b3c66520af194a107d6a5dd722dd52",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
@@ -23140,7 +23139,8 @@
     "helper_producers": {
       "_confirm_recovery_worker_stopped": "sha256:782b33c9f86faaa3e7d7bc88e33d0c5e0d5f9d110610d849a3069149e6f448af",
       "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b",
-      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
+      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6",
+      "recover_continuation_incident": "sha256:8c75df2b0dcad41c7d5499eb1184be1a3df2170b6d81c7a2792bfbafa8dbf139"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -23190,6 +23190,10 @@
         "return": "{'success': False, 'error': 'decision release requires operator_release'}"
       },
       {
+        "protocol": "delegated_producer",
+        "return": "continuation_recovery"
+      },
+      {
         "protocol": "explicit_boolean: False",
         "return": "{'success': False, 'error': 'Incident is stale or not found'}"
       },
@@ -23210,16 +23214,18 @@
         "return": "{'success': False, 'error_code': 'task_recovery.refused', 'error': str(exc)}"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Completion racing a direct recovery decision returns task_recovery.refused with success false; ask decisions still raise for their operation reconciler. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Completion racing a direct recovery decision returns task_recovery.refused with success false; ask decisions still raise for their operation reconciler. Continuation hold escalation IDs delegate retry to recover_continuation_incident, preserving explicit service success/refusal envelopes and the original principal. Its fenced resume owner revalidates project, generation, incident, branch and stopped-writer evidence; a missing incident falls through to ordinary recovery.",
     "schema_quality": "declared",
-    "source_digest": "sha256:7e3b79eb18e3676887b507b6b50cffe4070441d2a69a5979ba16687526fb55f9",
+    "source_digest": "sha256:8fcc8c3378c208ae90b073ef3a4495ef001ed83153c0ab3bd068a4034e1d5126",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
       "tests/test_integration_owner_recovery.py",
       "tests/test_supervisor_recovery.py::test_operator_close_resolves_open_recovery_incident",
-      "tests/test_supervisor_recovery.py::test_recover_racing_completion_refuses_cleanly"
+      "tests/test_supervisor_recovery.py::test_recover_racing_completion_refuses_cleanly",
+      "tests/test_wait_hibernation.py::test_task_recover_accepts_resume_escalation_id_and_preserves_outcome",
+      "tests/test_wait_hibernation.py::test_task_recover_resume_incident_refuses_changed_binding"
     ]
   },
   "task_recovery_notify": {
