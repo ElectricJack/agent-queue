@@ -1382,7 +1382,23 @@ class SessionReconciler:
                     # A failed close requeued the task but left this dead
                     # session holding it; end it instead of every tick.
                     return await self._apply_pool_verdict(row, verdict, task, now)
-                return  # A newer claim, manual stop, or close owns this task.
+                # A newer claim, manual stop, or close owns the task. That
+                # vetoes recovery, not the observed death of this instance.
+                # Keep its claim/workspace binding for the owner to recover.
+                current = await self._still_live(row)
+                if current is None or current.instance_token != row.instance_token:
+                    return
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    logger.warning("Stopping dead session %s failed", row.id, exc_info=True)
+                    return
+                await self.db.update_session_instance(
+                    row.id, row.instance_token,
+                    state="stopped", desired_state="stopped", ended_at=now,
+                    end_reason=verdict.verdict.name.lower(),
+                )
+                return
             if verdict.verdict is Verdict.CONTEXT_THRASH:
                 await self._recover_guarded_failure(provider, row, task, record, now)
                 return
