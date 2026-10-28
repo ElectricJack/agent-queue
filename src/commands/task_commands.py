@@ -4756,6 +4756,9 @@ class TaskCommandsMixin:
                 )
             }
         scope = self._current_scope or {}
+        continuation_recovery = await self.recover_continuation_incident(args)
+        if continuation_recovery is not None:
+            return continuation_recovery
         stopped_session = None
         operator_handoff = False
         if decision == "retry":
@@ -5098,6 +5101,12 @@ class TaskCommandsMixin:
             self.db, task.project_id, subject="task reopen"
         )
         transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
+        if not await self.orchestrator.aprepare_reopened_integration_owner(task):
+            return {
+                "success": False,
+                "error": "Prior pool writer handoff remains unproven; retain the closed task "
+                         "and use aq integration release-owner after proving the writer stopped",
+            }
         try:
             if review_evidence_snapshot is None:
                 await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)

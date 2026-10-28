@@ -238,6 +238,25 @@ async def test_arun_git_result_preserves_status_stdin_and_scoped_environment(clo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("nice", [None, "/usr/bin/nice"])
+async def test_low_priority_git_uses_owned_process_with_available_nice(clone, mgr, nice):
+    from unittest import mock
+
+    from src.git.manager import run_owned_process
+
+    with (
+        mock.patch("src.git.manager.shutil.which", return_value=nice),
+        mock.patch("src.git.manager.run_owned_process", wraps=run_owned_process) as run,
+    ):
+        result = await mgr.arun_git_result(["rev-parse", "HEAD"], cwd=clone,
+                                          low_priority=True, timeout=25)
+    assert result.returncode == 0
+    prefix = ("nice", "-n", "10") if nice else ()
+    assert run.call_args.args == (*prefix, "git", "rev-parse", "HEAD")
+    assert 0 < run.call_args.kwargs['timeout'] <= 25
+
+
+@pytest.mark.asyncio
 async def test_remote_ref_result_distinguishes_absent_from_io_failure(clone, mgr, monkeypatch):
     absent = await mgr.als_remote_ref(clone, "missing")
     assert absent.state is RemoteRefState.ABSENT
@@ -2525,6 +2544,33 @@ async def test_repository_wait_bound_preserves_owner_and_does_not_bound_body(mgr
             await unbounded
         if work is not None:
             await work
+
+
+async def test_repository_timeout_identifies_current_holder(mgr, tmp_path, caplog):
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def slow_repository_writer():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            entered.set()
+            await finish.wait()
+
+    owner = asyncio.create_task(slow_repository_writer())
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        with repository_lock_wait_limit(0.01), pytest.raises(RepositoryLockTimeout):
+            async with mgr.arepository_transaction(str(tmp_path)):
+                pytest.fail("entered another writer's critical section")
+        record = next(r for r in caplog.records if hasattr(r, "owner_chain"))
+        assert any("slow_repository_writer" in name for name in record.owner_chain)
+        assert record.held_seconds > 0
+        assert record.wait_seconds == 0.01
+        assert not owner.done()
+    finally:
+        finish.set()
+        await owner
+    lock = mgr._repository_operation_locks[str(tmp_path.resolve())]
+    assert lock._owner is None
+    assert lock._acquired_at is None
 
 
 @pytest.mark.parametrize("runner", ["local", "result"])
