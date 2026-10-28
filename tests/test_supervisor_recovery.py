@@ -717,6 +717,54 @@ async def test_operator_retry_clears_dangling_assignment_but_refuses_live_one(en
     assert any("Cleared dangling assignment to agent gone" in c["body"] for c in comments)
 
 
+@pytest.mark.parametrize("bound", ["elsewhere", "working_here", "session_here"])
+async def test_operator_retry_clears_assignment_of_agent_reused_for_another_task(env, bound):
+    """wise-glacier-45: a pool agent busy on another task no longer holds this one."""
+    await env.db.create_agent(Agent(id="reused", name="Reused", profile_id="worker"))
+    await env.db.create_task(Task(
+        id="t2", project_id="p", title="Next", description="", status=TaskStatus.IN_PROGRESS,
+        profile_id="worker", route_source="legacy", created_at=100, updated_at=100,
+    ))
+    await stopped_attempt(env, reason="claim_binding_stale", agent_id="reused", lifecycle="pool")
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, _ = await supervisor_handoff_hold(env, current)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(
+            assigned_agent_id="reused",
+        ))
+        await conn.execute(update(agents).where(agents.c.id == "reused").values(
+            state=AgentState.BUSY.value, current_task_id="t" if bound == "working_here" else "t2",
+        ))
+    # The reused agent's live session works t2, and still names an idle sibling.
+    for sid, task_id in (("live", "t" if bound == "session_here" else "t2"), ("idle", None)):
+        await env.db.create_session(SessionRecord(
+            id=sid, task_id=task_id, project_id="p", profile_id="worker", harness="fake",
+            provider="fake", name=sid, lifecycle="pool", state="running" if task_id else "sleeping",
+            desired_state="running" if task_id else "sleeping", agent_id="reused",
+            epoch="test", instance_token=sid, work_dir="/never-used", started_at=150,
+        ))
+    await env.db.set_task_meta("t", "claimed_by_session", "live")
+    result = await decide(env, current, operator_release=True,
+                          expected_hold_at=held["decided_at"])
+    task = await env.db.get_task("t")
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if bound != "elsewhere":
+        assert result["error"] == "Task still has an active claim or attempt", result
+        assert task.status is TaskStatus.BLOCKED and task.assigned_agent_id == "reused"
+        assert task.retry_count == 0 and recorded["decision"] == "hold"
+        return
+    assert result.get("status") == "READY", result
+    assert task.status is TaskStatus.READY and task.assigned_agent_id is None
+    assert task.retry_count == 1 and recorded["decision"] == "retry"
+    agent = await env.db.get_agent("reused")
+    assert agent.current_task_id == "t2" and (await env.db.get_task("t2")).status is (
+        TaskStatus.IN_PROGRESS
+    )
+    comments = (await env.handler.execute("task_comments", {"task_id": "t"}))["comments"]
+    assert any("Cleared dangling assignment to agent reused" in c["body"] for c in comments)
+
+
 @pytest.mark.parametrize("race", ["historical_release", "during_stop_probe"])
 async def test_old_hold_release_cannot_clear_successor_assignment_or_hold(env, race):
     await env.db.create_agent(Agent(id="old", name="Old", profile_id="worker"))
