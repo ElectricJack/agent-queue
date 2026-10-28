@@ -29,7 +29,11 @@ from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database.queries.ingest_hold import IngestHeld
 from src.git.manager import ForeignSlotClaim, SlotSourceDisagreement
 from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
-from src.git.repository_lock import RepositoryLockTimeout, repository_lock_wait_limit
+from src.git.repository_lock import (
+    RepositoryLockTimeout,
+    RetainedVerificationPending,
+    repository_lock_wait_limit,
+)
 from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 from src.workspace_disable import CLAIM_FAILURES, disable_fields
@@ -1644,10 +1648,13 @@ class ClaimCommandsMixin:
                         raise
                     from src.preparation_failure import describe_preparation_failure
 
-                    failure = describe_preparation_failure(
-                        exc, "repository_lock" if isinstance(exc, RepositoryLockTimeout)
-                        else "preparation_retry",
-                    )
+                    # A shared full object check outlived the wait: its own
+                    # stage, retained like repository contention.
+                    stage = ("retained_verification"
+                             if isinstance(exc, RetainedVerificationPending)
+                             else "repository_lock" if isinstance(exc, RepositoryLockTimeout)
+                             else "preparation_retry")
+                    failure = describe_preparation_failure(exc, stage)
                     active = await self.db.get_session(session.id)
                     if (active is not None and active.task_id == task.id
                             and active.last_claim_epoch == task.claim_epoch

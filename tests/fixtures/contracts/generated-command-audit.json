@@ -9663,6 +9663,50 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_store_maintenance": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_store_maintenance",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('unauthorized', refusal)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('not_found', 'project is not configured')"
+      },
+      {
+        "protocol": "explicit_boolean: result outcome",
+        "return": "{'success': result['outcome'] != 'unavailable', 'project_id': request.project_id, **result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await run() (read-only preview)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await detached_operations(...).run(...) (apply or running handle)"
+      }
+    ],
+    "review_notes": "clear-rapids-41: typed project-scoped preview/apply; live supervisor/operator authority precedes project/store inspection. Apply joins one detached operation; cooldown bounds retries. Returns explicit success or standard authorization/not-found refusal.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:17112802ce53a8946bbc391bb07f6138a545026bd2b51ff906df14bb3a3c92c4",
+    "tests": [
+      "tests/test_development_integration.py::test_retained_maintenance_control_rejects_workers_and_cross_project",
+      "tests/test_development_integration.py::test_retained_maintenance_preview_and_cooldown_survive_restart",
+      "tests/test_cli_integration.py::test_store_maintenance_previews_unless_apply_is_explicit"
+    ]
+  },
   "integration_supersede_completion": {
     "argument_reads_diagnostic_only": [],
     "denial_reason": null,
@@ -22463,7 +22507,7 @@
       "_claimed_response": "sha256:45088970df50fd509a820e83976770c42739806c56fb9eeba7d3f67262c7eb3e",
       "_drain_missing_claim_session": "sha256:2e9c65d8d584fa5022c2c51dfd083036ffe417edf42613301360fddcc66638cd",
       "_extend_claim_reset_deadline": "sha256:90181d49b0d571533e785cdbee83ab334076670589377411a74ed16d5d867eec",
-      "_prepare_and_activate": "sha256:be0fa4fbff3836f4100ce2deeb83cdfacf1aa13bce2fde0fac5700bf2a1f5c51",
+      "_prepare_and_activate": "sha256:496091ca03be590f79bbf9f5d7980b564bb426c145da144293911527a28f860c",
       "_prepare_and_activate_locked": "sha256:c6e224e7cc34d67092a9fa110a549a75b3b3c66520af194a107d6a5dd722dd52",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
@@ -22577,7 +22621,7 @@
       "_close_task_obsolete": "sha256:b6532b76f6a8dce25aafc0c9a8d8969ec38b6ea16b2686d8b7734042b6d30016",
       "_cmd_task_claim": "sha256:292aa904450d12b5b757e74bef9e59db6a62d2256a1916be054e1b0ab7c0e60e",
       "_drain_missing_claim_session": "sha256:2e9c65d8d584fa5022c2c51dfd083036ffe417edf42613301360fddcc66638cd",
-      "_prepare_and_activate": "sha256:be0fa4fbff3836f4100ce2deeb83cdfacf1aa13bce2fde0fac5700bf2a1f5c51",
+      "_prepare_and_activate": "sha256:496091ca03be590f79bbf9f5d7980b564bb426c145da144293911527a28f860c",
       "_prepare_and_activate_locked": "sha256:c6e224e7cc34d67092a9fa110a549a75b3b3c66520af194a107d6a5dd722dd52",
       "_record_claim_refusal": "sha256:c798ed323fd6827da3d8bd6d6bc8e2f6b859296830c70139749bf5dee3a7f14e",
       "_recover_stale_binding": "sha256:ca2744567435292ae87efc87fe55410930a687edc1623e0f071ad7483e0917a1",
