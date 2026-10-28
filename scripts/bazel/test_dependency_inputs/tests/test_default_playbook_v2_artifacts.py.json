@@ -1,0 +1,13 @@
+{
+  "docs": false,
+  "reason": "Reads four fixed files under integration-only/default-pipeline, two under shared-fleet/default-assignment-routing, and every file under history/legacy-train-policies/<playbook_id> for each retired train id (the directory this suite exists to keep honest).",
+  "data": [
+    "docs/playbooks/integration-only/default-pipeline/artifact.json",
+    "docs/playbooks/integration-only/default-pipeline/artifact.sha256",
+    "docs/playbooks/integration-only/default-pipeline/source.md",
+    "docs/playbooks/integration-only/default-pipeline/manifest.md",
+    "docs/playbooks/shared-fleet/default-assignment-routing/artifact.json",
+    "docs/playbooks/shared-fleet/default-assignment-routing/source.md",
+    "docs/history/legacy-train-policies/**/*"
+  ]
+}

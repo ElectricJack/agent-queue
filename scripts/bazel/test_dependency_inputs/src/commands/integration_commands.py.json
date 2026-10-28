@@ -1,0 +1,6 @@
+{
+  "reason": "getattr(contracts, model_name) looks up a Pydantic model class by a runtime name on `src.commands.contracts.integration`, imported statically as `contracts`; no path beyond that existing static import is ever reached.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

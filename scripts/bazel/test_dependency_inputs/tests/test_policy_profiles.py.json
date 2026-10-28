@@ -1,0 +1,7 @@
+{
+  "docs": false,
+  "reason": "Only docs/config/agent-queue-train-policy.json is read; the other \"docs/**\" occurrences are embedded in a YAML string literal and an expected-value comparison, not file reads.",
+  "data": [
+    "docs/config/agent-queue-train-policy.json"
+  ]
+}

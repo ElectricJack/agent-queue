@@ -1,0 +1,4 @@
+{
+  "docs": false,
+  "reason": "AgentProfile(id=\"docs\", name=\"Docs Agent\") uses the literal \"docs\" as a profile id in a migration-compatibility fixture; the module reads no files under docs/."
+}

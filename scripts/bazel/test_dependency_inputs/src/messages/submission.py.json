@@ -1,0 +1,6 @@
+{
+  "reason": "getattr(tables, table_name) looks up a SQLAlchemy Table by a runtime name on `src.database.tables`, imported statically as `tables`; no path beyond that existing static import is ever reached.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}

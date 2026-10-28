@@ -1,0 +1,9 @@
+{
+  "docs": false,
+  "reason": "PORTED[\"installed\"] reads exactly these three files from the installed building-block bundle.",
+  "data": [
+    "docs/playbooks/building-blocks/default-assignment-routing/artifact.json",
+    "docs/playbooks/building-blocks/default-assignment-routing/source.md",
+    "docs/playbooks/building-blocks/default-assignment-routing/diagnostics.json"
+  ]
+}

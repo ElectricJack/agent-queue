@@ -1,0 +1,11 @@
+{
+  "docs": false,
+  "reason": "BUNDLE reads exactly these files from the project-defaults building-block bundle; build.py is executed via runpy.run_path and its compile_bundle() additionally reads semantic-body.json, which the static analyzer cannot see.",
+  "data": [
+    "docs/playbooks/building-blocks/project-defaults/artifact.json",
+    "docs/playbooks/building-blocks/project-defaults/artifact.sha256",
+    "docs/playbooks/building-blocks/project-defaults/build.py",
+    "docs/playbooks/building-blocks/project-defaults/source.md",
+    "docs/playbooks/building-blocks/project-defaults/semantic-body.json"
+  ]
+}
