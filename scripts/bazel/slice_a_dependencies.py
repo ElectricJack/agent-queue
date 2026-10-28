@@ -54,6 +54,12 @@ def group_for(path: str) -> str | None:
 
 
 def digest(path: Path) -> str:
+    if path.is_dir():
+        hasher = hashlib.sha256()
+        for member in sorted(path.rglob("*.json")):
+            hasher.update(str(member.relative_to(path)).encode("utf-8"))
+            hasher.update(member.read_bytes())
+        return hasher.hexdigest()
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -193,7 +199,7 @@ def audit(args: argparse.Namespace) -> dict:
         proofs.append(proof)
     fingerprints = {str(p): digest(p) for p in (
         args.manifest, catalogue_path, rules_path, ROOT / "tests/BUILD.bazel",
-        ROOT / "scripts/bazel/test_dependency_inputs.json",
+        ROOT / "scripts/bazel/test_dependency_inputs",
         ROOT / "scripts/bazel/test_dependencies.py",
         ROOT / "scripts/bazel/dependency_paths.py", ROOT / "scripts/bazel/generate_targets.py",
         Path(__file__),

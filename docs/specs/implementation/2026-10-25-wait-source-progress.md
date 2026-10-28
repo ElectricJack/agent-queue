@@ -30,6 +30,15 @@ Contiguous pool/config/workspace invalidations with the same producer and projec
 scope may also reobserve once. Provider transitions and other event kinds remain
 individual because they carry lifecycle effects.
 
+Pool invalidations for the same pool and project scope also coalesce through the
+captured committed watermark across interleaved sources and retained retries.
+Reobserve the newest hint once and stamp superseded hints in the same fenced
+transaction. Preserve any contiguous hints already selected for that observation.
+Lookahead never advances the forward cursor past unrelated events; later crossings
+of stamped pool hints retire without another observation. Different project scopes
+and provider lifecycle events retain their own dispatch. A failed transaction
+retains the entire pool batch for retry, with no satisfaction inferred from a hint.
+
 After an authenticated CI observation reports an unfinished run, further explicit
 progress hints for that source share the listener's safety cadence. Keep only the
 latest pending hint and continue draining unrelated sources. Terminal hints bypass
