@@ -7294,6 +7294,83 @@ async def test_development_readiness_pool_and_claim_follow_git(
     assert (await settled_claim(scoped(handler, sid), {"next": True}))["task"]["id"] == "dependent"
 
 
+async def test_development_claim_accepts_source_bookkeeping_during_preparation(
+    handler, db, tmp_path, development_admission,
+):
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    before = (await db.get_task("prerequisite")).updated_at
+    sid, _ = await pool_session(db, tmp_path)
+
+    async def reset(*args, **kwargs):
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "prerequisite").values(
+                updated_at=before + 1,
+            ))
+        return "aq/dependent"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+        side_effect=reset,
+    )
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (await db.get_task("prerequisite")).updated_at == before + 1
+    assert await db.get_task_meta("dependent", "prepare_failure") is None
+
+
+async def test_development_claim_of_another_candidates_source_activates(
+    handler, db, tmp_path, development_admission,
+):
+    # "downstream" is a candidate in the same batch whose source is "dependent",
+    # so taking "dependent" moves a request the batch fingerprint fences.
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    await mktask(db, "downstream", profile_id="worker", repo_id="repo")
+    await db.add_dependency("downstream", "dependent")
+    sid, _ = await pool_session(db, tmp_path)
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (await db.get_task("dependent")).claim_epoch == 1
+    assert await db.get_task_meta("dependent", "prepare_failure") is None
+
+
+@pytest.mark.parametrize("movement", ["claim", "completion"])
+async def test_admission_fences_claimed_sources_except_the_claims_own_move(db, movement):
+    from src.integration.admission import AdmissionSnapshot, _inputs
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "dependent", profile_id="worker")
+    await mktask(db, "downstream", profile_id="worker")
+    await db.add_dependency("downstream", "dependent")
+    ids = {"dependent", "downstream"}
+    async with db._engine.connect() as conn:
+        inputs = (await _inputs(db, ids, conn))[-1]
+    batch = AdmissionSnapshot(db, ids, ids, inputs)
+
+    status = "IN_PROGRESS" if movement == "claim" else "COMPLETED"
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status=status, claim_epoch=1,
+        ))
+
+    # Only the claim's own lifecycle move is exempt, and only for that claim.
+    assert await batch.matches(task_id="dependent") is (movement == "claim")
+    assert not await batch.matches(task_id="downstream")
+    assert not await batch.matches()
+    for tid in ids:
+        [reason] = batch.reasons[tid]
+        assert reason["code"] == "admission_inputs_changed"
+        assert "dependent.task_status" in reason["detail"]
+        assert "dependent.claim_epoch" in reason["detail"]
+
+
 @pytest.mark.parametrize("movement", ["reopen", "completion", "edge", "gate", "hold", "target", "config"])
 async def test_development_preparation_invalidates_old_admission(
     handler, db, tmp_path, development_admission, movement
@@ -8996,6 +9073,97 @@ async def test_admission_clear_records_failed_inputs_in_view_and_explain(
     reasons = explained["reasons"]
     assert any(r["code"] == code and comparison in r["detail"] for r in reasons), explained
     assert not any(r["code"] == "development_snapshot_changed" for r in reasons), explained
+
+
+@pytest.mark.parametrize("phase", ["observation", "activation"])
+@pytest.mark.parametrize("completed", [False, True])
+async def test_admission_ignores_source_bookkeeping(db, monkeypatch, caplog, phase, completed):
+    from src.integration import admission
+    from src.models import TaskCompletion
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "prerequisite", status=TaskStatus.COMPLETED)
+    await mktask(db, "dependent", profile_id="worker")
+    await db.add_dependency("dependent", "prerequisite")
+    if completed:
+        await db.save_task_completion(TaskCompletion(
+            id="source-close", task_id="prerequisite", outcome="pass", commits=[],
+            completed_at=NOW,
+        ))
+    before = (await db.get_task("prerequisite")).updated_at
+
+    async def bookkeeping():
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "prerequisite").values(
+                updated_at=before + 1,
+            ))
+
+    if phase == "observation":
+        original, reads = admission._inputs, 0
+
+        async def with_bookkeeping(*args, **kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                await bookkeeping()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(admission, "_inputs", with_bookkeeping)
+    with caplog.at_level("DEBUG", logger="src.integration.admission"):
+        view = await admission.observe_admission(db, ["dependent"], None)
+        assert view.allowed == {"dependent"} and not view.changed, view.reasons
+        if phase == "activation":
+            await bookkeeping()
+        async with db.immediate() as conn:
+            assert await view.matches(conn=conn, lock=True, task_id="dependent")
+    assert not view.rejection_reasons("dependent")
+    assert (await db.get_task("prerequisite")).updated_at == before + 1
+    assert "prerequisite.task_version" in caplog.text
+    assert "bookkeeping" in caplog.text
+
+
+@pytest.mark.parametrize("changed", [
+    "branch_name", "task_status", "legacy_generation", "claim_epoch", "completion_id",
+    "settled_target_ref",
+])
+async def test_admission_delivery_request_diagnostics_name_changed_fields(db, changed):
+    from src.integration.admission import AdmissionSnapshot, _inputs
+    from src.models import TaskCompletion
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "prerequisite", status=TaskStatus.COMPLETED)
+    await mktask(db, "dependent", profile_id="worker")
+    await db.add_dependency("dependent", "prerequisite")
+    async with db._engine.connect() as conn:
+        inputs = (await _inputs(db, {"dependent"}, conn))[-1]
+    batch = AdmissionSnapshot(db, {"dependent"}, {"dependent"}, inputs)
+
+    if changed == "completion_id":
+        await db.save_task_completion(TaskCompletion(
+            id="new-close", task_id="prerequisite", outcome="pass", commits=[],
+            completed_at=NOW,
+        ))
+    elif changed == "settled_target_ref":
+        await db.set_task_meta("prerequisite", "development_delivery_settlement", {
+            "repository_id": "r", "target_ref": "refs/heads/other", "reason": "retargeted",
+        })
+    else:
+        column, value = {
+            "branch_name": ("branch_name", "aq/new-source"),
+            "task_status": ("status", "READY"),
+            "legacy_generation": ("legacy_completion_id", "new-generation"),
+            "claim_epoch": ("claim_epoch", 2),
+        }[changed]
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "prerequisite").values(
+                **{column: value},
+            ))
+
+    assert not await batch.matches(task_id="dependent")
+    [reason] = batch.reasons["dependent"]
+    assert reason["code"] == "admission_inputs_changed"
+    assert "delivery requests" in reason["detail"]
+    assert f"prerequisite.{changed}" in reason["detail"]
 
 
 @pytest.mark.parametrize("comparison", [
