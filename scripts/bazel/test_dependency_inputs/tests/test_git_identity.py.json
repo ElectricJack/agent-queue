@@ -1,0 +1,9 @@
+{
+  "imports": [
+    "migrations.versions.a00000000053_git_identity"
+  ],
+  "resolves": [
+    "tests/test_git_identity.py: unresolved file import"
+  ],
+  "reason": "_migration() loads migrations/versions/a00000000053_git_identity.py via spec_from_file_location with a Path built from __file__, not a string literal the scanner can resolve on its own; the target file is declared directly."
+}

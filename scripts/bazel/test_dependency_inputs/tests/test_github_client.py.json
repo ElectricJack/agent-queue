@@ -1,0 +1,6 @@
+{
+  "resolves": [
+    "tests/test_github_client.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "The two exec() calls run literal async function bodies built entirely from names already passed in through the namespace dict (e.g. asyncio); they never import or load a module."
+}

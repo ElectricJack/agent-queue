@@ -1,0 +1,6 @@
+{
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "getattr(tables, table_name) looks up a Table object by name on src.database.tables, which is already statically imported; every table it could resolve to lives in that one already-reached file."
+}

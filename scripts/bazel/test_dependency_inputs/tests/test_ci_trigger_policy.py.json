@@ -1,0 +1,6 @@
+{
+  "resolves": [
+    "tests/test_ci_trigger_policy.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "_evaluate() calls eval() on a GitHub Actions if: expression translated to a restricted boolean Python expression ({'__builtins__': {}}); it never imports or loads a module."
+}

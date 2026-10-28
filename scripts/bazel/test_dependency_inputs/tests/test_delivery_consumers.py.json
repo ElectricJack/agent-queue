@@ -1,4 +1,6 @@
 {
+  "docs": false,
+  "reason": "Reads exactly one literal docs file, already declared below; no directory scan.",
   "data": [
     "docs/specs/design/strict-git-containment.md",
     "src/**/*.py",

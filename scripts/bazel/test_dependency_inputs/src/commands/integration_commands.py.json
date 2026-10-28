@@ -1,0 +1,6 @@
+{
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "getattr(contracts, model_name) looks up a request model by name on src.commands.contracts.integration, which is already statically imported; every model it could resolve to lives in that one already-reached file."
+}
