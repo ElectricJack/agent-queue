@@ -90,8 +90,8 @@ class CloseStore:
 
     @asynccontextmanager
     async def visit(self, operation_id):
-        # One visit mutates this candidate; no target lease during editing or CI.
-        async with self.db._engine.connect() as conn:
+        # One visit mutates this candidate; no target lease or open txn during editing or CI.
+        async with self.db._engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
             key = int.from_bytes(hashlib.sha256(operation_id.encode()).digest()[:8], "big",
                                  signed=True)
             acquired = await conn.scalar(select(func.pg_try_advisory_lock(key)))
