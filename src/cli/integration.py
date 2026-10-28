@@ -884,18 +884,18 @@ def integration_redrive_child(
 ) -> None:
     """Say why completed child TASK_ID was never assembled into its parent; advance it.
 
-    A collecting parent assembles a COMPLETED child only once approved evidence
-    pins the child's exact checkpoint head.  The dry run reads the child and its
-    parent, proves the head from Git (the remote branch tip, descended from the
-    child's origin base) and answers `would_advance`, `nothing_to_redrive`,
-    `blocked` or `not_eligible` with the reason and the head.  `--apply` needs
-    that head and a reason: it records approved evidence for exactly that head
-    and queues the parent's collection. In Git-first mode delivery belongs to
-    the train. Use --adopt-source to preview retaining an older leaf's missing
-    completion source; --apply --head and --reason retain that exact generation
-    without granting review or declaring delivery. --dispose-obsolete requires
-    --superseded-by and creates an audited unchanged-tree merge; applying also
-    pins --parent-head. Local operators and named supervisors may apply it.
+    A collecting parent assembles a COMPLETED child only once approved evidence pins the child's
+    exact checkpoint head. The dry run reads the child and its parent, proves the head from Git (the
+    remote branch tip, descended from the child's origin base) and answers `would_advance`,
+    `nothing_to_redrive`, `blocked` or `not_eligible` with the reason and the head. `--apply` needs
+    that head and a reason: it records approved evidence for exactly that head and queues the
+    parent's collection. In Git-first mode delivery belongs to the train: the dry run answers within
+    a bounded Git read budget and `--apply` on a pending child requests a train visit of its parent
+    target (`train_visit_requested`) without waiting. Use --adopt-source to preview retaining an
+    older leaf's missing completion source; --apply --head and --reason retain that exact generation
+    without granting review or declaring delivery. --dispose-obsolete requires --superseded-by and
+    creates an audited unchanged-tree merge; applying also pins --parent-head. Local operators and
+    named supervisors may apply it.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")

@@ -375,7 +375,7 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     ):
         return PROJECT_ONBOARDING_SCOPE_ERROR
     if command in {"bind_project_repository", "repair_repository_checkout",
-                   "repair_workspace_checkout"} and not (
+                   "repair_workspace_checkout", "recover_retained_holder"} and not (
         scope.elevated and scope.project_id is None
     ):
         return "out of scope: repository binding requires global admin"

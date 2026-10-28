@@ -1,5 +1,6 @@
 """Real Git + private PostgreSQL coverage for the development delivery path."""
 
+import asyncio
 import json
 import subprocess
 import time
@@ -2036,6 +2037,32 @@ async def test_retained_fetch_failure_on_a_clean_store_never_opens_an_incident(
         assert (await conn.execute(select(escalations))).all() == []
 
 
+async def test_large_retained_store_check_has_independent_budget(
+    setup, monkeypatch,
+):
+    from src.git.manager import GitError
+
+    _db, service, _source, _remote, repo = setup
+    normal_run = service.git.arun_git_result
+    observed = set()
+
+    async def large_store(args, **kwargs):
+        operation = 'fsck' if 'fsck' in args else None
+        if operation:
+            # Model the measured 9:16 full pass without spending nine minutes
+            # in the test. The ordinary command budget cannot finish this work.
+            if kwargs.get('timeout', service.git._command_timeout()) <= 556:
+                raise GitError('large retained store command timed out')
+            observed.add(operation)
+        return await normal_run(args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'arun_git_result', large_store)
+    store = await service.store(repo)
+    assert observed == {'fsck'}
+    assert service.git.retained_store_verified(str(store / '.git'))
+    assert not recovery_journal(store).exists()
+
+
 async def test_retained_acquisition_does_not_run_pack_maintenance(setup):
     _db, service, _source, _remote, repo = setup
     store = await service.store(repo)
@@ -2154,6 +2181,29 @@ async def test_retained_maintenance_skips_busy_store_and_pending_recovery(setup,
     result = await maintenance.run('p', apply=True)
     assert result['evidence']['stores'][0]['outcome'] == 'recovery_pending'
     assert not (store / '.git' / 'aq-store-maintenance.json').exists()
+
+
+async def test_retained_maintenance_skips_store_during_verification_flight(setup, tmp_path):
+    from src.git.manager import _retained_store_key
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    release = asyncio.Event()
+    flight = asyncio.create_task(release.wait())
+    key = _retained_store_key(str(store / '.git'))
+    service.git.__dict__.setdefault('_retained_verify_flights', {})[key] = flight
+    with patch.object(service.git, 'arun_git_result', wraps=service.git.arun_git_result) as run:
+        result = await maintenance.run('p', apply=True)
+    assert result['evidence']['stores'][0]['outcome'] == 'busy'
+    assert not any('repack' in call.args[0] for call in run.await_args_list)
+    assert not (store / '.git' / 'aq-store-maintenance.json').exists()  # No cooldown spent.
+    release.set()
+    await flight
+    result = await maintenance.run('p', apply=True)
+    assert result['evidence']['stores'][0]['outcome'] == 'repacked'
 
 
 async def test_retained_maintenance_tick_rotates_without_acquisition(setup, tmp_path):

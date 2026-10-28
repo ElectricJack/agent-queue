@@ -27,8 +27,10 @@ through development `repository`/`observer` clones, bare repository readers and
 registered repository checkout/source paths, including durable storage bindings.
 Two or more packs, 1,024 loose objects or 256 MiB of loose objects trigger
 `git repack -a -d -k` (keep unreachable objects); one attempt per store per hour
-limits rewrite churn, including after failures and restarts. Busy stores and
-open recovery incidents are skipped. Repack runs at reduced CPU priority where
+limits rewrite churn, including after failures and restarts. Busy stores, open
+recovery incidents and stores whose full-fsck verification flight is running are
+skipped; repack and that flight also share one per-common-store exclusion, so they
+never overlap. Repack runs at reduced CPU priority where
 `nice` is available, with one compression thread, a 64 MiB window and a 240-second
 budget. Cancellation reaps Git before releasing exclusion. Maintenance preserves
 refs, loose unreachable objects, packed unreachable objects and recovery backups;
@@ -52,8 +54,11 @@ managed cache. Ordinary network/authentication failure with clean objects create
 no recovery incident and spends no attempt; when a clean fsck finds an earlier
 incident's store already clean with nothing to move, that incident closes as recovered
 and its escalation resolves. Any unexpected integrity diagnostic fails the check, even
-with exit status zero. A full fsck has a five-minute command budget, including the
-supervisor's clear check. Acquisition reserves four such checks in addition to the
+with exit status zero. A full fsck has a fifteen-minute command budget, shared
+with the lender-verification policy and including the supervisor's clear check.
+Healthy 2–3 GB retained stores have taken over nine minutes for a full pass;
+the former five-minute limit prevented acquisition and subsequent maintenance.
+Acquisition reserves four such checks in addition to the
 ordinary Git acquisition budget, covering diagnosis, pre-repair verification and
 both final checks. All acquisition, diagnosis, refetch, publication and final
 checking share that single bounded deadline; recovery never grants a new

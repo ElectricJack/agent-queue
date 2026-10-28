@@ -1,5 +1,5 @@
 {
-  "source_base": "512996c4738a348ac2a6372697f184e20a955a8c",
+  "source_base": "1c7c5ab2f695c06563d762f58b7b03450326d3b5",
   "source_commit": "4e9aa23e7017e02e8ea2f2fa877e9649c29735e4",
   "command": "integration_store_maintenance",
   "transport_definition": {
@@ -27,6 +27,6 @@
     }
   },
   "contract_fingerprint": "sha256:026c70ede4bd4227774207ffdce3f2edf4d756867a733e797b04b0c98edf75dc",
-  "cli_catalogue_sha256": "865e1f1d60defddfff29be90bf37adc61b57a25c3b777eff58a7fd0475ca41ea",
-  "previous_cli_catalogue_sha256": "9bdba69a2656181a1f707d27fb272d2e17b736caf8cab3353b70262054185f29"
+  "cli_catalogue_sha256": "1e613ff31e278712ca87a7fe0f898a180da51b6e4887f2e1c96152ec1826665a",
+  "previous_cli_catalogue_sha256": "75e6ed919ba8c3945cf4c8895fffe7f26fd9907b806236d25f2b8cb301b37b55"
 }

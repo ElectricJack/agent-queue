@@ -134,6 +134,9 @@ class RetainedStoreMaintenance:
                         raise GitError("retained repository origin differs from configuration")
                     if not apply or item["outcome"] != "eligible":
                         return item
+                    # Repack would wait on the full check's exclusion while visits wait on us.
+                    if await self.git.aretained_store_check_running(str(directory)):
+                        return {**item, "outcome": "busy"}
                     # Record even failed/interrupted attempts, to bound churn across restarts.
                     await asyncio.to_thread(_write, marker, {"attempted_at": self.clock()})
                     removed = await asyncio.to_thread(
