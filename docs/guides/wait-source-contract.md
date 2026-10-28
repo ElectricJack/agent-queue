@@ -148,8 +148,13 @@ over up to twenty retained retries per drain. After five seconds a drain yields 
 attempts and schedules an immediate watermark refresh. Cancellation and lease loss roll back
 without advancing the cursor. Contiguous CI observations with the same source and
 generation, or pool/config/workspace invalidations with the same producer and project,
-coalesce in batches of at most 200 into one fresh observation. Other sources and
-provider lifecycle events keep their ordering.
+coalesce into one fresh observation. Pool hints also coalesce across interleaved
+profile identities in the same project scope, with bounded stamping batches.
+Other sources and provider lifecycle events keep their ordering. Work-budget
+exhaustion adds bounded headroom for host contention, capped at half the listener
+lease; graph acquisition keeps its separate short timeout. Retained backlog
+cleanup discovers a bounded window before taking the graph fence and only
+rechecks subscriptions inside it.
 
 An independent monitor reports undispatched rows, including retained retries behind
 the cursor. It warns when their count exceeds `wait_policy.listener_lag_events`
@@ -158,7 +163,11 @@ notice per oldest sequence and affected supervisor project. A named project supe
 or local operator can run `aq wait source-redispatch --source-seq SEQ --project PROJECT
 --note REASON` to reobserve a durable event. This audited command checks current
 ownership and predicates within that project and neither moves the global cursor nor
-marks a global source dispatched.
+marks a global source dispatched while another project's subscriber needs it.
+For a pool event, this command also drains unused pool invalidations across
+profiles in that event's project scope through SEQ, up to one bounded batch.
+Repeat against a still-pending pool event for more history. Listener-lock queuing
+has a separate lease-length limit and does not consume the dispatch work budget.
 
 The dispatcher owner installs `orch.wait_dispatcher`, whose async
 `commit(conn, wait_row, committed_event, *, evidence=None)` returns a success dictionary

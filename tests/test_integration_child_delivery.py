@@ -1107,3 +1107,86 @@ async def test_git_redrive_explains_pending_child_without_a_batch(case, tmp_path
     assert (code or "no batch contains this child") in result["reason"]
     assert "train owns delivery" not in result["reason"]
     delivery.train_blockers.assert_awaited_once_with(case.child_id)
+
+
+async def test_git_redrive_apply_requests_a_train_visit_for_a_pending_child(case, tmp_path):
+    from unittest.mock import AsyncMock, Mock
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                       expected_head_sha=case.head, reason="retain source", operator_id="operator")
+    delivery.train_blockers = AsyncMock(return_value={"batches": [], "blockers": []})
+    delivery.request_visit = Mock(return_value=1)
+    preview = await delivery.run(case.child_id)
+    assert preview["outcome"] == "blocked"
+    delivery.request_visit.assert_not_called()
+
+    stale = await delivery.run(case.child_id, dry_run=False, expected_head_sha=case.base,
+                               reason="collect the child", operator_id="supervisor:p")
+    assert stale["outcome"] == "changed"
+    delivery.request_visit.assert_not_called()
+
+    applied = await delivery.run(case.child_id, dry_run=False, expected_head_sha=case.head,
+                                 reason="collect the child", operator_id="supervisor:p")
+    assert applied["outcome"] == "advanced", applied
+    assert applied["collection"] == "train_visit_requested"
+    assert f"refs/heads/{case.parent_branch}" in applied["reason"]
+    delivery.request_visit.assert_called_once_with(
+        "p", "repo", f"refs/heads/{case.parent_branch}",
+    )
+    assert await _evidence(case.db) == []
+    async with case.db._engine.connect() as conn:
+        audit = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == REDRIVE_EVENT,
+        ))).scalars().all()
+    payload = json.loads(audit[-1])
+    assert payload["collection"] == "train_visit_requested"
+    assert payload["target_ref"] == f"refs/heads/{case.parent_branch}"
+    assert payload["reason"] == "collect the child"
+
+    # A delivered child has nothing for the train to visit.
+    _git(["push", "origin", f"{case.head}:refs/heads/{case.parent_branch}"], case.work)
+    delivered = await delivery.run(case.child_id, dry_run=False, expected_head_sha=case.head,
+                                   reason="collect again", operator_id="supervisor:p")
+    assert delivered["outcome"] == "nothing_to_redrive"
+    delivery.request_visit.assert_called_once()
+
+
+async def test_git_redrive_apply_without_a_train_says_so(case, tmp_path):
+    from unittest.mock import AsyncMock
+
+    delivery, _observer = await _unretained_leaf(case, tmp_path)
+    await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                       expected_head_sha=case.head, reason="retain source", operator_id="operator")
+    delivery.train_blockers = AsyncMock(return_value={"batches": [], "blockers": []})
+    applied = await delivery.run(case.child_id, dry_run=False, expected_head_sha=case.head,
+                                 reason="collect the child", operator_id="supervisor:p")
+    assert applied["outcome"] == "blocked"
+    assert "no integration train is running" in applied["reason"]
+
+
+async def test_git_redrive_answers_within_its_read_budget(case, tmp_path, monkeypatch):
+    """A parent observation stuck behind a retained-store acquisition never holds redrive."""
+    import asyncio
+
+    delivery, observer = await _unretained_leaf(case, tmp_path)
+    await delivery.run(case.child_id, adopt_source=True, dry_run=False,
+                       expected_head_sha=case.head, reason="retain source", operator_id="operator")
+    acquiring = asyncio.Event()
+
+    async def stuck_acquisition(*_args, **_kwargs):
+        acquiring.set()
+        await asyncio.sleep(60)
+
+    observer._recent = {}
+    monkeypatch.setattr(observer.truth, "tick_snapshot", stuck_acquisition)
+    monkeypatch.setattr(observer, "_shared_observation", stuck_acquisition)
+    monkeypatch.setattr("src.git.manager.REQUEST_GIT_READ_SECONDS", 0.2)
+    started = time.monotonic()
+    for dry_run in (True, False):
+        result = await delivery.run(case.child_id, dry_run=dry_run, expected_head_sha=case.head,
+                                    reason="collect the child", operator_id="supervisor:p")
+        assert result["outcome"] == "blocked", result
+        assert "snapshot_unavailable: refs/heads/" in result["reason"], result
+    assert acquiring.is_set()
+    assert time.monotonic() - started < 10
