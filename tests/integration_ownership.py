@@ -933,6 +933,46 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'continuation_workspace_capacity_recovery_composition': {'authorized_engine_delta': 0,
+                                                            'authorized_owned_delta': 67,
+                                                            'authorized_shared_owned_delta': 67,
+                                                            'authorized_table_delta': 0,
+                                                            'charged_files': {'src/commands/task_commands.py': 3,
+                                                                              'src/wait_runtime/resume.py': 64},
+                                                            'dev_source_revision': 'e1d7a4739c32287a4056bcba84a2ecd5018972f2',
+                                                            'fix_task_id': 'swift-rapids-67',
+                                                            'measured_engine_lines': 83925,
+                                                            'measured_owned_total': 160478,
+                                                            'measured_table_count': 45,
+                                                            'operator_decision': '6679052c',
+                                                            'original_approval_message_id': 'msg-4b0cd2987b2149d4992bb8fa135e8daf',
+                                                            'previous_measured_engine_lines': 83925,
+                                                            'previous_measured_owned_total': 160411,
+                                                            'previous_measured_table_count': 45,
+                                                            'reason': 'Exact supervisor-approved +67 owned/+67 '
+                                                                      'shared/+0 engine/+0 tables for landing '
+                                                                      'continuation workspace-capacity backpressure '
+                                                                      'and fenced escalation-ID recovery '
+                                                                      '(swift-rapids-67, PR 2089 / 75f9caee2), '
+                                                                      'measured over dev e1d7a4739. A '
+                                                                      'continuation that cannot get a worktree slot '
+                                                                      'waits and retries instead of holding with '
+                                                                      'resume_workspace_failed: resume.py +64 '
+                                                                      '(workspace_capacity_retry, capacity backoff, '
+                                                                      'fenced incident requeue) and '
+                                                                      'task_commands.py +3 '
+                                                                      '(recover_continuation_incident dispatch). '
+                                                                      'Fix code unchanged. Preserve the original '
+                                                                      'baseline, every historical grant and '
+                                                                      'ownership classification, zero remaining '
+                                                                      'headroom, the s4_modules expiry and '
+                                                                      'existing storage categories.',
+                                                            'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                            'request_message_id': 'msg-f65edc1265b04280b712c6eb8f97f739',
+                                                            'source_revision': '75f9caee274a9e8331e46e5bfbe1815449093a3d',
+                                                            'supervisor_decision_message_id': 'msg-07f7f0ca8fe74d3ba5ec996788b67141',
+                                                            'task_id': 'fresh-apex-66',
+                                                            'thread_id': 'fresh-apex-66-size'},
  'retained_store_fsck_budget_composition': {'authorized_engine_delta': 3,
                                             'authorized_owned_delta': 6,
                                             'authorized_shared_owned_delta': 3,
@@ -1412,7 +1452,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4912,
+ 'authorized_owned_delta': 4979,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1984,7 +2024,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83925,
- 'measured_owned_total': 160411,
+ 'measured_owned_total': 160478,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
