@@ -8700,7 +8700,7 @@
       }
     ],
     "schema_quality": "typed",
-    "source_digest": "sha256:ee01383461ba57a4f106cc8f2ec93b5062f85e6dd2095fb0dacbdc2beeb5b740",
+    "source_digest": "sha256:f161b6e8aa8d25dd3a9286b1eb2213dbccb9892b01bd5694a0bcc3cd71478027",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
