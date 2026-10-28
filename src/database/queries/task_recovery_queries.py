@@ -1268,6 +1268,7 @@ class TaskRecoveryQueryMixin:
         """Atomically fence, record and optionally requeue one failed attempt."""
         result = None
         handoff = None
+        dangling_agent_id = None
         async with self.immediate() as conn:
             if operator_handoff:
                 identity = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
@@ -1345,7 +1346,7 @@ class TaskRecoveryQueryMixin:
                         conn, task, meta, attempt, incident, stopped_session,
                         releasing_hold=releasing_hold,
                     )
-                await self._guard_task_recovery(
+                dangling_agent_id = await self._guard_task_recovery(
                     conn, task, meta, attempt, incident, stopped_session,
                     releasing_hold=releasing_hold, operator_handoff=bool(handoff),
                     operator_release=operator_release,
@@ -1419,6 +1420,11 @@ class TaskRecoveryQueryMixin:
                         + (f"session {attempt['session_id']}" if attempt else "no worker attempt")
                         + f").\n{reason}"
                         + ("\nExplicit operator hold release." if operator_release else "")
+                        + (
+                            f"\nCleared dangling assignment to agent {dangling_agent_id} "
+                            "(no live claim, session or agent hold)."
+                            if dangling_agent_id else ""
+                        )
                         + (
                             f"\nOperator handoff evidence: {json.dumps(handoff, sort_keys=True)}"
                             if decision == "retry" and handoff
@@ -1688,8 +1694,14 @@ class TaskRecoveryQueryMixin:
             raise ValueError("Session exit was not a recoverable operational failure")
         if "manual_pause" in meta or task["resume_after"] is not None:
             raise ValueError("Task is paused or cooling down")
-        if task["assigned_agent_id"] or attempt["state"] not in ("stopped", "quarantined"):
+        if attempt["state"] not in ("stopped", "quarantined"):
             raise ValueError("Task still has an active claim or attempt")
+        dangling_agent_id = None
+        if task["assigned_agent_id"]:
+            if await self._recovery_assignment_is_live(conn, task, meta, attempt):
+                raise ValueError("Task still has an active claim or attempt")
+            # Nothing backs it: the caller's READY transition clears it.
+            dangling_agent_id = task["assigned_agent_id"]
         if not operator_handoff and any(
             task[key] != incident["routing"].get(key) for key in ROUTING_FIELDS
         ):
@@ -1739,3 +1751,33 @@ class TaskRecoveryQueryMixin:
                 raise ValueError(
                     "Task has an active session, resource claim, or unanswered question"
                 )
+        return dangling_agent_id
+
+    async def _recovery_assignment_is_live(self, conn, task, meta, attempt):
+        """Whether the task's assigned agent still holds it, or might again.
+
+        A soft-deleted agent, or one whose sessions all stopped, leaves an
+        assignment nothing can act on (steady-impact-12). It is live while the
+        agent row still names this task, while any of the agent's sessions is
+        not stopped, or while the task's claim record names a session that is
+        not stopped. The caller already confirmed the incident's own session.
+        """
+        agent_id = task["assigned_agent_id"]
+        not_stopped = or_(
+            sessions.c.state.not_in(("stopped", "quarantined")),
+            sessions.c.desired_state == "running",
+        )
+        holder = meta.get("claimed_by_session")
+        live = await conn.scalar(select(sessions.c.id).where(
+            sessions.c.id != attempt["session_id"],
+            or_(sessions.c.agent_id == agent_id,
+                *([sessions.c.id == holder] if isinstance(holder, str) else [])),
+            not_stopped,
+        ).limit(1))
+        if live is not None:
+            return True
+        return await conn.scalar(select(agents.c.id).where(
+            agents.c.id == agent_id,
+            agents.c.deleted_at.is_(None),
+            agents.c.current_task_id == task["id"],
+        )) is not None
