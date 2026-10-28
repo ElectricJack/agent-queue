@@ -1,0 +1,7 @@
+{
+  "imports": ["src.api.dependencies"],
+  "reason": "build_openapi_spec() does getattr(deps, name)/setattr(deps, name, value) for name in the fixed _CREATE_APP_DEPS_GLOBALS tuple, naming attributes on src.api.dependencies; the whole module is already a single file.",
+  "resolves": [
+    "src/api/spec.py: unresolved dynamic import in test helper lookup"
+  ]
+}

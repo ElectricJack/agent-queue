@@ -1,0 +1,7 @@
+{
+  "imports": ["src.commands.contracts.integration"],
+  "reason": "_train_control() does getattr(contracts, model_name).model_validate(args) where contracts is src.commands.contracts.integration and model_name is a caller-supplied literal naming one of its request models; the whole module is already a single file.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

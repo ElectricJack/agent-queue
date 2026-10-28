@@ -1,0 +1,7 @@
+{
+  "imports": ["src.database.tables"],
+  "reason": "lookup() does getattr(tables, table_name) where table_name is one of a fixed set of string literals (\"projects\", \"tasks\", \"sessions\", \"messages\") naming attributes on src.database.tables; the whole module is already a single file.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}

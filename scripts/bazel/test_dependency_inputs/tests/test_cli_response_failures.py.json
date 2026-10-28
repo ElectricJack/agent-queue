@@ -1,0 +1,7 @@
+{
+  "imports": ["src.cli.app"],
+  "reason": "Both subprocess -c snippets interpolate an f-string (the command name repr, or the default_timeout repr) ahead of the fixed body, so the static scanner can't extract a literal snippet. Both bodies always import src.cli.app in addition to src.cli.client, which this module already imports directly.",
+  "resolves": [
+    "tests/test_cli_response_failures.py: unresolved dynamic import in subprocess Python execution"
+  ]
+}

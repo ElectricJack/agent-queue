@@ -1,0 +1,4 @@
+{
+  "docs": false,
+  "reason": "The only doc reference is the literal \"docs/guides/knowledge-records.md\", already captured into data by the literal-path matcher independent of the docs flag; the blanket docs/** glob is unneeded."
+}

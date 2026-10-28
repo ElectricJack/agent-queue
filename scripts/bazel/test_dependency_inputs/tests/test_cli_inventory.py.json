@@ -1,0 +1,4 @@
+{
+  "docs": false,
+  "reason": "ARTIFACT = ROOT / \"docs\" / \"reference\" / \"cli-command-inventory.json\" is the only doc path this module reads; the composed-path literal is already captured into data via _path_data, so the blanket docs/** glob is unneeded."
+}

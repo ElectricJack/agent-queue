@@ -1,0 +1,4 @@
+{
+  "docs": false,
+  "reason": "The only \"docs\" string literals in this module are task-label fixture values (ids[\"docs\"], a zipped task-kind name), not file paths; no doc file is read, so the blanket docs/** glob is a false positive from the literal matcher."
+}

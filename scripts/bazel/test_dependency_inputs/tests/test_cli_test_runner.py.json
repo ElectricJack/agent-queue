@@ -1,0 +1,6 @@
+{
+  "reason": "The subprocess -c body is the class attribute _SCRIPT, formatted via .format(root=...) at the call site; the scanner can't resolve a method-call-formatted string to a literal. The script body is fixed and only imports src.cli.app and src.cli.test_runner, both of which this module already imports directly at module scope.",
+  "resolves": [
+    "tests/test_cli_test_runner.py: unresolved dynamic import in subprocess Python execution"
+  ]
+}

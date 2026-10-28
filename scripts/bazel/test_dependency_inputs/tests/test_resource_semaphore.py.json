@@ -1,0 +1,6 @@
+{
+  "reason": "The subprocess -c bodies are built via a method call (self._holder_script) or textwrap.dedent(f\"...\"), neither of which the scanner can resolve to a literal. Every body only imports src.resources.semaphore and/or src.resources.box_lock, both of which this module already imports directly at module scope.",
+  "resolves": [
+    "tests/test_resource_semaphore.py: unresolved dynamic import in subprocess Python execution"
+  ]
+}
