@@ -593,18 +593,18 @@ class AdmissionSnapshot:
                     f"{', '.join(sorted((before ^ verified) & ids))}; retry",
                     task_id,
                 )
-        if self.inputs != current[-1]:
+        # A candidate can be another's source: its own claim moves only its status and epoch.
+        inputs, now = (
+            (*i[:4], tuple((tid, replace(r, task_status="", claim_epoch=0)
+                            if tid == task_id and r.task_status != "COMPLETED" else r)
+                           for tid, r in i[4]), *i[5:])
+            for i in (self.inputs, current[-1]))
+        if inputs != now:
             groups = ("edges", "children", "gates", "obsolete markers", "delivery requests",
                       "project configuration", "repository configuration", "labels")
-            changed = []
-            for name, before, after in zip(groups, self.inputs, current[-1], strict=True):
-                if before == after:
-                    continue
-                if name == "delivery requests":
-                    detail = ", ".join(f"{tid}.{member}" for tid, member, _, _ in
-                                       _request_changes(dict(before), dict(after)))
-                    name += f" ({detail})"
-                changed.append(name)
+            changed = [name if name != "delivery requests" else f"{name} ({", ".join(
+                f"{tid}.{member}" for tid, member, _, _ in _request_changes(dict(b), dict(a)))})"
+                for name, b, a in zip(groups, inputs, now, strict=True) if b != a]
             return self.record_change(
                 "admission_inputs_changed",
                 f"Admission source inputs changed: {', '.join(changed)}; retry",
