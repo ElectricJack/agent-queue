@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-
+import contextlib
+import subprocess
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,7 +21,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.git.manager import GitError
+from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership, BranchOwnershipError
 from src.models import (
@@ -34,6 +35,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
+from src.orchestrator.workspace_attachments import _probe_workspace_checkout
 
 pytestmark = pytest.mark.asyncio
 
@@ -202,11 +204,12 @@ async def test_stop_timeout_is_not_release_evidence(orchestrator_factory, tmp_pa
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "clean-check", "fetch", "stop"]
+    assert events == ["validate-branch", "fetch", "clean-check", "stop"]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
@@ -260,6 +263,7 @@ async def test_stop_task_retains_train_workspace_when_handoff_is_unproven(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     error = await orchestrator.stop_task("task")
 
@@ -279,11 +283,12 @@ async def test_dirty_slot_is_not_detached_or_released(
     current_branch, run = _clean_git(events, dirty=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "clean-check"]
+    assert events == ["validate-branch", "fetch", "clean-check"]
     # The live writer must not be killed by a dirty-checkout refusal: the
     # pre-stop probe has to refuse before ``provider.stop`` runs at all, so a
     # dirty working tree cannot be lost along with its session.
@@ -328,6 +333,7 @@ async def test_save_wip_handoff_stops_the_writer_before_saving_then_detaches(
     current_branch, run, saved = _saving_git(events, monkeypatch)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(
         _owner(), save_wip_reason="usage exhausted on opencode"
@@ -336,12 +342,13 @@ async def test_save_wip_handoff_stops_the_writer_before_saving_then_detaches(
     assert confirmed is True
     assert events == [
         "validate-branch",
+        "fetch",
         "clean-check",
         "stop",
         "confirm",
         "save",
-        "clean-check",
         "fetch",
+        "clean-check",
         "detach",
     ]
     assert saved == [(str(tmp_path / "slot"), "aq/parent", "usage exhausted on opencode")]
@@ -375,6 +382,7 @@ async def test_saved_wip_handoff_records_where_the_next_worker_resumes(
     current_branch, run, _saved = _saving_git(events, monkeypatch, commit="c" * 40)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await orchestrator.aconfirm_integration_owner_handoff(
         _owner(), save_wip_reason="stopped by aq task stop"
@@ -404,6 +412,7 @@ async def test_an_ordinary_owner_handoff_records_no_resume_point(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await orchestrator.aconfirm_integration_owner_handoff(_owner()) is True
     assert await orchestrator.db.get_task_meta("task", RESUME_POINT_META) is None
@@ -422,6 +431,7 @@ async def test_a_verifier_checkout_is_never_saved_onto_the_task_branch(
     current_branch, run, saved = _saving_git(events, monkeypatch)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(
         _owner(owner_role="verifier"), save_wip_reason="stopped by aq task stop"
@@ -444,13 +454,14 @@ async def test_unsaved_wip_keeps_the_fence_and_records_the_writer_stopped(
     current_branch, run, _saved = _saving_git(events, monkeypatch, status="push_failed")
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(
         _owner(), save_wip_reason="stopped by aq task stop"
     )
 
     assert confirmed is False
-    assert events == ["validate-branch", "clean-check", "stop", "confirm", "save"]
+    assert events == ["validate-branch", "fetch", "clean-check", "stop", "confirm", "save"]
     assert "detach" not in events
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
     session = await orchestrator.db.get_session("session")
@@ -502,11 +513,12 @@ async def test_unpushed_slot_is_not_detached_or_released(
     current_branch, run = _clean_git(events, pushed=False)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "clean-check", "fetch"]
+    assert events == ["validate-branch", "fetch", "clean-check"]
     assert "stop" not in events
     assert "confirm" not in events
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
@@ -542,6 +554,7 @@ async def test_failed_detach_keeps_the_slot_locked(
     )
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
@@ -561,6 +574,7 @@ async def test_success_stops_confirms_detaches_then_releases(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     from src.orchestrator import workspace_attachments
 
     real_release = workspace_attachments.mark_integration_handoff_released
@@ -578,12 +592,12 @@ async def test_success_stops_confirms_detaches_then_releases(
     assert confirmed is True
     assert events == [
         "validate-branch",
-        "clean-check",
         "fetch",
+        "clean-check",
         "stop",
         "confirm",
-        "clean-check",
         "fetch",
+        "clean-check",
         "detach",
         "release",
     ]
@@ -618,6 +632,7 @@ async def test_handoff_release_does_not_clear_a_reused_agent_binding(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
@@ -639,6 +654,7 @@ async def test_released_handoff_recovers_after_crash_without_touching_a_new_hold
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await orchestrator.aconfirm_integration_owner_handoff(_owner()) is True
     async with orchestrator.db._engine.connect() as conn:
@@ -706,6 +722,7 @@ async def test_detached_handoff_retries_after_crash_before_durable_release(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     from src.orchestrator import workspace_attachments
 
     real_mark = workspace_attachments.mark_integration_handoff_released
@@ -766,11 +783,12 @@ async def test_detached_handoff_with_wrong_head_remains_busy(
     )
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["validate-branch", "clean-check", "fetch"]
+    assert events == ["validate-branch", "fetch", "clean-check"]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
@@ -795,18 +813,19 @@ async def test_detached_non_slot_releases_only_after_exact_git_proof(
     current_branch, run = _clean_git(events, already_detached=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_owner_handoff(_owner())
 
     assert confirmed is True
     assert events == [
         "validate-branch",
-        "clean-check",
         "fetch",
+        "clean-check",
         "stop",
         "confirm",
-        "clean-check",
         "fetch",
+        "clean-check",
     ]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
 
@@ -850,6 +869,7 @@ async def _release_owner_for_retry(
     current_branch, run = _clean_git(events, dirty=dirty)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     task = await orchestrator.db.get_task("task")
     extra = {} if roles is None else {"roles": roles}
     return await orchestrator.arelease_integration_writer_for_retry(
@@ -878,7 +898,7 @@ async def test_pool_release_detaches_the_checkout_without_stopping_the_loop(
 
     assert released is True
     # No "stop"/"confirm": the loop that is closing keeps running.
-    assert events == ["clean-check", "fetch", "detach"]
+    assert events == ["fetch", "clean-check", "detach"]
     target = BranchKey(repository_id="repo", branch="aq/parent")
     owner = await BranchOwnership(orchestrator.db).get_owner(target)
     assert owner["owner_id"] == "task"
@@ -983,12 +1003,12 @@ async def test_release_for_retry_restores_a_closed_repair_delegates_reservation(
     assert released is True
     assert events == [
         "validate-branch",
-        "clean-check",
         "fetch",
+        "clean-check",
         "stop",
         "confirm",
-        "clean-check",
         "fetch",
+        "clean-check",
         "detach",
     ]
     target = BranchKey(repository_id="repo", branch="aq/parent")
@@ -1073,6 +1093,7 @@ async def test_reopened_producer_reclaims_its_own_handoff_pending_branch(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     task = await orchestrator.db.get_task("task")
     origin, fence, role = await orchestrator._hierarchy_origin_and_fence(
@@ -1113,6 +1134,7 @@ async def test_unprovable_own_handoff_pending_branch_stays_fenced(
     current_branch, run = _clean_git(events, dirty=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     task = await orchestrator.db.get_task("task")
     with pytest.raises(BranchOwnershipError):
@@ -1153,6 +1175,7 @@ async def test_reclaim_does_not_transfer_a_replacement_attachment(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_: _provider(events))
 
     with pytest.raises(BranchOwnershipError):
@@ -1177,6 +1200,7 @@ async def test_reclaim_does_not_detach_its_current_preparation(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     with pytest.raises(BranchOwnershipError):
         await orchestrator._hierarchy_origin_and_fence(
@@ -1276,11 +1300,12 @@ async def test_pool_handoff_detaches_without_stopping_the_session(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_pool_owner_handoff(_owner())
 
     assert confirmed is True
-    assert events == ["clean-check", "fetch", "detach"]
+    assert events == ["fetch", "clean-check", "detach"]
     async with orchestrator.db._engine.connect() as conn:
         released = (await conn.execute(select(integration_branch_owners))).mappings().one()
     assert released["handoff_state"] == "released"
@@ -1304,6 +1329,7 @@ async def test_pool_handoff_replay_is_idempotent_and_touches_no_git(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await orchestrator.aconfirm_integration_pool_owner_handoff(_owner()) is True
     events.clear()
@@ -1330,6 +1356,7 @@ async def test_completed_pool_claim_recovery_releases_only_a_quiescent_exact_wri
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     provider = SimpleNamespace(
         process_alive=AsyncMock(return_value=False), confirm_stopped=AsyncMock(return_value=True)
     )
@@ -1339,7 +1366,7 @@ async def test_completed_pool_claim_recovery_releases_only_a_quiescent_exact_wri
     # The public replay sees no attached owner and therefore cannot disturb
     # the released session, its branch evidence, or a future replacement.
     assert await recover_completed_pool_claims(orchestrator, "p") == []
-    assert events == ["clean-check", "fetch", "detach"]
+    assert events == ["fetch", "clean-check", "detach"]
     assert (await db.get_task("task")).status is TaskStatus.COMPLETED
     session = await db.get_session("session")
     assert (session.state, session.desired_state, session.task_id) == ("stopped", "stopped", None)
@@ -1379,6 +1406,7 @@ async def test_completed_pool_claim_recovery_refuses_unsafe_or_reused_holders(
     )
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     provider = SimpleNamespace(
         process_alive=AsyncMock(return_value=refusal == "live"),
         confirm_stopped=AsyncMock(return_value=True),
@@ -1404,11 +1432,12 @@ async def test_pool_handoff_refuses_a_dirty_slot(
     current_branch, run = _clean_git(events, dirty=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_pool_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["clean-check"]
+    assert events == ["fetch", "clean-check"]
     async with orchestrator.db._engine.connect() as conn:
         row = (await conn.execute(select(integration_branch_owners))).mappings().one()
     assert row["handoff_state"] == "handoff_pending"
@@ -1423,11 +1452,12 @@ async def test_pool_handoff_refuses_an_unpushed_slot(
     current_branch, run = _clean_git(events, pushed=False)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_pool_owner_handoff(_owner())
 
     assert confirmed is False
-    assert events == ["clean-check", "fetch"]
+    assert events == ["fetch", "clean-check"]
 
 
 async def test_pool_proof_is_refused_for_a_task_lifecycle_session(
@@ -1443,6 +1473,7 @@ async def test_pool_proof_is_refused_for_a_task_lifecycle_session(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_pool_owner_handoff(_owner())
 
@@ -1465,6 +1496,7 @@ async def test_pool_proof_accepts_an_exact_repair_delegate(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_pool_owner_handoff(
         _owner(owner_role="repair")
@@ -1487,6 +1519,7 @@ async def test_pool_proof_is_refused_once_the_session_dropped_the_task(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     confirmed = await orchestrator.aconfirm_integration_pool_owner_handoff(_owner())
 
@@ -1548,6 +1581,7 @@ async def test_public_transfer_recovers_a_stopped_stale_pool_writer(
     current_branch, run = _clean_git(events, already_detached=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     result = await orchestrator._command_handler.execute(
         "integration_transfer_owner",
@@ -1560,7 +1594,7 @@ async def test_public_transfer_recovers_a_stopped_stale_pool_writer(
     )
 
     assert result["outcome"] == "transferred"
-    assert events == ["confirm", "clean-check", "fetch"]
+    assert events == ["confirm", "fetch", "clean-check"]
     stale_task = await orchestrator.db.get_task("task")
     assert stale_task.status is TaskStatus.READY
     assert stale_task.assigned_agent_id is None
@@ -1586,6 +1620,7 @@ async def test_background_recovery_enters_pending_before_releasing_stale_pool_wr
     current_branch, run = _clean_git(events, already_detached=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await reconcile_closed_integration_owners(orchestrator, "p", ready_only=True) == ["task"]
     assert (await orchestrator.db.get_session("session")).task_id is None
@@ -1631,6 +1666,7 @@ async def test_teardown_records_stopped_writer_when_owner_retains_claim(
         current_branch, run = _clean_git(events, already_detached=True)
         orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
         orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+        orchestrator.git._arun = AsyncMock(side_effect=run)
         assert await reconcile_closed_integration_owners(
             orchestrator, "p", ready_only=True
         ) == ["task"]
@@ -1673,6 +1709,7 @@ async def test_stopped_pool_recovery_refuses_a_reused_agent_before_git_proof(
     current_branch, run = _clean_git(events, already_detached=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await orchestrator.aconfirm_integration_owner_handoff(_owner(handoff_state="attached")) is False
     assert events == []
@@ -1745,9 +1782,10 @@ async def test_stopped_pool_recovery_refuses_dirty_published_evidence(
     current_branch, run = _clean_git(events, already_detached=True, dirty=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await orchestrator.aconfirm_integration_owner_handoff(_owner(handoff_state="attached")) is False
-    assert events == ["confirm", "clean-check"]
+    assert events == ["confirm", "fetch", "clean-check"]
     assert (await orchestrator.db.get_session("session")).task_id == "task"
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
     assert (await orchestrator.db.get_task("task")).claim_epoch == 3
@@ -1767,6 +1805,7 @@ async def test_pool_writer_release_restores_a_reserved_fence_for_the_parent(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     task = await orchestrator.db.get_task("task")
 
     released = await orchestrator.arelease_integration_writer_for_retry(
@@ -1816,6 +1855,7 @@ async def test_unreleasable_pool_writer_keeps_the_branch_fenced(
     current_branch, run = _clean_git(events, dirty=True)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     task = await orchestrator.db.get_task("task")
 
     released = await orchestrator.arelease_integration_writer_for_retry(
@@ -1966,6 +2006,7 @@ async def test_full_root_ref_handoff_proves_and_detaches_short_git_branch(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     confirm = (orchestrator.aconfirm_integration_pool_owner_handoff if pool
                else orchestrator.aconfirm_integration_owner_handoff)
     assert await confirm(owner)
@@ -2025,6 +2066,7 @@ async def test_stopped_pool_writer_handoff_releases_its_exact_active_claim(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     assert await orchestrator.aconfirm_integration_owner_handoff(_owner())
     task = await orchestrator.db.get_task("task")
@@ -2069,6 +2111,7 @@ async def test_stopped_verifier_recovery_preserves_detached_published_baseline(
 
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     if published:
         result = await orchestrator._command_handler.execute("integration_transfer_owner", {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
@@ -2132,7 +2175,7 @@ async def test_real_git_detached_verifier_baseline_requires_current_publication(
         allow_published_detached_head=True,
     )
     authenticated_fetch.assert_awaited_once_with(
-        str(checkout), repository_url=str(remote), lock_held=True
+        str(checkout), repository_url=str(remote)
     )
     assert await run("rev-parse", "HEAD") == baseline
     await run("commit", "--allow-empty", "-m", "unpublished detached work")
@@ -2216,6 +2259,7 @@ async def test_unlocked_verifier_proves_later_workspace_users_before_release(
 
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     result = await orchestrator.aconfirm_integration_owner_handoff(_owner(owner_role="verifier"))
     assert result is (case == "stopped")
     assert (await db.get_session("session")).task_id == (None if result else "task")
@@ -2442,7 +2486,7 @@ async def test_requeue_roles_return_an_attached_verifier_to_reserved(
     )
 
     assert released is True
-    assert events == ["clean-check", "fetch", "detach"]
+    assert events == ["fetch", "clean-check", "detach"]
     owner = await BranchOwnership(orchestrator.db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2519,7 +2563,7 @@ async def test_verification_requeue_returns_the_verifier_fence_to_reserved(
 
     assert result["status"] == "READY"
     assert (await orchestrator.db.get_task("task")).status is TaskStatus.READY
-    assert events == ["clean-check", "fetch", "detach"]
+    assert events == ["fetch", "clean-check", "detach"]
     owner = await BranchOwnership(orchestrator.db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2614,6 +2658,7 @@ async def test_stopped_unbound_pool_owner_can_complete_handoff(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_: _provider(events))
 
     target = BranchKey(repository_id="repo", branch="aq/parent")
@@ -2656,6 +2701,7 @@ async def test_public_transfer_recovers_exact_orphaned_pool_attachment(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: _provider(events))
 
     target = BranchKey(repository_id="repo", branch="aq/parent")
@@ -2666,8 +2712,8 @@ async def test_public_transfer_recovers_exact_orphaned_pool_attachment(
     assert successor == Fence(target=target, owner_id="operation", token=5)
     assert [event for event in events if event != "validate-branch"] == [
         "confirm",
-        "clean-check",
         "fetch",
+        "clean-check",
         "detach",
     ]
     owner = await BranchOwnership(orchestrator.db).get_owner(target)
@@ -2714,6 +2760,7 @@ async def test_public_transfer_keeps_orphaned_workspace_excluded_until_detach(
 
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     monkeypatch.setattr(orchestrator.session_providers, "create", lambda *_args: _provider(events))
 
     target = BranchKey(repository_id="repo", branch="aq/parent")
@@ -2724,7 +2771,7 @@ async def test_public_transfer_keeps_orphaned_workspace_excluded_until_detach(
     assert successor_fence == Fence(target=target, owner_id="operation", token=5)
     assert successor is not None
     await asyncio.wait_for(successor, timeout=1)
-    assert events == ["confirm", "clean-check", "fetch", "detach", "successor"]
+    assert events == ["confirm", "fetch", "clean-check", "detach", "successor"]
 
 
 async def test_public_transfer_refuses_reused_orphaned_pool_attachment(
@@ -2748,6 +2795,7 @@ async def test_public_transfer_refuses_reused_orphaned_pool_attachment(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     monkeypatch.setattr(
         orchestrator.session_providers,
         "create",
@@ -2784,6 +2832,7 @@ async def test_public_transfer_refuses_different_agent_orphan_workspace_holder(
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
     monkeypatch.setattr(
         orchestrator.session_providers,
         "create",
@@ -2833,6 +2882,7 @@ async def test_public_transfer_refuses_an_orphaned_attachment_with_newer_session
     current_branch, run = _clean_git(events)
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(side_effect=run)
 
     target = BranchKey(repository_id="repo", branch="aq/parent")
     with pytest.raises(Exception, match="previous writer has not confirmed"):
@@ -2841,3 +2891,85 @@ async def test_public_transfer_refuses_an_orphaned_attachment_with_newer_session
         ).transfer(Fence(target=target, owner_id="task", token=4), "operation", "collector")
 
     assert events == []
+
+
+@pytest.mark.parametrize("unsafe", [None, "live", "dirty", "reused", "hung"])
+async def test_reopen_settles_drained_pool_predecessor_before_ready(
+    orchestrator_factory, tmp_path, monkeypatch, unsafe,
+):
+    orch = await _stopped_stale_pool_orchestrator(
+        orchestrator_factory, tmp_path, handoff_state="handoff_pending",
+    )
+    db = orch.db
+    await db.update_task("task", status=TaskStatus.COMPLETED)
+    events = []
+    current_branch, run = _clean_git(events, dirty=unsafe == "dirty")
+    orch.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orch.git._arun_unlocked = AsyncMock(side_effect=run)
+    orch.git._arun = AsyncMock(side_effect=run)
+
+    async def confirm(_handle):
+        if unsafe == "hung":
+            await asyncio.Event().wait()
+        return unsafe != "live"
+
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(side_effect=confirm))
+    monkeypatch.setattr(orch.session_providers, "create", lambda *_args: provider)
+    if unsafe == "reused":
+        await db.create_task(Task(
+            id="another-task", project_id="p", title="Replacement", description="",
+        ))
+        await db.update_agent("agent", current_task_id="another-task")
+    if unsafe == "hung":
+        orch.config.swarm.prepare_timeout = 0.1
+    result = await asyncio.wait_for(orch._command_handler.execute(
+        "reopen_with_feedback", {"task_id": "task", "feedback": "Please fix the regression"},
+    ), timeout=5)
+    owner = await BranchOwnership(db).get_owner(BranchKey(repository_id="repo", branch="aq/parent"))
+    if unsafe is None:
+        assert result["success"], result
+        assert (await db.get_task("task")).status is TaskStatus.READY
+        assert (await db.get_task("task")).claim_epoch == 3
+        assert owner["handoff_state"] == "reserved" and owner["fence_token"] > 4
+        assert (await db.get_session("session")).task_id is None
+        assert (await db.get_workspace("slot")).locked_by_task_id is None
+        assert "detach" in events
+    else:
+        assert not result["success"], result
+        assert (await db.get_task("task")).status is TaskStatus.COMPLETED
+        assert owner["handoff_state"] == "handoff_pending" and owner["fence_token"] == 4
+        assert (await db.get_session("session")).task_id == "task"
+        assert (await db.get_workspace("slot")).locked_by_task_id == "task"
+        assert "detach" not in events
+
+
+def _run_git(cwd, *args) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("case", ["published", "unpublished", "other_branch"])
+async def test_probe_treats_a_never_created_task_branch_as_already_detached(tmp_path, case):
+    # A preparation that failed before checkout leaves no local task branch.
+    origin, slot = tmp_path / "origin.git", tmp_path / "slot"
+    _run_git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    _run_git(tmp_path, "clone", "-q", str(origin), str(slot))
+    for key, value in (("user.email", "t@example.com"), ("user.name", "t")):
+        _run_git(slot, "config", key, value)
+    _run_git(slot, "commit", "-q", "--allow-empty", "-m", "base")
+    _run_git(slot, "push", "-q", "origin", "main")
+    if case == "other_branch":
+        _run_git(slot, "switch", "-q", "-c", "aq/other")
+    else:
+        _run_git(slot, "switch", "-q", "--detach")
+    if case == "unpublished":
+        _run_git(slot, "commit", "-q", "--allow-empty", "-m", "local only")
+    head = _run_git(slot, "rev-parse", "HEAD")
+
+    proof = await _probe_workspace_checkout(
+        GitManager(), lambda _path: contextlib.nullcontext(),
+        SimpleNamespace(workspace_path=str(slot)), expected_branch="aq/never-created",
+    )
+
+    assert proof == (head if case == "published" else None)

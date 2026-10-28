@@ -487,7 +487,7 @@ handler `_cmd_doctor` in `src/commands/ops_commands.py:63-109`; CLI
 | Pools and claims (`pool_checks.py`) | `pools.stuck`* (releases the claim of a session whose task left its claim status), `pools.preparing_stuck`* (releases to READY with `prepare_failed`, epoch-guarded), `pools.orphan_agents`* (releases leaked locks, retires dead agents, never touches busy ones), `pools.stale_worktree_checkouts`* (detaches slots left on an `aq/<task>` branch), `pools.stranded_feature_branches`* (prints a `gh pr create`, never opens one), `agents.dangling_current_task`*, `claims.container_held`* |
 | Playbooks (`playbook_v2_checks.py`) | `playbooks.orphaned_runs` (report only; restart recovery retries them), `playbooks.artifact_integrity` and `playbooks.activation_stale` (no fix by design), `playbooks.required`*, `playbooks.reviewed_bundles`* |
 | Integration (`integration_checks.py`) | `integration.subjects_held`, `integration.subjects_overdue`, `integration.train_batches_stalled`, `integration.branch_origins`*, `integration.finished_branch_owners`*, `integration.promotion_stranded`, `integration.completed_undelivered` |
-| Database (`db_checks.py`, `builtin.py`) | `db.connect`, `db.migrations`, `db.alembic_orphan`* (borrows the missing revision file from up to 200 refs and runs its own `downgrade()`; with no file it refuses unless `AQ_DOCTOR_ALEMBIC_STAMP=1`) |
+| Database (`db_checks.py`, `builtin.py`) | `db.connect`, `db.migrations`, `db.alembic_orphan`* (borrows the missing revision file from up to 200 refs and runs its own `downgrade()`; with no file it refuses unless `AQ_DOCTOR_ALEMBIC_STAMP=1`), `db.idle_advisory_locks`* (`advisory_lock_checks.py`: lists every advisory lock with its backend, names session locks from `src/database/advisory_locks.py` and hierarchy locks by project, warns on a holder idle in a transaction over 30 s; the fix terminates only that backend, and only while it is still in the observed idle state) |
 | Stalls (`stall_checks.py`) | `stall.sweep`: one read-only check with a 55 s timeout and about 35 finding kinds, such as unclaimed READY work, crash-looping workers, publisher errors, orphaned PRs and stranded children ([`../operator-stall-sweep.md`](../operator-stall-sweep.md)) |
 | Verified waits (`wait_checks.py`) | `waits.schema` (report-only flags, v1 bodies and table inventory; never migrates), `waits.orphans`* (repairs via `CommandHandler`, preserving summaries and saved heads) |
 | Vault and drift | `harness.drift`*, `profiles.system_drift`, `profiles.supervisor_capability_drift`*, `skills.installed_drift`* |
@@ -629,8 +629,9 @@ class (`src/orphan_workflow_recovery.py`) is never constructed (§5).
 
 **Integration owner recovery** (`src/integration/owner_recovery.py`; behaviour
 owned by [integration-and-delivery](integration-and-delivery.md)).
-- It releases an `attached` or `handoff_pending` branch owner only with proof
-  that the writer is gone.
+- It releases an `attached`, `handoff_pending` or session-bound `reserved`
+  branch owner only with proof that the writer is gone. Unbound reservations
+  remain outside routine recovery.
 - It pushes the writer's work without forcing.
 - It releases with a compare-and-set.
 - It is reached from `integration_release_owner`, `restore_task_origin`,
@@ -659,7 +660,7 @@ retained clone of a project has empty or corrupt loose objects:
 3. Refetch everything.
 4. Re-publish readable AQ heads that exist only locally, through absent-head
    publication.
-5. Run a full `git fsck` (300 s timeout).
+5. Run a full `git fsck` (900 s timeout).
 
 There are at most two attempts (`MAX_ATTEMPTS = 2`), and the count is
 persisted. The supervisor gets one coalesced notice.
