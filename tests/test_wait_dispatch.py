@@ -280,9 +280,15 @@ async def test_pool_sizing_observation_is_replayed_by_cycle(db):
     key = PoolKey(profile_id="worker")
     measurement = SimpleNamespace(supply={key: PoolSupply(running_busy=1)}, demand={key: 2},
                                   bounds={key: (0, 2)})
-    await record_pool_observations(db, measurement, 100)
-    await record_pool_observations(db, measurement, 100)
+    cache = {}
+    for now in (100, 100, 101):
+        await record_pool_observations(db, measurement, now, last_observations=cache)
     assert len(await events(db, "resource_invalidation:pool:worker")) == 1
+    measurement.demand[key] = 3
+    await record_pool_observations(db, measurement, 102, last_observations=cache)
+    assert len(await events(db, "resource_invalidation:pool:worker")) == 2
+    await record_pool_observations(db, measurement, 702, last_observations=cache)
+    assert len(await events(db, "resource_invalidation:pool:worker")) == 3
 
 
 

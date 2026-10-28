@@ -933,6 +933,67 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'pool_observation_deduplication_composition': {'authorized_engine_delta': 0,
+                                                'authorized_owned_delta': 3,
+                                                'authorized_shared_owned_delta': 3,
+                                                'authorized_table_delta': 0,
+                                                'charged_files': {'src/orchestrator/pools.py': 3},
+                                                'dev_source_revision': 'a85536af1cb4d57f3d91ba85e555f48ef05409d4',
+                                                'fix_task_id': 'nimble-ember-59',
+                                                'measured_engine_lines': 83925,
+                                                'measured_owned_total': 160413,
+                                                'measured_table_count': 45,
+                                                'operator_decision': '6679052c',
+                                                'original_dev_source_revision': 'b2b093cec535c421fa865295aab5935a30b87782',
+                                                'previous_measured_engine_lines': 83925,
+                                                'previous_measured_owned_total': 160410,
+                                                'previous_measured_table_count': 45,
+                                                'reason': 'Exact supervisor-approved +3 shared-owned/+0 '
+                                                          'engine/+0 tables for the per-profile pool '
+                                                          'observation hash/time cache (nimble-ember-59, '
+                                                          'PR 2142 / fd7b76821), originally measured over '
+                                                          'dev b2b093cec and re-recorded over dev '
+                                                          'a85536af1 after the policy export hotfix. '
+                                                          'src/orchestrator/pools.py is three shared '
+                                                          'lines longer; the engine is unchanged. '
+                                                          'Preserve every historical grant, original '
+                                                          'baseline and ownership classification, zero '
+                                                          'remaining headroom, s4_modules expiry and '
+                                                          'existing storage categories.',
+                                                'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                'request_message_id': 'msg-89bc796c5d8d40c59cc8fe4773536efb',
+                                                'source_revision': 'fd7b768214384eaaa68d359a79c4621f183c18f3',
+                                                'supervisor_decision_message_id': 'msg-944c59bb1e234ade907339fdf0ca70b8',
+                                                'task_id': 'sound-summit-93',
+                                                'thread_id': 'nimble-ember-59-size'},
+ 'policy_export_git_first_composition': {'authorized_engine_delta': 0,
+                                         'authorized_owned_delta': -1,
+                                         'authorized_shared_owned_delta': -1,
+                                         'authorized_table_delta': 0,
+                                         'charged_files': {'src/policy_profiles/integration.py': -1},
+                                         'dev_source_revision': 'e1d7a4739c32287a4056bcba84a2ecd5018972f2',
+                                         'fix_task_id': 'swift-dune-64',
+                                         'measured_engine_lines': 83925,
+                                         'measured_owned_total': 160410,
+                                         'measured_table_count': 45,
+                                         'operator_decision': '6679052c',
+                                         'previous_measured_engine_lines': 83925,
+                                         'previous_measured_owned_total': 160411,
+                                         'previous_measured_table_count': 45,
+                                         'reason': 'Exact supervisor-approved -1 owned/+0 '
+                                                   'engine/-1 shared/+0 tables for hand-landing '
+                                                   'the git-first train policy export fix '
+                                                   '(swift-dune-64, PR 2147 / da7398108), measured '
+                                                   'over dev e1d7a4739. '
+                                                   'src/policy_profiles/integration.py is one '
+                                                   'shared line shorter; the engine is unchanged. '
+                                                   'Preserve the original baseline, every '
+                                                   'historical grant and ownership classification, '
+                                                   'zero remaining headroom, the s4_modules expiry '
+                                                   'and existing storage categories.',
+                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                         'source_revision': 'da7398108957d1f4e55572a7ad5fb779dc4431c4',
+                                         'task_id': 'agile-willow-93'},
  'retained_store_fsck_budget_composition': {'authorized_engine_delta': 3,
                                             'authorized_owned_delta': 6,
                                             'authorized_shared_owned_delta': 3,
@@ -1412,7 +1473,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4912,
+ 'authorized_owned_delta': 4914,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1984,7 +2045,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83925,
- 'measured_owned_total': 160411,
+ 'measured_owned_total': 160413,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
