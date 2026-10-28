@@ -23144,7 +23144,8 @@
     "helper_producers": {
       "_confirm_recovery_worker_stopped": "sha256:782b33c9f86faaa3e7d7bc88e33d0c5e0d5f9d110610d849a3069149e6f448af",
       "_task_control_scope_error": "sha256:1a958b28c3c21a13a924724bd84dbb483c7f9902e5870f9560a6e412c5356e9b",
-      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6"
+      "_task_findings_scope_error": "sha256:f5380416ec0bf188bc7b4d7ec48bd2abc812325fc775319abf2e5f55dc962fb6",
+      "_task_recovery_refused": "sha256:086629a1d657c8b590588bd400e876ccaa3989f3b8797fc288d29ab32fe94507"
     },
     "input_schema_source": "explicit_tool",
     "mode": "json_object",
@@ -23210,13 +23211,13 @@
         "return": "{'success': False, 'error': 'Incident is stale or not found'}"
       },
       {
-        "protocol": "explicit_boolean: False",
-        "return": "{'success': False, 'error_code': 'task_recovery.refused', 'error': str(exc)}"
+        "protocol": "delegated_producer",
+        "return": "self._task_recovery_refused(str(exc), task_id, operator_release)"
       }
     ],
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Completion racing a direct recovery decision returns task_recovery.refused with success false; ask decisions still raise for their operation reconciler. ",
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. Frozen-main reconciliation (c29fcd7804cef4e96bc45f3a3502ae4e8d3e70cb): reviewed producer exits and original-principal resource gates; typed adapters retain their domain contracts. Generated handlers emit explicit booleans or retain delegated producer outcomes; generated invocation stays disabled. Completion racing a direct recovery decision returns task_recovery.refused with success false; ask decisions still raise for their operation reconciler.  fleet-beacon-63: that refusal is built by _task_recovery_refused, which keeps success false and task_recovery.refused and, for an operator hold release refused by a retained claim, names `aq integration release-owner --task-id <t> --apply` (keeps the branch and workspace).",
     "schema_quality": "declared",
-    "source_digest": "sha256:7e3b79eb18e3676887b507b6b50cffe4070441d2a69a5979ba16687526fb55f9",
+    "source_digest": "sha256:f30988f434bd30a6c6bb85e1059ecdb3d26800ba252ce50235a8f85c08fd2465",
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
