@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "7df42e5b9b8cae0e941c7013d6e2f492288ecfa7",
+      "source_head": "f21266c750327e0977573083b5e197396dfee25c",
       "tool_sha256": "edf71529d50a5c985c9ca33513ebee75a078b8d021bf06ea1b00a6a51e7cddf7"
     },
     "nodes": [
@@ -39564,7 +39564,7 @@
       "tests/git_mock_helpers.py": "18a8ca3369aa23ba0d73d5c66f951aa1962122864fc9e1d6cab5a597754b3985",
       "tests/git_seed_helpers.py": "cd172ea70a2ac3fb7e44ee51578775ede647daf5cf67b0106465a8d2c9619684",
       "tests/installer_machine.py": "14dd61b046faf4372c222b7ef9249b4ad2d66b0c130552c816c68dc99f068940",
-      "tests/integration_ownership.py": "b3757a338f2b6e35646aac1af38d0653f65006fcd3cf602dabb5b121c7f509ae",
+      "tests/integration_ownership.py": "6e58ff534cda458a3fdaf5fdd03bfa3c778e954539fff8ece1a48a7fbb45ff2e",
       "tests/integration_primitive_scope.py": "dccecee64e75b8d102644ec778f557dd6092f23f5b79e485eea4a05661e8a56c",
       "tests/knowledge_fixture_adapter.py": "49c1c3d97e905e06f504c4aa4decb21d33b96c25169b03db0df14025f08eb175",
       "tests/llm/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
