@@ -484,8 +484,34 @@ async def test_refused_owner_page_does_not_starve_later_attached_owners(db, tmp_
     for _ in range(3):
         await service._owners()
     assert [call.args[0] for call in recovery.recover_many.await_args_list] == [
-        ["owner-0000", "owner-0001"], ["owner-0002", "owner-0003"], [],
+        ["owner-0000"], ["owner-0001"], ["owner-0002"], ["owner-0003"],
     ]
+
+
+async def test_hung_owner_recovery_does_not_starve_later_owners(db, tmp_path):
+    # bold-rapids-90.6: the first recoverable row's fetch hung until the stage
+    # timeout every pass, so the stalled worker's owner row was never reached.
+    await seed(db, count=3, origins=0, owners=3, checkpoint=False)
+    async with db.immediate() as conn:
+        await conn.execute(update(t.integration_branch_owners).values(handoff_state="attached"))
+    recovered = []
+
+    async def recover_many(ids, *, principal):
+        if "owner-0000" in ids:
+            await asyncio.Event().wait()
+        recovered.extend(ids)
+        return []
+
+    service = GitTruthReconciler(
+        db, SimpleNamespace(), data_dir=tmp_path,
+        owner_recovery=SimpleNamespace(recover_many=recover_many), page_size=10,
+    )
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.2):
+            await service._owners()
+    async with asyncio.timeout(5):
+        assert await service._owners() == 2
+    assert recovered == ["owner-0001", "owner-0002"]
 
 
 async def test_failed_delivery_source_does_not_prevent_other_repairs(db, tmp_path, monkeypatch):

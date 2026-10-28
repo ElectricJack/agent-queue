@@ -4482,11 +4482,29 @@ class TaskCommandsMixin:
             task = await self.db.get_task(task_id)
             await self._emit_task_graph_change("task.updated", task)
             return {"success": True, "task_id": task_id, "status": task.status.value}
-        task = await self.orchestrator.resume_task(
-            task_id, recover_stale_pause=bool(args.get("recover_stale_pause")),
-            actor=(self._current_scope or {}).get("session_id") or "local-operator",
-            **({"defer_recovery_supersession": True} if defer_recovery_supersession else {}),
-        )
+        try:
+            task = await self.orchestrator.resume_task(
+                task_id, recover_stale_pause=bool(args.get("recover_stale_pause")),
+                actor=(self._current_scope or {}).get("session_id") or "local-operator",
+                **({"defer_recovery_supersession": True} if defer_recovery_supersession else {}),
+            )
+        except ValueError as exc:
+            error = str(exc)
+            if (
+                current is not None
+                and current.status == TaskStatus.BLOCKED
+                and incident.get("decision") == "hold"
+            ):
+                # Resume only lifts a pause; a held stopped-worker incident is
+                # handed off by releasing its owner, then an exact hold release.
+                error += (
+                    f". Recovery incident {incident.get('id')} is held: run "
+                    f"`aq integration release-owner --task-id {task_id} --apply` (keeps the branch "
+                    f"and workspace), then `aq task recover --task-id {task_id} "
+                    f"--incident-id {incident.get('id')} --decision retry --operator-release "
+                    f"--expected-hold-at {incident.get('decided_at')} --reason \"<diagnosis>\"`"
+                )
+            return {"success": False, "error_code": "task_resume.refused", "error": error}
         await self._emit_task_graph_change("task.updated", task)
         return {"success": True, "task_id": task_id, "status": task.status.value}
 
@@ -4807,9 +4825,19 @@ class TaskCommandsMixin:
             if ask_decision:
                 raise  # The ask operation reconciles its own application failures.
             # The fenced transaction refused (stale incident, closed task); nothing changed.
-            return {"success": False, "error_code": "task_recovery.refused", "error": str(exc)}
+            return self._task_recovery_refused(str(exc), task_id, operator_release)
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
+
+    @staticmethod
+    def _task_recovery_refused(error: str, task_id: str, operator_release: bool) -> dict:
+        if operator_release and error == "Task still has an active claim or attempt":
+            # The dead worker's claim is cleared only once no branch owner retains it.
+            error += (
+                f"; run `aq integration release-owner --task-id {task_id} --apply` "
+                "(it keeps the branch and workspace), then retry this hold release"
+            )
+        return {"success": False, "error_code": "task_recovery.refused", "error": error}
 
     async def _cmd_task_recovery_notify(self, args: dict) -> dict:
         """Compatibility alias for the retired blocked-task subscriber."""

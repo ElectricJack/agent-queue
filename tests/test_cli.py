@@ -1443,3 +1443,36 @@ def test_task_restart_override_without_reason_fails_before_dispatch(runner):
     assert result.exit_code == 2
     assert '--override-hold requires --reason' in result.output
     execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize('command', ['restart', 'stop'])
+def test_task_confirmation_without_terminal_refuses_instead_of_hanging(runner, command):
+    # bold-rapids-90.6: `yes | aq task restart ...` hung in the full-screen dialog.
+    from src.cli.app import cli
+
+    with patch.object(CLIClient, 'execute', new_callable=AsyncMock) as execute:
+        result = runner.invoke(cli, ['task', command, 'held-task'], input='y\n')
+    assert result.exit_code == 2, result.output
+    assert '--yes' in result.output
+    execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize('override', [False, True])
+def test_task_restart_reports_previous_status_and_hold_release(runner, override):
+    from src.cli.app import cli
+
+    args = ['task', 'restart', 'held-task', '--yes']
+    if override:
+        args.extend(['--override-hold', '--reason', 'Review accepted'])
+    with (
+        patch.object(CLIClient, 'connect', new_callable=AsyncMock),
+        patch.object(CLIClient, 'close', new_callable=AsyncMock),
+        patch.object(CLIClient, 'execute', new_callable=AsyncMock, return_value={
+            'success': True, 'restarted': 'held-task', 'previous_status': 'BLOCKED',
+        }),
+    ):
+        result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert 'Task restarted: held-task' in result.output
+    assert 'was BLOCKED' in result.output
+    assert ('recovery hold released' in result.output) is override

@@ -1309,15 +1309,15 @@ class TaskRecoveryQueryMixin:
                 raise ValueError("Incident is stale or already has a decision")
             if operator_release and not releasing_hold:
                 raise ValueError("operator_release requires the exact prior hold")
+            if operator_release and task["assigned_agent_id"] and (
+                    await self._clear_stopped_recovery_assignment_on(
+                        conn, task, meta, attempt, incident, stopped_session)):
+                task = {**task, "assigned_agent_id": None}  # a dead worker's retained claim
             if decision == "release":
                 if not operator_release or not releasing_hold:
                     raise ValueError("Hold release requires explicit operator authority and exact hold")
                 if task["status"] not in ("READY", "BLOCKED", "FAILED", "PAUSED"):
                     raise ValueError("Cannot release a hold on an active or completed task")
-                if task["assigned_agent_id"]:
-                    await self._clear_stopped_recovery_assignment_on(
-                        conn, task, meta, attempt, incident, stopped_session,
-                    )
             elif not _incident_is_current(task, meta, attempt, incident):
                 raise ValueError("Task or execution attempt changed; incident is stale")
             elif incident.get("reason") != incident_reason(meta, task):
@@ -1500,11 +1500,11 @@ class TaskRecoveryQueryMixin:
             or_(sessions.c.state != "stopped", sessions.c.desired_state == "running"),
         ).limit(1)) is not None:
             raise ValueError("Task or assigned agent still has a live or retained session")
-        await conn.execute(update(tasks).where(
+        return (await conn.execute(update(tasks).where(
             tasks.c.id == task["id"],
             tasks.c.assigned_agent_id == row["agent_id"],
             tasks.c.claim_epoch == task["claim_epoch"],
-        ).values(assigned_agent_id=None))
+        ).values(assigned_agent_id=None))).rowcount
 
     async def _guard_operator_handoff(
         self, conn, task, meta, attempt, incident, stopped_session, *, releasing_hold=False,

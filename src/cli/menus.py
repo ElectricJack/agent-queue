@@ -6,8 +6,10 @@ and confirmation prompts for the CLI.
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Sequence
 
+import click
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.completion import FuzzyWordCompleter, WordCompleter
 from prompt_toolkit.shortcuts import radiolist_dialog, yes_no_dialog
@@ -106,8 +108,18 @@ def fuzzy_select_task(
     return None
 
 
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def confirm(message: str, default: bool = False) -> bool:
-    """Simple yes/no confirmation prompt."""
+    """Simple yes/no confirmation prompt.
+
+    The full-screen dialog never returns without a terminal (a piped ``yes``
+    hangs it silently), so a non-interactive caller is refused instead.
+    """
+    if not _interactive():
+        raise click.UsageError(f"{message} needs an interactive terminal; pass --yes to confirm")
     try:
         result = yes_no_dialog(
             title="Confirm",
