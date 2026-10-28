@@ -3834,7 +3834,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:8bf98a566598f1dab419cdcae4772bd926786786b3b92cdd88925ec4b1c474d6",
+      "digest": "sha256:7e2a1037c782663d3ce2b8a73fe9744e1342dbb623ad7d537a60809433086ff1",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3857,6 +3857,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.integration",
         "src.integration.admission",
         "src.integration.batches",
@@ -17762,13 +17763,14 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:3c9c577db0aa7ae525ae014ec7e7457f02b74abc7af84e93efc8d558985e17f9",
+      "digest": "sha256:fe7c74b668bf246aeec4fbbfde076487e8e5a4f8fd475602272917efe2e3aaf4",
       "imports": [
         "src.agent_waits",
         "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.config",
+        "src.database.queries.claim_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.integration.lock",
@@ -20463,15 +20465,19 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:51ef42487f8a41667069f2b66146ca1c4ac0c7fa9bc882ee8867b326884976c9",
+      "digest": "sha256:3da935f1fa0774037644c6bdabb149890b21b52423c820d4b4eba2115f315122",
       "imports": [
+        "src.api.auth",
+        "src.api.scope",
         "src.claim_file",
         "src.cli.waits",
         "src.commands",
+        "src.commands.message_commands",
         "src.commands.principal",
         "src.commands.task_commands",
         "src.config",
         "src.database",
+        "src.database.queries.claim_queries",
         "src.database.queries.continuation_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
