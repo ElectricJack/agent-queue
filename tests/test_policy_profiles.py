@@ -370,8 +370,12 @@ async def test_apply_development_mode_matches_project_configuration(env):
         assert getattr(target, field) == getattr(source, field), field
 
 
-async def train_pair(handler):
-    """Two independent repository bindings with the recorded AQ train policy."""
+async def train_pair(handler, *, routes=True):
+    """Two independent repository bindings with the recorded AQ train policy.
+
+    ``routes=False`` is the live git-first shape: the retired legacy playbook
+    route is absent, and the policy dump omits the key entirely.
+    """
     from src.integration.models import HierarchicalIntegrationPolicy
     from types import SimpleNamespace
 
@@ -384,7 +388,10 @@ async def train_pair(handler):
                            "settling_cap_seconds": 900}
         for name in ("parent", "root"):
             boundary = policy[name]
-            boundary["route"]["scope_identifier"] = pid
+            if routes:
+                boundary["route"]["scope_identifier"] = pid
+            else:
+                del boundary["route"]
             boundary["required_checks"] = {
                 "version": pid + "-v1", "producer_id": "123" if pid == "source" else "456",
                 "names": [pid + "-lint", pid + "-test"] if pid == "source" else ["cpp-test"],
@@ -463,19 +470,92 @@ async def test_integration_import_refuses_stale_live_generation_before_other_wri
     assert (await handler.db.get_project("target")).hierarchical_integration_mode == "observe"
 
 
-@pytest.mark.parametrize("problem", ["route", "engine", "repository", "policy"])
+async def test_export_apply_git_first_train_without_routes(env):
+    """Regression: a route-less git-first train policy exported ``error: "'route'"``."""
+    handler, _, _ = env
+    policies = await train_pair(handler, routes=False)
+    assert all("route" not in policies["source"][name] for name in ("parent", "root"))
+    args, _ = await integration_preview(handler)
+    entry = next(e for e in args["bundle"]["items"] if e["type"] == "integration_settings")
+    assert all("route" not in entry["payload"]["policy"][name] for name in ("parent", "root"))
+    assert "{{integration_root_checks_names}}" in json.dumps(entry)
+    result = await handler.execute("policy_apply", args)
+    assert result["success"], result
+    assert result["configured_integration"] == [entry["id"]]
+    target = await handler.db.get_project("target")
+    assert target.hierarchical_integration_mode == "train"
+    expected = copy.deepcopy(policies["source"])
+    for name in ("parent", "root"):
+        for field in ("required_checks", "authorized_task_ids"):
+            expected[name][field] = policies["target"][name][field]
+    # No route is fabricated for the target.
+    assert target.hierarchical_integration_policy == expected
+    again = await handler.execute("policy_diff", args)
+    assert again["success"], again
+    assert next(r for r in again["items"] if r["id"] == entry["id"])["status"] == "identical"
+
+
+async def test_integration_import_to_unconfigured_target_fabricates_no_route(env):
+    handler, _, _ = env
+    await train_pair(handler)
+    await handler.db.update_project("target", hierarchical_integration_policy=None)
+    before_activations = await handler.db.list_playbook_activations()
+    values = {f"integration_{name}_checks_{field}": value
+              for name in ("parent", "root")
+              for field, value in (("names", '["cpp-test"]'), ("version", "v1"),
+                                   ("producer_id", "456"))}
+    args, _ = await integration_preview(handler, values=values)
+    result = await handler.execute("policy_apply", args)
+    assert result["success"], result
+    policy = (await handler.db.get_project("target")).hierarchical_integration_policy
+    for name in ("parent", "root"):
+        assert "route" not in policy[name]
+        assert policy[name]["authorized_task_ids"] == []
+        assert policy[name]["required_checks"]["names"] == ["cpp-test"]
+    assert await handler.db.list_playbook_activations() == before_activations
+
+
+async def test_dashboard_route_and_cli_execute_export_route_less_train_identically(env):
+    """The dashboard's typed route and the CLI's /api/execute share one export."""
+    from src.api import dependencies as deps
+    from src.api.app import create_app
+
+    handler, _, _ = env
+    await train_pair(handler, routes=False)
+    saved = (
+        deps._orchestrator, deps._command_handler, deps._token_store, deps._require_session_token,
+    )
+    try:
+        app = create_app(handler.orchestrator, handler.config)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            typed = await client.post("/api/policy/export", json={"project_id": "source"})
+            assert typed.status_code == 200, typed.text
+            executed = await client.post("/api/execute", json={
+                "command": "policy_export", "args": {"project_id": "source"},
+            })
+            assert executed.status_code == 200, executed.text
+    finally:
+        (
+            deps._orchestrator, deps._command_handler, deps._token_store,
+            deps._require_session_token,
+        ) = saved
+    dashboard, envelope = typed.json(), executed.json()
+    assert envelope["ok"] is True, envelope
+    cli = envelope["result"]
+    assert dashboard["checksum"] == cli["checksum"]
+    assert dashboard["files"] == cli["files"]
+    bundle = read_bundle(base64.b64decode(dashboard["archive"]))
+    assert bundle == Bundle.model_validate(dashboard["bundle"])
+    assert "integration_settings:project:integration" in {entry.id for entry in bundle.items}
+
+
+@pytest.mark.parametrize("problem", ["engine", "repository", "policy"])
 async def test_integration_import_uses_supported_validation_without_fabricating_routes(env, problem):
     handler, vault, _ = env
     await train_pair(handler)
-    if problem == "route":
-        await handler.db.update_project("target", hierarchical_integration_policy=None)
-    extra = {}
-    if problem == "route":
-        extra["values"] = {f"integration_{name}_checks_{field}": value
-                           for name in ("parent", "root")
-                           for field, value in (("names", '["cpp-test"]'), ("version", "v1"),
-                                                ("producer_id", "456"))}
-    args, _ = await integration_preview(handler, **extra)
+    args, _ = await integration_preview(handler)
     entry = next(e for e in args["bundle"]["items"] if e["type"] == "integration_settings")
     if problem == "engine":
         entry["payload"]["engine"] = "shadow"
@@ -490,8 +570,6 @@ async def test_integration_import_uses_supported_validation_without_fabricating_
     assert not result["success"], result
     assert not (vault / "projects/target/policy").exists()
     assert (await handler.db.get_project("target")).hierarchical_integration_generation == 0
-    if problem == "route":
-        assert "cannot fabricate" in result["error"]
 
 
 async def test_integration_global_template_and_skip_do_not_configure_or_need_unused_values(env):
