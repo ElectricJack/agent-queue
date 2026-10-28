@@ -671,8 +671,11 @@ def _parse_status_branch_header(header: str) -> str:
 
 #: How long a clean full fsck of an unchanged object store is reused.
 _RETAINED_VERIFY_TTL_SECONDS = 3600.0
+#: Healthy multi-gigabyte stores have measured full checks lasting over nine minutes.
+#: Recovery and lender verification share this full-body command budget.
+RETAINED_FSCK_TIMEOUT_SECONDS = 900.0
 #: Full-body verification is a separate phase from negotiated object transfer.
-_RETAINED_VERIFY_TIMEOUT_SECONDS = 300.0
+_RETAINED_VERIFY_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
 _RETAINED_VERIFY_RETRY_DELAYS = (1.0, 2.0, 4.0)
 
 
