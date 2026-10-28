@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "c2fc3fb16f86efec54862ab9fd0a572f0d9ff26d",
+      "source_head": "72d74abc426b627e08a90dee99ce3ab612b445cf",
       "tool_sha256": "edf71529d50a5c985c9ca33513ebee75a078b8d021bf06ea1b00a6a51e7cddf7"
     },
     "nodes": [
