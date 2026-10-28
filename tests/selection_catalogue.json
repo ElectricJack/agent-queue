@@ -7616,9 +7616,10 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:4ecaf7ef37fa6585db32ded1f5dbf2e81432e06b2959c5918cf67d5637a54866",
+      "digest": "sha256:aeef4b38a8e350480e3e17fc5bbc978227754eeae797deee07a39c7524eaa558",
       "imports": [
         "src.git.manager",
+        "src.integration",
         "src.integration.bookkeeping_guard",
         "src.integration.development",
         "src.integration.gitops",
@@ -9094,7 +9095,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:398a809497f69bc74c9d17b16eb712f4b0491b9a69bacd9acc04733a305e5a1e",
+      "digest": "sha256:30041691efa900abadf54922a8136b9824614dda023d8f0bec55e87bd202eb38",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9109,6 +9110,7 @@
         "src.integration.close_runtime",
         "src.integration.gitops",
         "src.integration.models",
+        "src.integration.regeneration",
         "src.models",
         "src.operator_decisions",
         "src.waits.adapters.ci",

@@ -933,6 +933,54 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'close_regeneration_single_flight_composition': {'authorized_engine_delta': 210,
+                                                  'authorized_owned_delta': 211,
+                                                  'authorized_shared_owned_delta': 1,
+                                                  'authorized_table_delta': 0,
+                                                  'charged_files': {'src/cli/client.py': 1,
+                                                                    'src/integration/close_merge.py': 24,
+                                                                    'src/integration/close_runtime.py': 9,
+                                                                    'src/integration/regeneration.py': 177},
+                                                  'dev_source_revision': 'b9d4308cefbfc9b4292b96719954abe69350df92',
+                                                  'fix_task_id': 'keen-stone-16',
+                                                  'measured_engine_lines': 84135,
+                                                  'measured_owned_total': 160691,
+                                                  'measured_table_count': 45,
+                                                  'operator_decision': '6679052c',
+                                                  'original_dev_source_revision': 'e1d7a4739c32287a4056bcba84a2ecd5018972f2',
+                                                  'previous_measured_engine_lines': 83925,
+                                                  'previous_measured_owned_total': 160480,
+                                                  'previous_measured_table_count': 45,
+                                                  'pull_request': 2157,
+                                                  'reason': 'Exact supervisor-approved +211 '
+                                                            'owned/+210 engine/+1 shared/+0 tables '
+                                                            'for landing the single-flight, '
+                                                            'load-scaled close regeneration fix '
+                                                            '(keen-stone-16, PR 2157 / 0eaee6448), '
+                                                            'originally measured over dev '
+                                                            'e1d7a4739 and re-recorded over dev '
+                                                            '55cbf9ba2 after the policy export '
+                                                            'hotfix and PR 2142, then over dev '
+                                                            'b9d4308ce after PR 2089 (continuation '
+                                                            'workspace capacity), PR 2156, PR 2158 '
+                                                            'and PR 2150. regeneration.py shares '
+                                                            'one regeneration per candidate and '
+                                                            'scales its deadline with box load '
+                                                            '(+177 engine); close_merge.py and '
+                                                            'close_runtime.py return the durable '
+                                                            'close operation instead of failing at '
+                                                            'the deadline (+24/+9 engine); the '
+                                                            'task_close timeout comment in '
+                                                            'src/cli/client.py is charged as '
+                                                            'shared (+1). Preserve the original '
+                                                            'baseline, every historical grant and '
+                                                            'ownership classification, zero '
+                                                            'remaining headroom, the s4_modules '
+                                                            'expiry and existing storage '
+                                                            'categories.',
+                                                  'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                  'source_revision': '0eaee6448ce77d7062a7d4fd5a0d5ca9de1f44a8',
+                                                  'task_id': 'azure-current-27'},
  'continuation_workspace_capacity_recovery_composition': {'authorized_engine_delta': 0,
                                                             'authorized_owned_delta': 67,
                                                             'authorized_shared_owned_delta': 67,
@@ -1518,7 +1566,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4981,
+ 'authorized_owned_delta': 5192,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2089,8 +2137,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83925,
- 'measured_owned_total': 160480,
+ 'measured_engine_lines': 84135,
+ 'measured_owned_total': 160691,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
