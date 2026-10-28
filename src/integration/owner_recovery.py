@@ -366,7 +366,7 @@ class OwnerRecovery:
                     f"{' or '.join(self.recoverable_states)}, or session-bound reserved rows, "
                     "are recoverable",
                 )
-            session = await self._prove_writer_gone(row, evidence)
+            session = await self._prove_writer_gone(row, evidence, dry_run=dry_run)
             # Managed leases can be reacquired after TTL expiry. Exclude that
             # throughout preservation and release, even when the old TTL expired.
             async with self._recovery_exclusion(row, session) as conn:
@@ -475,9 +475,9 @@ class OwnerRecovery:
             checkout, default, _, url = await self._checkout_for(row)
             if checkout is None or branch == default:
                 return {"outcome": "not_eligible", "reason": "no safe repository checkout"}
-            async with self._mutex(checkout):
-                try:
-                    await self.git.afetch_origin(checkout, repository_url=url, lock_held=True)
+            try:
+                await self.git.afetch_origin(checkout, repository_url=url)
+                async with self._mutex(checkout):
                     remote = await self.git.als_remote_ref(checkout, branch)
                     if remote.state is not RemoteRefState.PRESENT:
                         return {"outcome": "not_eligible", "reason": "remote branch is unavailable"}
@@ -538,8 +538,8 @@ class OwnerRecovery:
                         task_id=task.id, payload=json.dumps(evidence, sort_keys=True), conn=conn,
                     )
                     return {"outcome": "restored", "evidence": evidence}
-                except (GitError, GitHubAccessError) as exc:
-                    return {"outcome": "not_eligible", "reason": str(exc)}
+            except (GitError, GitHubAccessError) as exc:
+                return {"outcome": "not_eligible", "reason": str(exc)}
 
     async def candidates(
         self, *, quiet_seconds: float = DEFAULT_QUIET_SECONDS, limit: int = 50
@@ -640,9 +640,11 @@ class OwnerRecovery:
     # -- step 2: the writer is gone -------------------------------------------
 
     async def _prove_writer_gone(
-        self, row: dict[str, Any], evidence: dict[str, Any]
+        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool = False,
     ) -> dict[str, Any] | None:
         session = None
+        if row["session_id"] and not dry_run:
+            await self._record_drained_writer_exit(row["session_id"])
         async with self.db._engine.connect() as conn:
             if row["session_id"]:
                 session, blocker = await _stopped_writer(
@@ -672,6 +674,19 @@ class OwnerRecovery:
         }
         return session
 
+    async def _record_drained_writer_exit(self, session_id: str) -> None:
+        """A stop intent plus provider proof is the stopped write a dead teardown lost."""
+        async with self.db._engine.connect() as conn:
+            session = await select_row(conn, sessions, sessions.c.id == session_id)
+        if (
+            session and session["desired_state"] == "stopped" and session["state"] != "stopped"
+            and not await _stop_proof_blocker(dict(session), self.confirm_stopped)
+        ):
+            await self.db.update_session_instance(
+                session_id, session["instance_token"], require_desired_state="stopped",
+                state="stopped", end_reason=session["end_reason"] or "process_gone",
+            )
+
     # -- step 3: the branch is safe -------------------------------------------
 
     async def _secure_branch(
@@ -694,11 +709,6 @@ class OwnerRecovery:
                 f"no checkout of repository {row['repository_id']} exists on this host, so "
                 "the branch cannot be compared with origin",
             )
-        live_dirs = await self._live_work_dirs()
-        base_paths = await self._base_paths()
-        if row_path is not None and os.path.realpath(row_path) in base_paths:
-            evidence["ignored_base_workspace"] = row["workspace_id"]
-            row_path = None
         planned: list[dict[str, Any]] = []
         preserve: list[tuple[str, str | None, str]] = []  # (kind, worktree, sha)
         detach: list[str] = []
@@ -706,16 +716,22 @@ class OwnerRecovery:
         workspace_clean = True
         retain_checkout = False
         row_inspected = False
+        # Full lender verification can take minutes. Let the fetch own its
+        # repository transaction, then inspect local state under ours.
+        # No preservation/detachment proof is captured before this mutex.
+        try:
+            await self.git.afetch_origin(checkout, repository_url=repository_url)
+        except (GitError, GitHubAccessError) as exc:
+            raise _Refusal(
+                ORIGIN_UNREACHABLE,
+                f"git fetch origin failed: {exc}",
+            ) from exc
         async with self._mutex(checkout):
-            try:
-                await self.git.afetch_origin(
-                    checkout, repository_url=repository_url, lock_held=True
-                )
-            except (GitError, GitHubAccessError) as exc:
-                raise _Refusal(
-                    ORIGIN_UNREACHABLE,
-                    f"git fetch origin failed: {exc}",
-                ) from exc
+            live_dirs = await self._live_work_dirs()
+            base_paths = await self._base_paths()
+            if row_path is not None and os.path.realpath(row_path) in base_paths:
+                evidence["ignored_base_workspace"] = row["workspace_id"]
+                row_path = None
             remote = await self.git.als_remote_ref(checkout, branch)
             if remote.state is RemoteRefState.ERROR:
                 raise _Refusal(ORIGIN_UNREACHABLE, f"reading origin/{branch}: {remote.error}")

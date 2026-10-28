@@ -611,6 +611,20 @@ def test_clear_retained_recovery_names_the_project_and_optional_incident(inciden
     )
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_store_maintenance_previews_unless_apply_is_explicit(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "store-maintenance", "--project-id", "p",
+                                         *(["--apply"] if apply else [])])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == (
+        "integration_store_maintenance", {"project_id": "p", "dry_run": not apply},
+    )
+
+
 def test_delegate_publication_preserves_explicit_grantee_and_fences():
     from src.cli.app import cli
 
