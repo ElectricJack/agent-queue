@@ -1859,6 +1859,104 @@ async def test_resource_coalescing_preserves_project_and_provider_boundaries(run
     assert dispatch.await_count == 4
 
 
+@pytest.mark.parametrize("retained", [False, True])
+@pytest.mark.parametrize("burst", [1, 40])
+@pytest.mark.parametrize("rollback", [False, True])
+async def test_pool_burst_reobserves_once_with_constant_graph_acquisitions(
+    runtime_env, monkeypatch, retained, burst, rollback,
+):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+        cond, state="unsatisfied", revision="1"))
+    await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                         "source_revision": "1"}, registry=build_registry(resource_reader=reader),
+                   scope=Scope("p", "scheduler", "source", principal="service"))
+    hints = []
+    for n in range(burst):
+        hints.append(await env.db.wait_source_commit(**resource_invalidation(
+            producer="pool", identity="worker", project_id="p", revision=str(n),
+            outcome_ref="pool", payload={})))
+        if n == 0:
+            barrier = await env.db.wait_source_commit(source_key="test:lifecycle", generation=0,
+                revision="1", outcome_ref="barrier", payload={})
+    service = runtime(env)
+    listener = service.listener
+    assert await service.lease()
+    watermark = await env.db.wait_source_watermark()
+    if retained:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_listener_cursors).values(last_seq=watermark))
+    dispatch = AsyncMock(return_value=0)
+    monkeypatch.setattr(listener, "_dispatch", dispatch)
+    locked = AsyncMock(wraps=listener_module.lock_graph)
+    monkeypatch.setattr(listener_module, "lock_graph", locked)
+
+    if rollback:
+        async def fail(conn, event):
+            assert event["seq"] == hints[-1]
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+            raise RuntimeError("pool observation failed")
+
+        monkeypatch.setattr(listener, "_dispatch", fail)
+        with pytest.raises(RuntimeError, match="pool observation failed"):
+            await listener._drain_one(watermark, True, {}, {"attempted": set()},
+                                      admission_ready=True)
+        assert (await env.db.get_task("owner")).title != "abort"
+        assert all(r["dispatched_at"] is None for r in await records(env, wait_source_events))
+        assert (await records(env, wait_listener_cursors))[0]["last_seq"] == (
+            watermark if retained else 0)
+        monkeypatch.setattr(listener, "_dispatch", dispatch)
+        locked.reset_mock()
+
+    # Lookahead may stamp later hints, but must not consume the lifecycle event.
+    result = await listener._drain_one(watermark, True, {}, {"attempted": set()},
+                                       admission_ready=True)
+    assert set(result["processed"]) == set(hints)
+    position = (await records(env, wait_listener_cursors))[0]["last_seq"]
+    assert position == (watermark if retained else hints[0])
+    sources = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert sources[barrier]["dispatched_at"] is None
+    assert all(sources[seq]["dispatched_at"] is not None for seq in hints)
+
+    await listener.drain(watermark, admission_ready=True)
+    assert [call.args[1]["seq"] for call in dispatch.await_args_list] == [hints[-1], barrier]
+    assert locked.await_count <= 3
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == watermark
+
+
+async def test_retained_pool_coalescing_preserves_project_and_provider_events(runtime_env):
+    env = runtime_env
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+        cond, state="unsatisfied", revision="1"))
+    await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                         "source_revision": "1"}, registry=build_registry(resource_reader=reader),
+                   scope=Scope("p", "scheduler", "source", principal="service"))
+    expected = {}
+    for n in range(4):
+        for producer, project, identity in [("pool", "p", "worker"), ("pool", "q", "worker"),
+                                             ("pool", "p", "other"), ("provider", None, "worker")]:
+            seq = await env.db.wait_source_commit(**resource_invalidation(
+                producer=producer, identity=identity, project_id=project, revision=f"{project}-{n}",
+                outcome_ref="hint", payload={}))
+            if producer == "pool":
+                expected[project, identity] = seq
+            else:
+                expected[seq] = seq
+    service = runtime(env)
+    assert await service.lease()
+    watermark = await env.db.wait_source_watermark()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=watermark))
+    dispatch = service.listener._dispatch = AsyncMock(return_value=0)
+    await service.listener.drain(watermark, admission_ready=True)
+    assert {call.args[1]["seq"] for call in dispatch.await_args_list} == set(expected.values())
+    assert dispatch.await_count == len(expected)
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+
+
 async def test_startup_renews_lease_while_first_drain_is_blocked(runtime_env):
     service = runtime(runtime_env)
     entered, renewed = asyncio.Event(), asyncio.Event()

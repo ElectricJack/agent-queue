@@ -227,10 +227,12 @@ async def test_extend_preserves_age_receipt_ceiling_and_allows_next_incident(env
     assert all(row["state"] == "cancelled" for row in resolved.values())
 
 
+@pytest.mark.parametrize("graph_timeout", [0.0, 0.25])
 @pytest.mark.parametrize("force_contention", [False, True])
 async def test_same_deadline_generation_concurrently_creates_one_incident(
-    env, monkeypatch, force_contention,
+    env, monkeypatch, graph_timeout, force_contention,
 ):
+    monkeypatch.setattr("src.waits.graph.BACKGROUND_GRAPH_LOCK_TIMEOUT", graph_timeout)
     now = [NOW + 60]
     service = service_for(env, now)
     receipt = await waiting(env, escalate_after_seconds=60)
