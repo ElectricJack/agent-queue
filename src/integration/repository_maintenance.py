@@ -142,10 +142,10 @@ class RetainedStoreMaintenance:
                     removed = await asyncio.to_thread(
                         _temporary_packs, directory, self.clock(), remove=True)
                     if item["repack_needed"]:
-                        result = await self.git.arun_git_result(
-                            _REPACK, cwd=str(path), lock_held=True, env={"LC_ALL": "C"},
-                            timeout=REPACK_TIMEOUT_SECONDS, low_priority=True,
-                        )
+                        # A clean check of the exact pre-repack store carries over.
+                        result = await self.git.arepack_retained_store(
+                            str(directory), _REPACK, cwd=str(path),
+                            timeout=REPACK_TIMEOUT_SECONDS)
                         if result.returncode or result.stderr.strip():
                             raise GitError(safe_git_detail(result.stderr or "retained repack failed"))
                         report = directory / "gc.log"
