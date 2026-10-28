@@ -4,13 +4,16 @@ def python_repository_data(name):
         name = name,
         srcs = native.glob(
             ["*", ".github/**", "scripts/**", "migrations/**", "packages/aq-client/**"],
-            exclude = ["BUILD.bazel", ".git", "**/__pycache__/**", "**/*.pyc", "**/node_modules/**"],
+            exclude = [
+                "*.md", "LICENSE", "BUILD.bazel", ".git", "**/__pycache__/**", "**/*.pyc",
+                "**/node_modules/**",
+            ],
             allow_empty = True,
         ) + ["//tools/bazel:repository_inputs"],
         visibility = ["//visibility:public"],
     )
     native.filegroup(
         name = "python_documentation_data",
-        srcs = native.glob(["docs/**"], exclude = ["**/BUILD.bazel"]),
+        srcs = native.glob(["docs/**", "*.md", "LICENSE"], exclude = ["**/BUILD.bazel"]),
         visibility = ["//visibility:public"],
     )

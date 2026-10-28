@@ -1,0 +1,6 @@
+{
+  "data": [
+    "dashboard/src/pages/playbook-graph-v2/__tests__/collections.fixture.json"
+  ],
+  "reason": "The backend collection projection is checked against the dashboard's shared fixture."
+}

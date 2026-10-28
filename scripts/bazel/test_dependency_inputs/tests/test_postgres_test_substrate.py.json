@@ -1,0 +1,6 @@
+{
+  "reason": "monkeypatch/patch.setattr(Database/db_fixtures, ...) passes the already-imported module/class objects as bare positional args; the attribute names patched are literal strings.",
+  "resolves": [
+    "tests/test_postgres_test_substrate.py: unresolved dynamic import in escaped test helper module"
+  ]
+}

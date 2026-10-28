@@ -1,0 +1,6 @@
+{
+  "reason": "monkeypatch.setattr(pg_dsn, ...) passes the already-imported pg_dsn module object as a bare positional arg; the attribute names patched are literal strings.",
+  "resolves": [
+    "tests/test_pg_dsn.py: unresolved dynamic import in escaped test helper module"
+  ]
+}

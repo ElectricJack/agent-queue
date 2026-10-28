@@ -1,0 +1,6 @@
+{
+  "reason": "_train_control's model_name is always a literal Integration*Args class name from a fixed set of call sites into src.commands.contracts.integration, which is already captured as a base-module import.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

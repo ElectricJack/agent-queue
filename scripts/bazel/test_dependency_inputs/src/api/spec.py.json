@@ -1,0 +1,6 @@
+{
+  "reason": "build_openapi_spec's getattr(deps, name) iterates the literal _CREATE_APP_DEPS_GLOBALS tuple against src.api.dependencies, which is already captured as a base-module import.",
+  "resolves": [
+    "src/api/spec.py: unresolved dynamic import in test helper lookup"
+  ]
+}

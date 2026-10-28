@@ -1,0 +1,6 @@
+{
+  "reason": "lookup()'s table_name ranges over a fixed set of literal table names on src.database.tables, which is already captured as a base-module import.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "imports": [
+    "scripts.migrate_task_records"
+  ],
+  "reason": "spec_from_file_location loads scripts/migrate_task_records.py via an os.path.join the analyzer can't statically resolve to a literal.",
+  "resolves": [
+    "tests/test_migrate_task_records.py: unresolved file import"
+  ]
+}

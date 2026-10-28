@@ -1,0 +1,6 @@
+{
+  "reason": "monkeypatch.setattr(pg_dsn/db_fixtures, ...) passes the already-imported module objects as bare positional args; the attribute names patched are literal strings.",
+  "resolves": [
+    "tests/test_db_pool_reaper.py: unresolved dynamic import in escaped test helper module"
+  ]
+}
