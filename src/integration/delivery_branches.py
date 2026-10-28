@@ -1153,7 +1153,8 @@ async def observe_completed_branches(
     *max_age* overrides that cache window (zero fetches current heads for recovery);
     *cached_only* never fetches (interactive diagnostics), so an expired
     snapshot is ``unavailable``.  A project whose default branch cannot be
-    observed is ``unavailable``, never clean.
+    observed is ``unavailable``, never clean.  ``targets`` names, per observed
+    project, the repository, ref and tip its entries were judged against.
     """
     from functools import partial
 
@@ -1175,6 +1176,7 @@ async def observe_completed_branches(
         targets = (await conn.execute(query)).mappings().all()
     entries: list[dict[str, Any]] = []
     unavailable: list[dict[str, Any]] = []
+    observed: dict[str, dict[str, str]] = {}
     for target in targets:
         project_id, repository_id = target["id"], target["repository_id"]
         target_ref = "refs/heads/" + (target["default_branch"] or "").removeprefix("refs/heads/")
@@ -1189,6 +1191,8 @@ async def observe_completed_branches(
             observation = getattr(snapshot, "observation", snapshot)
             if observation.error or not observation.target_oid:
                 raise ValueError(observation.error or "default branch unavailable")
+            observed[project_id] = {"repository_id": repository_id, "target_ref": target_ref,
+                                    "target_oid": observation.target_oid}
             truth = (snapshot if isinstance(snapshot, GitTruthSnapshot)
                      else GitTruthSnapshot(GitTruth(observer.git), snapshot,
                                            cached_only=cached_only))
@@ -1230,7 +1234,8 @@ async def observe_completed_branches(
         except (GitError, OSError, ValueError) as exc:
             unavailable.append({"project_id": project_id, "repository_id": repository_id,
                                 "reason": str(exc)})
-    return {"entries": entries, "unavailable": unavailable, "projects": len(targets)}
+    return {"entries": entries, "unavailable": unavailable, "projects": len(targets),
+            "targets": observed}
 
 
 #: Rules under which something on record explains the branch or will move it.
