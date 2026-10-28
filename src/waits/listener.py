@@ -437,8 +437,10 @@ class WaitSourceListener:
 
     async def _dispatched_ci_retry(self, conn, watermark, attempted):
         # Older daemons stamped events dispatched even when fresh observation
-        # failed. The stamp is not a per-wait receipt. Start from pending
-        # subscriptions and their indexed source histories, not all history.
+        # failed, and a failed owner fence (a restart or hibernation race)
+        # still stamps the event. The stamp is not a per-wait receipt. Jobs
+        # emit only terminal events, so a pending job wait behind one is stale.
+        # Start from pending subscriptions and their indexed source histories.
         latest = select(func.max(wait_source_events.c.seq)).where(
             wait_source_events.c.source_key == wait_records.c.source_key,
             wait_source_events.c.source_generation == wait_records.c.source_generation,
@@ -448,7 +450,7 @@ class WaitSourceListener:
         recoverable = select(latest).where(
             wait_records.c.outcome == "pending",
             wait_records.c.verification_state == "verified",
-            wait_records.c.condition_kind.in_(("ci_check", "ci_run")),
+            wait_records.c.condition_kind.in_(("ci_check", "ci_run", "job")),
         )
         return (await conn.execute(select(wait_source_events).where(
             wait_source_events.c.seq.in_(recoverable),

@@ -18,7 +18,7 @@ from src.database.queries.wait_queries import wait_explain
 from src.database.tables import (
     admission_reservations, continuations, escalation_deliveries, escalations, events,
     integration_branch_owners, messages, sessions, task_context, tasks, wait_deadlines,
-    wait_edges, wait_escalations, wait_records,
+    wait_edges, wait_escalations, wait_records, wait_source_events,
 )
 from src.waits.admission import admission_pass
 from src.waits.conditions import Condition, Scope, WaitError
@@ -216,9 +216,12 @@ class WaitDecisions:
                 raise WaitError("wait.out_of_scope", "verified source generation changed")
             observed = await self.service.registry.observe(conn, cond)
             if observed.state != "unsatisfied":
-                # Let source dispatch record the real evidence; never supersede
-                # a source result with a stale supervisor digest decision.
-                raise WaitError("wait.not_escalated", "source changed; dispatch its evidence first")
+                # Never supersede a source result with a stale supervisor digest
+                # decision: settle from the source instead.
+                return await self.settle_source(
+                    conn, wait, task, observed, args=args, principal=principal,
+                    escalation=escalation, keys=keys, now=now,
+                )
             decision = args["decision"]
             owner_scope, continuation = await fence_owner(
                 conn, wait, task, parked_required=decision in {"wake", "reroute"},
@@ -257,6 +260,40 @@ class WaitDecisions:
             return {"success": True, "wait_id": wait["id"], "decision": decision,
                     "outcome": "cancelled" if decision in {"wake", "cancel", "reroute"}
                     else "pending", "generation": escalation["generation"]}
+
+    async def settle_source(self, conn, wait, task, observed, *, args, principal, escalation,
+                            keys, now):
+        """Settle a changed source whose evidence the listener will never dispatch.
+
+        Undispatched evidence still belongs to source dispatch. A consumed event
+        (an owner fence failing across a restart stamps it without committing)
+        is never revisited by the cursor, so refusing would deadlock the wait.
+        """
+        same_source = ((wait_source_events.c.source_key == wait["source_key"])
+                       & (wait_source_events.c.source_generation == wait["source_generation"])
+                       & (wait_source_events.c.seq > wait["source_watermark_seq"]))
+        pending = await conn.scalar(select(func.min(wait_source_events.c.seq)).where(
+            same_source, wait_source_events.c.dispatched_at.is_(None),
+        ))
+        if pending is not None:
+            raise WaitError("wait.not_escalated", "source changed; dispatch its evidence first",
+                            source_seq=pending)
+        _, continuation = await fence_owner(conn, wait, task, parked_required=True)
+        seq = await conn.scalar(select(func.max(wait_source_events.c.seq)).where(same_source))
+        result = await self.service.dispatcher.settle(
+            conn, wait, observed, event={"seq": seq, "note": args["note"]}, task=task,
+            continuation=continuation, changed_keys=keys,
+        )
+        if not result.get("committed"):
+            raise WaitError("wait.not_escalated", "wait changed before decision commit")
+        await self.audit(conn, wait, "wait.decided", now, generation=escalation["generation"],
+                         decision=args["decision"], note=args["note"], outcome=result["outcome"],
+                         reason="source_reverified", source_seq=seq,
+                         supervisor_session_id=principal.session_id, at=now)
+        return {"success": True, "wait_id": wait["id"], "decision": args["decision"],
+                "outcome": result["outcome"], "generation": escalation["generation"],
+                "next_step": "The source already changed; the wait settled from a fresh "
+                             "observation and the requested decision was not applied."}
 
     async def retire(self, args, *, principal, scope):
         """Retire one current suspension; termination still owns writer release."""

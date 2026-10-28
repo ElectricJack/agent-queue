@@ -107,6 +107,31 @@ async def test_origin_restore_adapter_retains_the_reviewable_preview():
     assert result.value.evidence == evidence
 
 
+async def test_store_maintenance_adapter_preserves_running_poll_handle():
+    from src.commands.contracts.integration import IntegrationStoreMaintenanceArgs
+
+    class Handler:
+        async def execute(self, name, payload):
+            assert name == "integration_store_maintenance"
+            assert payload == {"project_id": "p", "dry_run": False}
+            return {"success": True, "outcome": "running", "operation_id": "maintenance",
+                    "poll": "aq integration store-maintenance --project-id p --apply",
+                    "elapsed_seconds": 20}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    set_handler_provider(Handler)
+    try:
+        result = await registry.require("integration_store_maintenance").invoke(
+            IntegrationStoreMaintenanceArgs(project_id="p", dry_run=False), None,
+        )
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == "running"
+    assert result.value.operation_id == "maintenance"
+    assert "--apply" in result.value.poll
+
+
 @pytest.mark.parametrize("payload", [
     {"dry_run": False},
     {"dry_run": False, "expected_head_sha": "a" * 40},

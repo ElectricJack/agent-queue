@@ -102,7 +102,8 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
     "task_claim": 180.0,
-    # Author close may regenerate a candidate (600s) before returning a wait.
+    # Author close waits at most 300s for its shared regeneration, then returns
+    # its durable operation id (close_in_progress) while the run continues.
     "task_close": 900.0,
     "integration_continue_close": 900.0,
     "message_wait": 90.0,

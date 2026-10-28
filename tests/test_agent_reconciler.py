@@ -557,6 +557,39 @@ async def test_busy_agent_on_in_progress_task_is_untouched(db):
     assert bus.events == []
 
 
+@pytest.mark.parametrize("reserved_by_this_agent", [True, False])
+async def test_reserved_resume_agent_keeps_its_pin_before_the_session_starts(
+    db, reserved_by_this_agent,
+):
+    """bold-rapids-90.3: a continuation's resume reserves the agent, then builds
+    a fresh workspace before any session exists. Unpinning it there left the
+    resumed session out of scope for push, message and close."""
+    await _seed_project_with_profile(
+        db, project_id="p", profile_id="claude-opus", max_agents=1, workspace_count=0,
+    )
+    await _seed_busy_agent_on_task(
+        db, agent_id="agent-1", profile_id="claude-opus",
+        task_id="t-resume", task_status=TaskStatus.RESUME_PENDING,
+    )
+    if not reserved_by_this_agent:
+        await db.create_agent(Agent(id="agent-2", name="agent-2", profile_id="claude-opus"))
+    await db.update_task(
+        "t-resume", assigned_agent_id="agent-1" if reserved_by_this_agent else "agent-2",
+    )
+
+    bus = _Bus()
+    await AgentReconciler(db, bus=bus).reconcile()
+
+    agent = await db.get_agent("agent-1")
+    if reserved_by_this_agent:
+        assert agent.state == AgentState.BUSY
+        assert agent.current_task_id == "t-resume"
+        assert bus.events == []
+    else:
+        assert agent.state == AgentState.IDLE
+        assert agent.current_task_id is None
+
+
 async def test_busy_agent_with_live_session_on_completed_task_is_untouched(db):
     from src.models import SessionRecord
 
