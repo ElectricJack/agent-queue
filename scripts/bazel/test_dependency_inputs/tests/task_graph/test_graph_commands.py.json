@@ -1,4 +1,8 @@
 {
+  "reason": "The subprocess exec() snippet's getattr(graph, name) walks src.task_graph.__all__ to compare every exported symbol against creator/models/parser/validator, all of which the same snippet already imports directly; the dynamic name never reaches a file outside that already-declared closure.",
+  "resolves": [
+    "tests/task_graph/test_graph_commands.py: unresolved dynamic import in test helper lookup"
+  ],
   "data": [
     "src/__init__.py",
     "src/api/graph_layout.py",

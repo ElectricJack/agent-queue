@@ -1,0 +1,6 @@
+{
+  "reason": "lookup()'s getattr(tables, table_name) picks one of the Table objects already imported from src/database/tables.py by the same function (`from src.database import tables`); that file is already a declared import edge, so the dynamic attribute name never introduces a new file dependency.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}

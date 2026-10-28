@@ -1,0 +1,6 @@
+{
+  "reason": "_train_control's getattr(contracts, model_name) picks one of the Integration*Args classes already imported from src/commands/contracts/integration.py by the same function (`from src.commands.contracts import integration as contracts`); that file is already a declared import edge, so the dynamic attribute name never introduces a new file dependency.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}
