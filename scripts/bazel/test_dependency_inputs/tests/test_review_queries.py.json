@@ -1,0 +1,13 @@
+{
+  "reason": "_load_migration() loads a migration module by a formatted name/path rather than an inline literal; all migration names used by call sites in this module are fixed and enumerable.",
+  "resolves": [
+    "tests/test_review_queries.py: unresolved file import"
+  ],
+  "imports": [
+    "migrations.versions.a00000000014_document_reviews",
+    "migrations.versions.a00000000081_review_spec_kind",
+    "migrations.versions.a00000000072_object_review_decider",
+    "migrations.versions.a00000000096_human_ask_decisions",
+    "migrations.versions.a00000000046_review_attachments"
+  ]
+}
