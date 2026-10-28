@@ -14641,7 +14641,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:9d5401310666ad691b3f912f2f6b37fee297fc1d071f51ea97462c4f44b41886",
+      "digest": "sha256:ff47ae06a9e5b7dd29aa0c5d2d7b4f0c3850c019a8f0ca171313f52cc566781d",
       "imports": [
         "src.claim_file",
         "src.config",
@@ -14656,6 +14656,7 @@
         "src.sessions.context",
         "src.sessions.exit_classifier",
         "src.sessions.fake",
+        "src.sessions.proctable",
         "src.sessions.provider",
         "src.sessions.reconciler"
       ],
@@ -21270,9 +21271,11 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:74b628183e6aad59cac5d120ecb0c1254c0be3163f30edd3d6212629d54b5ec7",
+      "digest": "sha256:2e2a927700c1b60fb174961e06b9d4b8a023074e770fa3bd1e9bdbb04d66f997",
       "imports": [
+        "src.claim_file",
         "src.config",
+        "src.database.tables",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.execution",
