@@ -1,0 +1,6 @@
+{
+  "reason": "Two helpers in this file dispatch getattr(contracts, model_name) -- _train_control (line ~474) and _repair_request (line ~2843). In both, contracts is the already-imported src.commands.contracts.integration module (via `from src.commands.contracts import integration as contracts`), and every call site of both helpers passes a literal class name defined there (IntegrationRecordRootNoopArgs, IntegrationRepairTargetArgs, IntegrationRerequestCheckArgs, IntegrationAbortBatchArgs, IntegrationSealNowArgs, IntegrationRefreshEpicArgs, IntegrationReverifyEpicArgs, IntegrationSettleBatchArgs, IntegrationRetireOriginArgs, IntegrationRepairStartArgs, IntegrationRecordRepairArgs, IntegrationRepairTimeoutArgs, IntegrationRepairDispatchArgs). No file beyond that already-imported module is reachable through either lookup.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

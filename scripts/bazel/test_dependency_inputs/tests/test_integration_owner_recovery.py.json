@@ -1,4 +1,11 @@
 {
+  "reason": "_migration() loads migrations/versions/a00000000015_owner_recoveries.py via spec_from_file_location with a Path built from __file__, not a literal, so the static analyzer cannot follow it; declare the one migration module it actually loads.",
+  "resolves": [
+    "tests/test_integration_owner_recovery.py: unresolved file import"
+  ],
+  "imports": [
+    "migrations.versions.a00000000015_owner_recoveries"
+  ],
   "data": [
     "src/__init__.py",
     "src/api/auth.py",
