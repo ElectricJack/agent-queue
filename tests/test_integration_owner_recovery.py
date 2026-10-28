@@ -584,6 +584,44 @@ async def test_a_writer_that_is_not_proven_gone_is_refused(env, case):
         confirm.assert_not_awaited()
 
 
+@pytest.mark.parametrize("dead", [True, False])
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_a_drained_writer_whose_stop_write_was_lost_needs_only_provider_proof(
+    env, dead, dry_run,
+):
+    # A teardown that never wrote state=stopped leaves draining under stop intent.
+    env.branch("aq/t6d")
+    slot = await env.slot("slot", "aq/t6d", locked_by_task_id=None)
+    await env.task("t6d")
+    await env.session(
+        "s6d", work_dir=slot, state="draining", desired_state="stopped", task_id="t6d",
+    )
+    await env.owner(
+        "o6d", "aq/t6d", "t6d", session_id="s6d", workspace_id="ws-slot",
+        state="handoff_pending",
+    )
+    confirm = AsyncMock(return_value=dead)
+
+    result = await env.service(confirm_stopped=confirm).recover(
+        "o6d", principal="human:local-operator", dry_run=dry_run,
+    )
+
+    async with env.db._engine.connect() as conn:
+        state = (await conn.execute(
+            select(sessions.c.state).where(sessions.c.id == "s6d"))).scalar_one()
+    if not dead:
+        assert (result.outcome, result.reason) == ("not_eligible", "writer_live")
+        assert state == "draining"
+    elif dry_run:
+        # A preview records nothing, so the unrecorded stop still refuses it.
+        assert (result.outcome, result.reason) == ("not_eligible", "writer_live")
+        assert state == "draining"
+    else:
+        assert (result.outcome, result.reason) == ("released", None)
+        assert state == "stopped"
+        assert (await env.row("o6d"))["handoff_state"] == "released"
+
+
 @pytest.mark.parametrize("case", ["claimed", "claiming", "named"])
 async def test_a_branch_checked_out_where_a_live_session_works_is_refused(env, case):
     env.branch("aq/t7")

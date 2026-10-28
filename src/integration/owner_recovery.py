@@ -366,7 +366,7 @@ class OwnerRecovery:
                     f"{' or '.join(self.recoverable_states)}, or session-bound reserved rows, "
                     "are recoverable",
                 )
-            session = await self._prove_writer_gone(row, evidence)
+            session = await self._prove_writer_gone(row, evidence, dry_run=dry_run)
             # Managed leases can be reacquired after TTL expiry. Exclude that
             # throughout preservation and release, even when the old TTL expired.
             async with self._recovery_exclusion(row, session) as conn:
@@ -638,9 +638,11 @@ class OwnerRecovery:
     # -- step 2: the writer is gone -------------------------------------------
 
     async def _prove_writer_gone(
-        self, row: dict[str, Any], evidence: dict[str, Any]
+        self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool = False,
     ) -> dict[str, Any] | None:
         session = None
+        if row["session_id"] and not dry_run:
+            await self._record_drained_writer_exit(row["session_id"])
         async with self.db._engine.connect() as conn:
             if row["session_id"]:
                 session, blocker = await _stopped_writer(
@@ -669,6 +671,19 @@ class OwnerRecovery:
             "confirmed_at": self.clock(),
         }
         return session
+
+    async def _record_drained_writer_exit(self, session_id: str) -> None:
+        """A stop intent plus provider proof is the stopped write a dead teardown lost."""
+        async with self.db._engine.connect() as conn:
+            session = await select_row(conn, sessions, sessions.c.id == session_id)
+        if (
+            session and session["desired_state"] == "stopped" and session["state"] != "stopped"
+            and not await _stop_proof_blocker(dict(session), self.confirm_stopped)
+        ):
+            await self.db.update_session_instance(
+                session_id, session["instance_token"], require_desired_state="stopped",
+                state="stopped", end_reason=session["end_reason"] or "process_gone",
+            )
 
     # -- step 3: the branch is safe -------------------------------------------
 
