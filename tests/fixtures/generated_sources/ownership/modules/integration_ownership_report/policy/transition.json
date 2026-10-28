@@ -14,7 +14,7 @@
       "restore_task": "azure-ridge-72",
       "restored_owned_total_cap": 155499
     },
-    "engine_cap": 84135,
+    "engine_cap": 84212,
     "expires_at": "s4_modules",
     "fixed_replacement_allowance": 15000,
     "hand_integration_reconciliation": {
@@ -83,7 +83,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 5285,
+      "authorized_owned_delta": 5362,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -545,6 +545,31 @@
         "task_id": "bold-lantern-39",
         "thread_id": "bold-lantern-39-ci-size"
       },
+      "delivery_watchdog_target_verification_composition": {
+        "authorized_engine_delta": 77,
+        "authorized_owned_delta": 77,
+        "authorized_shared_owned_delta": 0,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/integration/delivery_branches.py": 5,
+          "src/integration/delivery_watchdog.py": 72
+        },
+        "dev_source_revision": "c2dfcd683dbb18cb6a8da08b3c53cd72dc9fdc95",
+        "fix_task_id": "bright-stone-69",
+        "measured_engine_lines": 84212,
+        "measured_owned_total": 160861,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "original_dev_source_revision": "17d0d73891157519e2ccb94bed4d8331491af400",
+        "previous_measured_engine_lines": 84135,
+        "previous_measured_owned_total": 160784,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +77 engine/+77 owned/+0 shared/+0 tables for landing the delivery watchdog target-verification fix (bright-stone-69 / 68331c71e), originally measured over dev 17d0d7389 and re-recorded over dev c2dfcd683 after PRs 2166, 2169 and 2168. delivery_watchdog.py verifies the judged target ref, keeps a projection pending while the head is still not an ancestor and never watches the land-* tasks it filed itself (+72 engine); delivery_branches.py exposes the landing-task marker (+5 engine). Preserve the original baseline, every historical grant and ownership classification, zero remaining headroom, the s4_modules expiry and existing storage categories.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "68331c71ed5e1302d4f80e3566e1526e2a4590e6",
+        "supervisor_grant_reference": "msg-4fda2e4d5dfd4a92821d88782489b933",
+        "task_id": "bright-stone-69"
+      },
       "expires_at": "s4_modules",
       "focus_view_retirement_reduction": {
         "measured_engine_delta": 0,
@@ -802,8 +827,8 @@
         "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
         "task_id": "keen-harbor-84"
       },
-      "measured_engine_lines": 84135,
-      "measured_owned_total": 160784,
+      "measured_engine_lines": 84212,
+      "measured_owned_total": 160861,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -1650,7 +1675,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 160784,
+    "owned_total_cap": 160861,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
