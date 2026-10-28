@@ -2642,6 +2642,8 @@ class GitManager:
         ``_RETAINED_VERIFY_TTL_SECONDS``: unverified object writes invalidate it. A
         full check may take many seconds on a large store. Ordinary origin
         fetches run it before taking repository exclusion for transfer and import.
+        When fsck reports only missing objects that all exist afterwards, a
+        concurrent writer added them mid-scan: the check passes but is not reused.
         """
         # One full check per store at a time: concurrent fetches into the same
         # store wait for it and reuse a clean result instead of each running
@@ -2662,6 +2664,9 @@ class GitManager:
                     )
                     break
                 except GitError as exc:
+                    if await self._aonly_concurrent_writes(git_dir, exc, home=home,
+                                                           deadline=deadline):
+                        return
                     if (attempt == len(_RETAINED_VERIFY_RETRY_DELAYS)
                             or not str(exc).startswith("retained Git object integrity")):
                         raise
@@ -2681,6 +2686,23 @@ class GitManager:
                     fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
             self._record_retained_verified(key, fingerprint, after, started)
+
+    async def _aonly_concurrent_writes(
+        self, git_dir: str, exc: GitError, *, home: Path, deadline: float,
+    ) -> bool:
+        """Whether every object fsck called missing exists now, written mid-scan."""
+        oids = getattr(exc, "missing_oids", ())
+        if not oids:
+            return False
+        try:
+            found = await self._run_isolated_import_git(
+                [f"--git-dir={git_dir}", "cat-file", "--batch-check=%(objectname)"],
+                home=home, deadline=deadline,
+                input="".join(f"{oid}\n" for oid in oids).encode("ascii"),
+            )
+        except GitError:
+            return False
+        return found.decode("ascii").split() == list(oids)
 
     async def _aretained_fetch_deadline(
         self, git_dir: str, *, home: Path, deadline: float,
@@ -5602,7 +5624,14 @@ class GitManager:
                     if detail not in evidence:
                         evidence.append(detail)
                 detail = "; ".join(evidence[:16]) or f"fsck exit {process.returncode}"
-                raise GitError(f"retained Git object integrity is unavailable: {detail}")
+                error = GitError(f"retained Git object integrity is unavailable: {detail}")
+                # fsck scans objects before refs and indexes, so a concurrent
+                # commit can be reported missing. Keep every such id for re-checks.
+                missing = [re.fullmatch(rb"missing [a-z]+ ([0-9a-f]{40,64})", line)
+                           for line in unexpected]
+                if missing and all(missing):
+                    error.missing_oids = tuple(m[1].decode("ascii") for m in missing)
+                raise error
         elif process.returncode == 0 and re.search(
             rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
         ):

@@ -2954,7 +2954,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 4914,
+    "authorized_owned_delta": 4981,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -3219,6 +3219,34 @@
       "source_revision": "9dd471a3ae39eb2494dac5d19945b21a18f4cf7f",
       "supervisor_decision_message_id": "msg-064ace8754d34bb98fd36c97c2d60fd2",
       "task_id": "calm-ember-15"
+    },
+    "continuation_workspace_capacity_recovery_composition": {
+      "authorized_engine_delta": 0,
+      "authorized_owned_delta": 67,
+      "authorized_shared_owned_delta": 67,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/commands/task_commands.py": 3,
+        "src/wait_runtime/resume.py": 64
+      },
+      "dev_source_revision": "b6a501bca6d69897f3b931e4a1f896a0c0e82c4c",
+      "fix_task_id": "swift-rapids-67",
+      "measured_engine_lines": 83925,
+      "measured_owned_total": 160480,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "original_approval_message_id": "msg-4b0cd2987b2149d4992bb8fa135e8daf",
+      "original_dev_source_revision": "e1d7a4739c32287a4056bcba84a2ecd5018972f2",
+      "previous_measured_engine_lines": 83925,
+      "previous_measured_owned_total": 160413,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +67 owned/+67 shared/+0 engine/+0 tables for landing continuation workspace-capacity backpressure and fenced escalation-ID recovery (swift-rapids-67, PR 2089 / 75f9caee2), originally measured over dev e1d7a4739 and re-recorded over dev a0a696f84 after the policy export hotfix and PR 2142, then over dev b6a501bca after PR 2109 and PR 2164 (fresh-horizon-83). A continuation that cannot get a worktree slot waits and retries instead of holding with resume_workspace_failed: resume.py +64 (workspace_capacity_retry, capacity backoff, fenced incident requeue) and task_commands.py +3 (recover_continuation_incident dispatch). Fix code unchanged. Preserve the original baseline, every historical grant and ownership classification, zero remaining headroom, the s4_modules expiry and existing storage categories.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "request_message_id": "msg-f65edc1265b04280b712c6eb8f97f739",
+      "source_revision": "75f9caee274a9e8331e46e5bfbe1815449093a3d",
+      "supervisor_decision_message_id": "msg-07f7f0ca8fe74d3ba5ec996788b67141",
+      "task_id": "fresh-apex-66",
+      "thread_id": "fresh-apex-66-size"
     },
     "dashboard_retirement_overlap": {
       "applied_owned_reduction": 26,
@@ -3572,7 +3600,7 @@
       "task_id": "keen-harbor-84"
     },
     "measured_engine_lines": 83925,
-    "measured_owned_total": 160413,
+    "measured_owned_total": 160480,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -17729,7 +17757,7 @@
         "thread_id": "eager-stone-76-ci-size"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 4914,
+      "authorized_owned_delta": 4981,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -17994,6 +18022,34 @@
         "source_revision": "9dd471a3ae39eb2494dac5d19945b21a18f4cf7f",
         "supervisor_decision_message_id": "msg-064ace8754d34bb98fd36c97c2d60fd2",
         "task_id": "calm-ember-15"
+      },
+      "continuation_workspace_capacity_recovery_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 67,
+        "authorized_shared_owned_delta": 67,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/commands/task_commands.py": 3,
+          "src/wait_runtime/resume.py": 64
+        },
+        "dev_source_revision": "b6a501bca6d69897f3b931e4a1f896a0c0e82c4c",
+        "fix_task_id": "swift-rapids-67",
+        "measured_engine_lines": 83925,
+        "measured_owned_total": 160480,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "original_approval_message_id": "msg-4b0cd2987b2149d4992bb8fa135e8daf",
+        "original_dev_source_revision": "e1d7a4739c32287a4056bcba84a2ecd5018972f2",
+        "previous_measured_engine_lines": 83925,
+        "previous_measured_owned_total": 160413,
+        "previous_measured_table_count": 45,
+        "reason": "Exact supervisor-approved +67 owned/+67 shared/+0 engine/+0 tables for landing continuation workspace-capacity backpressure and fenced escalation-ID recovery (swift-rapids-67, PR 2089 / 75f9caee2), originally measured over dev e1d7a4739 and re-recorded over dev a0a696f84 after the policy export hotfix and PR 2142, then over dev b6a501bca after PR 2109 and PR 2164 (fresh-horizon-83). A continuation that cannot get a worktree slot waits and retries instead of holding with resume_workspace_failed: resume.py +64 (workspace_capacity_retry, capacity backoff, fenced incident requeue) and task_commands.py +3 (recover_continuation_incident dispatch). Fix code unchanged. Preserve the original baseline, every historical grant and ownership classification, zero remaining headroom, the s4_modules expiry and existing storage categories.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "request_message_id": "msg-f65edc1265b04280b712c6eb8f97f739",
+        "source_revision": "75f9caee274a9e8331e46e5bfbe1815449093a3d",
+        "supervisor_decision_message_id": "msg-07f7f0ca8fe74d3ba5ec996788b67141",
+        "task_id": "fresh-apex-66",
+        "thread_id": "fresh-apex-66-size"
       },
       "dashboard_retirement_overlap": {
         "applied_owned_reduction": 26,
@@ -18347,7 +18403,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 83925,
-      "measured_owned_total": 160413,
+      "measured_owned_total": 160480,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -19194,7 +19250,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 160413,
+    "owned_total_cap": 160480,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
