@@ -1,0 +1,72 @@
+{
+  "after": {
+    "engine": 83768,
+    "owned": 159409,
+    "revision": "677a14ca8560dbdc009221c9c5c0d5aa691ebe06",
+    "tables": 45
+  },
+  "before": {
+    "engine": 83653,
+    "owned": 159208,
+    "revision": "512996c4738a348ac2a6372697f184e20a955a8c",
+    "tables": 45
+  },
+  "charged_files": {
+    "src/api/scope.py": {
+      "after": 449,
+      "before": 448,
+      "delta": 1
+    },
+    "src/cli/auto_commands.py": {
+      "after": 26,
+      "before": 25,
+      "delta": 1
+    },
+    "src/cli/integration.py": {
+      "after": 1490,
+      "before": 1480,
+      "delta": 10
+    },
+    "src/commands/contracts/integration.py": {
+      "after": 2513,
+      "before": 2485,
+      "delta": 28
+    },
+    "src/commands/integration_commands.py": {
+      "after": 3284,
+      "before": 3253,
+      "delta": 31
+    },
+    "src/git/repository_lock.py": {
+      "after": 11,
+      "before": 0,
+      "delta": 11
+    },
+    "src/integration/repository_maintenance.py": {
+      "after": 141,
+      "before": 0,
+      "delta": 141
+    },
+    "src/integration/repository_recovery.py": {
+      "after": 541,
+      "before": 567,
+      "delta": -26
+    },
+    "src/orchestrator/core.py": {
+      "after": 2924,
+      "before": 2920,
+      "delta": 4
+    }
+  },
+  "delta": {
+    "engine": 115,
+    "owned": 201,
+    "tables": 0
+  },
+  "inventory": "tests/integration_ownership.py::inventory",
+  "method": "Unchanged dev ownership classifications, measured over origin/dev git archive and the validated source commit; physical line counts include comments and blank lines.",
+  "new_storage_categories": [],
+  "referenced_decision": "size-cap-delegation-2026-10-23",
+  "supervisor_decision_message_id": "msg-ac391b12aa444a02aa254a1038a0cd89",
+  "task_id": "clear-rapids-41"
+}
