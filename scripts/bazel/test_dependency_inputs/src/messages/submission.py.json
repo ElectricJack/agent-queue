@@ -1,0 +1,6 @@
+{
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "getattr(tables, table_name) in lookup() looks up a SQLAlchemy Table object on the already-imported src.database.tables module (imported locally as `from src.database import tables`) by a caller-supplied literal table name; that import is already captured statically, so no additional files are introduced."
+}

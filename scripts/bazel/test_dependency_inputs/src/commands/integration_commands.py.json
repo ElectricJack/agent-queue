@@ -1,0 +1,6 @@
+{
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "getattr(contracts, model_name) in _train_control looks up a Pydantic request model on the already-imported src.commands.contracts.integration module (imported locally as `from src.commands.contracts import integration as contracts`) by a caller-supplied literal model name; that import is already captured statically, so no additional files are introduced."
+}
