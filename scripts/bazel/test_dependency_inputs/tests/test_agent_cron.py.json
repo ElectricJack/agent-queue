@@ -1,0 +1,8 @@
+{
+  "data": [
+    "src/profiles/defaults/worker-codex/profile.md",
+    "src/profiles/defaults/worker-claude/profile.md",
+    "src/profiles/defaults/supervisor/profile.md"
+  ],
+  "reason": "test_contract_cli_and_fresh_install_grants reads each shipped profile.md via (root / \"src/profiles/defaults\" / profile / \"profile.md\").read_text(), a runtime-computed path the analyzer can't resolve statically."
+}

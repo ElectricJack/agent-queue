@@ -1,0 +1,7 @@
+{
+  "data": [
+    "src/profiles/defaults/worker-codex/profile.md",
+    "src/profiles/defaults/worker-claude/profile.md"
+  ],
+  "reason": "test_four_contracts_are_granted_and_typed reads each shipped profile.md via Path(f\"src/profiles/defaults/{template}/profile.md\").read_text(), a runtime-computed path the analyzer can't resolve statically."
+}
