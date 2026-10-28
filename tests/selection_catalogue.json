@@ -21290,9 +21290,11 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:74b628183e6aad59cac5d120ecb0c1254c0be3163f30edd3d6212629d54b5ec7",
+      "digest": "sha256:2e2a927700c1b60fb174961e06b9d4b8a023074e770fa3bd1e9bdbb04d66f997",
       "imports": [
+        "src.claim_file",
         "src.config",
+        "src.database.tables",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.execution",

@@ -2225,12 +2225,12 @@ class IntegrationCommandsMixin:
             async def collect(parent_id: str) -> str | None:
                 return await collection.collect_parent(parent_id, time.time())
 
+        train = getattr(self.orchestrator, "integration_train", None)
         result = await ChildDelivery(
             self.db, self._integration_repository_git(), collect=collect,
             train_blockers=IntegrationStatusService(
-                self.db, git_first="active",
-                train=getattr(self.orchestrator, "integration_train", None),
-            ).train_task_blockers,
+                self.db, git_first="active", train=train,
+            ).train_task_blockers, request_visit=getattr(train, "wake", None),
         ).run(
             request.task_id,
             dry_run=request.dry_run,

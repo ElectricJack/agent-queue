@@ -660,7 +660,7 @@ retained clone of a project has empty or corrupt loose objects:
 3. Refetch everything.
 4. Re-publish readable AQ heads that exist only locally, through absent-head
    publication.
-5. Run a full `git fsck` (300 s timeout).
+5. Run a full `git fsck` (900 s timeout).
 
 There are at most two attempts (`MAX_ATTEMPTS = 2`), and the count is
 persisted. The supervisor gets one coalesced notice.
