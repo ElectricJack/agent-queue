@@ -933,6 +933,42 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'claim_binding_resume_composition': {'authorized_engine_delta': 0,
+                                      'authorized_owned_delta': 80,
+                                      'authorized_shared_owned_delta': 80,
+                                      'authorized_table_delta': 0,
+                                      'charged_files': {'src/sessions/reconciler.py': 54,
+                                                        'src/wait_runtime/resume.py': 2,
+                                                        'src/waits/resume_ack.py': 24},
+                                      'decision_message_id': 'msg-c0e32116ecff483580559a15cd8bfb11',
+                                      'dev_source_revision': '17d0d73891157519e2ccb94bed4d8331491af400',
+                                      'measured_engine_lines': 83925,
+                                      'measured_owned_total': 160493,
+                                      'measured_table_count': 45,
+                                      'operator_decision': '6679052c',
+                                      'previous_measured_engine_lines': 83925,
+                                      'previous_measured_owned_total': 160413,
+                                      'previous_measured_table_count': 45,
+                                      'reason': 'Exact supervisor-approved +80 owned/+0 engine/+80 '
+                                                'shared/+0 tables for binding a resumed '
+                                                "continuation's live claim atomically with its "
+                                                'launch (prime-willow-11, bold-rapids-90.3), '
+                                                'measured over dev 17d0d7389. '
+                                                'src/sessions/reconciler.py +54 '
+                                                '(_step_claim_binding stall detector), '
+                                                'src/waits/resume_ack.py +24 (bind_live_claim and '
+                                                'import), src/wait_runtime/resume.py +2 '
+                                                '(bind_launch call); charged only through the '
+                                                'owned CLAIMED_BY_SESSION_KEY import; the engine '
+                                                'is unchanged. Preserve the original baseline, '
+                                                'every historical grant and ownership '
+                                                'classification, zero remaining headroom, the '
+                                                's4_modules expiry and existing storage '
+                                                'categories.',
+                                      'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                      'source_revision': '9ea5947c26a443fd6af16e24e632a8a037cb354a',
+                                      'task_id': 'prime-willow-11',
+                                      'thread_id': 'prime-willow-11-size'},
  'pool_observation_deduplication_composition': {'authorized_engine_delta': 0,
                                                 'authorized_owned_delta': 3,
                                                 'authorized_shared_owned_delta': 3,
@@ -1473,7 +1509,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4914,
+ 'authorized_owned_delta': 4994,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2045,7 +2081,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 83925,
- 'measured_owned_total': 160413,
+ 'measured_owned_total': 160493,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
