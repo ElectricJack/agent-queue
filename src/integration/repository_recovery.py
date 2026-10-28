@@ -17,7 +17,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, RemoteRefState, safe_git_detail
+from src.git.manager import (
+    RETAINED_FSCK_TIMEOUT_SECONDS, GitError, RemoteRefState, safe_git_detail,
+)
 from src.integration.selection_metrics import selection_count, selection_stage
 
 logger = logging.getLogger(__name__)
@@ -33,11 +35,11 @@ _MAINTENANCE = ["-c", "gc.auto=6700", "-c", "gc.autoDetach=false", "-c", "mainte
 _RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
                     ("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"))
 MAX_ATTEMPTS = 2
-# Full object-body verification is CPU/I/O bound: the 423 MB integration cache
-# takes about a minute per pass on a healthy store. Recovery needs up to four
-# passes, so neither a pass nor their shared acquisition can use the ordinary
-# short-command budget alone.
-FSCK_TIMEOUT_SECONDS = 300
+# Recovery needs up to four full-body passes, using the same budget as the
+# pre-fetch lender check rather than the ordinary short-command timeout.
+FSCK_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
+# Foreground repacking must be able to finish on these same large stores.
+MAINTENANCE_TIMEOUT_SECONDS = 900
 
 
 @dataclass
@@ -285,7 +287,8 @@ async def _maintain(git, store, git_dir):
     """Best-effort foreground gc; a successful run makes any old gc.log obsolete."""
     try:
         result = await git.arun_git_result(_MAINTENANCE, cwd=str(store), lock_held=True,
-                                           env={"LC_ALL": "C"})
+                                           env={"LC_ALL": "C"},
+                                           timeout=MAINTENANCE_TIMEOUT_SECONDS)
     except GitError as exc:
         logger.warning("retained cache %s maintenance failed: %s", store, exc)
         return
