@@ -1,0 +1,7 @@
+{
+  "reason": "create()'s body lazily imports .menus (task_creation_wizard) and _load_graph_document lazily imports src.task_graph.parser; both are reached only through Click's argv/string command dispatch (CliRunner().invoke(cli, [\"task\", \"create\", ...])), which the static analyzer cannot trace, so the function bodies are never activated and the nested imports stay invisible.",
+  "imports": [
+    "src.cli.menus",
+    "src.task_graph.parser"
+  ]
+}

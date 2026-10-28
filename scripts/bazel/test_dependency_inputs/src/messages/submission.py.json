@@ -1,0 +1,6 @@
+{
+  "reason": "lookup() dispatches getattr(tables, table_name) where table_name is a parameter, not a literal; every call site passes a literal table key, and src.database.tables is already a static import in the same function body.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "reason": "_train_control dispatches getattr(contracts, model_name) where model_name is a parameter, not a literal; every call site passes a literal Args class name, and the whole src.commands.contracts.integration module is already a static import in the same function body.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}
