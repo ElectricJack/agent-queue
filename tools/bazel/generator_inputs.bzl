@@ -4816,6 +4816,7 @@ GENERATOR_INPUTS = [
     "src/waits/conditions.py",
     "src/waits/decision.py",
     "src/waits/decisions.py",
+    "src/waits/dispatcher.py",
     "src/waits/explain.py",
     "src/waits/fencing.py",
     "src/waits/graph.py",
