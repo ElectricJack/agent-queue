@@ -5,12 +5,35 @@ import json
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.tables import (
     agents, continuations, messages, sessions, task_metadata, tasks, wait_records,
 )
 from src.waits.conditions import WaitError
 from src.waits.graph import lock_graph
 from src.waits.sources import execute_task_status_mutation
+
+
+async def bind_live_claim(conn, *, task_id, agent_id, session_id, now):
+    """Bind *session_id* as live holder: claim record plus BUSY agent pinned to the task.
+
+    Park empties both; a resume that skips either cannot push or message
+    (bold-rapids-90.3), so it is written with the launch receipt and the ack.
+    """
+    agent = (await conn.execute(select(agents).where(
+        agents.c.id == agent_id,
+    ).with_for_update())).mappings().first()
+    if (not agent or not agent["enabled"] or agent["deleted_at"] is not None
+            or agent["state"] not in {"IDLE", "BUSY"}
+            or agent["current_task_id"] not in {None, task_id}):
+        raise WaitError("continuation.stale_generation", "resume agent is no longer reserved")
+    await conn.execute(update(agents).where(agents.c.id == agent_id).values(
+        state="BUSY", current_task_id=task_id, last_heartbeat=now,
+    ))
+    await conn.execute(insert(task_metadata).values(
+        task_id=task_id, key=CLAIMED_BY_SESSION_KEY, value=json.dumps(session_id),
+    ).on_conflict_do_update(index_elements=[task_metadata.c.task_id, task_metadata.c.key],
+                            set_={"value": json.dumps(session_id)}))
 
 
 async def locked_resume(conn, continuation_id, *, session_id, instance_token, claim_epoch):
@@ -128,7 +151,8 @@ async def acknowledge(conn, args, *, scope, now):
         status="IN_PROGRESS", updated_at=now,
     ))
     await conn.execute(update(sessions).where(sessions.c.id == session["id"]).values(last_activity=now))
-    await conn.execute(update(agents).where(agents.c.id == session["agent_id"]).values(last_heartbeat=now))
+    await bind_live_claim(conn, task_id=task["id"], agent_id=session["agent_id"],
+                          session_id=session["id"], now=now)
     for key, value in (("stall_nudges", "0"), ("stall_last_action", str(now))):
         await conn.execute(insert(task_metadata).values(
             task_id=task["id"], key=key, value=json.dumps(value),
