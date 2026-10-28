@@ -1,0 +1,5 @@
+{
+  "generic_dependencies": {
+    "src/doctor/advisory_lock_checks.py::advisory_lock_checks": "Generic dependency: the database-wide idle advisory-lock check registers through the owned doctor registry; it reads pg_locks only and has no integration storage or authority."
+  }
+}
