@@ -259,6 +259,10 @@ class SessionReconciler:
         #: why ``sessions.stop_intent_pending`` exists.
         self._idle_stop_intent_seen: dict[tuple[str, str], float] = {}
         self._drain_instruction_sent: set[tuple[str, str]] = set()
+        #: session id -> its in-flight idle branch release. Off the tick: an
+        #: origin refresh queued behind a preparation once held drain-ack past
+        #: the stage bound, so exits and stalls never ran (2026-10-27).
+        self._branch_detaches: dict[str, asyncio.Task] = {}
         #: (session id, instance token) -> (read at, the harness store's
         #: activity for that session, or ``None`` when unreadable).  The wedge
         #: check's own cache: a wedged TUI repaints forever, so without it the
@@ -616,17 +620,16 @@ class SessionReconciler:
                     continue
                 if row.desired_state == "stopped":
                     # A released preparation can leave its branch checked out
-                    # while the harness is idle. Free it before asking the
-                    # worker to leave, under the same fences as slot reset.
+                    # while the harness is idle. Free it alongside asking the
+                    # worker to leave, under the same fences as slot reset; the
+                    # release refreshes origin, so it never holds this tick.
                     instance_token = row.instance_token
                     row = await self._still_live(row)
                     if (row is None or row.desired_state != "stopped"
                             or row.instance_token != instance_token
                             or row.task_id or row.claim_phase is not None):
                         continue
-                    detach = getattr(self.orchestrator, "_detach_idle_pool_branch", None)
-                    if detach is not None:
-                        await detach(row)
+                    self._start_branch_detach(row)
                     key = (row.id, row.instance_token)
                     if not await self._agent_acked_drain(row):
                         first = self._idle_stop_intent_seen.setdefault(key, now)
@@ -673,6 +676,24 @@ class SessionReconciler:
                 task_id=row.task_id,
                 project_id=row.project_id,
             )
+
+    def _start_branch_detach(self, row: SessionRecord) -> None:
+        """Release an idle pool's branch in the background, one release per session."""
+        detach = getattr(self.orchestrator, "_detach_idle_pool_branch", None)
+        running = self._branch_detaches.get(row.id)
+        if detach is None or (running is not None and not running.done()):
+            return
+        task = asyncio.create_task(detach(row), name=f"pool-branch-detach-{row.id}")
+        self._branch_detaches[row.id] = task
+
+        def finished(done: asyncio.Task, session_id=row.id) -> None:
+            if self._branch_detaches.get(session_id) is done:
+                del self._branch_detaches[session_id]
+            if not done.cancelled() and done.exception() is not None:
+                logger.warning("Pool session %s: branch release failed", session_id,
+                               exc_info=done.exception())
+
+        task.add_done_callback(finished)
 
     async def _stop_drain_acked_holder(self, row: SessionRecord) -> bool:
         """Stop a drain-acked pool worker whose held task no close can change.
@@ -1357,7 +1378,27 @@ class SessionReconciler:
         if task is not None and verdict.verdict is not Verdict.DRAINED:
             record = await self._record_worker_failure(row, task, verdict.verdict.value, now)
             if record is None:
-                return  # A newer claim, manual stop, or close owns this task.
+                if row.lifecycle == "pool" and await self._pool_task_requeued(row, task):
+                    # A failed close requeued the task but left this dead
+                    # session holding it; end it instead of every tick.
+                    return await self._apply_pool_verdict(row, verdict, task, now)
+                # A newer claim, manual stop, or close owns the task. That
+                # vetoes recovery, not the observed death of this instance.
+                # Keep its claim/workspace binding for the owner to recover.
+                current = await self._still_live(row)
+                if current is None or current.instance_token != row.instance_token:
+                    return
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    logger.warning("Stopping dead session %s failed", row.id, exc_info=True)
+                    return
+                await self.db.update_session_instance(
+                    row.id, row.instance_token,
+                    state="stopped", desired_state="stopped", ended_at=now,
+                    end_reason=verdict.verdict.name.lower(),
+                )
+                return
             if verdict.verdict is Verdict.CONTEXT_THRASH:
                 await self._recover_guarded_failure(provider, row, task, record, now)
                 return
@@ -1753,11 +1794,11 @@ class SessionReconciler:
         """Release a stopped pool writer's train/hierarchy owner before its teardown.
 
         An attached integration owner retains a pool claim through
-        ``terminate_pool_session``, leaving the task to owner recovery.  The
-        checkpoint just left the checkout clean and on ``origin`` -- the pool
-        handoff's proof -- so hand the owner back now, as a failed claim
-        preparation does; the teardown then releases the claim.  Refused or
-        unmanaged, nothing changes and the claim stays retained.
+        ``terminate_pool_session``, leaving the task to owner recovery.  When
+        the checkout is clean and on ``origin`` -- the pool handoff's proof --
+        hand the owner back now, as a failed claim preparation does; the
+        teardown then releases the claim.  Refused or unmanaged, nothing
+        changes and the claim stays retained.
         """
         release = getattr(self.orchestrator, "arelease_integration_writer_for_retry", None)
         if release is None:
@@ -1766,7 +1807,7 @@ class SessionReconciler:
             await release(task, reason=reason, pool=True)
         except Exception:
             logger.warning(
-                "Task %s: integration owner hand-back after provider failover failed",
+                "Task %s: pool integration owner hand-back failed",
                 task.id,
                 exc_info=True,
             )
@@ -1931,7 +1972,11 @@ class SessionReconciler:
                 "Pool session %s exited but no orchestrator is wired — skipping", row.id,
             )
             return
-        if task is not None:
+        if task is not None and await self._pool_task_requeued(row, task):
+            # The task is back in the queue, but an attached owner would keep
+            # the teardown from releasing the claim: hand it back first.
+            await self._hand_back_requeued_owner(task, verdict)
+        elif task is not None:
             note = {"RAPID_CRASH": "rapid_crash"}.get(verdict.verdict.name, "exited_holding_task")
             await self.db.set_task_meta(task.id, "needs_attention", note)
         # A rapid crash while the provider is already unavailable is the
@@ -1959,6 +2004,18 @@ class SessionReconciler:
                 reason=f"provider rate limit; retrying in {verdict.cooldown_seconds:.0f}s",
             )
         await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
+
+    async def _pool_task_requeued(self, row: SessionRecord, task) -> bool:
+        """True when *row*'s own claim on *task* is already back in the queue."""
+        current = await self.db.get_task(task.id)
+        return (
+            current is not None
+            and current.status == TaskStatus.READY
+            and current.claim_epoch == row.last_claim_epoch
+        )
+
+    async def _hand_back_requeued_owner(self, task, verdict: ExitVerdict) -> None:
+        await self._hand_back_pool_integration_owner(task, reason=f"session_{verdict.verdict.value}")
 
     def _provider_availability(self):
         return getattr(self.orchestrator, "provider_availability", None)
