@@ -1629,6 +1629,7 @@ class TestIdleStopIntent:
         )
         detach = pool_reconciler.test_orch._detach_idle_pool_branch = AsyncMock()
         await pool_reconciler._step_drain_ack([row], NOW)
+        await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
         detach.assert_awaited_once()
         assert len(provider.sent_nudges) == 1
         assert "aq session drain-ack" in provider.sent_nudges[0][1]
@@ -1641,6 +1642,46 @@ class TestIdleStopIntent:
         await pool_reconciler._step_drain_ack([row], NOW + (59 if acknowledge else 61))
         assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
         assert (await db.get_session(row.id)).state == "stopped"
+
+    async def test_slow_branch_release_never_holds_the_tick(
+        self, db, provider, pool_reconciler, tmp_path,
+    ):
+        # 2026-10-27: drain-ack awaited an origin fetch queued ~160s behind a
+        # slot preparation; every tick hit its stage bound and exits, stalls
+        # and orphans never ran anywhere in the fleet.
+        row = await self._finished_worker(
+            db, provider, tmp_path, claims=0, failed_preparation={"task_id": "t1"},
+        )
+        fetching, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def slow_detach(session):
+            calls.append(session.id)
+            fetching.set()
+            await release.wait()
+
+        pool_reconciler.test_orch._detach_idle_pool_branch = slow_detach
+        ran = []
+        for name in ("_step_exits", "_step_stall_ladder"):
+            step = getattr(pool_reconciler, name)
+
+            async def recorded(live, now, step=step, name=name):
+                ran.append(name)
+                return await step(live, now)
+
+            setattr(pool_reconciler, name, recorded)
+        try:
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW), 5)
+            await asyncio.wait_for(fetching.wait(), 5)
+            assert ran == ["_step_exits", "_step_stall_ladder"]
+            assert len(provider.sent_nudges) == 1
+            # The next pass neither waits on nor duplicates the release in flight.
+            await asyncio.wait_for(pool_reconciler.tick(now=NOW + 1), 5)
+            assert calls == [row.id]
+        finally:
+            release.set()
+            await asyncio.gather(*list(pool_reconciler._branch_detaches.values()))
+        assert pool_reconciler._branch_detaches == {}
 
     @pytest.mark.parametrize("deferred", [False, True])
     async def test_taskless_drain_retries_submission_without_extending_grace(
@@ -1956,6 +1997,71 @@ class TestIdleStopIntent:
 
 
 class TestPoolLifecycle:
+    @pytest.mark.parametrize("status", [TaskStatus.PAUSED, TaskStatus.BLOCKED])
+    async def test_dead_worker_with_changed_task_is_stopped_in_one_tick(
+        self, db, provider, pool_reconciler, tmp_path, status
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.transition_task("t1", status, context="operator_decision")
+        task_before = await db.get_task("t1")
+        workspace_before = await db.get_workspace("ws1")
+        provider.script_death(row.name)
+
+        await pool_reconciler.tick(now=NOW)
+
+        stopped = await db.get_session(row.id)
+        assert stopped.state == stopped.desired_state == "stopped"
+        assert stopped.ended_at == NOW
+        assert stopped.task_id == row.task_id
+        assert stopped.claim_phase == row.claim_phase
+        assert await db.get_task("t1") == task_before
+        assert await db.get_workspace("ws1") == workspace_before
+        assert not pool_reconciler.test_orch.terminations
+        assert await db.get_task_meta("t1", "worker_failure_streak") is None
+
+    @pytest.mark.parametrize("change", ["replacement", "stop_failed"])
+    async def test_changed_task_exit_retirement_keeps_instance_and_stop_fences(
+        self, db, provider, pool_reconciler, tmp_path, monkeypatch, change
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.transition_task("t1", TaskStatus.BLOCKED, context="operator_decision")
+        provider.script_death(row.name)
+
+        async def stop(*args, **kwargs):
+            if change == "stop_failed":
+                raise RuntimeError("stop unconfirmed")
+            await db.update_session(row.id, instance_token="successor-instance")
+
+        monkeypatch.setattr(provider, "stop", stop)
+
+        await pool_reconciler._step_exits([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert current.state == "running"
+        assert current.ended_at is None
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        assert not pool_reconciler.test_orch.terminations
+        if change == "replacement":
+            assert current.instance_token == "successor-instance"
+
+    async def test_killed_task_worker_is_stopped_despite_failure_record_guard(
+        self, db, provider, releasing_reconciler, tmp_path
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        row = await _session(db, provider, agent_id="a1", desired_state="stopped")
+        task_before = await db.get_task("t1")
+        provider.script_death(row.name)
+
+        await releasing_reconciler.tick(now=NOW)
+
+        stopped = await db.get_session(row.id)
+        assert stopped.state == stopped.desired_state == "stopped"
+        assert stopped.ended_at == NOW
+        assert await db.get_task("t1") == task_before
+        assert releasing_reconciler.test_orch.calls == []
+        assert await db.get_task_meta("t1", "worker_failure_streak") is None
+
     @pytest.mark.parametrize("during", ["process_probe", "final_capture"])
     async def test_pool_kill_during_exit_probe_uses_persisted_stop_intent(
         self, db, provider, pool_reconciler, tmp_path, monkeypatch, during

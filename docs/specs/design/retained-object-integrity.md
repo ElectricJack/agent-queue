@@ -12,7 +12,9 @@ Tip naming is transactional in the disposable import repository. The local
 exact-commit shortcut must walk the requested history without excluding seeded
 refs; an unreferenced commit needs the same full-body check before local success.
 Default isolated origin and exact acquisitions give retained verification its
-own bounded 300-second phase before lending objects. This phase includes the
+own bounded 900-second phase before lending objects. This accommodates measured
+full checks of over nine minutes on healthy multi-gigabyte retained stores.
+This phase includes the
 store-lock wait and all retries, and preserves the transfer's remaining budget
 instead of giving full verification only that remainder. An explicit exact-fetch
 timeout remains an overall cap; enclosing visit cancellation still propagates.

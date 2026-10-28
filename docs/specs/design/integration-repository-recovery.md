@@ -23,14 +23,22 @@ threshold, never detached); a successful run removes a stale `gc.log`. Only the
 stale-report block itself is forgiven on a zero exit; any other `error:`/`fatal:` line
 still fails.
 
+Foreground maintenance has its own bounded fifteen-minute command budget,
+including verifier-exclusion waits. It is best effort: failure preserves a stale
+`gc.log` and does not invalidate the successful acquisition. Cancellation still
+terminates and reaps Git before repository exclusion is released.
+
 The approved `rev-swift-flare` revision 2 recovery runs through the existing
 integration acquisition seam and CommandHandler. Full `fsck` diagnoses the actual
 managed cache. Ordinary network/authentication failure with clean objects creates
 no recovery incident and spends no attempt; when a clean fsck finds an earlier
 incident's store already clean with nothing to move, that incident closes as recovered
 and its escalation resolves. Any unexpected integrity diagnostic fails the check, even
-with exit status zero. A full fsck has a five-minute command budget, including the
-supervisor's clear check. Acquisition reserves four such checks in addition to the
+with exit status zero. A full fsck has a fifteen-minute command budget, shared
+with the lender-verification policy and including the supervisor's clear check.
+Healthy 2–3 GB retained stores have taken over nine minutes for a full pass;
+the former five-minute limit prevented acquisition and subsequent maintenance.
+Acquisition reserves four such checks in addition to the
 ordinary Git acquisition budget, covering diagnosis, pre-repair verification and
 both final checks. All acquisition, diagnosis, refetch, publication and final
 checking share that single bounded deadline; recovery never grants a new

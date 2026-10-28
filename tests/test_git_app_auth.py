@@ -3957,8 +3957,9 @@ async def test_origin_import_does_not_verify_unknown_additions_during_staging(tm
     assert not manager.retained_store_verified(str(checkout / ".git"))
 
 
+@pytest.mark.parametrize("verification_seconds", [60, 556])
 async def test_retained_verification_has_own_budget_and_preserves_transfer_time(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, verification_seconds,
 ):
     manager = GitManager()
     now = 100.0
@@ -3968,7 +3969,7 @@ async def test_retained_verification_has_own_budget_and_preserves_transfer_time(
         nonlocal now
         assert deadline == now + manager_module._RETAINED_VERIFY_TIMEOUT_SECONDS
         # Verification takes longer than the transfer time left on entry.
-        now += 60
+        now += verification_seconds
         assert now < deadline
 
     check = AsyncMock(side_effect=slow_check)
