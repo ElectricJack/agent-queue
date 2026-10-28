@@ -2091,7 +2091,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 5285,
+    "authorized_owned_delta": 5362,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -2553,6 +2553,31 @@
       "task_id": "bold-lantern-39",
       "thread_id": "bold-lantern-39-ci-size"
     },
+    "delivery_watchdog_target_verification_composition": {
+      "authorized_engine_delta": 77,
+      "authorized_owned_delta": 77,
+      "authorized_shared_owned_delta": 0,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/delivery_branches.py": 5,
+        "src/integration/delivery_watchdog.py": 72
+      },
+      "dev_source_revision": "c2dfcd683dbb18cb6a8da08b3c53cd72dc9fdc95",
+      "fix_task_id": "bright-stone-69",
+      "measured_engine_lines": 84212,
+      "measured_owned_total": 160861,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "original_dev_source_revision": "17d0d73891157519e2ccb94bed4d8331491af400",
+      "previous_measured_engine_lines": 84135,
+      "previous_measured_owned_total": 160784,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +77 engine/+77 owned/+0 shared/+0 tables for landing the delivery watchdog target-verification fix (bright-stone-69 / 68331c71e), originally measured over dev 17d0d7389 and re-recorded over dev c2dfcd683 after PRs 2166, 2169 and 2168. delivery_watchdog.py verifies the judged target ref, keeps a projection pending while the head is still not an ancestor and never watches the land-* tasks it filed itself (+72 engine); delivery_branches.py exposes the landing-task marker (+5 engine). Preserve the original baseline, every historical grant and ownership classification, zero remaining headroom, the s4_modules expiry and existing storage categories.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "source_revision": "68331c71ed5e1302d4f80e3566e1526e2a4590e6",
+      "supervisor_grant_reference": "msg-4fda2e4d5dfd4a92821d88782489b933",
+      "task_id": "bright-stone-69"
+    },
     "expires_at": "s4_modules",
     "focus_view_retirement_reduction": {
       "measured_engine_delta": 0,
@@ -2810,8 +2835,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 84135,
-    "measured_owned_total": 160784,
+    "measured_engine_lines": 84212,
+    "measured_owned_total": 160861,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -19934,7 +19959,7 @@
       "call": "insert",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 154,
+      "line": 158,
       "owner": "_config_put",
       "owner_fingerprint": "00fab2847d763c7a595e264e6f04f8394b9c8fa0d30ecfe41b5ca1a2a513a7d8",
       "reason": "Reviewed hand-integration reconciliation smart-nexus-83, size-cap-delegation-2026-10-23: charged integration adapter, source authority, policy or storage observation; no new storage category."
@@ -19943,9 +19968,9 @@
       "call": "log_event",
       "disposition": "ordinary",
       "integration_signal": false,
-      "line": 260,
+      "line": 307,
       "owner": "_settle_on",
-      "owner_fingerprint": "c87d2c4176ba6d2590f4d138d51a423953c49f9286b64fb44529eaa2106c593b",
+      "owner_fingerprint": "7682dd362bcfa8fcd0d6aebde50f528ffbcdbf1c69b52f9e708834412d88502a",
       "reason": "Reviewed hand-integration reconciliation smart-nexus-83, size-cap-delegation-2026-10-23: charged integration adapter, source authority, policy or storage observation; no new storage category."
     },
     "src/integration/development.py::DevelopmentIntegration._operation_insert::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
