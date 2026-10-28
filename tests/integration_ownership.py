@@ -939,7 +939,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                                             'authorized_table_delta': 0,
                                                             'charged_files': {'src/commands/task_commands.py': 3,
                                                                               'src/wait_runtime/resume.py': 64},
-                                                            'dev_source_revision': 'a0a696f84050a9525b59fe201817ced77d6be3ae',
+                                                            'dev_source_revision': 'b6a501bca6d69897f3b931e4a1f896a0c0e82c4c',
                                                             'fix_task_id': 'swift-rapids-67',
                                                             'measured_engine_lines': 83925,
                                                             'measured_owned_total': 160480,
@@ -957,7 +957,9 @@ HAND_INTEGRATION_RECONCILIATION = {
                                                                       '(swift-rapids-67, PR 2089 / 75f9caee2), '
                                                                       'originally measured over dev e1d7a4739 and '
                                                                       're-recorded over dev a0a696f84 after the '
-                                                                      'policy export hotfix and PR 2142. A '
+                                                                      'policy export hotfix and PR 2142, then over '
+                                                                      'dev b6a501bca after PR 2109 and PR 2164 '
+                                                                      '(fresh-horizon-83). A '
                                                                       'continuation that cannot get a worktree slot '
                                                                       'waits and retries instead of holding with '
                                                                       'resume_workspace_failed: resume.py +64 '
