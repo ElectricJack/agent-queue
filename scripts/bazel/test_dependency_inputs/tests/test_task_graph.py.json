@@ -1,0 +1,6 @@
+{
+  "data": [
+    "tests/fixtures/task_graphs/**/*"
+  ],
+  "reason": "GOLDEN_CASES parametrizes case names that are string-interpolated into FIXTURES/<case> and GOLDEN/<name>.json paths at runtime (test_validation_matches_golden), so the static scan only sees the one literal fixtures/task_graphs/valid.json reference and misses the rest of the directory, including the golden/ subdirectory."
+}
