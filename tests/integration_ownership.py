@@ -933,6 +933,42 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'settled_claim_wake_composition': {'authorized_engine_delta': 0,
+                                    'authorized_owned_delta': 5,
+                                    'authorized_shared_owned_delta': 5,
+                                    'authorized_table_delta': 0,
+                                    'charged_files': {'src/commands/claim_commands.py': 2,
+                                                      'src/sessions/reconciler.py': 3},
+                                    'dev_source_revision': '1473a49fe665890bb017b9a656e166bacd72c201',
+                                    'fix_task_id': 'nimble-journey-85',
+                                    'measured_engine_lines': 84356,
+                                    'measured_owned_total': 161096,
+                                    'measured_table_count': 45,
+                                    'operator_decision': '6679052c',
+                                    'previous_measured_engine_lines': 84356,
+                                    'previous_measured_owned_total': 161091,
+                                    'previous_measured_table_count': 45,
+                                    'reason': 'Exact supervisor-requested +5 owned/+0 engine/+5 '
+                                              'shared/+0 tables for landing the settled pool claim '
+                                              'wake and drained-preparation stop '
+                                              '(nimble-journey-85 / 4c0d396ec), measured over dev '
+                                              '1473a49fe. claim_commands.py '
+                                              'ClaimCommandsMixin._cmd_task_claim attaches '
+                                              'same-turn retry instructions to claim_in_progress '
+                                              '(+2 shared); reconciler.py '
+                                              'SessionReconciler._stop_drain_acked_holder routes a '
+                                              'drain-acked holder still claiming/preparing to the '
+                                              'unactivated-preparation stop proof (+3 shared). The '
+                                              'engine is unchanged. Preserve the original '
+                                              'baseline, every historical grant and ownership '
+                                              'classification, zero remaining headroom, the '
+                                              's4_modules expiry and existing storage categories, '
+                                              "including 2104's admission fencing, 2169's "
+                                              "retained_verification and 2115's store maintenance "
+                                              'entries.',
+                                    'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                    'source_revision': '4c0d396ec37513860b6a5d40daf99050c97c50dc',
+                                    'task_id': 'nimble-journey-85'},
  'delivery_watchdog_target_verification_composition': {'authorized_engine_delta': 77,
                                                        'authorized_owned_delta': 77,
                                                        'authorized_shared_owned_delta': 0,
@@ -1814,7 +1850,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 5592,
+ 'authorized_owned_delta': 5597,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2423,7 +2459,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 84356,
- 'measured_owned_total': 161091,
+ 'measured_owned_total': 161096,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
