@@ -23,6 +23,14 @@ starve retries and an unavailable source cannot starve forward work even when a 
 fits only one attempt. Existing retry batch limits still apply. Retry selection and
 coalescing never advance the cursor past unrelated forward events.
 
+The live listener wakes at the earliest scheduled retry deadline, bounded above
+by the safety cadence, even when no new source notification arrives. Exhausting
+the retry batch limit schedules another pass instead of sleeping with eligible
+work. Rebuild the retry deadline heap from persisted undispatched events behind
+the cursor whenever leadership is acquired or the notification connection is
+restarted. Those events are immediately eligible; process-local backoff may reset
+on restart. Timer reconstruction happens while listener lease renewal is active.
+
 CI observations of the same source and generation reobserve once at the newest
 sequence through the captured committed watermark. This includes hints interleaved
 with other sources and retained retries behind the cursor. Superseded hints are
@@ -140,4 +148,6 @@ the oldest sequence, restart, and repeated checks within a bucket must not dupli
 it; continued lag may produce another notice in the next bucket. Lag notices are
 diagnostic messages and must not create wait source events themselves. Monitoring
 needs no graph fence and must continue while drain or maintenance is blocked.
-Messages contain sequence/age/count and recovery guidance.
+Messages and lag logs contain sequence/age/count, the oldest pending event's next
+retry timestamp and remaining delay, and recovery guidance. An unread event or
+retained event without local backoff is eligible immediately.

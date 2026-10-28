@@ -4,7 +4,7 @@ import asyncio
 import errno
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy.engine import make_url
@@ -62,6 +62,28 @@ async def test_listener_connect_arguments(monkeypatch, dsn, expected):
     connect.assert_awaited_once_with(**expected)
 
 
+async def test_inactive_listener_sleeps_even_with_overdue_retry(monkeypatch):
+    listener = WaitSourceListener(SimpleNamespace(orch=SimpleNamespace(db=None)), clock=lambda: 1)
+    listener._schedule_retry(1, 0)
+    listener.tick = AsyncMock(return_value=False)
+    delays = []
+
+    class StopLive(Exception):
+        pass
+
+    async def wait_for(awaitable, timeout):
+        awaitable.close()
+        delays.append(timeout)
+        raise StopLive
+
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.wait_for = wait_for
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+    with pytest.raises(StopLive):
+        await listener._live(SimpleNamespace(is_closed=lambda: False))
+    assert delays == [listener.renewal_seconds]
+
+
 async def test_cancelled_isolated_fetch_cleanup_does_not_restart_listener(
     tmp_path, monkeypatch, caplog,
 ):
@@ -100,6 +122,7 @@ async def test_cancelled_isolated_fetch_cleanup_does_not_restart_listener(
         timers=SimpleNamespace(run=timers, rearm=AsyncMock()), drain=drain,
     )
     listener = WaitSourceListener(service, connect=connect)
+    listener.rearm_retries = AsyncMock()
     running = None
     try:
         with monkeypatch.context() as patch:

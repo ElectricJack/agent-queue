@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
 import time
@@ -114,11 +115,46 @@ class WaitSourceListener:
         # process-local cadence only avoids hammering a temporarily unavailable
         # provider; restart makes retained events immediately eligible again.
         self._retry_due = {}
+        self._retry_heap = []
         self._ci_progress_due = {}
         # Keep fairness across budget-limited passes, even if each pass fits
         # only one attempt. Restart gives an aged retry the first turn.
         self._retry_turn = True
         self._budget_multiplier = 1
+
+    def _schedule_retry(self, seq, due):
+        self._retry_due[seq] = due
+        heapq.heappush(self._retry_heap, (due, seq))
+
+    def _retry_delay(self):
+        """Discard stale heap entries without losing an expired, unattempted retry."""
+        while self._retry_heap:
+            due, seq = self._retry_heap[0]
+            if self._retry_due.get(seq) == due:
+                return max(0, due - self.clock())
+            heapq.heappop(self._retry_heap)
+        return self.safety_seconds
+
+    async def rearm_retries(self):
+        """Reconstruct retry ownership after acquiring leadership or reconnecting.
+
+        Backoff is process-local. Persisted undispatched rows behind the cursor
+        are immediately eligible after restart, even without another notification.
+        """
+        async with self.db._engine.connect() as conn:
+            position = select(wait_listener_cursors.c.last_seq).where(
+                wait_listener_cursors.c.listener_key == "source",
+            ).scalar_subquery()
+            pending = list(await conn.scalars(select(wait_source_events.c.seq).where(
+                wait_source_events.c.seq <= position,
+                wait_source_events.c.dispatched_at.is_(None),
+            )))
+        now = self.clock()
+        self._retry_due = dict.fromkeys(pending, now)
+        self._retry_heap = [(now, seq) for seq in pending]
+        heapq.heapify(self._retry_heap)
+        self._ci_progress_due.clear()
+        self._retry_turn = True
 
     async def _connect(self):
         import asyncpg
@@ -418,11 +454,14 @@ class WaitSourceListener:
                 wait_listener_cursors.c.lease_owner == self.owner,
             ).values(last_seq=max(cursor["last_seq"], attempt["forward_seq"]),
                      updated_at=self.clock()))
+        due = self.clock() + self.retry_seconds
         for seq in attempt["seqs"]:
-            self._retry_due[seq] = self.clock() + self.retry_seconds
+            self._schedule_retry(seq, due)
         self._retry_turn = not attempt["retry"]
-        logger.warning("wait.source_dispatch_deferred seq=%s source_key=%s",
-                       attempt["event"]["seq"], attempt["event"]["source_key"])
+        logger.warning("wait.source_dispatch_deferred seq=%s source_key=%s "
+                       "retry_after=%s next_retry_at=%s",
+                       attempt["event"]["seq"], attempt["event"]["source_key"],
+                       self.retry_seconds, due)
         return True
 
     async def _dispatched_ci_retry(self, conn, watermark, attempted):
@@ -526,6 +565,8 @@ class WaitSourceListener:
                 if not await self._defer(attempt):
                     return count
                 retries += bool(attempt["retry"])
+                if retries >= self.retry_batch_size:
+                    self.changed.set()
                 if not await self.service.lease():
                     raise LeaseLost("wait source lease lost after deferred dispatch")
                 continue
@@ -547,7 +588,7 @@ class WaitSourceListener:
             recovery["attempted"].update(processed)
             if retry_after:
                 for seq in processed:
-                    self._retry_due[seq] = self.clock() + retry_after
+                    self._schedule_retry(seq, self.clock() + retry_after)
                 logger.warning("wait.source_observation_deferred seq=%s source_key=%s "
                                "retry_after=%s age_seconds=%.1f",
                                processed[-1], result["event"]["source_key"], retry_after,
@@ -557,10 +598,14 @@ class WaitSourceListener:
                 if result["event"]["dispatched_at"] is not None and not retry_after:
                     # An unsatisfied observation is legitimate. Bound repeated
                     # recovery visits without requiring a new source revision.
-                    self._retry_due[processed[-1]] = self.clock() + self.safety_seconds
+                    self._schedule_retry(processed[-1], self.clock() + self.safety_seconds)
                 if not retry_after:
                     logger.info("wait.source_observation_retried seq=%s", processed[-1])
             count += len(processed)
+            if retries >= self.retry_batch_size:
+                # Expired deadlines were removed before selection. Continue on a
+                # fresh pass for retained rows beyond this pass's retry limit.
+                self.changed.set()
             if not await self.service.lease():
                 raise LeaseLost("wait source lease lost between batches")
 
@@ -953,8 +998,11 @@ class WaitSourceListener:
             age = max(0, now - committed) if committed is not None else 0
             if pending <= threshold and age <= 120:
                 return
-            logger.warning("wait.listener_lag pending_events=%s oldest_seq=%s age_seconds=%.1f",
-                           pending, oldest, age)
+            next_retry_at = self._retry_due.get(oldest, now)
+            retry_in = max(0, next_retry_at - now)
+            logger.warning("wait.listener_lag pending_events=%s oldest_seq=%s age_seconds=%.1f "
+                           "oldest_next_retry_at=%s oldest_retry_in_seconds=%.1f",
+                           pending, oldest, age, next_retry_at, retry_in)
             projects = (await conn.execute(select(wait_records.c.project_id).where(
                 wait_records.c.outcome == "pending",
                 wait_records.c.verification_state == "verified",
@@ -969,6 +1017,8 @@ class WaitSourceListener:
                     subject="Wait source listener is falling behind", created_at=now,
                     body=json.dumps({
                         "pending_events": pending, "oldest_seq": oldest, "age_seconds": age,
+                        "oldest_next_retry_at": next_retry_at,
+                        "oldest_retry_in_seconds": retry_in,
                         "next_step": "Inspect graph contention and source dispatch failures; "
                                      "aq wait source-redispatch can reobserve one event.",
                     }),
@@ -1002,13 +1052,15 @@ class WaitSourceListener:
             self.changed.clear()
             if connection.is_closed():
                 raise ConnectionError("wait listener disconnected")
-            await self.tick()
+            active = await self.tick()
             if connection.is_closed():
                 raise ConnectionError("wait listener disconnected")
+            delay = self.renewal_seconds if not active else (
+                self.graph_wait_seconds if self._graph_busy
+                else min(self.safety_seconds, self._retry_delay())
+            )
             try:
-                await asyncio.wait_for(self.changed.wait(),
-                                       self.graph_wait_seconds if self._graph_busy
-                                       else self.safety_seconds)
+                await asyncio.wait_for(self.changed.wait(), delay)
             except TimeoutError:
                 pass
 
@@ -1031,6 +1083,7 @@ class WaitSourceListener:
                 failed, backoff = False, 1
                 async with asyncio.TaskGroup() as group:
                     group.create_task(self._renew())
+                    await self.rearm_retries()
                     group.create_task(self._live(connection))
                     group.create_task(self.service.timers.run())
             except asyncio.CancelledError:
