@@ -4032,6 +4032,60 @@ async def test_integrity_transient_failure_rechecks_full_store_with_same_deadlin
     assert runs.await_args.kwargs['verify_integrity'] is True
 
 
+@pytest.mark.parametrize("extra", [b"", b"broken link from tree " + b"a" * 40 + b"\n"])
+async def test_fsck_missing_objects_written_mid_scan_are_a_race(tmp_path, monkeypatch, extra):
+    """fsck reports a commit landing after its object scan as missing; it is no damage."""
+    work, _source, _store = _exact_fetch_case(tmp_path)
+    gitdir = _git(["rev-parse", "--absolute-git-dir"], work)
+    present = _git(["rev-parse", "HEAD", "HEAD^{tree}"], work).split()
+    manager = GitManager()
+    spawn = manager._spawn_isolated_git
+    fscks = []
+
+    async def raced(*args, **kwargs):
+        if "fsck" not in args:
+            return await spawn(*args, **kwargs)
+        fscks.append(args)
+        stdout = b"".join(b"missing %s %s\n" % (kind, oid.encode())
+                          for kind, oid in zip((b"commit", b"tree"), present))
+        return SimpleNamespace(returncode=2, communicate=AsyncMock(
+            return_value=(stdout + extra, b"")))
+
+    monkeypatch.setattr(manager, "_spawn_isolated_git", raced)
+    monkeypatch.setattr(manager_module.asyncio, "sleep", AsyncMock())
+    deadline = asyncio.get_running_loop().time() + 30
+    if extra:
+        with pytest.raises(GitError, match="integrity is unavailable"):
+            await manager._averify_retained_objects(gitdir, home=tmp_path, deadline=deadline)
+        assert len(fscks) == 4
+    else:
+        await manager._averify_retained_objects(gitdir, home=tmp_path, deadline=deadline)
+        assert len(fscks) == 1
+    # Objects fsck never read are not a reusable clean result.
+    assert not manager.retained_store_verified(gitdir)
+
+
+async def test_fsck_missing_objects_still_absent_fail_the_gate(tmp_path, monkeypatch):
+    work, _source, _store = _exact_fetch_case(tmp_path)
+    gitdir = _git(["rev-parse", "--absolute-git-dir"], work)
+    present = _git(["rev-parse", "HEAD"], work)
+    manager = GitManager()
+    spawn = manager._spawn_isolated_git
+
+    async def damaged(*args, **kwargs):
+        if "fsck" not in args:
+            return await spawn(*args, **kwargs)
+        stdout = b"missing commit %s\nmissing blob %s\n" % (present.encode(), b"c" * 40)
+        return SimpleNamespace(returncode=2, communicate=AsyncMock(return_value=(stdout, b"")))
+
+    monkeypatch.setattr(manager, "_spawn_isolated_git", damaged)
+    monkeypatch.setattr(manager_module.asyncio, "sleep", AsyncMock())
+    with pytest.raises(GitError, match="missing " + "c" * 40):
+        await manager._averify_retained_objects(
+            gitdir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+
+
 async def test_integrity_retry_waits_for_independent_repack(tmp_path, monkeypatch):
     """An independent repack can finish during backoff after two dirty observations."""
     work, _source, _store = _exact_fetch_case(tmp_path)
