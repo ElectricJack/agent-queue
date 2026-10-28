@@ -43,7 +43,8 @@ from enum import StrEnum
 from pathlib import Path
 
 from src.claim_file import CLAIM_FILE, read_claim_file, remove_claim_file_if_matches
-from src.models import ProjectStatus, SessionRecord, TaskStatus
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
 from src.pool_claims import (
     CLAIM_FAILURE_DRAIN_REASON,
     MAX_IDENTICAL_CLAIM_FAILURES,
@@ -96,6 +97,11 @@ DRAIN_ACK_KEY = "AQ_DRAIN_ACK"
 #: concept starts as a key.
 META_STALL_NUDGES = "stall_nudges"
 META_STALL_LAST_ACTION = "stall_last_action_at"
+
+#: ``needs_attention`` codes for a live holder whose claim binding is broken.
+#: A worker in that state can heartbeat and comment but every live-claim
+#: check (worker git, message send, wait registration) refuses it.
+CLAIM_BINDING_ATTENTION = ("claim_binding_empty", "claim_binding_mismatch", "claim_agent_unpinned")
 
 
 def stall_reminder(task_id: str, minutes: int) -> str:
@@ -361,6 +367,7 @@ class SessionReconciler:
             self._step_orphans,
             self._step_disabled_project_supervisors,
             self._step_idle_stop_intent,
+            self._step_claim_binding,
             self._step_stall_ladder,
             self._step_named,
             self._step_backstop,
@@ -2433,6 +2440,59 @@ class SessionReconciler:
         )
         await self._apply_verdict(provider, row, task, verdict, now, screen=last_screen)
         return True
+
+    async def _step_claim_binding(self, live: list[SessionRecord], now: float) -> None:
+        """Flag a live holder whose claim record or agent pin is gone.
+
+        The worker keeps heartbeating, so no other step sees it, while ``aq git
+        push`` and ``aq message send`` refuse it (bold-rapids-90.3); a binding
+        that is whole again clears the flag.
+        """
+        rows = [
+            row for row in live
+            if row.lifecycle in ("task", "pool") and row.task_id and row.agent_id
+            and row.state == "running"
+            and (row.lifecycle == "task" or row.claim_phase == "active")
+        ]
+        if not rows:
+            return
+        task_ids = sorted({row.task_id for row in rows})
+        tasks = {task.id: task for task in await self.db.list_tasks(task_ids=task_ids)}
+        records = await self.db.get_task_meta_bulk(task_ids, CLAIMED_BY_SESSION_KEY)
+        flags = await self.db.get_task_meta_bulk(task_ids, "needs_attention")
+        agents = {agent.id: agent for agent in await self.db.list_agents()}
+        for row in rows:
+            task = tasks.get(row.task_id)
+            if (
+                task is None or task.status is not TaskStatus.IN_PROGRESS
+                or task.assigned_agent_id != row.agent_id
+                or task.claim_epoch != row.last_claim_epoch
+            ):
+                continue  # not this session's live claim; other steps own it
+            agent = agents.get(row.agent_id)
+            record = records.get(task.id)
+            code = None
+            if record is not None and record != row.id:
+                # Absent is a scheduler-launched session, which never records one.
+                code = "claim_binding_empty" if not record else "claim_binding_mismatch"
+            elif (
+                agent is None or agent.state is not AgentState.BUSY
+                or agent.current_task_id != task.id
+            ):
+                code = "claim_agent_unpinned"
+            flagged = flags.get(task.id)
+            if code is None:
+                if flagged in CLAIM_BINDING_ATTENTION:
+                    await self.db.delete_task_meta(task.id, "needs_attention")
+                continue
+            if flagged == code or (flagged is not None and flagged not in CLAIM_BINDING_ATTENTION):
+                continue  # already surfaced, or a stronger flag already stands
+            logger.warning("Task %s live holder %s: %s (record=%r)", task.id, row.id, code, record)
+            await self.db.set_task_meta(task.id, "needs_attention", code)
+            await self._emit(
+                "task.needs_attention", task_id=task.id, project_id=task.project_id,
+                title=task.title, session_id=row.id, reason=code,
+            )
 
     async def _step_stall_ladder(self, live: list[SessionRecord], now: float) -> None:
         """Nudge → backoff → restart → quarantine.

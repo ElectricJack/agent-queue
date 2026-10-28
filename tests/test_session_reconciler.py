@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import insert, update
 
 from src.config import AppConfig, DatabaseConfig
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.tables import (
     admission_reservations,
     continuations,
@@ -2349,6 +2350,70 @@ class TestStallLadder:
         )
         await reconciler.tick(now=NOW)
         assert provider.sent_nudges == []
+
+
+class TestClaimBinding:
+    """bold-rapids-90.3: a live holder whose claim binding cannot publish.
+
+    The resumed worker kept heartbeating and commenting while push and
+    message send refused it, so neither the stall ladder nor the exit path
+    saw anything; the binding itself has to be surfaced.
+    """
+
+    async def _holder(self, db, provider, tmp_path):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        task = await db.get_task("t1")
+        return await _session(
+            db, provider, agent_id="a1", last_claim_epoch=task.claim_epoch,
+            started_at=NOW - 100, last_activity=NOW,
+        )
+
+    async def test_empty_binding_is_flagged_once_and_clears_when_bound(
+        self, db, provider, reconciler, bus, tmp_path
+    ):
+        row = await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "")  # what park leaves
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_empty"
+        assert bus.payload("task.needs_attention")["reason"] == "claim_binding_empty"
+        assert bus.payload("task.needs_attention")["session_id"] == row.id
+        await reconciler.tick(now=NOW + 10)
+        assert bus.types().count("task.needs_attention") == 1
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, row.id)
+        await reconciler.tick(now=NOW + 20)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+
+    async def test_binding_to_another_session_is_a_mismatch(
+        self, db, provider, reconciler, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "old-session")
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_mismatch"
+
+    async def test_unpinned_agent_is_flagged(self, db, provider, reconciler, tmp_path):
+        await self._holder(db, provider, tmp_path)
+        await db.update_agent("a1", state=AgentState.IDLE, current_task_id=None)
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_agent_unpinned"
+
+    async def test_scheduler_launch_without_a_record_is_healthy(
+        self, db, provider, reconciler, bus, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        assert "task.needs_attention" not in bus.types()
+
+    async def test_an_unrelated_flag_is_neither_overwritten_nor_cleared(
+        self, db, provider, reconciler, tmp_path
+    ):
+        await self._holder(db, provider, tmp_path)
+        await db.set_task_meta("t1", "needs_attention", "stuck_timeout")
+        await db.set_task_meta("t1", CLAIMED_BY_SESSION_KEY, "")
+        await reconciler.tick(now=NOW)
+        assert await db.get_task_meta("t1", "needs_attention") == "stuck_timeout"
 
 
 class TestLiveRefLeases:
