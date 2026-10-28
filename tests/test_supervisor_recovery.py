@@ -669,6 +669,50 @@ async def test_hold_release_repairs_only_exact_stopped_assignment(env, guard):
         }
 
 
+@pytest.mark.parametrize("guard", [None, "branch_owner", "released_owner", "live_session"])
+async def test_operator_retry_clears_dead_workers_retained_assignment(env, guard):
+    # bold-rapids-90.6: a stalled worker left the BLOCKED task assigned with no
+    # live session, so an operator retry refused "still has an active claim".
+    await env.db.create_agent(Agent(id="old", name="Old", profile_id="worker"))
+    await stopped_attempt(env, reason="session_stalled_handoff_deferred", agent_id="old",
+                          lifecycle="pool")
+    await env.db.update_session("s", last_claim_epoch=0)
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, _ = await supervisor_handoff_hold(env, current)
+    await env.db.update_task("t", assigned_agent_id="old")
+    if guard in {"branch_owner", "released_owner"}:
+        async with env.db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="owner", repository_id="r", ref="aq/keep", owner_id="t",
+                owner_role="worker", session_id="s", fence_token=2, created_at=1,
+                updated_at=8000,
+                handoff_state="released" if guard == "released_owner" else "handoff_pending",
+            ))
+    elif guard == "live_session":
+        await env.db.create_session(SessionRecord(
+            id="other-worker", project_id="p", profile_id="worker", harness="fake",
+            provider="fake", name="other-worker", lifecycle="pool", state="sleeping",
+            desired_state="sleeping", agent_id="old", epoch="test", instance_token="other",
+            work_dir="/never-used", started_at=9000,
+        ))
+    result = await decide(env, current, operator_release=True,
+                          expected_hold_at=held["decided_at"])
+    task = await env.db.get_task("t")
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if guard in (None, "released_owner"):
+        assert result["status"] == "READY", result
+        assert task.status == TaskStatus.READY and task.assigned_agent_id is None
+        assert task.branch_name == "aq/keep"
+        assert recorded["decision"] == "retry"
+        return
+    assert "error" in result, result
+    if guard == "branch_owner":
+        assert "aq integration release-owner --task-id t" in result["error"]
+    assert task.status == TaskStatus.BLOCKED and task.assigned_agent_id == "old"
+    assert recorded["decision"] == "hold"
+
+
 @pytest.mark.parametrize("race", ["historical_release", "during_stop_probe"])
 async def test_old_hold_release_cannot_clear_successor_assignment_or_hold(env, race):
     await env.db.create_agent(Agent(id="old", name="Old", profile_id="worker"))
@@ -1099,6 +1143,21 @@ async def test_resume_recovery_supersession_rolls_back_with_status(env):
     assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
     assert await env.db.get_task_meta("t", "manual_pause") is not None
     assert (await env.db.get_message(message_id)).archived_at == archived_at
+
+
+async def test_resume_of_held_blocked_task_refuses_with_recovery_guidance(env):
+    # bold-rapids-90.6: resume on a held BLOCKED task surfaced as a runtime error.
+    current = await incident(env, reason="session_stalled_handoff_deferred")
+    held, _ = await supervisor_handoff_hold(env, current)
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+    assert result["success"] is False, result
+    assert result.get("error_code") != "command_runtime_error", result
+    assert "status: BLOCKED" in result["error"]
+    assert "aq integration release-owner --task-id t" in result["error"]
+    assert "--decision retry --operator-release" in result["error"]
+    assert str(held["decided_at"]) in result["error"]
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
 
 
 async def test_resume_supersedes_held_failure_without_worker_attempt(env):

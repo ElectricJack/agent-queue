@@ -251,10 +251,10 @@ class GitTruthReconciler:
                     t.sessions.c.id == owners.c.session_id, session_attached_clause(),
                 ),
             ).order_by(owners.c.id).limit(self.page_size))).scalars())
+        for owner_id in ids:  # advance first, even on refusal: a hung row resumes past itself
+            self._owner_cursor = owner_id
+            await self.owner_recovery.recover_many([owner_id], principal="git-truth-reconciler")
         self._owner_cursor = ids[-1] if len(ids) == self.page_size else ""
-        # Recovery rechecks the writer/provider and retains unpublished work.
-        # Advancing even on refusal prevents a blocked first page starving the rest.
-        await self.owner_recovery.recover_many(ids, principal="git-truth-reconciler")
         return len(ids)
 
     async def _repair(self, view, task_id, now):

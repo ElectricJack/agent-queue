@@ -260,6 +260,46 @@ work.
 OpenCode's screen. Make it log to a file only, or add `--pure` to the OpenCode
 harness `args` (that disables every external plugin, including ones you want).
 
+## A dead worker that kept its claim
+
+**Symptom.** A task is BLOCKED with a held recovery incident, its worker
+session is stopped, and the task is still assigned to that worker. On
+2026-10-27 (`bold-rapids-90.6`) every way out refused: `aq task recover
+--decision retry` said `Task still has an active claim or attempt`, `aq task
+resume` failed with `command_runtime_error`, and `yes | aq task restart
+--override-hold` printed nothing.
+
+**Cause.** A retry never cleared the stopped worker's retained assignment, and
+an unreleased integration branch owner row kept the claim alive. Resume only
+lifts a pause, so it cannot hand off a held incident. The restart confirmation
+waited for a terminal that a pipe does not provide.
+
+**Fix.** The supervisor, or an operator, hands the task off in two guarded
+steps. Both keep the branch and the workspace:
+
+```bash
+aq integration release-owner --task-id <task> --dry-run   # what would be released
+aq integration release-owner --task-id <task> --apply
+aq task recover --task-id <task> --incident-id <incident> --decision retry \
+  --operator-release --expected-hold-at <hold decided_at> --reason "<diagnosis>"
+```
+
+`aq task resume <task>` on a held task now refuses with these two commands,
+with the incident id and the hold timestamp filled in. The exact-hold retry
+clears the assignment only after it confirms the same stopped worker (its
+instance, attempt and claim epoch) and finds no live session for that agent.
+It then requeues the task READY on its existing branch. While an owner row
+is still unreleased, the retry refuses and names `release-owner`.
+
+`aq task restart` and `aq task stop` without a terminal now refuse at once
+and ask for `--yes`. `aq task restart` reports the previous status and
+whether a recovery hold was released.
+
+The git-truth reconciler's owner stage now advances its cursor before each
+row. A row whose fetch hangs until the 60-second stage timeout therefore
+resumes after itself on the next pass, instead of starving every later
+owner row.
+
 ## A worker that looks busy forever and is not
 
 **Symptom.** A worker holds a task and its pane shows OpenCode's in-turn

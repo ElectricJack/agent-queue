@@ -635,13 +635,17 @@ def task_restart(
             return await client.execute("restart_task", args)
 
     result = _run(_restart())
-    emit(
-        ctx,
-        result,
-        render=lambda data: console.print(
+
+    def _render(data):
+        previous = _getval(data, "previous_status")
+        console.print(
             f"[bold green]Task restarted:[/] {_getval(data, 'restarted', task_id)}"
-        ),
-    )
+            + (f" (was {previous})" if previous else "")
+        )
+        if override_hold:
+            console.print("  [dim]recovery hold released (audited)[/]")
+
+    emit(ctx, result, render=_render)
 
 
 @task.command("search")

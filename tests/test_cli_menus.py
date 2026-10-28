@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+import click
 import pytest
 
 from src.cli import menus
@@ -113,9 +114,20 @@ def test_select_and_confirm_return_value_on_choice_and_none_or_default_on_cancel
     dialog.run.return_value = None
     assert menus.select_from_list([("chosen", "Chosen")]) is None
 
+    monkeypatch.setattr(menus, "_interactive", lambda: True)
     confirmation = Mock()
     confirmation.run.return_value = True
     monkeypatch.setattr(menus, "yes_no_dialog", lambda **kwargs: confirmation)
     assert menus.confirm("Continue?", default=False) is True
     confirmation.run.return_value = None
     assert menus.confirm("Continue?", default=True) is True
+
+
+def test_confirm_without_terminal_refuses_instead_of_hanging(monkeypatch):
+    """The full-screen dialog never returns on piped stdin, so refuse up front."""
+    dialog = Mock()
+    monkeypatch.setattr(menus, "yes_no_dialog", lambda **kwargs: dialog)
+    monkeypatch.setattr(menus, "_interactive", lambda: False)
+    with pytest.raises(click.UsageError, match="--yes"):
+        menus.confirm("Restart task 't'?")
+    dialog.run.assert_not_called()
