@@ -62,6 +62,7 @@ from src.sessions.exit_classifier import (
 )
 from src.sessions.harness_registry import runs_cli
 from src.sessions.opencode_store import OpenCodeActivity, resolve_liveness_store
+from src.sessions.proctable import MarkedProc, agent_command_running, marked_inventory
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -282,6 +283,8 @@ class SessionReconciler:
         self._deferred_prefixes: set[str] = set()
         self._execution_wait_cache = {}
         self._execution_wait_pass = None
+        #: ``(tick, processes)``: one /proc scan serves every session a tick.
+        self._command_inventory: tuple[float, list[MarkedProc]] | None = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -347,6 +350,7 @@ class SessionReconciler:
         self._deferred_prefixes.clear()
         self._execution_wait_cache.clear()
         self._execution_wait_pass = now
+        self._command_inventory = None
 
         live = await self._step_observe(now)
         for step in (
@@ -1382,7 +1386,23 @@ class SessionReconciler:
                     # A failed close requeued the task but left this dead
                     # session holding it; end it instead of every tick.
                     return await self._apply_pool_verdict(row, verdict, task, now)
-                return  # A newer claim, manual stop, or close owns this task.
+                # A newer claim, manual stop, or close owns the task. That
+                # vetoes recovery, not the observed death of this instance.
+                # Keep its claim/workspace binding for the owner to recover.
+                current = await self._still_live(row)
+                if current is None or current.instance_token != row.instance_token:
+                    return
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    logger.warning("Stopping dead session %s failed", row.id, exc_info=True)
+                    return
+                await self.db.update_session_instance(
+                    row.id, row.instance_token,
+                    state="stopped", desired_state="stopped", ended_at=now,
+                    end_reason=verdict.verdict.name.lower(),
+                )
+                return
             if verdict.verdict is Verdict.CONTEXT_THRASH:
                 await self._recover_guarded_failure(provider, row, task, record, now)
                 return
@@ -2103,6 +2123,26 @@ class SessionReconciler:
         agent = await self.db.get_agent(row.agent_id) if row.agent_id else None
         return max(at, (agent.last_heartbeat or 0.0) if agent else 0.0)
 
+    async def _running_own_command(self, row: SessionRecord, since: float, now: float) -> bool:
+        """A command the session runs counts as activity, within a grace.
+
+        A harness that hands a long command to its shell -- a foreground
+        ``aq test`` under load, a background task its ended turn waits on --
+        leaves pane and transcript quiet for as long as it runs, and the
+        ladder used to spend a rung every interval on a session doing its
+        work (fair-ember-83).  *since* is the session's last own activity, so
+        a command still running ``stall_command_grace_seconds`` after it is
+        no cover.
+        """
+        grace = float(self.sessions_config.stall_command_grace_seconds)
+        if grace <= 0 or now - since > grace or not row.instance_token:
+            return False
+        if self._command_inventory is None or self._command_inventory[0] != now:
+            self._command_inventory = (now, await marked_inventory())
+        return agent_command_running(
+            self._command_inventory[1], row.instance_token, self._process_names(row)
+        )
+
     async def _screen_digest(self, provider, row: SessionRecord) -> str | None:
         """A digest of everything this session's pane is showing, read-only.
 
@@ -2515,6 +2555,8 @@ class SessionReconciler:
                 if wedged is None:
                     continue
                 last = min(last, wedged.progress_at)
+            if await self._running_own_command(row, last, now):
+                continue  # the command is the work; no rung is spent
             if await self._still_live(row) is None:
                 continue  # already stopped/slept/quarantined this tick
 
@@ -3413,6 +3455,8 @@ class SessionReconciler:
                 baseline = max(baseline or 0.0, resumed)
                 elapsed = now - (baseline or now)
             if effective_limit <= 0 or elapsed <= effective_limit:
+                continue
+            if await self._running_own_command(row, now - elapsed, now):
                 continue
             fresh = await self._still_live(row)
             if fresh is None:
