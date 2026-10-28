@@ -67,6 +67,7 @@ from src.git.manager import (
     is_valid_git_oid,
 )
 from src.git.process import ProcessCleanupError, run_owned_process
+from src.git.repository_lock import repository_lock_wait_limit
 from src.models import (
     AgentState,
     RepoSourceType,
@@ -193,6 +194,12 @@ async def resolve_managed_exclude_path(git, checkout_path: str | Path) -> Path:
 #: Branch prefix every task branch carries.  Fixed — no title slug — so the
 #: branch is derivable from the task id alone (design §3.2).
 BRANCH_PREFIX = "aq/"
+
+#: Bound on a best-effort idle-branch release: its origin refresh and its
+#: repository-mutex wait share it. Pool drain and teardown call it; an
+#: unbounded fetch queued behind a slot preparation starved every later
+#: session-reconciler step (2026-10-27, ~160s fetches).
+IDLE_BRANCH_RELEASE_TIMEOUT = 20.0
 
 
 def slot_name(slot_index: int) -> str:
@@ -2031,8 +2038,20 @@ class WorktreeSlotManager:
 
         Draining workers and confirmed teardown use the same acquisition
         fences. A new holder wins over this best-effort cleanup; dirty or
-        unpublished work keeps its checkout and sentinel for recovery.
+        unpublished work keeps its checkout and sentinel for recovery. A busy
+        repository or slow origin defers the release to a later pass rather
+        than stalling the caller.
         """
+        deadline = asyncio.get_running_loop().time() + IDLE_BRANCH_RELEASE_TIMEOUT
+        try:
+            with repository_lock_wait_limit(IDLE_BRANCH_RELEASE_TIMEOUT):
+                return await self._detach_idle_slot_branch(slot_ws, deadline)
+        except TimeoutError:  # includes RepositoryLockTimeout
+            logger.info("Idle branch release for %s deferred; repository busy past %.0fs",
+                        slot_ws.workspace_path, IDLE_BRANCH_RELEASE_TIMEOUT)
+            return False
+
+    async def _detach_idle_slot_branch(self, slot_ws: Workspace, deadline: float) -> bool:
         if not slot_ws.is_slot:
             return False
         base = await self._base_of(slot_ws)
@@ -2040,24 +2059,45 @@ class WorktreeSlotManager:
             return False
         if await self.git.aget_current_branch(slot_ws.workspace_path) == "HEAD":
             return False
-        await self.git.afetch_origin(
-            base.workspace_path, repository_url=await self._repository_url(slot_ws.project_id),
-            all_heads=True,
-        )
-        async with self._git_mutex(base.workspace_path):
-            if await self.git.aget_current_branch(slot_ws.workspace_path) == "HEAD":
-                return False
-            async with self._idle_branch_holder(
-                slot_ws, allow_disabled=True, allow_pool_reservation=True,
-            ) as reservation:
-                path = slot_ws.workspace_path
-                if not await self._slot_branch_matches_origin(path):
+        default = await self._default_branch(base.workspace_path, project_id=slot_ws.project_id)
+        # A landed tip is already proved by the default branch's last
+        # refresh; only an unlanded one needs origin's current branch ref.
+        if not await self._slot_head_landed(slot_ws.workspace_path, default):
+            async with asyncio.timeout_at(deadline):
+                await self.git.afetch_origin(
+                    base.workspace_path,
+                    repository_url=await self._repository_url(slot_ws.project_id),
+                    all_heads=True,
+                )
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        with repository_lock_wait_limit(remaining):
+            async with self._git_mutex(base.workspace_path):
+                if await self.git.aget_current_branch(slot_ws.workspace_path) == "HEAD":
                     return False
-                await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
-                if reservation:
-                    sentinel = self.read_sentinel(path)
-                    self.write_sentinel(path, replace(sentinel, branch=None))
+                async with self._idle_branch_holder(
+                    slot_ws, allow_disabled=True, allow_pool_reservation=True,
+                ) as reservation:
+                    path = slot_ws.workspace_path
+                    if not (await self._slot_branch_matches_origin(path)
+                            or await self._slot_head_landed(path, default, clean=True)):
+                        return False
+                    await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+                    if reservation:
+                        sentinel = self.read_sentinel(path)
+                        self.write_sentinel(path, replace(sentinel, branch=None))
         return True
+
+    async def _slot_head_landed(self, path: str, default: str, *, clean: bool = False) -> bool:
+        """A task-branch checkout, clean when asked, whose tip origin's default contains."""
+        branch = await self.git.aget_current_branch(path)
+        if not branch.startswith(BRANCH_PREFIX):
+            return False
+        if clean and await self.git.ahas_uncommitted_changes(path, strict=True) is not False:
+            return False
+        head = await self.git.arev_parse(path, "HEAD")
+        return bool(head) and await self.git.ais_ancestor(
+            path, head, f"refs/remotes/origin/{default}", strict=True,
+        ) is True
 
     async def _slot_branch_matches_origin(self, path: str) -> bool:
         """The caller holds the repo mutex and refreshed origin before this proof."""
