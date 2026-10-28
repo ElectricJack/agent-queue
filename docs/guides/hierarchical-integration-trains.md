@@ -769,6 +769,22 @@ with its project and task id, and appears in the scan's `errors` list. Other tas
 continue and the project cursor advances; the failed task is retried on a later
 pass.
 
+A projection's `verification_state: verified` means the observation is current.
+Its `evidence_ref` is the observed head, which the target does not reach. Its
+inputs name the `repository_id`, `target_ref` and `target_oid` the inventory
+judged. An inventory of any other repository or ref counts as unavailable. A
+projection settles `satisfied` with `head_on_target: true` only when the
+inventory no longer lists the task, because the target reaches its head by
+ancestry or identical content. A head that is still unreached settles with
+`head_on_target: false`. It is `satisfied` under `delivery_accounted` when a
+recorded or proven delivery, or an ancestor branch, carries the work. Otherwise
+it is `cancelled` under `delivery_unwatched`: the task was archived, its branch
+is retiring, or only a `-wip` branch remains. The landing tasks a takeover files
+(`created_by_id: delivery-watchdog`) are never watched or landed in their own
+right. The generation they land keeps their progress and raises its incident
+when a completed landing still has not reached the target. A pre-existing
+projection of a landing task is cancelled under `landing_task_unwatched`.
+
 The train automatically re-runs a required Actions job once if its check stays
 `in_progress` for five minutes after its workflow or all job steps completed.
 The check remains pending until fresh authenticated evidence concludes it.
