@@ -52,13 +52,15 @@ values, secrets, message bodies or satisfaction verdicts.
 
 | Actual transition | Producer identity and revision | Candidate typed blockers |
 | --- | --- | --- |
-| pool measurement | fleet profile / measurement timestamp revision | all eight; the new admission snapshot also invalidates time-dependent predicates |
+| pool measurement | fleet profile / measurement timestamp revision | all eight; changed payloads emit immediately, unchanged payloads emit at most once per ten minutes to invalidate time-dependent predicates |
 | workspace release | actual workspace, project scoped / mutation UUID | slot, workspace, branch_owner |
 | provider state transition | provider, fleet scoped / committed transition generation revision | slot, provider, backoff, budget |
 | completed config reload | global / reload UUID retained on replay | all eight |
 
 The broad pool/config mappings deliberately allow extra **reobservations**, never
-extra satisfactions. In particular, a pool cycle B can reobserve a wait registered in
+extra satisfactions. Pool observation hashes and last-commit times are cached per profile
+on the orchestrator; failed commits leave the cache unchanged, and restart emits the
+first observation again. In particular, a pool cycle B can reobserve a wait registered in
 cycle A with the same generation 0. No producer infers a typed condition key from a
 profile alone. A project-scoped workspace invalidation cannot select foreign-project
 subscriptions; global invalidations require each reader to check its own scope.
