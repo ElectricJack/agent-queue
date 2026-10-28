@@ -933,6 +933,197 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'close_regeneration_single_flight_composition': {'authorized_engine_delta': 210,
+                                                  'authorized_owned_delta': 211,
+                                                  'authorized_shared_owned_delta': 1,
+                                                  'authorized_table_delta': 0,
+                                                  'charged_files': {'src/cli/client.py': 1,
+                                                                    'src/integration/close_merge.py': 24,
+                                                                    'src/integration/close_runtime.py': 9,
+                                                                    'src/integration/regeneration.py': 177},
+                                                  'dev_source_revision': 'b9d4308cefbfc9b4292b96719954abe69350df92',
+                                                  'fix_task_id': 'keen-stone-16',
+                                                  'measured_engine_lines': 84135,
+                                                  'measured_owned_total': 160691,
+                                                  'measured_table_count': 45,
+                                                  'operator_decision': '6679052c',
+                                                  'original_dev_source_revision': 'e1d7a4739c32287a4056bcba84a2ecd5018972f2',
+                                                  'previous_measured_engine_lines': 83925,
+                                                  'previous_measured_owned_total': 160480,
+                                                  'previous_measured_table_count': 45,
+                                                  'pull_request': 2157,
+                                                  'reason': 'Exact supervisor-approved +211 '
+                                                            'owned/+210 engine/+1 shared/+0 tables '
+                                                            'for landing the single-flight, '
+                                                            'load-scaled close regeneration fix '
+                                                            '(keen-stone-16, PR 2157 / 0eaee6448), '
+                                                            'originally measured over dev '
+                                                            'e1d7a4739 and re-recorded over dev '
+                                                            '55cbf9ba2 after the policy export '
+                                                            'hotfix and PR 2142, then over dev '
+                                                            'b9d4308ce after PR 2089 (continuation '
+                                                            'workspace capacity), PR 2156, PR 2158 '
+                                                            'and PR 2150. regeneration.py shares '
+                                                            'one regeneration per candidate and '
+                                                            'scales its deadline with box load '
+                                                            '(+177 engine); close_merge.py and '
+                                                            'close_runtime.py return the durable '
+                                                            'close operation instead of failing at '
+                                                            'the deadline (+24/+9 engine); the '
+                                                            'task_close timeout comment in '
+                                                            'src/cli/client.py is charged as '
+                                                            'shared (+1). Preserve the original '
+                                                            'baseline, every historical grant and '
+                                                            'ownership classification, zero '
+                                                            'remaining headroom, the s4_modules '
+                                                            'expiry and existing storage '
+                                                            'categories.',
+                                                  'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                  'source_revision': '0eaee6448ce77d7062a7d4fd5a0d5ca9de1f44a8',
+                                                  'task_id': 'azure-current-27'},
+ 'continuation_workspace_capacity_recovery_composition': {'authorized_engine_delta': 0,
+                                                            'authorized_owned_delta': 67,
+                                                            'authorized_shared_owned_delta': 67,
+                                                            'authorized_table_delta': 0,
+                                                            'charged_files': {'src/commands/task_commands.py': 3,
+                                                                              'src/wait_runtime/resume.py': 64},
+                                                            'dev_source_revision': 'b6a501bca6d69897f3b931e4a1f896a0c0e82c4c',
+                                                            'fix_task_id': 'swift-rapids-67',
+                                                            'measured_engine_lines': 83925,
+                                                            'measured_owned_total': 160480,
+                                                            'measured_table_count': 45,
+                                                            'operator_decision': '6679052c',
+                                                            'original_approval_message_id': 'msg-4b0cd2987b2149d4992bb8fa135e8daf',
+                                                            'original_dev_source_revision': 'e1d7a4739c32287a4056bcba84a2ecd5018972f2',
+                                                            'previous_measured_engine_lines': 83925,
+                                                            'previous_measured_owned_total': 160413,
+                                                            'previous_measured_table_count': 45,
+                                                            'reason': 'Exact supervisor-approved +67 owned/+67 '
+                                                                      'shared/+0 engine/+0 tables for landing '
+                                                                      'continuation workspace-capacity backpressure '
+                                                                      'and fenced escalation-ID recovery '
+                                                                      '(swift-rapids-67, PR 2089 / 75f9caee2), '
+                                                                      'originally measured over dev e1d7a4739 and '
+                                                                      're-recorded over dev a0a696f84 after the '
+                                                                      'policy export hotfix and PR 2142, then over '
+                                                                      'dev b6a501bca after PR 2109 and PR 2164 '
+                                                                      '(fresh-horizon-83). A '
+                                                                      'continuation that cannot get a worktree slot '
+                                                                      'waits and retries instead of holding with '
+                                                                      'resume_workspace_failed: resume.py +64 '
+                                                                      '(workspace_capacity_retry, capacity backoff, '
+                                                                      'fenced incident requeue) and '
+                                                                      'task_commands.py +3 '
+                                                                      '(recover_continuation_incident dispatch). '
+                                                                      'Fix code unchanged. Preserve the original '
+                                                                      'baseline, every historical grant and '
+                                                                      'ownership classification, zero remaining '
+                                                                      'headroom, the s4_modules expiry and '
+                                                                      'existing storage categories.',
+                                                            'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                            'request_message_id': 'msg-f65edc1265b04280b712c6eb8f97f739',
+                                                            'source_revision': '75f9caee274a9e8331e46e5bfbe1815449093a3d',
+                                                            'supervisor_decision_message_id': 'msg-07f7f0ca8fe74d3ba5ec996788b67141',
+                                                            'task_id': 'fresh-apex-66',
+                                                            'thread_id': 'fresh-apex-66-size'},
+ 'pool_observation_deduplication_composition': {'authorized_engine_delta': 0,
+                                                'authorized_owned_delta': 3,
+                                                'authorized_shared_owned_delta': 3,
+                                                'authorized_table_delta': 0,
+                                                'charged_files': {'src/orchestrator/pools.py': 3},
+                                                'dev_source_revision': 'a85536af1cb4d57f3d91ba85e555f48ef05409d4',
+                                                'fix_task_id': 'nimble-ember-59',
+                                                'measured_engine_lines': 83925,
+                                                'measured_owned_total': 160413,
+                                                'measured_table_count': 45,
+                                                'operator_decision': '6679052c',
+                                                'original_dev_source_revision': 'b2b093cec535c421fa865295aab5935a30b87782',
+                                                'previous_measured_engine_lines': 83925,
+                                                'previous_measured_owned_total': 160410,
+                                                'previous_measured_table_count': 45,
+                                                'reason': 'Exact supervisor-approved +3 shared-owned/+0 '
+                                                          'engine/+0 tables for the per-profile pool '
+                                                          'observation hash/time cache (nimble-ember-59, '
+                                                          'PR 2142 / fd7b76821), originally measured over '
+                                                          'dev b2b093cec and re-recorded over dev '
+                                                          'a85536af1 after the policy export hotfix. '
+                                                          'src/orchestrator/pools.py is three shared '
+                                                          'lines longer; the engine is unchanged. '
+                                                          'Preserve every historical grant, original '
+                                                          'baseline and ownership classification, zero '
+                                                          'remaining headroom, s4_modules expiry and '
+                                                          'existing storage categories.',
+                                                'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                'request_message_id': 'msg-89bc796c5d8d40c59cc8fe4773536efb',
+                                                'source_revision': 'fd7b768214384eaaa68d359a79c4621f183c18f3',
+                                                'supervisor_decision_message_id': 'msg-944c59bb1e234ade907339fdf0ca70b8',
+                                                'task_id': 'sound-summit-93',
+                                                'thread_id': 'nimble-ember-59-size'},
+ 'policy_export_git_first_composition': {'authorized_engine_delta': 0,
+                                         'authorized_owned_delta': -1,
+                                         'authorized_shared_owned_delta': -1,
+                                         'authorized_table_delta': 0,
+                                         'charged_files': {'src/policy_profiles/integration.py': -1},
+                                         'dev_source_revision': 'e1d7a4739c32287a4056bcba84a2ecd5018972f2',
+                                         'fix_task_id': 'swift-dune-64',
+                                         'measured_engine_lines': 83925,
+                                         'measured_owned_total': 160410,
+                                         'measured_table_count': 45,
+                                         'operator_decision': '6679052c',
+                                         'previous_measured_engine_lines': 83925,
+                                         'previous_measured_owned_total': 160411,
+                                         'previous_measured_table_count': 45,
+                                         'reason': 'Exact supervisor-approved -1 owned/+0 '
+                                                   'engine/-1 shared/+0 tables for hand-landing '
+                                                   'the git-first train policy export fix '
+                                                   '(swift-dune-64, PR 2147 / da7398108), measured '
+                                                   'over dev e1d7a4739. '
+                                                   'src/policy_profiles/integration.py is one '
+                                                   'shared line shorter; the engine is unchanged. '
+                                                   'Preserve the original baseline, every '
+                                                   'historical grant and ownership classification, '
+                                                   'zero remaining headroom, the s4_modules expiry '
+                                                   'and existing storage categories.',
+                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                         'source_revision': 'da7398108957d1f4e55572a7ad5fb779dc4431c4',
+                                         'task_id': 'agile-willow-93'},
+ 'retained_store_fsck_budget_composition': {'authorized_engine_delta': 3,
+                                            'authorized_owned_delta': 6,
+                                            'authorized_shared_owned_delta': 3,
+                                            'authorized_table_delta': 0,
+                                            'charged_files': {'src/git/manager.py': 3,
+                                                              'src/integration/repository_recovery.py': 3},
+                                            'dev_source_revision': 'd4b6b8f1204f6cacb79f2e484d5d7f10b5283728',
+                                            'fix_task_id': 'solid-vault-81',
+                                            'measured_engine_lines': 83925,
+                                            'measured_owned_total': 160411,
+                                            'measured_table_count': 45,
+                                            'operator_decision': '6679052c',
+                                            'previous_measured_engine_lines': 83922,
+                                            'previous_measured_owned_total': 160405,
+                                            'previous_measured_table_count': 45,
+                                            'reason': 'Exact supervisor-approved +6 owned/+3 '
+                                                      'engine/+3 shared/+0 tables for hand-landing '
+                                                      'the retained-store full-fsck budget fix '
+                                                      '(solid-vault-81, PR 2149 / aa29d3476), '
+                                                      'measured over dev d4b6b8f12. '
+                                                      'repository_recovery shares the git '
+                                                      "manager's 900-second full-body budget and "
+                                                      'bounds foreground maintenance (+3 engine); '
+                                                      'the shared RETAINED_FSCK_TIMEOUT_SECONDS '
+                                                      'constant and its comment in '
+                                                      'src/git/manager.py are charged because '
+                                                      'recovery imports it (+3 shared). Preserve '
+                                                      'the original baseline, every historical '
+                                                      'grant and ownership classification, zero '
+                                                      'remaining headroom, the s4_modules expiry '
+                                                      'and existing storage categories.',
+                                            'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                            'request_message_id': 'msg-eca93a10645d4d1ba98a25610aba6f28',
+                                            'source_revision': 'aa29d347608b58c7afba1c5738f5eb8ca86c6f6c',
+                                            'supervisor_decision_message_id': 'msg-66233d0824604467af73722429a60ab4',
+                                            'task_id': 'clear-cascade-20',
+                                            'thread_id': 'clear-cascade-20-size'},
  'claim_admission_bookkeeping_composition': {'authorized_engine_delta': 42,
                                              'authorized_owned_delta': 42,
                                              'authorized_table_delta': 0,
@@ -1375,7 +1566,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 4906,
+ 'authorized_owned_delta': 5192,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -1946,8 +2137,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 83922,
- 'measured_owned_total': 160405,
+ 'measured_engine_lines': 84135,
+ 'measured_owned_total': 160691,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
