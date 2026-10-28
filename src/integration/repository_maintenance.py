@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -19,7 +20,16 @@ LOOSE_THRESHOLD = 1024
 LOOSE_BYTES_THRESHOLD = 256 * 1024 * 1024
 INTERVAL_SECONDS = 300
 COOLDOWN_SECONDS = 3600
+# The repack budget scales with the bytes Git must read: packed objects mostly copy
+# reused deltas, loose objects are inflated, delta-searched and recompressed. Rates
+# are from single-threaded, niced repacks of the live 1.4-4 GB retained stores on a
+# loaded host (calm-lantern-36), doubled; the floor and ceiling bound tiny and
+# pathological stores.
 REPACK_TIMEOUT_SECONDS = 240
+REPACK_MAX_TIMEOUT_SECONDS = 3600
+REPACK_PACKED_SECONDS_PER_GIB = 90
+REPACK_LOOSE_SECONDS_PER_GIB = 1000
+_GIB = 1024 ** 3
 _REPACK = ["-c", "pack.threads=1", "-c", "pack.windowMemory=64m",
            "repack", "-a", "-d", "-k", "--quiet"]
 logger = logging.getLogger(__name__)
@@ -33,6 +43,13 @@ def _temporary_packs(directory, now, *, remove=False):
         for path in stale:
             path.unlink()
     return len(stale)
+
+
+def repack_budget(pack_bytes, loose_bytes):
+    """Seconds one repack of a store this size may run."""
+    estimate = (pack_bytes * REPACK_PACKED_SECONDS_PER_GIB
+                + loose_bytes * REPACK_LOOSE_SECONDS_PER_GIB) / _GIB
+    return min(REPACK_MAX_TIMEOUT_SECONDS, max(REPACK_TIMEOUT_SECONDS, math.ceil(estimate)))
 
 
 def _inspect(store, now):
@@ -66,10 +83,12 @@ def _inspect(store, now):
     retry_at = attempted_at + COOLDOWN_SECONDS
     outcome = ("recovery_pending" if pending else "below_threshold" if not repack and not temporary
                else "cooldown" if previous and now < retry_at else "eligible")
+    pack_bytes = sum(pack.stat().st_size for pack in packs)
     return {"cache": str(store), "pack_count": len(packs),
             "loose_count": len(loose), "loose_bytes": loose_bytes,
             "repack_needed": repack, "stale_temp_count": temporary,
-            "pack_bytes": sum(pack.stat().st_size for pack in packs), "outcome": outcome,
+            "pack_bytes": pack_bytes, "outcome": outcome,
+            "repack_budget_seconds": repack_budget(pack_bytes, loose_bytes),
             "retry_at": retry_at if previous else None}, directory, marker
 
 
@@ -79,6 +98,7 @@ class RetainedStoreMaintenance:
         self.data_dir, self.clock = Path(data_dir), clock
         self._next_tick, self._cursor = 0, 0
         self._run_lock = asyncio.Lock()
+        self._pass = None
 
     async def stores(self, project_id=None):
         """Derive known stores from configuration/bindings; never scan arbitrary clones."""
@@ -97,18 +117,39 @@ class RetainedStoreMaintenance:
         return result
 
     async def tick(self, now):
+        """Start one rotating store visit in the background; never wait for it.
+
+        A repack can outlast the integration service's per-source budget, and the
+        service's pass is serial, so the visit is its own task (``stop`` reaps it).
+        """
         if now < self._next_tick or self._run_lock.locked():
             return
         self._next_tick = now + INTERVAL_SECONDS
-        async with self._run_lock:
-            stores = await self.stores()
-            if stores:
-                repo, path = stores[self._cursor % len(stores)]
-                self._cursor += 1
-                result = await self._store(repo, path, apply=True)
-                if result["outcome"] == "unavailable":
-                    logger.warning("retained store maintenance: %s", result)
-                return result
+        await self._run_lock.acquire()  # Uncontended: never suspends.
+        self._pass = asyncio.create_task(self._rotate(), name="retained-store-maintenance")
+        self._pass.add_done_callback(self._finished)
+
+    async def _rotate(self):
+        stores = await self.stores()
+        if stores:
+            repo, path = stores[self._cursor % len(stores)]
+            self._cursor += 1
+            result = await self._store(repo, path, apply=True)
+            if result["outcome"] == "unavailable":
+                logger.warning("retained store maintenance: %s", result)
+            return result
+
+    def _finished(self, task):
+        # Released here, not in _rotate: a task cancelled before it starts runs no finally.
+        self._run_lock.release()
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("retained store maintenance failed", exc_info=task.exception())
+
+    async def stop(self):
+        """Cancel a running visit; cancellation reaps Git and keeps its cooldown."""
+        if self._pass is not None and not self._pass.done():
+            self._pass.cancel()
+            await asyncio.gather(self._pass, return_exceptions=True)
 
     async def run(self, project_id, *, apply=False):
         if self._run_lock.locked():
@@ -134,29 +175,34 @@ class RetainedStoreMaintenance:
                         raise GitError("retained repository origin differs from configuration")
                     if not apply or item["outcome"] != "eligible":
                         return item
-                    # Repack would wait on the full check's exclusion while visits wait on us.
+                    # A repack queued behind the full check would spend its budget waiting.
                     if await self.git.aretained_store_check_running(str(directory)):
                         return {**item, "outcome": "busy"}
                     # Record even failed/interrupted attempts, to bound churn across restarts.
                     await asyncio.to_thread(_write, marker, {"attempted_at": self.clock()})
                     removed = await asyncio.to_thread(
                         _temporary_packs, directory, self.clock(), remove=True)
-                    if item["repack_needed"]:
-                        result = await self.git.arun_git_result(
-                            _REPACK, cwd=str(path), lock_held=True, env={"LC_ALL": "C"},
-                            timeout=REPACK_TIMEOUT_SECONDS, low_priority=True,
-                        )
-                        if result.returncode or result.stderr.strip():
-                            raise GitError(safe_git_detail(result.stderr or "retained repack failed"))
-                        report = directory / "gc.log"
-                        if report.is_file() and not report.is_symlink():
-                            report.unlink()
-                    after, _, _ = await asyncio.to_thread(_inspect, path, self.clock())
-                    return {**item, "outcome": "repacked" if item["repack_needed"] else "cleaned",
-                            "removed_temp_count": removed, "after_loose_count": after["loose_count"],
-                            "after_loose_bytes": after["loose_bytes"],
-                            "after_pack_count": after["pack_count"],
-                            "after_pack_bytes": after["pack_bytes"]}
+            if item["repack_needed"]:
+                # Outside the transaction: a checkout/source store shares the worker-slot
+                # base mutex claim preparation waits on for seconds, and visits must not
+                # stall for minutes. Git's nonpruning repack is safe beside fetch and
+                # readers; the full check and recovery diagnosis share the per-store
+                # exclusion the repack holds.
+                result = await self.git.arun_git_result(
+                    _REPACK, cwd=str(path), env={"LC_ALL": "C"},
+                    timeout=item["repack_budget_seconds"], low_priority=True,
+                )
+                if result.returncode or result.stderr.strip():
+                    raise GitError(safe_git_detail(result.stderr or "retained repack failed"))
+                report = directory / "gc.log"
+                if report.is_file() and not report.is_symlink():
+                    report.unlink()
+            after, _, _ = await asyncio.to_thread(_inspect, path, self.clock())
+            return {**item, "outcome": "repacked" if item["repack_needed"] else "cleaned",
+                    "removed_temp_count": removed, "after_loose_count": after["loose_count"],
+                    "after_loose_bytes": after["loose_bytes"],
+                    "after_pack_count": after["pack_count"],
+                    "after_pack_bytes": after["pack_bytes"]}
         except RepositoryLockTimeout:
             return {"cache": str(path), "outcome": "busy"}
         except (GitError, OSError, ValueError) as exc:
