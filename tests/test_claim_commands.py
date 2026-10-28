@@ -7321,6 +7321,56 @@ async def test_development_claim_accepts_source_bookkeeping_during_preparation(
     assert await db.get_task_meta("dependent", "prepare_failure") is None
 
 
+async def test_development_claim_of_another_candidates_source_activates(
+    handler, db, tmp_path, development_admission,
+):
+    # "downstream" is a candidate in the same batch whose source is "dependent",
+    # so taking "dependent" moves a request the batch fingerprint fences.
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    await mktask(db, "downstream", profile_id="worker", repo_id="repo")
+    await db.add_dependency("downstream", "dependent")
+    sid, _ = await pool_session(db, tmp_path)
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (await db.get_task("dependent")).claim_epoch == 1
+    assert await db.get_task_meta("dependent", "prepare_failure") is None
+
+
+@pytest.mark.parametrize("movement", ["claim", "completion"])
+async def test_admission_fences_claimed_sources_except_the_claims_own_move(db, movement):
+    from src.integration.admission import AdmissionSnapshot, _inputs
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "dependent", profile_id="worker")
+    await mktask(db, "downstream", profile_id="worker")
+    await db.add_dependency("downstream", "dependent")
+    ids = {"dependent", "downstream"}
+    async with db._engine.connect() as conn:
+        inputs = (await _inputs(db, ids, conn))[-1]
+    batch = AdmissionSnapshot(db, ids, ids, inputs)
+
+    status = "IN_PROGRESS" if movement == "claim" else "COMPLETED"
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status=status, claim_epoch=1,
+        ))
+
+    # Only the claim's own lifecycle move is exempt, and only for that claim.
+    assert await batch.matches(task_id="dependent") is (movement == "claim")
+    assert not await batch.matches(task_id="downstream")
+    assert not await batch.matches()
+    for tid in ids:
+        [reason] = batch.reasons[tid]
+        assert reason["code"] == "admission_inputs_changed"
+        assert "dependent.task_status" in reason["detail"]
+        assert "dependent.claim_epoch" in reason["detail"]
+
+
 @pytest.mark.parametrize("movement", ["reopen", "completion", "edge", "gate", "hold", "target", "config"])
 async def test_development_preparation_invalidates_old_admission(
     handler, db, tmp_path, development_admission, movement
