@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 
 from src.claim_file import write_claim_file
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
@@ -40,6 +40,7 @@ from src.sessions import SessionProviderRegistry
 from src.sessions.context import completed_turn_at
 from src.sessions.exit_classifier import ExitVerdict, Verdict
 from src.sessions.fake import FakeProvider
+from src.sessions.proctable import MarkedProc
 from src.sessions.provider import SessionHandle, SessionSpec
 from src.sessions.reconciler import (
     DRAIN_ACK_KEY,
@@ -355,14 +356,20 @@ class TestExits:
         task = await db.get_task("t1")
         claim_epoch = None if epoch_delta is None else task.claim_epoch + epoch_delta
         await db.update_session(sid, last_claim_epoch=claim_epoch)
+        before = await db.get_session(sid)
+        workspace = await db.get_workspace_for_agent("agent-1")
         provider.peek = AsyncMock(return_value="rate limit exceeded, please retry later")
         live, now = await observe(reconciler)
 
         await reconciler._step_exits(live, now)
 
-        task = await db.get_task("t1")
-        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
-        assert (await db.get_session(sid)).state == "running"
+        assert await db.get_task("t1") == task
+        assert await db.get_workspace_for_agent("agent-1") == workspace
+        row = await db.get_session(sid)
+        assert (row.state, row.desired_state, row.ended_at) == ("stopped", "stopped", now)
+        assert (row.task_id, row.agent_id, row.claim_phase, row.last_claim_epoch) == (
+            before.task_id, before.agent_id, before.claim_phase, before.last_claim_epoch,
+        )
         assert await db.get_task_meta("t1", "worker_failure_streak") is None
         assert orch._pool_quarantine == {}
 
@@ -378,6 +385,45 @@ class TestExits:
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
         assert await db.get_workspace_for_agent("agent-1") is None
         assert (await db.get_session(sid)).state == "stopped"
+
+    @pytest.mark.parametrize("handed_back", [True, False])
+    async def test_dead_pool_session_holding_a_requeued_task_is_ended(
+        self, db, reconciler, provider, orch, monkeypatch, handed_back,
+    ):
+        # A close whose writer handoff failed requeued the task at this
+        # session's epoch but left the dead session holding it.
+        sid = await held_pool_session(db)
+        await db.update_task("t1", status=TaskStatus.READY, assigned_agent_id=None)
+        await _attached_owner(db, sid)
+
+        async def release(task, *, reason, pool):
+            if handed_back:
+                async with db.immediate() as conn:
+                    await conn.execute(update(integration_branch_owners).values(
+                        handoff_state="released", session_id=None, workspace_id=None,
+                    ))
+            return handed_back
+
+        release = AsyncMock(side_effect=release)
+        monkeypatch.setattr(orch, "arelease_integration_writer_for_retry", release, raising=False)
+        provider.peek = AsyncMock(return_value="")
+        live, now = await observe(reconciler)
+
+        await reconciler._step_exits(live, now)
+
+        release.assert_awaited_once()
+        assert release.await_args.kwargs["pool"] is True
+        assert (await db.get_session(sid)).state == "stopped"
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        # A refused hand-back leaves the owner, and the writer's binding, to
+        # owner recovery: the session is now provably stopped for it.
+        agent = await db.get_agent("agent-1")
+        if handed_back:
+            assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+        else:
+            assert agent.current_task_id == "t1"
 
     async def test_rapid_crash_quarantines_pool_key(self, db, reconciler, provider, orch):
         sid = await held_pool_session(db)
@@ -497,6 +543,26 @@ class TestExits:
         )
 
 
+def _running_command(monkeypatch, now, grace=None, command=True, reconciler=None):
+    """A turn that completed 30 minutes ago and, optionally, the shell it left running."""
+    procs = [MarkedProc(21, 1, "claude", "t")]
+    if command:
+        procs += [MarkedProc(22, 21, "bash", "t"), MarkedProc(23, 22, "python3", "t")]
+    monkeypatch.setattr("src.sessions.reconciler.marked_inventory", AsyncMock(return_value=procs))
+    monkeypatch.setattr("src.sessions.reconciler.completed_turn_at",
+                        AsyncMock(return_value=now - 1800))
+    if grace is not None:
+        reconciler.sessions_config.stall_command_grace_seconds = grace
+
+
+_COMMAND_CASES = [
+    pytest.param(None, True, False, id="running-command"),
+    pytest.param(None, False, True, id="no-command"),
+    pytest.param(600, True, True, id="beyond-grace"),
+    pytest.param(0, True, True, id="grace-disabled"),
+]
+
+
 class TestBackstop:
     async def test_idle_pool_session_is_not_stale_for_backstop(self, db, reconciler):
         sid = await held_pool_session(db)
@@ -554,8 +620,36 @@ class TestStallLadder:
         await reconciler._step_stall_ladder(await db.list_sessions(live_only=True), now)
         assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
 
+    @pytest.mark.parametrize("grace,command,stalls", _COMMAND_CASES)
+    async def test_running_command_after_a_completed_turn_spends_no_rung(
+        self, db, reconciler, monkeypatch, grace, command, stalls
+    ):
+        """A 30-minute foreground ``aq test`` is the work, not a stall (fair-ember-83)."""
+        sid = await held_pool_session(db)
+        now = time.time()
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1800)
+        _running_command(monkeypatch, now, grace, command, reconciler)
+        await reconciler._step_stall_ladder(await db.list_sessions(live_only=True), now)
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == ("1" if stalls else None)
+        assert (await db.get_session(sid)).state == "running"
+
 
 class TestCompletedTurnBackstop:
+    @pytest.mark.parametrize("grace,command,stalls", _COMMAND_CASES)
+    async def test_running_command_holds_the_claim(
+        self, db, reconciler, monkeypatch, grace, command, stalls
+    ):
+        sid = await held_pool_session(db)
+        now = time.time()
+        reconciler.config.agents_config.stuck_timeout_seconds = 0
+        await db.update_session(sid, last_activity=now)
+        await db.update_agent("agent-1", last_heartbeat=now - 1800)
+        _running_command(monkeypatch, now, grace, command, reconciler)
+        await reconciler._step_backstop(await db.list_sessions(live_only=True), now)
+        assert (await db.get_session(sid)).state == ("stopped" if stalls else "running")
+        assert (await db.get_task("t1")).assigned_agent_id == (None if stalls else "agent-1")
+
     @pytest.mark.parametrize("exemption", [None, "question", "wait", "heartbeat", "disabled"])
     async def test_repainting_idle_holder_released_unless_exempt(
         self, db, reconciler, monkeypatch, exemption

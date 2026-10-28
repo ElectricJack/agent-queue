@@ -28,8 +28,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import insert
 
+from src.claim_file import write_claim_file
 from src.config import DatabaseConfig, AppConfig
+from src.database.tables import sessions
 from src.models import (
     KIND_MODE_EXCLUSIVE_CLONE,
     KIND_MODE_WORKTREE,
@@ -190,6 +193,45 @@ class TestGrowthHandsOverTheSlot:
             assert new_slot.enabled
             assert not (await o.db.get_workspace(retired_id)).enabled
             assert Path(slot_path(base_repo, 0)).exists()
+        finally:
+            await o.shutdown()
+
+    async def test_protected_unlocked_slots_do_not_prevent_growth(self, tmp_path, base_repo):
+        """Observed 2026-10-28: unlocked slots that acquisition refuses (a stale
+        claim file whose stopped session still carries a ``claim_phase``, a
+        job pin) were counted as free, so the pool never grew below its cap."""
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo, cap=3)
+            project = await o.db.get_project("p1")
+            claimed = (await o._ensure_worktree_slots(project, "project-repo")).created
+            claimed_ws = await o.db.get_workspace(claimed["project-repo"])
+            await o.db.create_task(Task(id="t-old", project_id="p1", title="t", description=""))
+            async with o.db._engine.begin() as conn:
+                await conn.execute(insert(sessions).values(
+                    id="s-old", task_id="t-old", profile_id="test-profile", harness="claude",
+                    provider="tmux", name="s-t-old", lifecycle="task", state="stopped",
+                    claim_phase="claimed", work_dir="/elsewhere", epoch="0",
+                    instance_token="tok", started_at=1.0,
+                ))
+            write_claim_file(claimed_ws.workspace_path,
+                             {"task_id": "t-old", "session_id": "s-old", "claim_epoch": 1})
+            pinned = (await o._ensure_worktree_slots(project, "project-repo")).created
+            await o.db.update_workspace(pinned["project-repo"], job_pin_count=1)
+
+            growth = await o._ensure_worktree_slots(project, "project-repo")
+
+            fresh = growth.created["project-repo"]
+            assert (await o.db.get_workspace(fresh)).slot_index == 2
+            await o.db.create_agent(Agent(id="a-1", name="a-1", profile_id="test-profile"))
+            acquired = await o.db.acquire_one_unlocked(
+                project_id="p1", kind_id="project-repo", mode="exclusive",
+                locked_by_task_id=None, locked_by_agent_id="a-1",
+                kind_mode=KIND_MODE_WORKTREE, worktree_slot_cap=3,
+            )
+            assert acquired is not None and acquired.id == fresh
+            # At cap, protected slots still grow nothing.
+            assert (await o._ensure_worktree_slots(project, "project-repo")).created == {}
         finally:
             await o.shutdown()
 
