@@ -280,9 +280,15 @@ async def test_pool_sizing_observation_is_replayed_by_cycle(db):
     key = PoolKey(profile_id="worker")
     measurement = SimpleNamespace(supply={key: PoolSupply(running_busy=1)}, demand={key: 2},
                                   bounds={key: (0, 2)})
-    await record_pool_observations(db, measurement, 100)
-    await record_pool_observations(db, measurement, 100)
+    cache = {}
+    for now in (100, 100, 101):
+        await record_pool_observations(db, measurement, now, last_observations=cache)
     assert len(await events(db, "resource_invalidation:pool:worker")) == 1
+    measurement.demand[key] = 3
+    await record_pool_observations(db, measurement, 102, last_observations=cache)
+    assert len(await events(db, "resource_invalidation:pool:worker")) == 2
+    await record_pool_observations(db, measurement, 702, last_observations=cache)
+    assert len(await events(db, "resource_invalidation:pool:worker")) == 3
 
 
 
@@ -1757,7 +1763,7 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     def controlled_timeout(seconds):
         nonlocal event_budget
         budget = asyncio.timeout(None)
-        if seconds == service.listener.preparation_budget_seconds:
+        if seconds == service.listener.event_budget_seconds:
             event_budget = budget
         return budget
 
@@ -1765,12 +1771,8 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
     # ordinary queries cannot consume the event or drain budget under host load.
     listener_asyncio = Mock(wraps=asyncio)
     listener_asyncio.timeout.side_effect = controlled_timeout
+    listener_asyncio.get_running_loop.return_value = SimpleNamespace(time=lambda: 0)
     monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
-    # Deadline rescheduling needs the real loop clock. Keep ordinary work
-    # unbounded here; expire_on_query still cancels the actual pg_sleep query.
-    monkeypatch.setattr(service.listener, "event_budget_seconds", float("inf"))
-    monkeypatch.setattr(service.listener, "preparation_budget_seconds", float("inf"))
-    monkeypatch.setattr(service.listener, "drain_budget_seconds", float("inf"))
 
     def expire_on_query(conn, cursor, statement, parameters, context, executemany):
         if "pg_sleep" in statement:
@@ -1861,6 +1863,104 @@ async def test_resource_coalescing_preserves_project_and_provider_boundaries(run
     dispatch = service.listener._dispatch = AsyncMock(return_value=0)
     await service.listener.tick()
     assert dispatch.await_count == 4
+
+
+@pytest.mark.parametrize("retained", [False, True])
+@pytest.mark.parametrize("burst", [1, 40])
+@pytest.mark.parametrize("rollback", [False, True])
+async def test_pool_burst_reobserves_once_with_constant_graph_acquisitions(
+    runtime_env, monkeypatch, retained, burst, rollback,
+):
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+        cond, state="unsatisfied", revision="1"))
+    await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                         "source_revision": "1"}, registry=build_registry(resource_reader=reader),
+                   scope=Scope("p", "scheduler", "source", principal="service"))
+    hints = []
+    for n in range(burst):
+        hints.append(await env.db.wait_source_commit(**resource_invalidation(
+            producer="pool", identity="worker", project_id="p", revision=str(n),
+            outcome_ref="pool", payload={})))
+        if n == 0:
+            barrier = await env.db.wait_source_commit(source_key="test:lifecycle", generation=0,
+                revision="1", outcome_ref="barrier", payload={})
+    service = runtime(env)
+    listener = service.listener
+    assert await service.lease()
+    watermark = await env.db.wait_source_watermark()
+    if retained:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(wait_listener_cursors).values(last_seq=watermark))
+    dispatch = AsyncMock(return_value=0)
+    monkeypatch.setattr(listener, "_dispatch", dispatch)
+    locked = AsyncMock(wraps=listener_module.lock_graph)
+    monkeypatch.setattr(listener_module, "lock_graph", locked)
+
+    if rollback:
+        async def fail(conn, event):
+            assert event["seq"] == hints[-1]
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(title="abort"))
+            raise RuntimeError("pool observation failed")
+
+        monkeypatch.setattr(listener, "_dispatch", fail)
+        with pytest.raises(RuntimeError, match="pool observation failed"):
+            await listener._drain_one(watermark, True, {}, {"attempted": set()},
+                                      admission_ready=True)
+        assert (await env.db.get_task("owner")).title != "abort"
+        assert all(r["dispatched_at"] is None for r in await records(env, wait_source_events))
+        assert (await records(env, wait_listener_cursors))[0]["last_seq"] == (
+            watermark if retained else 0)
+        monkeypatch.setattr(listener, "_dispatch", dispatch)
+        locked.reset_mock()
+
+    # Lookahead may stamp later hints, but must not consume the lifecycle event.
+    result = await listener._drain_one(watermark, True, {}, {"attempted": set()},
+                                       admission_ready=True)
+    assert set(result["processed"]) == set(hints)
+    position = (await records(env, wait_listener_cursors))[0]["last_seq"]
+    assert position == (watermark if retained else hints[0])
+    sources = {r["seq"]: r for r in await records(env, wait_source_events)}
+    assert sources[barrier]["dispatched_at"] is None
+    assert all(sources[seq]["dispatched_at"] is not None for seq in hints)
+
+    await listener.drain(watermark, admission_ready=True)
+    assert [call.args[1]["seq"] for call in dispatch.await_args_list] == [hints[-1], barrier]
+    assert locked.await_count <= 3
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == watermark
+
+
+async def test_retained_pool_coalescing_preserves_project_and_provider_events(runtime_env):
+    env = runtime_env
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+        cond, state="unsatisfied", revision="1"))
+    await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                         "source_revision": "1"}, registry=build_registry(resource_reader=reader),
+                   scope=Scope("p", "scheduler", "source", principal="service"))
+    expected = {}
+    for n in range(4):
+        for producer, project, identity in [("pool", "p", "worker"), ("pool", "q", "worker"),
+                                             ("pool", "p", "other"), ("provider", None, "worker")]:
+            seq = await env.db.wait_source_commit(**resource_invalidation(
+                producer=producer, identity=identity, project_id=project, revision=f"{project}-{n}",
+                outcome_ref="hint", payload={}))
+            if producer == "pool":
+                expected[project] = seq
+            else:
+                expected[seq] = seq
+    service = runtime(env)
+    assert await service.lease()
+    watermark = await env.db.wait_source_watermark()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=watermark))
+    dispatch = service.listener._dispatch = AsyncMock(return_value=0)
+    await service.listener.drain(watermark, admission_ready=True)
+    assert {call.args[1]["seq"] for call in dispatch.await_args_list} == set(expected.values())
+    assert dispatch.await_count == len(expected)
+    assert all(r["dispatched_at"] is not None for r in await records(env, wait_source_events))
 
 
 async def test_startup_renews_lease_while_first_drain_is_blocked(runtime_env):
@@ -2433,12 +2533,13 @@ async def test_ci_preparation_can_outlast_apply_budget(runtime_env, monkeypatch)
     async def slow_preparation(conn, cond):
         await asyncio.sleep(0.03)
         # Restore the ordinary SQL/apply allowance after exceeding the small
-        # apply deadline. Remote preparation must have an independent budget.
+        # apply deadline. Remote preparation spends the adaptive work budget.
         listener.event_budget_seconds = 5
         return await original(conn, cond)
 
     reader.side_effect = slow_preparation
     listener.event_budget_seconds = 0.01
+    monkeypatch.setattr(listener, "_work_budget", lambda: 5)
     assert await listener.tick()
     assert reader.await_count == 1
     assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
@@ -2993,3 +3094,99 @@ async def test_drain_hold_timing_includes_dispatch_and_transaction_end_on_failur
         "lease", "prefix_retirement", "admission_recheck", "outcome_writes"))
     assert ((await records(env, wait_source_events))[0]["dispatched_at"] is None) == bool(failure)
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == (0 if failure else seq)
+
+
+async def test_eighteen_pool_producers_share_observation_and_preserve_task_wake(runtime_env):
+    env = runtime_env
+    reader = AsyncMock(side_effect=lambda conn, cond: resource_snapshot(
+        cond, state="unsatisfied", revision="1"))
+    registry = build_registry(resource_reader=reader)
+    await register(env, {"kind": "resource", "blocker": "slot", "identity": "opaque",
+                         "source_revision": "1"}, registry=registry,
+                   scope=Scope("p", "scheduler", "source", principal="service"))
+    receipt = await register(env)
+    reader.reset_mock()
+
+    async def producer(profile):
+        for revision in range(4):
+            await env.db.wait_source_commit(**resource_invalidation(
+                producer="pool", identity=f"profile-{profile}", project_id="p",
+                revision=str(revision), outcome_ref="pool", payload={}))
+            if revision == 1:
+                await env.db.wait_source_commit(source_key=f"test:barrier:{profile}", generation=0,
+                    revision="1", outcome_ref="barrier", payload={})
+
+    await asyncio.gather(*(producer(profile) for profile in range(18)))
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    service = runtime(env, registry=registry, dispatcher=ObservingDispatcher(registry))
+    dispatch = AsyncMock(wraps=service.listener._dispatch)
+    service.listener._dispatch = dispatch
+    assert await service.listener.tick()
+    dispatched = [call.args[1] for call in dispatch.await_args_list]
+    assert sum(event["source_key"].startswith("resource_invalidation:pool:")
+               for event in dispatched) == 1
+    assert sum(event["source_key"].startswith("test:barrier:") for event in dispatched) == 18
+    reader.assert_awaited_once()
+    assert next(row for row in await records(env) if row["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    assert all(row["dispatched_at"] is not None for row in await records(env, wait_source_events))
+
+
+async def test_retained_cleanup_never_scans_event_history_under_graph_lock(
+    runtime_env, monkeypatch,
+):
+    from sqlalchemy import event
+    from src.waits import listener as listener_module
+
+    env = runtime_env
+    for profile in range(18):
+        seq = await env.db.wait_source_commit(**resource_invalidation(
+            producer="pool", identity=f"profile-{profile}", revision="1",
+            outcome_ref="hint", payload={}))
+    service = runtime(env)
+    assert await service.lease()
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_listener_cursors).values(last_seq=seq))
+    statements = []
+    original_lock = listener_module.lock_graph
+
+    async def track_locked(conn, **kwargs):
+        await original_lock(conn, **kwargs)
+        event.listen(conn.sync_connection, "before_cursor_execute",
+                     lambda conn, cursor, sql, parameters, context, many: statements.append(sql))
+
+    monkeypatch.setattr(listener_module, "lock_graph", track_locked)
+    assert await service.listener._retire_unused_retries(seq) == 18
+    assert not any("EXISTS" in sql or "ORDER BY wait_source_events.seq" in sql
+                   for sql in statements)
+    assert all(row["dispatched_at"] is not None for row in await records(env, wait_source_events))
+
+
+async def test_manual_recovery_retires_unused_pool_profiles_with_bounded_scope(runtime_env):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    env = runtime_env
+    own = []
+    for profile in range(18):
+        own.append(await env.db.wait_source_commit(**resource_invalidation(
+            producer="pool", identity=f"profile-{profile}", project_id="p", revision="1",
+            outcome_ref="hint", payload={})))
+        await env.db.wait_source_commit(**resource_invalidation(
+            producer="pool", identity=f"profile-{profile}", project_id="q", revision="1",
+            outcome_ref="foreign", payload={}))
+    provider = await env.db.wait_source_commit(**resource_invalidation(
+        producer="provider", identity="provider", revision="1", outcome_ref="provider", payload={}))
+    service = runtime(env)
+    service.listener.batch_size = 5
+    retired = []
+    for _ in range(4):
+        with principal_context(TRUSTED_LOCAL):
+            result = await service.orch._command_handler.execute("wait_source_redispatch", {
+                "source_seq": own[-1], "project_id": "p", "note": "drain unused pool backlog"})
+        assert result["success"], result
+        retired.append(result["result"]["retired_events"])
+    assert retired == [5, 5, 5, 3]
+    rows = await records(env, wait_source_events)
+    assert {row["seq"] for row in rows if row["dispatched_at"] is not None} == set(own)
+    assert next(row for row in rows if row["seq"] == provider)["dispatched_at"] is None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0

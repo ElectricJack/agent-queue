@@ -2036,6 +2036,32 @@ async def test_retained_fetch_failure_on_a_clean_store_never_opens_an_incident(
         assert (await conn.execute(select(escalations))).all() == []
 
 
+async def test_large_retained_store_checks_and_maintenance_have_independent_budgets(
+    setup, monkeypatch,
+):
+    from src.git.manager import GitError
+
+    _db, service, _source, _remote, repo = setup
+    normal_run = service.git.arun_git_result
+    observed = set()
+
+    async def large_store(args, **kwargs):
+        operation = 'fsck' if 'fsck' in args else 'gc' if 'gc' in args else None
+        if operation:
+            # Model the measured 9:16 full pass without spending nine minutes
+            # in the test. The ordinary command budget cannot finish this work.
+            if kwargs.get('timeout', service.git._command_timeout()) <= 556:
+                raise GitError('large retained store command timed out')
+            observed.add(operation)
+        return await normal_run(args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'arun_git_result', large_store)
+    store = await service.store(repo)
+    assert observed == {'fsck', 'gc'}
+    assert service.git.retained_store_verified(str(store / '.git'))
+    assert not recovery_journal(store).exists()
+
+
 async def test_retained_maintenance_runs_foreground_and_drops_stale_gc_log(setup):
     _db, service, _source, _remote, repo = setup
     store = await service.store(repo)
