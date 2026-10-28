@@ -9663,6 +9663,50 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "integration_store_maintenance": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "input_schema_source": "typed_contract",
+    "mode": "typed",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/integration_commands.py:IntegrationCommandsMixin._cmd_integration_store_maintenance",
+    "resource_gates": [
+      "resource_audit_required"
+    ],
+    "result_policy": "retained typed adapter",
+    "retry_safe": true,
+    "return_branches": [
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('unauthorized', refusal)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "_failure('not_found', 'project is not configured')"
+      },
+      {
+        "protocol": "explicit_boolean: result outcome",
+        "return": "{'success': result['outcome'] != 'unavailable', 'project_id': request.project_id, **result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await run() (read-only preview)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await detached_operations(...).run(...) (apply or running handle)"
+      }
+    ],
+    "review_notes": "clear-rapids-41: typed project-scoped preview/apply; live supervisor/operator authority precedes project/store inspection. Apply joins one detached operation; cooldown bounds retries. Returns explicit success or standard authorization/not-found refusal.",
+    "schema_quality": "typed",
+    "source_digest": "sha256:17112802ce53a8946bbc391bb07f6138a545026bd2b51ff906df14bb3a3c92c4",
+    "tests": [
+      "tests/test_development_integration.py::test_retained_maintenance_control_rejects_workers_and_cross_project",
+      "tests/test_development_integration.py::test_retained_maintenance_preview_and_cooldown_survive_restart",
+      "tests/test_cli_integration.py::test_store_maintenance_previews_unless_apply_is_explicit"
+    ]
+  },
   "integration_supersede_completion": {
     "argument_reads_diagnostic_only": [],
     "denial_reason": null,

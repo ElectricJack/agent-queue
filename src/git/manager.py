@@ -74,6 +74,7 @@ import math
 import os
 import random
 import re
+import shutil
 import shlex
 import signal
 import subprocess
@@ -1122,6 +1123,7 @@ class GitManager:
         env: dict[str, str] | None = None,
         timeout: int | None = None,
         lock_held: bool = False,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         """Run Git while preserving expected nonzero status and diagnostics.
 
@@ -1145,10 +1147,12 @@ class GitManager:
         if lock is not None:
             async with lock:
                 return await self._arun_git_result_unlocked(
-                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+                    low_priority=low_priority,
                 )
         return await self._arun_git_result_unlocked(
-            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+            low_priority=low_priority,
         )
 
     async def _arun_git_result_unlocked(
@@ -1159,9 +1163,12 @@ class GitManager:
         stdin: str | None,
         env: dict[str, str],
         timeout: int | None,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
+        if low_priority and shutil.which("nice"):
+            command = ["nice", "-n", "10", *command]
         try:
             try:
                 async with self._amaintenance_exclusion(args, cwd, effective_timeout) as remaining:
@@ -2755,6 +2762,13 @@ class GitManager:
                 return
             current = await asyncio.to_thread(_object_store_fingerprint, git_dir)
         raise GitError("retained Git object integrity is unavailable: unchecked additions")
+
+    async def aretained_store_check_running(self, git_dir: str) -> bool:
+        """Whether *git_dir*'s common store has a full check or exclusive maintenance active."""
+        key = await asyncio.to_thread(_retained_store_key, git_dir)
+        flight = self.__dict__.get("_retained_verify_flights", {}).get(key)
+        lock = self.__dict__.get("_retained_verify_locks", {}).get(key)
+        return (flight is not None and not flight.done()) or (lock is not None and lock.locked())
 
     def _retained_verification_flight(self, key: str) -> asyncio.Task:
         """Common store *key*'s running full check, starting one if none is."""
