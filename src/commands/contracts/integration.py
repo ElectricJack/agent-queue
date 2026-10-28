@@ -88,6 +88,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_restore_task_origin",
         "integration_reserve_owner",
         "integration_clear_retained_recovery",
+        "integration_store_maintenance",
         "integration_release_stale_owners",
         "integration_redrive_root",
         "integration_authorize_root",
@@ -538,6 +539,19 @@ class IntegrationClearRetainedRecoveryArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     #: Clear only this incident; omitted clears every hold the project's caches show.
     incident_id: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationStoreMaintenanceArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    dry_run: bool = True
+
+
+class IntegrationStoreMaintenanceValue(CommandValue):
+    project_id: str | None = None
+    evidence: dict[str, Any] | None = None
+    operation_id: str | None = None
+    elapsed_seconds: float | None = None
+    poll: str | None = None
 
 
 class IntegrationReleaseStaleOwnersArgs(CommandArgs):
@@ -1582,6 +1596,19 @@ INTEGRATION_RESTORE_TASK_ORIGIN = _operational_contract(
 
 CLEAR_RETAINED_RECOVERY_OUTCOMES = ("cleared", "not_clean", "unavailable", "not_found")
 
+INTEGRATION_STORE_MAINTENANCE = _named_contract(
+    "integration_store_maintenance", IntegrationStoreMaintenanceArgs, IntegrationStoreMaintenanceValue,
+    title="Maintain retained integration packs",
+    summary="Preview or consolidate configured retained stores while keeping unreachable objects.",
+    outcomes=_outcomes(("preview", "maintained", "busy", "running", "unavailable", "not_found"),
+                       frozenset({"preview", "maintained", "busy", "running"})),
+    side_effect=SideEffectClass.UPDATE,
+    supports_preview=True,
+    effects=(ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
+             UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION,
+                          when=ClausePredicate(arg_equals=("dry_run", False)))),
+)
+
 INTEGRATION_CLEAR_RETAINED_RECOVERY = _operational_contract(
     "integration_clear_retained_recovery",
     IntegrationClearRetainedRecoveryArgs,
@@ -2415,6 +2442,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         INTEGRATION_DELEGATE_PUBLICATION,
         INTEGRATION_REVOKE_PUBLICATION,
         INTEGRATION_CLEAR_RETAINED_RECOVERY,
+        INTEGRATION_STORE_MAINTENANCE,
         INTEGRATION_RELEASE_STALE_OWNERS,
         INTEGRATION_REDRIVE_ROOT,
         INTEGRATION_AUTHORIZE_ROOT,
