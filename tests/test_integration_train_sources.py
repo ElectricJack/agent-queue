@@ -151,12 +151,19 @@ from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.status import IntegrationStatusService
-from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
+from src.integration.train import (
+    CandidateChecks,
+    IntegrationTrain,
+    LaneRecord,
+    TrainLane,
+    TrainTarget,
+)
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import (
     RETAINED_CANDIDATE_PREFIX,
     DaemonLanes,
     DatabaseBatches,
+    DatabaseLaneLedger,
     DatabaseTargets,
     LeasedPublish,
     _never_trusted,
@@ -5186,6 +5193,52 @@ async def test_default_config_constructs_the_train(world):
     # A minimal integration config also constructs the same train.
     orchestrator.config = SimpleNamespace(integration=SimpleNamespace())
     assert isinstance(train_for(orchestrator), IntegrationTrain)
+    assert isinstance(train_for(orchestrator).ledger, DatabaseLaneLedger)
+
+
+async def test_lane_ledger_keeps_visit_history_for_the_next_daemon(world):
+    now = [1000.0]
+    ledger = DatabaseLaneLedger(world.db, clock=lambda: now[0], retention_seconds=100)
+    first = LaneRecord("p", "r", "refs/heads/aq/epic", kind="epic", visits=1, errors=0,
+                       state="idle", observed_at=990.0, started_at=980.0)
+    second = replace(first, visits=2, observed_at=995.0)
+    await ledger.record(first)
+    await ledger.record(second)
+    # A project deleted while its visit ran leaves no orphaned history.
+    await ledger.record(replace(first, project_id="deleted"))
+    assert await ledger.load() == [second]
+    await ledger.forget([second.key])
+    assert await ledger.load() == []
+    await ledger.record(first)
+    now[0] = 1101.0
+    assert await ledger.load() == []
+
+
+async def test_lane_ledger_migration_is_idempotent_and_matches_the_table(world):
+    from importlib import import_module
+
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    from src.database.tables import integration_train_lanes
+
+    migration = import_module("migrations.versions.a00000000124_integration_train_lanes")
+
+    def rebuild(bind):
+        integration_train_lanes.drop(bind)
+        with Operations.context(MigrationContext.configure(bind)):
+            migration.upgrade()
+            migration.upgrade()
+        inspector = sa.inspect(bind)
+        assert {c["name"] for c in inspector.get_columns("integration_train_lanes")} == set(
+            integration_train_lanes.c.keys())
+        primary = inspector.get_pk_constraint("integration_train_lanes")
+        assert primary["name"] == "pk_integration_train_lanes"
+        assert primary["constrained_columns"] == ["project_id", "repository_id", "target_ref"]
+
+    async with world.db._engine.begin() as conn:
+        await conn.run_sync(rebuild)
 
 
 async def test_default_config_train_delivers_to_git(world, monkeypatch):

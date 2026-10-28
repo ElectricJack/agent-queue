@@ -7797,3 +7797,23 @@ project_schedules = Table(
           postgresql_where=text("state = 'pending'")),
     Index("idx_project_schedules_project", "project_id", "due_at", "id"),
 )
+
+
+# The integration train's visit history per target lane. Diagnostics and the
+# restart visit order only: a visit always re-reads Git, never this row.
+integration_train_lanes = Table(
+    "integration_train_lanes",
+    metadata,
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_ref", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("visits", Integer, nullable=False, server_default="0"),
+    Column("errors", Integer, nullable=False, server_default="0"),
+    Column("state", Text),
+    Column("observed_at", Float),
+    Column("started_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    PrimaryKeyConstraint("project_id", "repository_id", "target_ref",
+                         name="pk_integration_train_lanes"),
+)
