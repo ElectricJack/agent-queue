@@ -14641,7 +14641,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:9d5401310666ad691b3f912f2f6b37fee297fc1d071f51ea97462c4f44b41886",
+      "digest": "sha256:ff47ae06a9e5b7dd29aa0c5d2d7b4f0c3850c019a8f0ca171313f52cc566781d",
       "imports": [
         "src.claim_file",
         "src.config",
@@ -14656,6 +14656,7 @@
         "src.sessions.context",
         "src.sessions.exit_classifier",
         "src.sessions.fake",
+        "src.sessions.proctable",
         "src.sessions.provider",
         "src.sessions.reconciler"
       ],
