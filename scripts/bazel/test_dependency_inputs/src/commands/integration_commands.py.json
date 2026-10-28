@@ -1,0 +1,9 @@
+{
+  "imports": [
+    "src.commands.contracts.integration"
+  ],
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "_train_control dispatches getattr(contracts, model_name) against src/commands/contracts/integration.py, whose request/response models it selects by name at call time; the whole module is the real dependency."
+}

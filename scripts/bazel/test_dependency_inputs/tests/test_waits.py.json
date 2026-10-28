@@ -1,0 +1,6 @@
+{
+  "data": [
+    "src/waits/**/*.py"
+  ],
+  "reason": "test_wait_package_has_no_imports_from_command_session_or_orchestrator_packages walks src/waits via Path(\"src/waits\").rglob(\"*.py\") at runtime, which the analyzer can't see as a static import."
+}

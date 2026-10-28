@@ -1,0 +1,9 @@
+{
+  "imports": [
+    "src.database.tables"
+  ],
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ],
+  "reason": "getattr(tables, table_name) selects a SQLAlchemy Core table object from src/database/tables.py by name at call time; the whole module is the real dependency."
+}
