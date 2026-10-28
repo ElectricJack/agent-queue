@@ -3834,7 +3834,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:8bf98a566598f1dab419cdcae4772bd926786786b3b92cdd88925ec4b1c474d6",
+      "digest": "sha256:7e2a1037c782663d3ce2b8a73fe9744e1342dbb623ad7d537a60809433086ff1",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3857,6 +3857,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.git.process",
+        "src.git.repository_lock",
         "src.integration",
         "src.integration.admission",
         "src.integration.batches",
