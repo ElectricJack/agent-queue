@@ -1,0 +1,6 @@
+{
+  "data": [
+    "dashboard/src/pages/metrics/__tests__/waitFaultAccounting.json"
+  ],
+  "reason": "The expected-fault-accounting fixture is read via a Path(__file__) expression the analyzer can't resolve as a literal."
+}

@@ -30,37 +30,47 @@ source checkout's tracked paths. The archive uses that explicit inventory.
 Pytest's Python imports and automatic conftest loading still follow pytest's
 normal rules; run collection in a trusted checkout.
 
-## Per-area dependency migration
+## Fine-grained by default
 
-Opt in a selection-catalogue area name or a quoted test-path glob:
+Every catalogue module is fine-grained unless its declaration in
+`scripts/bazel/test_dependency_inputs.json` sets `mode: legacy` with a
+`reason`. There is no opt-in mechanism and no manifest stickiness: `--area`
+and the `fine_grained_modules` manifest key are retired. A module keeps the
+conservative, repository-wide source closure only while its declaration marks
+it legacy; removing that declaration (with the corresponding regression
+coverage) is the migration.
 
 ```bash
-python scripts/bazel/generate_targets.py --area 'tests/test_knowledge_*.py'
+python scripts/bazel/generate_targets.py --collection .aq/tmp/bazel-collection.json
 python scripts/bazel/generate_targets.py --check
 ```
 
-Repeat `--area` to select several areas. The manifest retains the opted-in module
-names, so normal regeneration and `--check` preserve earlier slices. An unmatched
-area is an error. This foundation opts in only `tests/test_knowledge_*`; other
-areas retain their existing source declarations until their own migration.
-Collection evidence and suite membership are unchanged by opting in. Refresh
-collection with the commands above when test or fixture bytes change.
-
-For opted-in modules, `scripts/bazel/test_dependencies.py` follows Python imports,
-package initializers, literal dynamic imports, and the transitive fixtures the
+For every non-legacy module, `scripts/bazel/test_dependencies.py` follows Python
+imports, package initializers, literal dynamic imports, and the transitive fixtures the
 module requests. Autouse fixtures, `usefixtures`, fixture overrides and imported
 fixtures participate. Conftest startup code and pytest hooks remain dependencies;
 unused fixture bodies do not pull unrelated application modules into the graph.
 The original conftest bytes remain runfiles. Individual source files are declared
 as data, avoiding broad package-library dependencies and import cycles. Unknown
-dynamic imports retain a conservative closure and an explanation in the manifest.
-Package resources and the existing repository/runtime substrate remain declared;
-this does not assert that every input is yet minimal or that a module is pure.
+dynamic imports retain a conservative closure and an explanation in the manifest;
+a module declared `broad: "<reason>"` gets the same repository-wide closure
+on purpose, with the reason recorded in the manifest instead of a generic
+"unresolved import" message. Package resources and the existing
+repository/runtime substrate remain declared; this does not assert that every
+input is yet minimal or that a module is pure.
 
 Documentation has a separate `//:python_documentation_data` filegroup and is absent
-from `python_repository_data`. Readers retain documentation inputs; unresolved
-dynamic consumers may conservatively retain them. Selection proofs should inspect
-both the selected modules and their recorded conservative reasons.
+from `python_repository_data`. The documentation filegroup carries `docs/**` plus
+the root `*.md` files and `LICENSE`; Bazel's root `"*"` glob is non-recursive, so
+excluding `*.md`/`LICENSE` from the repository filegroup's glob only affects
+root-level files, not `docs/**`'s own glob. Readers retain documentation inputs by
+setting the module's `docs` flag (which pulls in the whole filegroup) or by
+declaring exact files under `data` (which does not); unresolved dynamic consumers
+may conservatively retain them. A docs-matching string literal (`"docs"` or a
+`"docs/..."` prefix) defaults active in `tests/` files and inactive in `src/`
+files; `docs: false` (with a `reason`) or an explicit `docs: true` overrides the
+default per path. Selection proofs should inspect both the selected modules and
+their recorded conservative reasons.
 
 The database bootstrap refactor (`fair-glacier-79`) makes the package and query
 exports lazy and separates reusable database adapters from lease bookkeeping.
@@ -166,21 +176,42 @@ prefix/comparison strings do not request directory contents. Unknown Python
 execution retains a visible conservative fallback.
 
 Inputs that syntax cannot express can be added in
-`scripts/bazel/test_dependency_inputs.json`, keyed by test module path:
+`scripts/bazel/test_dependency_inputs.json`, keyed by a test module path or a
+`src/` file path:
 
 ```json
 {
   "tests/test_example.py": {
     "imports": ["src.example.entry"],
-    "data": ["tests/fixtures/example/**/*.json"]
+    "import_globs": ["src/example/plugins/*.py"],
+    "data": ["tests/fixtures/example/**/*.json"],
+    "resolves": ["tests/test_example.py: unresolved dynamic import"],
+    "docs": false,
+    "broad": "loads every plugin under src/example/plugins by name",
+    "mode": "legacy",
+    "reason": "required whenever docs:false, mode:legacy, or broad is set"
   }
 }
 ```
 
-Declarations add to discovered imports, fixtures and resources. Import entries
-include package initializers and transitive imports. Data globs track added and
-removed members; an unknown import or unmatched glob stops generation. These
-entries cannot remove a discovered dependency or suppress a conservative reason.
+Unknown declaration keys are a generation error; the allowed set is `resolves`,
+`imports`, `import_globs`, `data`, `docs`, `broad`, `mode` and `reason`.
+`imports`/`import_globs` and `data` add to discovered imports, fixtures and
+resources: import entries (and glob matches) include package initializers and
+transitive imports, and data globs track added and removed members; an unknown
+import name or a glob matching no file stops generation. `resolves` lists the
+exact conservative reason strings the declaration answers for that path — once
+declared, that reason is dropped from every closure that reaches the path, in
+favor of the declared imports/globs. A `resolves` entry that stops matching any
+recorded reason (the dependency that caused it went away) is a stale
+declaration and also stops generation; drop the entry instead of leaving it
+dangling. `docs: false` (or `true`) overrides the path's default docs-literal
+behavior and requires `reason`. `broad: "<reason>"` keeps the module's closure
+conservative (repository-wide) like an unresolved dynamic import, but records
+the given reason instead of a generic one. `mode: legacy` keeps the module out
+of fine-grained generation entirely and requires `reason`. These entries cannot
+remove a discovered dependency, and nothing here can suppress a conservative
+reason other than via `resolves`.
 
 ## Manifest dependency lists
 

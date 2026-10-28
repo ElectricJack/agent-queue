@@ -1,11 +1,22 @@
 """Per-test Bazel dependency discovery preserves runtime inputs without global fanout."""
 import json
+import os
+import subprocess
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
 from scripts.bazel.test_dependencies import DependencyAnalyzer, discover
+
+_GIT_IDENTITY = ["-c", "user.name=Tester", "-c", "user.email=tester@example.test"]
+
+
+def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(path), *_GIT_IDENTITY, *args], capture_output=True, text=True,
+        check=check, env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"},
+    )
 
 
 def test_repository_leaf_closure_avoids_database_bootstrap_fanout():
@@ -225,7 +236,11 @@ def test_production_runtime_imports_are_not_pruned(tmp_path):
             from src import runtime
     """)
     write(tmp_path, "src/runtime.py")
-    write(tmp_path, "tests/test_sample.py", "import src.entry")
+    write(tmp_path, "tests/test_sample.py", """
+        import src.entry
+        def test_sample():
+            src.entry.load()
+    """)
     assert discover(tmp_path, "tests/test_sample.py")["source_files"] == [
         "src/entry.py", "src/runtime.py",
     ]
@@ -496,9 +511,9 @@ def test_declared_subprocess_module_includes_transitive_imports_and_initializers
         def test_sample():
             subprocess.run([sys.executable, "-m", "src.tool.entry"], check=True)
     """)
-    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
-        "tests/test_sample.py": {"imports": ["src.tool.entry"]},
-    }))
+    write(tmp_path, "scripts/bazel/test_dependency_inputs/tests/test_sample.py.json", json.dumps(
+        {"imports": ["src.tool.entry"]},
+    ))
 
     result = discover(tmp_path, "tests/test_sample.py")
 
@@ -527,11 +542,9 @@ def test_declared_inputs_preserve_discovered_imports_fixtures_and_resources(tmp_
             assert Path("src/template.txt").read_text()
     """)
     write(tmp_path, "tests/test_other.py", "def test_other(): pass")
-    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
-        "tests/test_sample.py": {
-            "imports": ["src.declared"],
-            "data": ["tests/fixtures/*.json"],
-        },
+    write(tmp_path, "scripts/bazel/test_dependency_inputs/tests/test_sample.py.json", json.dumps({
+        "imports": ["src.declared"],
+        "data": ["tests/fixtures/*.json"],
     }))
 
     analyzer = DependencyAnalyzer(tmp_path)
@@ -550,9 +563,9 @@ def test_declared_data_glob_tracks_added_and_deleted_members(tmp_path):
     write(tmp_path, "tests/test_sample.py", "def test_sample(): pass")
     write(tmp_path, "tests/fixtures/first.json", "{}")
     write(tmp_path, "tests/fixtures/readme.txt", "unmatched")
-    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
-        "tests/test_sample.py": {"data": ["tests/fixtures/**/*.json"]},
-    }))
+    write(tmp_path, "scripts/bazel/test_dependency_inputs/tests/test_sample.py.json", json.dumps(
+        {"data": ["tests/fixtures/**/*.json"]},
+    ))
 
     before = discover(tmp_path, "tests/test_sample.py")
     write(tmp_path, "tests/fixtures/nested/second.json", "{}")
@@ -572,20 +585,257 @@ def test_declared_data_glob_tracks_added_and_deleted_members(tmp_path):
     [
         ({"imports": ["src.missing"]}, "unknown declared import src.missing"),
         ({"data": ["tests/fixtures/*.json"]}, "declared data matches no files"),
+        ({"nonsense": "x"}, "unknown declaration keys"),
+        ({"mode": "legacy"}, "mode: legacy requires reason"),
+        ({"docs": False}, "docs: false requires reason"),
     ],
-    ids=["unknown-import", "unmatched-data-glob"],
+    ids=[
+        "unknown-import", "unmatched-data-glob", "unknown-declaration-key",
+        "mode-legacy-requires-reason", "docs-false-requires-reason",
+    ],
 )
 def test_invalid_declared_inputs_fail_instead_of_silently_narrowing(
     tmp_path, declaration, diagnostic,
 ):
     write(tmp_path, "src/available.py")
     write(tmp_path, "tests/test_sample.py", "import src.available")
-    write(tmp_path, "scripts/bazel/test_dependency_inputs.json", json.dumps({
-        "tests/test_sample.py": declaration,
-    }))
+    write(
+        tmp_path, "scripts/bazel/test_dependency_inputs/tests/test_sample.py.json",
+        json.dumps(declaration),
+    )
 
     with pytest.raises(ValueError, match=diagnostic):
         discover(tmp_path, "tests/test_sample.py")
+
+
+def test_getattr_literal_attribute_retains_only_named_definition(tmp_path):
+    """S6: a literal ``getattr(module, "name")`` activates exactly that
+    top-level definition -- a sibling definition never named this way, and
+    its own lazy import, stay unreached."""
+    write(tmp_path, "src/registry.py", """
+        def worker_one():
+            from src import dep_one
+            return dep_one
+
+        def worker_two():
+            from src import dep_two
+            return dep_two
+    """)
+    write(tmp_path, "src/dep_one.py")
+    write(tmp_path, "src/dep_two.py")
+    write(tmp_path, "tests/test_sample.py", """
+        import src.registry as registry
+        def test_sample():
+            assert getattr(registry, "worker_one")
+    """)
+
+    result = discover(tmp_path, "tests/test_sample.py")
+
+    assert "src/dep_one.py" in result["source_files"]
+    assert "src/dep_two.py" not in result["source_files"]
+    assert not result["conservative"], result["conservative_reasons"]
+
+
+def test_dunder_all_wildcard_import_activates_only_listed_names(tmp_path):
+    """S6 soundness guard: ``__all__`` with ``from x import *`` activates the
+    listed names -- a sibling definition left out of ``__all__`` stays
+    unreached even though the wildcard import pulls in the module."""
+    write(tmp_path, "src/toolkit.py", """
+        __all__ = ["helper_a"]
+
+        def helper_a():
+            from src import dep_a
+            return dep_a
+
+        def helper_b():
+            from src import dep_b
+            return dep_b
+    """)
+    write(tmp_path, "src/dep_a.py")
+    write(tmp_path, "src/dep_b.py")
+    write(tmp_path, "tests/test_sample.py", """
+        from src.toolkit import *
+        def test_sample():
+            pass
+    """)
+
+    result = discover(tmp_path, "tests/test_sample.py")
+
+    assert "src/dep_a.py" in result["source_files"]
+    assert "src/dep_b.py" not in result["source_files"]
+    assert not result["conservative"], result["conservative_reasons"]
+
+
+def test_declared_plugin_loader_resolves_suppress_dynamic_and_file_import_reasons(tmp_path):
+    """S acceptance: plugin declarations. ``pkgutil.iter_modules`` fan-out and
+    ``spec_from_file_location`` on an operator-supplied path are both
+    genuinely dynamic; a declared ``resolves`` keeps the graph narrow instead
+    of falling back to the whole repository."""
+    write(tmp_path, "src/plugins/internal/__init__.py", """
+        import importlib
+        import pkgutil
+        package = importlib.import_module(__name__)
+        for importer, modname, ispkg in pkgutil.iter_modules(
+            package.__path__, prefix=f"{__name__}.",
+        ):
+            importlib.import_module(modname)
+    """)
+    write(tmp_path, "src/plugins/internal/notes.py")
+    write(tmp_path, "src/plugins/loader.py", """
+        import importlib.util
+        def load_plugin(path):
+            spec = importlib.util.spec_from_file_location("plugin", path)
+            return spec
+    """)
+    write(tmp_path, "tests/test_sample.py", """
+        import src.plugins.internal
+        import src.plugins.loader as loader
+        def test_sample():
+            loader.load_plugin("/operator/plugin.py")
+    """)
+    write(
+        tmp_path, "scripts/bazel/test_dependency_inputs/src/plugins/internal/__init__.py.json",
+        json.dumps({
+            "import_globs": ["src/plugins/internal/*.py"],
+            "resolves": ["src/plugins/internal/__init__.py: unresolved dynamic import"],
+            "reason": "pkgutil.iter_modules walks submodules dynamically",
+        }),
+    )
+    write(
+        tmp_path, "scripts/bazel/test_dependency_inputs/src/plugins/loader.py.json",
+        json.dumps({
+            "resolves": ["src/plugins/loader.py: unresolved file import"],
+            "reason": "spec_from_file_location loads an operator-supplied path outside the repository",
+        }),
+    )
+
+    result = discover(tmp_path, "tests/test_sample.py")
+
+    assert result["source_files"] == [
+        "src/plugins/internal/__init__.py", "src/plugins/internal/notes.py",
+        "src/plugins/loader.py",
+    ]
+    assert not result["conservative"], result["conservative_reasons"]
+
+
+def test_check_stale_declarations_flags_unmatched_declared_resolves(tmp_path):
+    """S acceptance: a stale ``resolves`` refusal. A declared reason that is
+    never actually produced by a scan stays visible instead of silently
+    rotting once the code it used to cover changes."""
+    write(tmp_path, "src/plugins/loader.py", """
+        import importlib.util
+        def load_plugin(path):
+            spec = importlib.util.spec_from_file_location("plugin", path)
+            return spec
+    """)
+    write(tmp_path, "tests/test_sample.py", """
+        import src.plugins.loader as loader
+        def test_sample():
+            loader.load_plugin("/operator/plugin.py")
+    """)
+    write(
+        tmp_path, "scripts/bazel/test_dependency_inputs/src/plugins/loader.py.json",
+        json.dumps({
+            "resolves": [
+                "src/plugins/loader.py: unresolved file import",
+                "src/plugins/loader.py: this reason never happens",
+            ],
+            "reason": "spec_from_file_location loads an operator-supplied path outside the repository",
+        }),
+    )
+
+    analyzer = DependencyAnalyzer(tmp_path)
+    analyzer.discover("tests/test_sample.py")
+
+    assert analyzer.check_stale_declarations() == {
+        "src/plugins/loader.py": ["src/plugins/loader.py: this reason never happens"],
+    }
+
+
+def test_docs_false_override_suppresses_default_active_docs_literal(tmp_path):
+    """A literal ``docs/...``-shaped string defaults to active for a tests/
+    module; a declared ``docs: false`` (with its required reason) overrides
+    that default instead of being ignored."""
+    write(tmp_path, "tests/test_sample.py", """
+        def test_sample():
+            open("docs/guides/thing.md")
+    """)
+    write(
+        tmp_path, "scripts/bazel/test_dependency_inputs/tests/test_sample.py.json",
+        json.dumps({
+            "docs": False,
+            "reason": "this path merely starts with docs/ and is not documentation",
+        }),
+    )
+
+    result = discover(tmp_path, "tests/test_sample.py")
+
+    assert result["docs"] is False
+
+
+def test_declared_broad_escape_hatch_forces_full_repository_fallback(tmp_path):
+    """A declared ``broad`` reason is the explicit, visible escape hatch for
+    genuinely unanalyzable execution: it forces the same whole-repository
+    fallback as an unresolved dynamic import, with the declared text kept as
+    the reason instead of a silent narrow (and wrong) graph."""
+    write(tmp_path, "src/alpha.py")
+    write(tmp_path, "src/unrelated.py")
+    write(tmp_path, "tests/test_sample.py", "import src.alpha")
+    write(
+        tmp_path, "scripts/bazel/test_dependency_inputs/src/alpha.py.json",
+        json.dumps({"broad": "legacy module wires itself up via exec()"}),
+    )
+
+    result = discover(tmp_path, "tests/test_sample.py")
+
+    assert "src/unrelated.py" in result["source_files"]
+    assert result["docs"] is True
+    assert result["conservative"]
+    assert "legacy module wires itself up via exec()" in result["conservative_reasons"]
+
+
+def test_shard_per_module_merges_two_branches_without_conflict(tmp_path):
+    """S5: one declaration shard per module means two branches that declare
+    different modules touch different files, so a real merge never conflicts
+    -- and ``repository_files()`` (``git ls-files --cached`` at a real root)
+    picks up both shards from the merged index afterward."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "--initial-branch=main")
+    write(repo, "src/alpha.py")
+    write(repo, "src/beta.py")
+    write(repo, "tests/test_alpha.py", "def test_alpha(): pass")
+    write(repo, "tests/test_beta.py", "def test_beta(): pass")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+
+    _git(repo, "checkout", "-qb", "one")
+    write(
+        repo, "scripts/bazel/test_dependency_inputs/tests/test_alpha.py.json",
+        json.dumps({"imports": ["src.alpha"]}),
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "declare alpha")
+
+    _git(repo, "checkout", "-q", "main")
+    write(
+        repo, "scripts/bazel/test_dependency_inputs/tests/test_beta.py.json",
+        json.dumps({"imports": ["src.beta"]}),
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "declare beta")
+
+    merged = _git(repo, "merge", "--no-edit", "one", check=False)
+    assert merged.returncode == 0, merged.stdout + merged.stderr
+    assert _git(repo, "diff", "--name-only", "--diff-filter=U").stdout == ""
+
+    analyzer = DependencyAnalyzer(repo)
+    assert analyzer.declarations["tests/test_alpha.py"] == {"imports": ["src.alpha"]}
+    assert analyzer.declarations["tests/test_beta.py"] == {"imports": ["src.beta"]}
+    alpha = analyzer.discover("tests/test_alpha.py")
+    beta = analyzer.discover("tests/test_beta.py")
+    assert alpha["source_files"] == ["src/alpha.py"]
+    assert beta["source_files"] == ["src/beta.py"]
 
 
 def test_overlapping_scan_batches_reuse_nodes_with_full_lexical_context(tmp_path, monkeypatch):

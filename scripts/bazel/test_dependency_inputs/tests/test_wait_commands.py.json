@@ -1,0 +1,9 @@
+{
+  "data": [
+    "src/profiles/defaults/supervisor/profile.md",
+    "src/profiles/defaults/worker-claude/profile.md",
+    "src/profiles/defaults/worker-codex/profile.md",
+    "src/profiles/defaults/worker-opencode/profile.md"
+  ],
+  "reason": "test_copied_vault_additive_sync_closes_wait_grant_drift and test_additive_sync_repairs_a_disposable_vault_copy read the shipped profile.md for each profile_id via shipped_profile_path(), a runtime-computed path the analyzer can't resolve statically."
+}

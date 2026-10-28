@@ -1,0 +1,9 @@
+{
+  "imports": [
+    "migrations.versions.a00000000113_continuation_task_audit"
+  ],
+  "resolves": [
+    "tests/test_wait_hibernation.py: unresolved file import"
+  ],
+  "reason": "spec_from_file_location loads migrations/versions/a00000000113_continuation_task_audit.py via a Path(...) expression, which the analyzer can't read as a literal; the migration module is the real dependency."
+}

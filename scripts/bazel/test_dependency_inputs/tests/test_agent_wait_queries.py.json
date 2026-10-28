@@ -1,0 +1,9 @@
+{
+  "imports": [
+    "migrations.versions.a00000000029_agent_waits"
+  ],
+  "resolves": [
+    "tests/test_agent_wait_queries.py: unresolved file import"
+  ],
+  "reason": "spec_from_file_location loads migrations/versions/a00000000029_agent_waits.py via a Path(...) expression, which the analyzer can't read as a literal; the migration module is the real dependency."
+}
