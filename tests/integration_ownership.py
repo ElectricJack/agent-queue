@@ -1483,7 +1483,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                                                       'src/integration/repository_maintenance.py': 173,
                                                                       'src/integration/repository_recovery.py': -29,
                                                                       'src/orchestrator/core.py': 4},
-                                                    'dev_source_revision': '1c7c5ab2f695c06563d762f58b7b03450326d3b5',
+                                                    'dev_source_revision': '036ca25bbc82d2c6673186dc645d2149c7a90d4f',
                                                     'evidence_path': 'docs/reports/2026-10-28-retained-store-maintenance-landing-ownership.json',
                                                     'measured_engine_lines': 84356,
                                                     'measured_owned_total': 161091,
@@ -1494,7 +1494,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                                     'previous_measured_table_count': 45,
                                                     'prior_grant_evidence': 'docs/reports/2026-10-27-retained-store-maintenance-dev-merge-ownership.json',
                                                     'reason': 'Measured landing delta over dev '
-                                                              '1c7c5ab2f, approved exact by the '
+                                                              '036ca25bb, approved exact by the '
                                                               'supervisor under the global landing '
                                                               'protocol: unchanged +230 owned/+144 '
                                                               'engine/+86 shared/0 tables after '
@@ -1504,7 +1504,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                                               'zero headroom, s4_modules expiry '
                                                               'and storage categories.',
                                                     'referenced_decision': 'size-cap-delegation-2026-10-23',
-                                                    'source_revision': 'b8a612702a6724c97dbcc5843e5754e5c17c032c',
+                                                    'source_revision': '8f8cbacb59939e7b1157459dee10482ea33ef5a9',
                                                     'supervisor_decision_message_id': 'msg-52016cbae0e445e1baa70acb295b19ec',
                                                     'task_id': 'clear-rapids-41'},
  'promotion_ci_policy_composition': {'authorized_engine_delta': 94,

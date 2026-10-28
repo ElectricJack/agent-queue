@@ -7,7 +7,7 @@
   "before": {
     "engine": 84212,
     "owned": 160861,
-    "revision": "1c7c5ab2f695c06563d762f58b7b03450326d3b5",
+    "revision": "036ca25bbc82d2c6673186dc645d2149c7a90d4f",
     "tables": 45
   },
   "charged_files": {
@@ -62,7 +62,7 @@
     "owned": 230,
     "tables": 0
   },
-  "method": "Fresh complete dev 1c7c5ab2f archive and merged source inventory using unchanged classifications, after composing the retained-verification single flight. Exact measured +230 owned/+144 engine/+86 shared/0 tables; preserve all historical grants, zero headroom, and original pins.",
+  "method": "Fresh complete dev 036ca25bb archive and merged source inventory using unchanged classifications, after composing the retained-verification single flight. Exact measured +230 owned/+144 engine/+86 shared/0 tables; preserve all historical grants, zero headroom, and original pins.",
   "prior_grant_evidence": "docs/reports/2026-10-27-retained-store-maintenance-dev-merge-ownership.json",
   "referenced_decision": "size-cap-delegation-2026-10-23",
   "supervisor_decision_message_id": "msg-52016cbae0e445e1baa70acb295b19ec",
