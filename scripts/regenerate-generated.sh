@@ -41,6 +41,8 @@ GENERATED=(
     openapi.json
     packages/aq-client
     scripts/aq-client-boilerplate.sha256
+    tools/bazel/test_suites.json
+    tools/bazel/python_data.bzl
 )
 
 MODE=""
@@ -78,6 +80,47 @@ fi
 RECORDED_PATHS="$("$PYTHON" "$ROOT_DIR/scripts/generate-recorded-artifacts.py" --list)"
 mapfile -t RECORDED <<< "$RECORDED_PATHS"
 GENERATED+=("${RECORDED[@]}")
+
+# scripts/bazel/generate_targets.py reuses the committed manifest's collection
+# when no test/fixture byte has changed (the fast path: no pytest collection,
+# just re-rendering).  It only runs the full `inventory.py collect` -- timed
+# at ~2 minutes wall-clock (39421 tests; see the S5 close summary) on this
+# checkout -- when that comparison finds drift, which is the one error this
+# wraps and retries with a freshly collected manifest.
+bazel_generate() {
+    local python="$1" root="$2"
+    shift 2
+    local log status collection
+    if log="$(cd "$root" && "$python" scripts/bazel/generate_targets.py "$@" 2>&1)"; then
+        printf '%s\n' "$log"
+        return 0
+    fi
+    status=$?
+    if ! grep -q "test/fixture source drift" <<<"$log"; then
+        printf '%s\n' "$log" >&2
+        return "$status"
+    fi
+    echo "Bazel manifest collection is stale; running a full inventory.py collect (~2 minutes) to refresh it..." >&2
+    collection="$(mktemp "${TMPDIR:-/tmp}/aq-bazel-collection.XXXXXX.json")"
+    if ! (cd "$root" && "$python" scripts/bazel/inventory.py collect --output "$collection"); then
+        rm -f "$collection"
+        return 1
+    fi
+    (cd "$root" && "$python" scripts/bazel/generate_targets.py "$@" --collection "$collection")
+    status=$?
+    rm -f "$collection"
+    return "$status"
+}
+
+# Every generated BUILD.bazel file: enumerated from the committed tree via
+# `git ls-files`, not by invoking generate_targets.py, whose definition-level
+# analysis over every selected test module (scripts/bazel/test_dependencies.py's
+# DependencyAnalyzer.discover) takes minutes even on its fast, no-recollection
+# path. The committed set is authoritative between runs; the bazel-targets
+# step below is the only place that cost is paid, once, to actually rewrite
+# fresh content into these same paths.
+mapfile -t BAZEL_TARGETS < <(cd "$ROOT_DIR" && git ls-files -- BUILD.bazel '**/BUILD.bazel')
+GENERATED+=("${BAZEL_TARGETS[@]}")
 if [[ "$MODE" == "--list" ]]; then
     printf '%s\n' "${GENERATED[@]}"
     exit 0
@@ -100,7 +143,11 @@ regenerate() {
         pids+=("$!")
         names+=("$name")
     }
-    step selection-catalogue "$PYTHON" scripts/generate-selection-catalogue.py
+    # generate_targets.py reads tests/selection_catalogue.json as its first
+    # statement, so this must be settled before the bazel-targets step starts.
+    if ! (cd "$root" && "$PYTHON" scripts/generate-selection-catalogue.py); then
+        return 1
+    fi
     step recorded-artifacts "$PYTHON" scripts/generate-recorded-artifacts.py
     # These profiles have authored prose/config and generated capability blocks.
     step worker-capabilities "$PYTHON" scripts/generate-worker-capabilities.py
@@ -115,6 +162,9 @@ regenerate() {
     step playbook-schema "$PYTHON" scripts/generate-playbook-schema.py
     # openapi.json, packages/aq-client/ and the boilerplate digests.
     step api-client ./scripts/regenerate-api-client.sh --offline
+    # Every BUILD.bazel/BUILD file, tools/bazel/test_suites.json and
+    # tools/bazel/python_data.bzl; see bazel_generate() above for the drift fallback.
+    step bazel-targets bazel_generate "$PYTHON" "$root"
     local failed=0 i
     for i in "${!pids[@]}"; do
         if ! wait "${pids[$i]}"; then
