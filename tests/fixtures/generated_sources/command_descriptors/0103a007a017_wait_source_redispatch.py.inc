@@ -17,7 +17,7 @@ def _before_wait_source_redispatch_catalogue():
 def test_wait_source_redispatch_only_adds_scoped_recovery_command():
     evidence = _wait_source_redispatch_changes()
     assert evidence["command"] == "wait_source_redispatch"
-    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+    assert _wait_source_recovery_changes()["previous_fingerprint"] == (
         evidence["contract_fingerprint"]
     )
     # Undo independent additions while preserving each recording's original hashes.

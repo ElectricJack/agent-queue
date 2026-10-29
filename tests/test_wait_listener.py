@@ -148,7 +148,7 @@ async def test_source_budget_adapts_to_timeouts_without_exceeding_lease(monkeypa
 
     async def drain_one(watermark, retry_pending, attempt, recovery, **kwargs):
         observed.append(active[-1][0])
-        attempt.update(retry=False)
+        attempt.update(retry=False, event={"seq": watermark})
         if len(observed) <= 3:
             active[-1][1].reschedule(asyncio.get_running_loop().time())
             await asyncio.Event().wait()
@@ -212,7 +212,7 @@ async def test_manual_recovery_wait_does_not_consume_dispatch_budget(monkeypatch
     # Let the request reach the queued lock without spending a dispatch budget.
     await queued.wait()
     listener._redispatch_locked.assert_not_awaited()
-    assert budgets == [listener.lease_seconds]
+    assert budgets == [listener.redispatch_lock_seconds]
     listener._tick_lock.release()
     assert await request == {"success": True}
     assert not listener._tick_lock.locked()
