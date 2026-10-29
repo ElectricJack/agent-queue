@@ -1,0 +1,57 @@
+{
+  "approval": {
+    "authority": "size-cap-delegation-2026-10-23",
+    "decision_message_id": "msg-753ed33f5aae40cfa23a343221437e4e",
+    "remaining_headroom": 0
+  },
+  "base_revision": "fdd38f92f6188e850dbadd76f0c402ecf0af6df6",
+  "charged_files": {
+    "src/commands/handler.py": 4
+  },
+  "delta": {
+    "groups": {
+      "companions": 0,
+      "engine": 0,
+      "guards": 0,
+      "policy": 0,
+      "policy_sources": 0,
+      "shared": 4,
+      "ui": 0
+    },
+    "table_count": 0,
+    "total": 4
+  },
+  "dev": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64158,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161824,
+    "unknown_count": 67,
+    "unknown_sinks_count": 59
+  },
+  "merged": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84825,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64162,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161828,
+    "unknown_count": 67,
+    "unknown_sinks_count": 59
+  },
+  "method": "Complete dev archive and merged tree measured with the incoming dev scanner and unchanged ownership classifications. Preserve all dev grant entries and original PR2100 grant history. Exact carry-forward of the existing +4 shared/+0 engine/+0 tables approval; no new allowance.",
+  "old_head": "6ed2d250dba6b820f7b017600bc363a9a8605716",
+  "task_id": "crisp-dune-85"
+}
