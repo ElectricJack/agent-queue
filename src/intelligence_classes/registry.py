@@ -27,6 +27,7 @@ from src.intelligence_classes import (
     IntelligenceClass,
     _parse_class_file,
     _upgrade_legacy_provider_defaults,
+    is_class_source,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -119,7 +120,7 @@ class IntelligenceClassRegistry(Mapping):
             names = sorted(n for n in os.listdir(root) if n.endswith(".md"))
         for name in names:
             path = os.path.join(root, name)
-            if os.path.islink(path) or not os.path.isfile(path):
+            if os.path.islink(path) or not os.path.isfile(path) or not is_class_source(path):
                 continue
             rel_path = f"intelligence-classes/{name}"
             cls, error = _parse_class_file(path)
@@ -171,6 +172,8 @@ async def _on_intelligence_class_changed(
                 logger.info("Intelligence-class registry: removed %s", class_id)
             continue
 
+        if not is_class_source(change.path):
+            continue
         cls, error = _parse_class_file(change.path)
         if cls is None:
             # Keep the previous entry: a file being edited must not take a

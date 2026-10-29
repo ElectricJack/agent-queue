@@ -947,6 +947,32 @@ async def test_repository_contention_returns_cooldown_and_resumes_same_preparati
         await train
 
 
+async def test_retained_verification_wait_is_its_own_retained_stage(handler, db, tmp_path):
+    from src.git.repository_lock import RetainedVerificationPending
+
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    prefetch = handler.orchestrator._worktree_slots().prefetch_slot_for_task
+    prefetch.side_effect = RetainedVerificationPending(5.0)
+    result = await settled_claim(env.handler, {"next": True})
+    assert result["result"] == "prepare_failed", result
+    assert "verification in progress" in result["reason"]
+    assert result["retry_after"] > 0 and result["refusal_count"] == 1
+    assert prefetch.await_count == 1
+    held = await db.get_session(env.sid)
+    assert (held.claim_phase, held.last_claim_epoch, held.claim_failure_count) == (
+        "preparing", 1, 0,
+    )
+    failure = await db.get_task_meta(env.task_id, "prepare_failure")
+    assert (failure["stage"], failure["disposition"]) == ("retained_verification", "retained")
+    assert await db.get_task_meta(env.task_id, "needs_attention") is None
+
+    prefetch.side_effect = None
+    await expire_claim_refusal(db, env.sid)
+    resumed = await settled_claim(env.handler, {"next": True})
+    assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
+    assert await db.get_task_meta(env.task_id, "prepare_failure") is None
+
+
 async def test_slow_slot_prefetch_runs_outside_branch_exclusion(handler, db, tmp_path, monkeypatch):
     from src.integration import lock as lock_module
 
@@ -7319,6 +7345,56 @@ async def test_development_claim_accepts_source_bookkeeping_during_preparation(
     assert (await db.get_session(sid)).claim_phase == "active"
     assert (await db.get_task("prerequisite")).updated_at == before + 1
     assert await db.get_task_meta("dependent", "prepare_failure") is None
+
+
+async def test_development_claim_of_another_candidates_source_activates(
+    handler, db, tmp_path, development_admission,
+):
+    # "downstream" is a candidate in the same batch whose source is "dependent",
+    # so taking "dependent" moves a request the batch fingerprint fences.
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    await mktask(db, "downstream", profile_id="worker", repo_id="repo")
+    await db.add_dependency("downstream", "dependent")
+    sid, _ = await pool_session(db, tmp_path)
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    assert (await db.get_session(sid)).claim_phase == "active"
+    assert (await db.get_task("dependent")).claim_epoch == 1
+    assert await db.get_task_meta("dependent", "prepare_failure") is None
+
+
+@pytest.mark.parametrize("movement", ["claim", "completion"])
+async def test_admission_fences_claimed_sources_except_the_claims_own_move(db, movement):
+    from src.integration.admission import AdmissionSnapshot, _inputs
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+    await mktask(db, "dependent", profile_id="worker")
+    await mktask(db, "downstream", profile_id="worker")
+    await db.add_dependency("downstream", "dependent")
+    ids = {"dependent", "downstream"}
+    async with db._engine.connect() as conn:
+        inputs = (await _inputs(db, ids, conn))[-1]
+    batch = AdmissionSnapshot(db, ids, ids, inputs)
+
+    status = "IN_PROGRESS" if movement == "claim" else "COMPLETED"
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            status=status, claim_epoch=1,
+        ))
+
+    # Only the claim's own lifecycle move is exempt, and only for that claim.
+    assert await batch.matches(task_id="dependent") is (movement == "claim")
+    assert not await batch.matches(task_id="downstream")
+    assert not await batch.matches()
+    for tid in ids:
+        [reason] = batch.reasons[tid]
+        assert reason["code"] == "admission_inputs_changed"
+        assert "dependent.task_status" in reason["detail"]
+        assert "dependent.claim_epoch" in reason["detail"]
 
 
 @pytest.mark.parametrize("movement", ["reopen", "completion", "edge", "gate", "hold", "target", "config"])

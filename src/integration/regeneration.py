@@ -8,6 +8,7 @@ their original diagnostics and remain the caller's responsibility.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -16,6 +17,10 @@ import shutil
 import signal
 import sys
 import tempfile
+import weakref
+from collections import OrderedDict
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
@@ -30,8 +35,21 @@ logger = logging.getLogger(__name__)
 #: another one; a merge never runs an empty command.
 DEFAULT_REGENERATE_COMMAND = "scripts/regenerate-generated.sh"
 
-#: Default timeout (seconds) applied to the regenerator subprocess.
+#: Default timeout (seconds) applied to the regenerator subprocess. It is the
+#: budget on an idle box; :func:`load_scaled_timeout` stretches it under load.
 REGENERATION_TIMEOUT_SECONDS = 600
+
+#: Regenerator commands one daemon runs at once. Concurrent closes and train
+#: visits queue for a slot instead of starving each other's budgets, and the
+#: time spent queued never counts against a budget.
+REGENERATION_CONCURRENCY = 1
+
+#: The budget scales with the one-minute load per CPU, at most by this factor.
+REGENERATION_LOAD_SCALE_MAX = 4.0
+
+#: Outcomes kept for runs whose caller stopped waiting, so the same call
+#: rejoins the shared result instead of rebuilding it.
+REGENERATION_RETAINED_OUTCOMES = 64
 
 #: Maximum tail (chars) of the regenerator output retained on failure.
 REGENERATION_OUTPUT_TAIL_CHARS = 4000
@@ -49,6 +67,24 @@ class RegenerationFailure(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.retryable = retryable
+
+
+class RegenerationPending(RuntimeError):
+    """The shared regeneration was still queued or running when the caller's
+    :func:`regeneration_wait` bound expired.
+
+    The run continues detached. Repeating the same call joins it, or takes its
+    retained outcome once it settles. Never a failure and never a conflict.
+    """
+
+    def __init__(self, state: str, waited_seconds: float) -> None:
+        self.state = state
+        self.waited_seconds = waited_seconds
+        self.reason = (
+            f"generated regeneration still {state} after {waited_seconds:g}s; "
+            "it continues detached and the same call rejoins it"
+        )
+        super().__init__(self.reason)
 
 
 class GeneratedMergeConflict(RuntimeError):
@@ -248,6 +284,84 @@ def _subprocess_env(verified_merges=()) -> dict[str, str]:
     return env
 
 
+def load_scaled_timeout(
+    base_seconds: float, *, load: float | None = None, cpus: int | None = None,
+) -> float:
+    """Stretch *base_seconds* by the box's one-minute load per CPU.
+
+    An idle box keeps the configured budget; a box at three times its CPU
+    count gives the regenerator three times as long, capped at
+    :data:`REGENERATION_LOAD_SCALE_MAX`.
+    """
+    if load is None:
+        try:
+            load = os.getloadavg()[0]
+        except OSError:
+            return float(base_seconds)
+    per_cpu = load / max(1, cpus or os.cpu_count() or 1)
+    return float(base_seconds) * min(REGENERATION_LOAD_SCALE_MAX, max(1.0, per_cpu))
+
+
+_WAIT_SECONDS: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "aq_regeneration_wait_seconds", default=None,
+)
+
+
+@contextmanager
+def regeneration_wait(seconds: float | None):
+    """Bound how long regenerations in this context wait for the shared run.
+
+    Past the bound :func:`regenerated_tree` raises :class:`RegenerationPending`
+    while the run continues detached. ``None`` (the default) waits for it.
+    """
+    token = _WAIT_SECONDS.set(seconds)
+    try:
+        yield
+    finally:
+        _WAIT_SECONDS.reset(token)
+
+
+@dataclass
+class _Flight:
+    task: asyncio.Task | None = None
+    state: str = "queued"
+    detached: bool = False
+
+
+@dataclass
+class _Scheduler:
+    """One event loop's regeneration slots, in-flight runs and retained outcomes."""
+
+    gate: asyncio.Semaphore = field(
+        default_factory=lambda: asyncio.Semaphore(REGENERATION_CONCURRENCY)
+    )
+    flights: dict[tuple, _Flight] = field(default_factory=dict)
+    retained: OrderedDict = field(default_factory=OrderedDict)
+
+    def settle(self, key: tuple, flight: _Flight) -> None:
+        self.flights.pop(key, None)
+        if flight.task.cancelled():
+            return
+        error = flight.task.exception()  # Always retrieved: no unhandled warning.
+        if not flight.detached:
+            return
+        self.retained[key] = (error, None if error else flight.task.result())
+        self.retained.move_to_end(key)
+        while len(self.retained) > REGENERATION_RETAINED_OUTCOMES:
+            self.retained.popitem(last=False)
+
+
+_SCHEDULERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _scheduler() -> _Scheduler:
+    loop = asyncio.get_running_loop()
+    scheduler = _SCHEDULERS.get(loop)
+    if scheduler is None:
+        scheduler = _SCHEDULERS[loop] = _Scheduler()
+    return scheduler
+
+
 async def regenerated_tree(
     git: GitManager,
     store: Path,
@@ -275,11 +389,74 @@ async def regenerated_tree(
 
     ``restore_only`` returns the tree after restoring the specified generated
     conflicts. It leaves the command for the batch's final combined sweep.
+
+    A command run is single-flight per event loop: identical inputs share one
+    run, at most :data:`REGENERATION_CONCURRENCY` commands run at once, and
+    *timeout_seconds* (scaled by :func:`load_scaled_timeout`) starts only when
+    a run gets its slot. The run is detached from its callers: a caller whose
+    :func:`regeneration_wait` bound expires gets :class:`RegenerationPending`,
+    a cancelled caller leaves the run going, and the same call later rejoins
+    it or takes its retained outcome (a retained failure is reported once).
     """
+    args = (git, store, merge_tree_sha, command, timeout_seconds, restore_from,
+            restore_paths, restore_only, verified_merges)
+    if restore_only:
+        return await _scratch_run(*args)
+    scheduler = _scheduler()
+    key = (str(Path(store).resolve()), merge_tree_sha, command, restore_from,
+           tuple(restore_paths), tuple(tuple(merge) for merge in verified_merges))
+    flight = scheduler.flights.get(key)
+    if flight is None:
+        retained = await _retained_outcome(git, store, scheduler, key)
+        if retained is not None:
+            return retained
+        flight = scheduler.flights[key] = _Flight()
+        flight.task = asyncio.create_task(_slotted_run(scheduler, flight, args))
+        flight.task.add_done_callback(lambda _task, f=flight: scheduler.settle(key, f))
+    wait_seconds = _WAIT_SECONDS.get()
+    try:
+        done, _ = await asyncio.wait({flight.task}, timeout=wait_seconds)
+    except asyncio.CancelledError:
+        flight.detached = True
+        raise
+    if not done:
+        flight.detached = True
+        raise RegenerationPending(flight.state, wait_seconds)
+    return flight.task.result()
+
+
+async def _retained_outcome(git, store, scheduler, key):
+    """A settled detached run's tree, or raise its failure exactly once."""
+    error, tree = scheduler.retained.get(key, (None, None))
+    if error is not None:
+        del scheduler.retained[key]
+        raise error
+    if tree is None:
+        return None
+    # Unreachable sweep objects can be pruned; a vanished tree runs again.
+    probe = await git.arun_git_result(["cat-file", "-e", f"{tree}^{{tree}}"], cwd=str(store))
+    if probe.returncode:
+        del scheduler.retained[key]
+        return None
+    scheduler.retained.move_to_end(key)
+    return tree
+
+
+async def _slotted_run(scheduler: _Scheduler, flight: _Flight, args: tuple) -> str:
+    async with scheduler.gate:
+        flight.state = "running"
+        return await _scratch_run(*args)
+
+
+async def _scratch_run(
+    git, store, merge_tree_sha, command, timeout_seconds, restore_from,
+    restore_paths, restore_only, verified_merges,
+) -> str:
     worktree = Path(tempfile.mkdtemp(prefix="aq-regen-", dir=str(store.parent)))
     try:
         return await _run(
-            git, store, worktree, merge_tree_sha, command, timeout_seconds,
+            git, store, worktree, merge_tree_sha, command,
+            timeout_seconds if restore_only else load_scaled_timeout(timeout_seconds),
             restore_from, restore_paths,
             restore_only,
             verified_merges,
@@ -356,7 +533,7 @@ async def _run(
     except TimeoutError as exc:
         _kill_process_group(process)
         raise RegenerationFailure(
-            f"`{command}` timed out after {timeout_seconds}s", retryable=True
+            f"`{command}` timed out after {timeout_seconds:g}s", retryable=True
         ) from exc
     except asyncio.CancelledError:
         _kill_process_group(process)
