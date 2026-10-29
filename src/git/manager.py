@@ -74,6 +74,7 @@ import math
 import os
 import random
 import re
+import shutil
 import shlex
 import signal
 import subprocess
@@ -742,6 +743,9 @@ _RETAINED_METADATA_RE = re.compile(
 _RETAINED_INCREMENT_BYTES = 256 * 1024 * 1024
 #: The check after which a background full refresh starts, before expiry.
 _RETAINED_REFRESH_AGE_SECONDS = _RETAINED_VERIFY_TTL_SECONDS / 2
+#: Common stores whose exclusion the current context already holds.
+_RETAINED_EXCLUSIONS_HELD: ContextVar[frozenset[str]] = ContextVar(
+    "retained_store_exclusions_held", default=frozenset())
 
 
 def _retained_increment(previous: tuple, current: tuple) -> tuple[tuple, tuple] | None:
@@ -1122,6 +1126,7 @@ class GitManager:
         env: dict[str, str] | None = None,
         timeout: int | None = None,
         lock_held: bool = False,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         """Run Git while preserving expected nonzero status and diagnostics.
 
@@ -1145,10 +1150,12 @@ class GitManager:
         if lock is not None:
             async with lock:
                 return await self._arun_git_result_unlocked(
-                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+                    low_priority=low_priority,
                 )
         return await self._arun_git_result_unlocked(
-            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+            low_priority=low_priority,
         )
 
     async def _arun_git_result_unlocked(
@@ -1159,9 +1166,12 @@ class GitManager:
         stdin: str | None,
         env: dict[str, str],
         timeout: int | None,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
+        if low_priority and shutil.which("nice"):
+            command = ["nice", "-n", "10", *command]
         try:
             try:
                 async with self._amaintenance_exclusion(args, cwd, effective_timeout) as remaining:
@@ -2695,9 +2705,17 @@ class GitManager:
     async def _aretained_store_exclusion(
         self, git_dir: str, *, deadline: float,
     ) -> AsyncIterator[None]:
-        """Serialize full checks and foreground maintenance for one common store."""
+        """Serialize full checks and foreground maintenance for one common store.
+
+        Re-entrant within the holder's own context, so maintenance it runs
+        passes; a full check's fresh context never inherits the hold.
+        """
         common = await asyncio.to_thread(_common_git_dir, git_dir)
         key = os.path.realpath(common)
+        held = _RETAINED_EXCLUSIONS_HELD.get()
+        if key in held:
+            yield
+            return
         lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
             key, asyncio.Lock())
         loop = asyncio.get_running_loop()
@@ -2710,9 +2728,11 @@ class GitManager:
                 "lock_wait_timeout", elapsed=loop.time() - started_waiting,
                 budget=max(0.0, deadline - started_waiting),
             ) from exc
+        token = _RETAINED_EXCLUSIONS_HELD.set(held | {key})
         try:
             yield
         finally:
+            _RETAINED_EXCLUSIONS_HELD.reset(token)
             lock.release()
 
     async def _averify_retained_objects(
@@ -2755,6 +2775,13 @@ class GitManager:
                 return
             current = await asyncio.to_thread(_object_store_fingerprint, git_dir)
         raise GitError("retained Git object integrity is unavailable: unchecked additions")
+
+    async def aretained_store_check_running(self, git_dir: str) -> bool:
+        """Whether *git_dir*'s common store has a full check or exclusive maintenance active."""
+        key = await asyncio.to_thread(_retained_store_key, git_dir)
+        flight = self.__dict__.get("_retained_verify_flights", {}).get(key)
+        lock = self.__dict__.get("_retained_verify_locks", {}).get(key)
+        return (flight is not None and not flight.done()) or (lock is not None and lock.locked())
 
     def _retained_verification_flight(self, key: str) -> asyncio.Task:
         """Common store *key*'s running full check, starting one if none is."""
@@ -2817,7 +2844,9 @@ class GitManager:
         throughout a clean check. Files written meanwhile remain additions for
         the incremental gate. Returns None when the store could not be
         inventoried. A persistent integrity failure also discards the store's
-        earlier clean result.
+        earlier clean result. A store that, once this check holds the exclusion,
+        exactly matches a clean result not yet due for refresh (a check or a
+        carried repack finished meanwhile) is not checked again.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + RETAINED_FSCK_TIMEOUT_SECONDS
@@ -2828,6 +2857,10 @@ class GitManager:
             home.mkdir(mode=0o700)
             async with self._aretained_store_exclusion(key, deadline=deadline):
                 fingerprint = await asyncio.to_thread(_object_store_fingerprint, key)
+                cached = self._retained_baseline(key)
+                if (cached is not None and fingerprint == cached[0]
+                        and time.monotonic() - cached[1] < _RETAINED_REFRESH_AGE_SECONDS):
+                    return cached
                 started = time.monotonic()
                 try:
                     await self._afsck_retained_store(key, home=home, deadline=deadline)
@@ -3076,6 +3109,50 @@ class GitManager:
             return False
         verified[key] = (current, started)
         return True
+
+    async def arepack_retained_store(
+        self, git_dir: str, args: list[str], *, cwd: str, timeout: float,
+    ) -> subprocess.CompletedProcess:
+        """Repack *git_dir*'s common store, carrying an exact clean result across it.
+
+        A whole-store repack replaces every pack, which the incremental gate
+        cannot follow. When the store was exactly the verified one beforehand,
+        the rewrite holds only checked objects: a clean connectivity check of
+        the result carries that clean result over with its original age, so the
+        background refresh still comes due on schedule. Unverified additions,
+        a failed repack or a failed check leave the store to the full check.
+        The store exclusion is held throughout, so no full check overlaps.
+        """
+        loop = asyncio.get_running_loop()
+        async with self._aretained_store_exclusion(git_dir, deadline=loop.time() + timeout):
+            key, before = await asyncio.to_thread(_retained_store_state, git_dir)
+            cached = self._retained_baseline(key)
+            result = await self.arun_git_result(
+                args, cwd=cwd, lock_held=True, env={"LC_ALL": "C"},
+                timeout=timeout, low_priority=True,
+            )
+            if (result.returncode or result.stderr.strip() or cached is None
+                    or before is None or before != cached[0]):
+                return result
+            try:
+                async with _isolated_git_directory(prefix="aq-retained-repack-") as temporary:
+                    root = Path(temporary)
+                    root.chmod(0o700)
+                    home = root / "home"
+                    home.mkdir(mode=0o700)
+                    await self._run_isolated_import_git(
+                        [f"--git-dir={key}", "fsck", "--connectivity-only", "--no-dangling",
+                         "--no-reflogs", "--no-progress"],
+                        home=home, deadline=loop.time() + timeout, verify_integrity=True,
+                    )
+            except GitError as exc:
+                logger.info("retained repack left the full check due: %s", type(exc).__name__)
+                return result
+            after = await asyncio.to_thread(_object_store_fingerprint, key)
+            verified = self.__dict__.setdefault("_retained_verified", {})
+            if after is not None and verified.get(key) == cached:
+                verified[key] = (after, cached[1])
+        return result
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,

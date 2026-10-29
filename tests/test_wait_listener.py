@@ -212,7 +212,7 @@ async def test_manual_recovery_wait_does_not_consume_dispatch_budget(monkeypatch
     # Let the request reach the queued lock without spending a dispatch budget.
     await queued.wait()
     listener._redispatch_locked.assert_not_awaited()
-    assert budgets == [listener.lease_seconds]
+    assert budgets == [listener.redispatch_lock_seconds]
     listener._tick_lock.release()
     assert await request == {"success": True}
     assert not listener._tick_lock.locked()
