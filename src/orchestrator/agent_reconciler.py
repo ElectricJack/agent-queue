@@ -129,6 +129,9 @@ class AgentReconciler:
         live_counts = project_live_session_counts(live)
         live_agents = {row.agent_id for row in live if row.agent_id}
         live_agents.update(launching_agent_ids or ())
+        from src.waits.occupancy import continuation_agent_ids
+
+        live_agents.update(await continuation_agent_ids(self._db))
         # Legacy task sessions may not have been linked before adoption.
         live_tasks = {row.task_id for row in live if row.task_id}
         by_task = {task.id: task for task in tasks}

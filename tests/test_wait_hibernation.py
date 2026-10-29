@@ -888,6 +888,46 @@ async def test_resume_dispatch_in_flight_is_reused_and_failed_command_is_retried
         await service.lifecycle.stop()
 
 
+async def test_refused_resume_reservation_waits_for_its_backoff(env):
+    # stark-ember-97: a policy-held resume retook the graph lock every tick.
+    from tests.test_wait_dispatch import runtime
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={'reserve_retry': {
+            'refusals': 3, 'due_at': NOW + 40, 'blocked': ['policy_hold']}}))
+    now = [NOW + 39]
+    service = runtime(env, registry=build_registry(), clock=lambda: now[0])
+    service.command = AsyncMock(return_value={'success': True})
+    try:
+        await service.lifecycle.resume_pending()
+        assert service.command.await_count == 0 and not service.lifecycle._resume_tasks
+        now[0] = NOW + 40
+        await service.lifecycle.resume_pending()
+        await asyncio.gather(*service.lifecycle._resume_tasks.values())
+        assert service.command.await_args.args == (
+            'wait_resume_dispatch', {'continuation_id': 'c', 'generation': 1})
+    finally:
+        await service.lifecycle.stop()
+
+
+async def test_resume_policy_refusal_backs_off_longer_and_caps(env):
+    from src.wait_runtime.resume import ResumeTransaction
+
+    driver = ResumeTransaction(SimpleNamespace(orch=SimpleNamespace(db=env.db)))
+    await park(env)
+    for refusals, delay in [(1, 10), (2, 20), (6, 300), (9, 300)]:
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(continuations).values(facts={'kept': True, **(
+                {'reserve_retry': {'refusals': refusals - 1}} if refusals > 1 else {})}))
+            row = dict((await conn.execute(select(continuations))).mappings().one())
+            await driver._back_off(conn, row, {'policy_hold'}, NOW)
+        assert (await intent(env))['facts'] == {'kept': True, 'reserve_retry': {
+            'refusals': refusals, 'due_at': NOW + delay, 'blocked': ['policy_hold']}}
+
+
 async def test_resume_graph_busy_streak_is_scoped_reset_and_retired(env, caplog):
     from tests.test_wait_dispatch import runtime
 
@@ -1766,8 +1806,14 @@ async def test_failed_stop_signal_with_fresh_death_proof_still_parks(env, monkey
     case.handler.wait_escalation_create.assert_not_awaited()
 
 
-async def bound_resume(env, *, outcome='satisfied'):
-    """Park a real claim, reserve a seat, bind an entirely new process."""
+async def bound_resume(env, *, outcome='satisfied', unpin_agent=False, before_launch=None,
+                       work_dir='/tmp/fresh'):
+    """Park a real claim, reserve a seat, bind an entirely new process.
+
+    ``unpin_agent`` replays the agent reconciler's stale-BUSY reset landing on
+    the reserved agent before its fresh workspace is ready (bold-rapids-90.3);
+    ``before_launch`` runs real reconciliation inside that same window.
+    """
     from dataclasses import replace
     from src.database.tables import admission_reservations, agents
     from src.scheduler import AssignAction
@@ -1792,10 +1838,13 @@ async def bound_resume(env, *, outcome='satisfied'):
             id='reservation', project_id='p', continuation_id='c', scope={},
             effective_priority=100, provenance='resume', deadline_at=NOW + 300,
             state='granted', created_at=NOW + 30))
+        if unpin_agent:
+            await conn.execute(update(agents).where(agents.c.id == 'a').values(
+                state='IDLE', current_task_id=None))
     record = SessionRecord(
         id='fresh', task_id='owner', agent_id='a', project_id='p', profile_id='worker-codex',
         harness='codex', provider='fake', name='fresh', lifecycle='task', state='running',
-        desired_state='running', work_dir='/tmp/fresh', epoch='boot', instance_token='fresh-token',
+        desired_state='running', work_dir=work_dir, epoch='boot', instance_token='fresh-token',
         last_claim_epoch=2, started_at=NOW + 30,
     )
     service = SimpleNamespace(orch=SimpleNamespace(db=env.db))
@@ -1804,10 +1853,151 @@ async def bound_resume(env, *, outcome='satisfied'):
     await env.db.create_workspace(Workspace(
         id='resume-slot', project_id='p', workspace_path=record.work_dir,
         source_type=RepoSourceType.CLONE, locked_by_task_id='owner', locked_by_agent_id='a'))
+    if before_launch is not None:
+        await before_launch()
     await driver.bind_launch(action, record)
     await env.db.create_session(record)
     scope = replace(env.scope, session_id='fresh', instance_token='fresh-token', claim_epoch=2)
     return driver, action, scope
+
+
+@pytest.mark.parametrize('recovery', ['cycle', 'restart'])
+async def test_slow_resume_preserves_claim_for_push_message_wait_and_close(
+    env, tmp_path, internal_plugins_handler, recovery,
+):
+    from src.api.auth import RequestScope
+    from src.api.scope import check_request_scope
+    from src.config import DatabaseConfig
+    from src.git.identity import FALLBACK_IDENTITY
+    from src.git.manager import GitManager
+    from src.models import AgentProfile, TaskStatus
+    from src.orchestrator.agent_reconciler import AgentReconciler
+    from src.waits.resume_ack import acknowledge, mark_delivered
+
+    git = GitManager()
+    git.set_identity_resolver(lambda _: FALLBACK_IDENTITY)
+    origin, checkout = tmp_path / 'origin.git', tmp_path / 'checkout'
+    await git._arun(['init', '--bare', str(origin)])
+    await git._arun(['init', '-b', 'main', str(checkout)])
+    await git._arun(['remote', 'add', 'origin', str(origin)], cwd=str(checkout))
+    (checkout / 'work').write_text('base\n')
+    await git.acommit_all(str(checkout), 'base')
+    await git._arun(['push', 'origin', 'main'], cwd=str(checkout))
+    await git._arun(['switch', '-c', 'aq/owner'], cwd=str(checkout))
+    (checkout / 'work').write_text('resumed work\n')
+    await git.acommit_all(str(checkout), 'resumed work\n\nAQ-Task: owner')
+    head = await git._arun(['rev-parse', 'HEAD'], cwd=str(checkout))
+    await env.db.update_project('p', repo_url=str(origin), repo_default_branch='main')
+    await env.db.create_profile(AgentProfile(
+        id='worker-codex', name='Worker', harness='codex', needs_workspace=True))
+    config = AppConfig(data_dir=str(tmp_path / 'data'), workspace_dir=str(tmp_path),
+                       database=DatabaseConfig(url=lease_dsn('wait-checkpoints')))
+    handler = await internal_plugins_handler(db=env.db, config=config, git=git)
+
+    async def slow_preparation():
+        await env.db.update_agent('a', last_heartbeat=0)
+        # The diagnostic repair must not classify the reservation as dangling.
+        from src.doctor.pool_checks import _find_dangling_current_task
+
+        assert await _find_dangling_current_task(SimpleNamespace(db=env.db)) == []
+        if recovery == 'cycle':
+            await AgentReconciler(env.db).reconcile(ready_tasks=[])
+        else:
+            await handler.orchestrator._recover_stale_state()
+
+    _, _, scope = await bound_resume(env, before_launch=slow_preparation, work_dir=str(checkout))
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id='c', session_id='fresh',
+                             instance_token='fresh-token', claim_epoch=2, now=NOW + 40)
+        await acknowledge(conn, dict(wait_id=env.wait_id, continuation_id='c', generation=1),
+                          scope=scope, now=NOW + 41)
+    request_scope = RequestScope(kind='session', session_id='fresh', task_id='owner',
+                                 project_id='p', session_instance_token='fresh-token')
+    request = dict(kind='session', session_id='fresh', task_id='owner', project_id='p',
+                   session_instance_token='fresh-token')
+    for command in ('git_push', 'git_pull'):
+        assert await check_request_scope(command, {}, request_scope, db=env.db) is None
+    pushed = await handler.execute('git_push', {'_scope': request})
+    assert 'error' not in pushed, pushed
+    assert pushed['oid'] == head
+    assert await git._arun(['rev-parse', 'refs/heads/aq/owner'], cwd=str(origin)) == head
+    sent = await handler.execute('message_send', {
+        '_scope': request, 'to_kind': 'task', 'to_id': 'owner',
+        'body': 'Resumed claim is live', 'claim_epoch': 2,
+    })
+    assert 'error' not in sent, sent
+    # Exercise the same transaction-local ownership check used by wait register.
+    async with env.db._engine.begin() as conn:
+        registered = await register_wait(
+            conn, scope=scope, condition={'kind': 'task', 'task_id': 'source'},
+            idempotency_key='resumed-wait', registry=build_registry(clock=lambda: NOW + 50),
+            policy=Policy(), decide_sleep=lambda *_: SleepDecision('in_place', 'test', {}),
+            now=NOW + 50, source_watermark=await env.db.wait_source_watermark(),
+        )
+        # Clear this verification wait so the worker can complete its task.
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == registered['wait_id'],
+        ).values(outcome='cancelled', blocking=False, cleared_at=NOW + 51))
+    # Consume the self-addressed message and fixture mail before closing.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(messages).values(delivered_at=NOW + 52))
+    closed = await handler.execute('task_close', {
+        '_scope': request, 'task_id': 'owner', 'session_id': 'fresh', 'claim_epoch': 2,
+        'outcome': 'pass', 'summary': 'Resumed, published and validated the retained work',
+    })
+    assert closed.get('success'), closed
+    assert (await env.db.get_task('owner')).status == TaskStatus.COMPLETED
+    assert all(not ws.locked_by_task_id for ws in await env.db.list_workspaces('p'))
+
+
+@pytest.mark.parametrize('unpin_agent', [False, True])
+async def test_resumed_continuation_holds_a_live_claim_it_can_push_message_and_close(
+    env, unpin_agent,
+):
+    """bold-rapids-90.3: a resumed continuation bound an empty claim holder.
+
+    Park leaves ``claimed_by_session`` empty; the resume must bind the new
+    session id, and a reserved agent unpinned while its workspace was being
+    built must be re-pinned, or push, message and close all refuse it.
+    """
+    from src.api.auth import RequestScope
+    from src.api.scope import held_task_for_session
+    from src.commands.message_commands import MessageCommandsMixin
+    from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+    from src.models import AgentState, TaskStatus
+    from src.waits.fencing import mutation_fence
+    from src.waits.resume_ack import acknowledge, mark_delivered
+
+    _, _, scope = await bound_resume(env, unpin_agent=unpin_agent)
+    assert await env.db.get_task_meta('owner', CLAIMED_BY_SESSION_KEY) == 'fresh'
+    agent = await env.db.get_agent('a')
+    assert agent.state is AgentState.BUSY and agent.current_task_id == 'owner'
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id='c', session_id='fresh',
+                             instance_token='fresh-token', claim_epoch=2, now=NOW + 40)
+        await acknowledge(conn, {'wait_id': env.wait_id, 'continuation_id': 'c', 'generation': 1},
+                          scope=scope, now=NOW + 45)
+    task = await env.db.get_task('owner')
+    assert task.status is TaskStatus.IN_PROGRESS and task.assigned_agent_id == 'a'
+    assert await env.db.get_task_meta('owner', CLAIMED_BY_SESSION_KEY) == 'fresh'
+    # aq git push and the other held-task reads.
+    held = await held_task_for_session(env.db, RequestScope(
+        kind='session', session_id='fresh', session_instance_token='fresh-token',
+        task_id='owner', project_id='p'))
+    assert held is not None and held.id == 'owner'
+    # aq message send.
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=CapabilityPolicy(), session_id='fresh',
+        session_instance_token='fresh-token', task_id='owner', project_id='p',
+        profile_id='worker-codex')
+    with principal_context(principal):
+        sender = await MessageCommandsMixin._ordinary_message_sender(
+            SimpleNamespace(db=env.db), {'project_id': 'p', 'claim_epoch': 2})
+    assert sender == ('session', 'fresh')
+    # aq task close.
+    async with env.db._engine.connect() as conn:
+        assert await mutation_fence(conn, 'task_close', SimpleNamespace(
+            session_id='fresh', session_instance_token='fresh-token')) is None
 
 
 @pytest.mark.parametrize('outcome', ['satisfied', 'cancelled'])
@@ -2767,6 +2957,7 @@ async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env
     from src.models import AgentProfile, RepoConfig, RepoSourceType, Workspace
     from src.wait_runtime.resume import ResumeTransaction
     from src.wait_runtime.scheduler import SchedulerWaitService
+    from src.orchestrator.agent_reconciler import AgentReconciler
 
     await env.db.create_profile(AgentProfile(id='worker', name='Worker', lifecycle='pool',
                                             max_active=1))
@@ -2807,13 +2998,26 @@ async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env
     [request] = await requests()
     assert (request['state'], request['created_at'], request['granted_at']) == (
         'pending', NOW + 30, None)
+    # ...and when to look again, so the resume loop stops retaking the graph lock.
+    assert (await intent(env))['facts']['reserve_retry'] == {
+        'refusals': 1, 'due_at': NOW + 35, 'blocked': ['slot']}
     now[0] = NOW + 60
     assert await driver.reserve('c', 1) is None  # Requested stop is not proof of free capacity.
     assert await requests() == [request]  # An idempotent retry keeps the first boundary.
+    assert (await intent(env))['facts']['reserve_retry'] == {
+        'refusals': 2, 'due_at': NOW + 70, 'blocked': ['slot']}
     await env.db.update_session('idle', state='stopped')
     now[0] = NOW + 90
     action = await driver.reserve('c', 1)
     assert action is not None and action.continuation_id == 'c'
+    assert (await intent(env))['facts']['reserve_retry'] is None
+    # Workspace preparation can outlast the stale-BUSY heartbeat grace before
+    # the new session row exists. The granted continuation still owns its agent.
+    await env.db.update_agent(action.agent_id, last_heartbeat=0)
+    await AgentReconciler(env.db).reconcile(ready_tasks=[])
+    reserved_agent = await env.db.get_agent(action.agent_id)
+    assert reserved_agent.state.value == 'BUSY'
+    assert reserved_agent.current_task_id == 'owner'
     now[0] = NOW + 120
     assert (await driver.reserve('c', 1)).agent_id == action.agent_id
     reservations = await requests()
@@ -3200,6 +3404,37 @@ async def workspace_resume(env):
     return service, action, now
 
 
+@pytest.mark.parametrize(('resume_state', 'grant', 'protected'), [
+    ('reserved', 'granted', True),
+    ('launching', 'consumed', True),
+    ('delivered', 'consumed', True),
+    ('held', 'granted', True),
+    ('held', 'cancelled', False),
+    ('cancelled', 'granted', False),
+    ('queued', 'pending', False),
+])
+async def test_resume_agent_protection_requires_active_intent_and_retained_grant(
+    env, resume_state, grant, protected,
+):
+    from src.database.tables import admission_reservations
+    from src.doctor.pool_checks import _find_dangling_current_task
+    from src.orchestrator.agent_reconciler import AgentReconciler
+    from src.waits.occupancy import continuation_agent_ids
+
+    await workspace_resume(env)
+    await env.db.update_agent('a', last_heartbeat=0)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(resume_state=resume_state))
+        await conn.execute(update(admission_reservations).values(state=grant))
+    assert ('a' in await continuation_agent_ids(env.db)) is protected
+    dangling = await _find_dangling_current_task(SimpleNamespace(db=env.db))
+    assert bool(dangling) is not protected
+    await AgentReconciler(env.db).reconcile(ready_tasks=[])
+    agent = await env.db.get_agent('a')
+    assert agent.state.value == ('BUSY' if protected else 'IDLE')
+    assert agent.current_task_id == ('owner' if protected else None)
+
+
 @pytest.mark.parametrize('mutation', ['path', 'agent', 'task', 'disabled'])
 async def test_resume_launch_receipt_refuses_changed_workspace_binding(env, mutation):
     from dataclasses import replace
@@ -3281,6 +3516,198 @@ async def test_workspace_failure_holds_after_budget_or_immediately(env, retryabl
     async with env.db._engine.connect() as conn:
         assert await conn.scalar(select(escalations.c.id)) == row['facts']['hold_escalation_id']
     service.orch._launch_session_for_task_locked.assert_not_awaited()
+
+
+@pytest.mark.parametrize('reason', ['slots_full', 'slot_warming', 'slot_lost_race'])
+async def test_workspace_capacity_requeues_without_spending_failure_budget(env, reason):
+    from src.database.tables import admission_reservations, escalations
+    from src.models import AgentProfile, RepoConfig, RepoSourceType, Workspace
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.waits.occupancy import continuation_occupancy
+
+    service, action, now = await workspace_resume(env)
+    await env.db.delete_workspace('resume-slot')
+    await env.db.create_profile(AgentProfile(id='worker-codex', name='Worker'))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url='https://example.test/repo',
+        source_type=RepoSourceType.CLONE, checkout_base_path='/tmp/resume-admission'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    await env.db.create_workspace(Workspace(id='available', project_id='p',
+        workspace_path='/tmp/resume-available', source_type=RepoSourceType.CLONE,
+        kind_id='project-repo'))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker-codex', route_source='override'))
+        await conn.execute(update(admission_reservations).values(scope={'profile_id': 'worker-codex'}))
+    service.orch._worktrees_enabled = lambda: False
+    service.orch._pool_quarantine_state = lambda *a: (None, None)
+    service.orch._workspace_wait_reasons = {'owner': reason}
+    service.orch._prepare_workspace_locked = AsyncMock(return_value=None)
+
+    async def reservation():
+        async with env.db._engine.connect() as conn:
+            return dict((await conn.execute(select(admission_reservations))).mappings().one())
+
+    before, request = await intent(env), await reservation()
+    started = now[0]
+    for delay in [5, 10, 20, 40, 60, 60, 60, 60]:
+        # Reconstruct the transaction driver to prove backoff is durable.
+        driver = ResumeTransaction(service, clock=lambda: now[0])
+        service.lifecycle.resume = driver
+        result = await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+            principal=None, scope=None, handler=service.orch._command_handler)
+        assert result['capacity_blocked'] and result['retry_at'] == now[0] + delay
+        row = await intent(env)
+        assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
+        assert 'workspace_retry' not in row['facts']
+        assert row['facts']['workspace_capacity']['first_blocked_at'] == started
+        assert (row['saved_head'], row['branch'], row['wait_id'], row['suspension_generation']) == (
+            before['saved_head'], before['branch'], before['wait_id'], before['suspension_generation'])
+        pending = await reservation()
+        assert pending['state'] == 'pending' and pending['granted_at'] is None
+        assert (pending['id'], pending['created_at'], pending['fifo_seq']) == (
+            request['id'], request['created_at'], request['fifo_seq'])
+        assert (await env.db.get_task('owner')).assigned_agent_id is None
+        assert (await env.db.get_agent(action.agent_id)).current_task_id is None
+        assert (await env.db.get_agent(action.agent_id)).state.value == 'RETIRED'
+        assert (await continuation_occupancy(env.db, service.orch.config))[1] == {}
+        # Both maintenance and direct dispatch respect the persisted delay.
+        service.command = AsyncMock()
+        await service.lifecycle.resume_pending()
+        service.command.assert_not_awaited()
+        assert await driver.reserve('c', 1) is None
+        assert await intent(env) == row
+        now[0] = result['retry_at']
+
+    await service.orch._command_handler.wait_service_resume_stalls(service.lifecycle)
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(escalations.c.id)) is None
+        [notice] = (await conn.execute(select(messages).where(
+            messages.c.subject == 'Resume stalled: owner'))).mappings().all()
+        assert reason in notice['body']
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait['outcome'] == 'satisfied' and wait['cleared_at'] is None
+    # A later retry reobserves actual workspace capacity before taking a seat.
+    driver.fresh_workspace = AsyncMock(return_value='/tmp/preserved')
+    await env.db.update_workspace('available', locked_by_task_id='source', locked_by_agent_id='a')
+    result = await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=service.orch._command_handler)
+    assert not result['dispatched']
+    driver.fresh_workspace.assert_not_awaited()
+    assert (await reservation())['state'] == 'pending'
+    assert (await intent(env))['launch_attempts'] == 0
+    # Capacity becomes available: fresh admission succeeds, then launch once.
+    await env.db.release_workspace('available')
+    result = await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=service.orch._command_handler)
+    assert result['dispatched']
+    assert (await intent(env))['launch_attempts'] == 1
+    assert (await reservation())['granted_at'] == now[0]
+    service.orch._launch_session_for_task_locked.assert_awaited_once()
+
+
+@pytest.mark.parametrize('reason', ['slot_stalled', None])
+async def test_missing_workspace_without_capacity_evidence_holds(env, reason):
+    service, _, _ = await workspace_resume(env)
+    await env.db.delete_workspace('resume-slot')
+    service.orch._workspace_wait_reasons = {'owner': reason}
+    service.orch._prepare_workspace_locked = AsyncMock(return_value=None)
+    driver = type(service.lifecycle.resume)(service)
+    result = await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=service.orch._command_handler)
+    assert result['held'] and result['hold_reason'] == 'resume_workspace_failed'
+
+
+@pytest.mark.parametrize('authority', ['local', 'project', 'global'])
+async def test_task_recover_accepts_resume_escalation_id_and_preserves_outcome(env, authority):
+    from dataclasses import replace
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import escalations
+
+    service, action, _ = await workspace_resume(env)
+    service.orch.wait_service = service
+    driver = service.lifecycle.resume
+    driver.fresh_workspace.side_effect = RuntimeError('setup needs repair')
+    handler = service.orch._command_handler
+    assert (await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=handler))['held']
+    held = await intent(env)
+    incident_id = held['facts']['hold_escalation_id']
+    principal = TRUSTED_LOCAL
+    if authority != 'local':
+        record = replace(await env.db.get_session('fresh'), id='supervisor', task_id=None,
+            agent_id=None, name='supervisor', lifecycle='named', profile_id='supervisor',
+            state='running', desired_state='running', project_id='p' if authority == 'project' else None)
+        await env.db.create_session(record)
+        principal = ExecutionPrincipal(kind=PrincipalKind.SESSION,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=['task_recover']),
+            session_id=record.id, session_instance_token=record.instance_token,
+            project_id=record.project_id, profile_id='supervisor', elevated=True)
+    with principal_context(principal):
+        result = await handler.execute('task_recover', dict(task_id='owner',
+            incident_id=incident_id, decision='retry', reason='Setup repaired'))
+        assert result['success'], result
+        assert result['incident_id'] == incident_id and result['decision'] == 'retry'
+        replay = await handler.execute('task_recover', dict(task_id='owner',
+            incident_id=incident_id, decision='retry', reason='Duplicate retry'))
+        assert not replay['success']
+    row = await intent(env)
+    assert row['resume_state'] == 'reserved' and row['hold_reason'] is None
+    assert row['facts']['resume_requeue']['incident_id'] == incident_id
+    assert row['facts']['resume_requeue']['note'] == 'Setup repaired'
+    assert (row['saved_head'], row['branch'], row['wait_id']) == (
+        held['saved_head'], held['branch'], held['wait_id'])
+    assert (await env.db.get_task('owner')).assigned_agent_id == action.agent_id
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(escalations.c.state)) == 'needs_human'
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        assert wait['outcome'] == 'satisfied' and wait['cleared_at'] is None
+
+
+@pytest.mark.parametrize('change', [
+    'generation', 'task', 'closed', 'incident', 'hold', 'live', 'scope', 'branch',
+])
+async def test_task_recover_resume_incident_refuses_changed_binding(env, change):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import escalations
+
+    service, _, _ = await workspace_resume(env)
+    service.orch.wait_service = service
+    driver = service.lifecycle.resume
+    handler = service.orch._command_handler
+    driver.fresh_workspace.side_effect = RuntimeError('setup needs repair')
+    assert (await driver.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=handler))['held']
+    held = await intent(env)
+    incident_id = held['facts']['hold_escalation_id']
+    async with env.db._engine.begin() as conn:
+        if change == 'generation':
+            await conn.execute(update(continuations).values(suspension_generation=2))
+        elif change == 'task':
+            await conn.execute(update(escalations).values(task_id='source'))
+        elif change == 'closed':
+            await conn.execute(update(escalations).values(state='cancelled',
+                terminal_outcome='source_satisfied', terminal_evidence={'rule': 'test'},
+                terminal_at=NOW + 40))
+        elif change == 'incident':
+            await conn.execute(update(continuations).values(facts={**held['facts'],
+                'hold_escalation_id': 'another-incident'}))
+        elif change == 'hold':
+            await conn.execute(update(continuations).values(hold_reason='push_failed'))
+        elif change == 'live':
+            await conn.execute(update(sessions).where(sessions.c.id == 'fresh').values(state='running'))
+        elif change == 'branch':
+            await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(branch_name='aq/other'))
+    principal = TRUSTED_LOCAL
+    if change == 'scope':
+        principal = ExecutionPrincipal(kind=PrincipalKind.SESSION,
+            session_id='foreign-supervisor', project_id='foreign', elevated=True,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=['task_recover']))
+    before = await intent(env)
+    with principal_context(principal):
+        result = await handler.execute('task_recover', dict(task_id='owner', incident_id=incident_id,
+            decision='retry', reason='Setup repaired'))
+    assert not result['success'], result
+    assert await intent(env) == before
 
 
 async def test_supervisor_requeue_generation_fence_audit_and_resumed_incident(env):

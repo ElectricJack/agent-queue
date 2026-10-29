@@ -9,7 +9,13 @@ from src.git.manager import GitError
 from src.integration.close_merge import CloseMerge, ClosePolicy, CloseStore, policy_digest
 from src.integration.gitops import GitOperations, RetainedRepository
 from src.integration.models import CloseMergePolicy
-from src.integration.train_sources import LeasedPublish, TRAIN_MODES
+from src.integration.regeneration import regeneration_wait
+from src.integration.train_sources import TRAIN_MODES, LeasedPublish
+
+#: How long one close request waits for its shared regeneration. Past it the
+#: run continues detached and the close returns its durable operation id; this
+#: stays well inside the CLI's close read timeout.
+CLOSE_REGENERATION_WAIT_SECONDS = 300.0
 
 
 async def current_policy(db, project):
@@ -147,8 +153,9 @@ class DaemonClose:
 
         source = row["candidate_oid"] or row["source_oid"]
         base = await self.gitops.run(repo, "merge-base", row["base_oid"], source)
-        merged = await self.gitops.merge_sources(repo, row["base_oid"], [SimpleNamespace(
-            task_id=row["task_id"], head_sha=source, base_sha=base)], created_at=time.time())
+        with regeneration_wait(CLOSE_REGENERATION_WAIT_SECONDS):
+            merged = await self.gitops.merge_sources(repo, row["base_oid"], [SimpleNamespace(
+                task_id=row["task_id"], head_sha=source, base_sha=base)], created_at=time.time())
         pool = WarmWorkspacePool(self.git, repo.store,
                                  Path(self.orch.config.data_dir) / "close-candidates")
 
@@ -190,9 +197,11 @@ class DaemonClose:
 
         if not await generated_paths(self.git, repo.store, head):
             return head
-        tree = await regenerated_tree(self.git, repo.store, await self.git.atree_sha(str(repo.store),
-                                      head), command=repo.regenerate,
-                                      timeout_seconds=repo.regenerate_timeout_seconds)
+        with regeneration_wait(CLOSE_REGENERATION_WAIT_SECONDS):
+            tree = await regenerated_tree(self.git, repo.store,
+                                          await self.git.atree_sha(str(repo.store), head),
+                                          command=repo.regenerate,
+                                          timeout_seconds=repo.regenerate_timeout_seconds)
         if tree != await self.git.atree_sha(str(repo.store), head):
             head = await self.gitops.run(repo, *self.git.resolve_commit_identity().config_args(),
                                         "commit-tree", tree, "-p", head, "-m",
