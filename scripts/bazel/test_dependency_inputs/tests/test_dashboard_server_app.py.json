@@ -1,0 +1,7 @@
+{
+  "reason": "_release_builder loads scripts/build_release_artifact.py via spec_from_file_location with a path built from ROOT / \"scripts\" / \"build_release_artifact.py\", not a string literal; that script imports only stdlib (argparse, hashlib, json, os, shutil, subprocess, tomllib, pathlib).",
+  "import_globs": ["scripts/build_release_artifact.py"],
+  "resolves": [
+    "tests/test_dashboard_server_app.py: unresolved file import"
+  ]
+}

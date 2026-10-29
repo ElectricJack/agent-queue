@@ -1,0 +1,6 @@
+{
+  "reason": "test_marked_root_is_the_topmost_process_carrying_the_token builds its nested subprocess -c script with an f-string wrapping a literal child_script (line 566-569); the f-string interpolation isn't a string the scanner can statically extract, but the launched process only runs stdlib os/time (print a pid, sleep) -- nothing from the repository is loaded.",
+  "resolves": [
+    "tests/test_session_runtime_units.py: unresolved dynamic import in subprocess Python execution"
+  ]
+}

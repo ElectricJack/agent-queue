@@ -1,0 +1,7 @@
+{
+  "reason": "_train_control and _repair_request resolve getattr(contracts, model_name), where contracts aliases src.commands.contracts.integration (imported locally in both methods) and model_name is a function parameter, not a literal.",
+  "imports": ["src.commands.contracts.integration"],
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

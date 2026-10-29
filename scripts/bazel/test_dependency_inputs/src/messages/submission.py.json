@@ -1,0 +1,7 @@
+{
+  "reason": "lookup resolves getattr(tables, table_name), where tables aliases src.database.tables (imported locally when conn is provided) and table_name is a function parameter, not a literal.",
+  "imports": ["src.database.tables"],
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}
