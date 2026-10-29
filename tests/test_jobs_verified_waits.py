@@ -13,12 +13,13 @@ from src.config import AppConfig
 from src.config_wait_policy import WaitProjectOverrides
 from src.database.tables import (
     agent_waits, continuations, jobs, job_outbox, job_workspace_pins, messages,
-    playbook_private_values, tasks, wait_deadlines, wait_records, workspaces,
+    playbook_private_values, tasks, wait_deadlines, wait_records, wait_source_events, workspaces,
 )
 from src.models import AgentProfile
 from src.wait_runtime.job_wait import AtomicJobWait
 from src.wait_runtime.service import WaitService
 from src.waits.conditions import Scope, WaitError
+from src.waits.listener import WaitSourceListener
 from tests.test_agent_wait_queries import env as _env
 from tests.test_jobs_waits import NOW, finish, job_values, setup as _setup
 
@@ -197,6 +198,38 @@ async def test_completion_dispatches_once_and_retry_does_not_sleep_after_ack(run
     assert (await r.db.get_task("owner")).status.value == "IN_PROGRESS"
     assert len(await rows(r, wait_records)) == 1
     assert (await rows(r, job_outbox))[0]["delivered_at"] is not None
+
+
+async def test_job_completed_while_owner_fence_failed_wakes_after_listener_restart(
+    runtime, monkeypatch,
+):
+    from src.waits import dispatcher as dispatcher_module
+
+    r = runtime
+    result = await submit(r)
+    assert result["success"], result
+    fence = dispatcher_module.fence_owner
+
+    async def restarting(*args, **kwargs):
+        raise WaitError("wait.out_of_scope", "stopped continuation ownership changed")
+
+    # The job finishes while the owner fence cannot be proved (a daemon restart
+    # racing hibernation). The listener consumes the terminal event uncommitted.
+    monkeypatch.setattr(dispatcher_module, "fence_owner", restarting)
+    await finish(r, result["job"])
+    await r.service.tick()
+    source = [row for row in await rows(r, wait_source_events)
+              if row["source_key"] == f"job:{result['job']['id']}"]
+    assert source and all(row["dispatched_at"] is not None for row in source)
+    assert (await rows(r, wait_records))[0]["outcome"] == "pending"
+    monkeypatch.setattr(dispatcher_module, "fence_owner", fence)
+    # A restarted listener keeps only the durable cursor and outbox stamps.
+    r.service.listener = WaitSourceListener(r.service, clock=lambda: NOW,
+                                            owner=r.service.listener.owner)
+    await r.service.tick()
+    wait = (await rows(r, wait_records))[0]
+    assert wait["outcome"] == "satisfied" and wait["result_ref"]
+    assert [m["body_kind"] for m in await rows(r, messages)] == ["wait_outcome"]
 
 
 async def test_terminal_source_during_subscribe_commits_audit_without_missed_wake(runtime, monkeypatch):

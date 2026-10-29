@@ -933,6 +933,84 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'delivery_watchdog_target_verification_composition': {'authorized_engine_delta': 77,
+                                                       'authorized_owned_delta': 77,
+                                                       'authorized_shared_owned_delta': 0,
+                                                       'authorized_table_delta': 0,
+                                                       'charged_files': {'src/integration/delivery_branches.py': 5,
+                                                                         'src/integration/delivery_watchdog.py': 72},
+                                                       'dev_source_revision': 'c2dfcd683dbb18cb6a8da08b3c53cd72dc9fdc95',
+                                                       'fix_task_id': 'bright-stone-69',
+                                                       'measured_engine_lines': 84212,
+                                                       'measured_owned_total': 160861,
+                                                       'measured_table_count': 45,
+                                                       'operator_decision': '6679052c',
+                                                       'original_dev_source_revision': '17d0d73891157519e2ccb94bed4d8331491af400',
+                                                       'previous_measured_engine_lines': 84135,
+                                                       'previous_measured_owned_total': 160784,
+                                                       'previous_measured_table_count': 45,
+                                                       'reason': 'Exact supervisor-approved +77 '
+                                                                 'engine/+77 owned/+0 shared/+0 '
+                                                                 'tables for landing the delivery '
+                                                                 'watchdog target-verification fix '
+                                                                 '(bright-stone-69 / 68331c71e), '
+                                                                 'originally measured over dev '
+                                                                 '17d0d7389 and re-recorded over '
+                                                                 'dev c2dfcd683 after PRs 2166, '
+                                                                 '2169 and 2168. '
+                                                                 'delivery_watchdog.py verifies '
+                                                                 'the judged target ref, keeps a '
+                                                                 'projection pending while the '
+                                                                 'head is still not an ancestor '
+                                                                 'and never watches the land-* '
+                                                                 'tasks it filed itself (+72 '
+                                                                 'engine); delivery_branches.py '
+                                                                 'exposes the landing-task marker '
+                                                                 '(+5 engine). Preserve the '
+                                                                 'original baseline, every '
+                                                                 'historical grant and ownership '
+                                                                 'classification, zero remaining '
+                                                                 'headroom, the s4_modules expiry '
+                                                                 'and existing storage categories.',
+                                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                       'source_revision': '68331c71ed5e1302d4f80e3566e1526e2a4590e6',
+                                                       'supervisor_grant_reference': 'msg-4fda2e4d5dfd4a92821d88782489b933',
+                                                       'task_id': 'bright-stone-69'},
+ 'dangling_assignment_recovery_retry_composition': {'authorized_engine_delta': 0,
+                                                    'authorized_owned_delta': 13,
+                                                    'authorized_shared_owned_delta': 13,
+                                                    'authorized_table_delta': 0,
+                                                    'charged_files': {'src/database/queries/task_recovery_queries.py': 13},
+                                                    'dev_source_revision': '5eaf02c7f9f663748decf041f35167b83b715d60',
+                                                    'fix_task_id': 'steady-impact-12',
+                                                    'measured_engine_lines': 84135,
+                                                    'measured_owned_total': 160784,
+                                                    'measured_table_count': 45,
+                                                    'operator_decision': '6679052c',
+                                                    'previous_measured_engine_lines': 84135,
+                                                    'previous_measured_owned_total': 160771,
+                                                    'previous_measured_table_count': 45,
+                                                    'reason': 'Exact supervisor-approved +13 '
+                                                              'owned/+0 engine/+13 shared/+0 '
+                                                              'tables for landing the dangling '
+                                                              'assigned_agent recovery fix '
+                                                              '(steady-impact-12 / 7dfc711a5), '
+                                                              'measured over dev 5eaf02c7f. '
+                                                              'task_recovery_queries.py lets '
+                                                              'supervisor retry clear an '
+                                                              'assignment whose agent is gone and '
+                                                              'whose sessions are stopped, while a '
+                                                              'live assignment is still refused '
+                                                              '(+13 shared). The engine is '
+                                                              'unchanged. Preserve the original '
+                                                              'baseline, every historical grant '
+                                                              'and ownership classification, zero '
+                                                              'remaining headroom, the s4_modules '
+                                                              'expiry and existing storage '
+                                                              'categories.',
+                                                    'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                    'source_revision': '7dfc711a5b43d540f8e2e22f250383546fa6b9e8',
+                                                    'task_id': 'steady-impact-12'},
  'close_regeneration_single_flight_composition': {'authorized_engine_delta': 210,
                                                   'authorized_owned_delta': 211,
                                                   'authorized_shared_owned_delta': 1,
@@ -1566,7 +1644,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 5272,
+ 'authorized_owned_delta': 5362,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2174,8 +2252,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84135,
- 'measured_owned_total': 160771,
+ 'measured_engine_lines': 84212,
+ 'measured_owned_total': 160861,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
