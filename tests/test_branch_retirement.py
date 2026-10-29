@@ -400,6 +400,56 @@ async def test_failed_close_that_retries_keeps_its_work(setup):
     assert await git.arev_parse(str(checkout), BRANCH) == head
 
 
+async def block_with_failed_close(db, work_outcome):
+    await db.transition_task("retired", TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task(
+        "retired", TaskStatus.BLOCKED, context="session_close_hard_failure",
+    )
+    await db.save_task_completion(TaskCompletion(
+        id="blocked-close", task_id="retired", outcome="fail", work_outcome=work_outcome,
+        branch=BRANCH,
+    ))
+
+
+@pytest.mark.parametrize("work_outcome", ["blocked", None])
+async def test_failed_close_that_blocks_keeps_its_undelivered_pr_branch(
+    setup, work_outcome, caplog,
+):
+    # 2026-10-27: a BLOCKED close's retirement deleted the branch after the
+    # owner was released, and GitHub closed the task's open PR as the bot.
+    db, git, service, checkout, remote, head = setup
+    await block_with_failed_close(db, work_outcome)
+    assert {row["branch"] for row in await rows(db)} == {BRANCH, BRANCH + "-wip"}
+    with caplog.at_level("INFO", logger="src.integration.branch_discard"):
+        outcomes = await service.drain_due()
+    assert outcomes == [("withdrawn", "restartable task keeps its branch")] * 2
+    assert await git.arev_parse(str(remote), BRANCH) == head
+    assert await git.arev_parse(str(checkout), BRANCH) == head
+    logged = [r.getMessage() for r in caplog.records if "Branch retirement" in r.getMessage()]
+    assert len(logged) == 2 and all("'failed close'" in line for line in logged)
+
+
+async def test_cancelled_blocked_task_retires_its_branch_and_logs_why(setup, caplog):
+    db, git, service, checkout, remote, head = setup
+    await db.transition_task("retired", TaskStatus.IN_PROGRESS, force=True)
+    # The cancel's stop_task transition queues the retirement itself.
+    await db.transition_task("retired", TaskStatus.BLOCKED, context="stop_task")
+    with caplog.at_level("INFO", logger="src.integration.branch_discard"):
+        assert all(state == "complete" for state, _ in await service.drain_due())
+    assert await git.arev_parse(str(remote), BRANCH) is None
+    assert await git.arev_parse(str(checkout), BRANCH) is None
+    [line] = [r.getMessage() for r in caplog.records
+              if f"Branch retirement complete of {BRANCH} " in r.getMessage()]
+    assert "(task retired, cancel:retired:" in line and head in line and "bundle" in line
+
+
+async def test_abandoned_blocked_close_still_retires_unmerged_work(setup):
+    db, git, service, _checkout, remote, _head = setup
+    await block_with_failed_close(db, "abandoned")
+    assert all(state == "complete" for state, _ in await service.drain_due())
+    assert await git.arev_parse(str(remote), BRANCH) is None
+
+
 async def test_comment_timestamp_does_not_cancel_an_abandon_decision(setup):
     db, git, service, _checkout, remote, _head = setup
     await request(db)

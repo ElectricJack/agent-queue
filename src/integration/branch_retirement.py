@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+from src.database.queries.task_queries import task_resumes_on_branch
 from src.database.tables import (
     branch_deletion_audit,
     archived_tasks,
@@ -31,7 +32,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitError, is_valid_git_oid, repository_urls_match
-from src.integration.branch_discard import BranchDiscardService, _bundle
+from src.integration.branch_discard import BranchDiscardService, _bundle, logger
 from src.integration.delivery_branches import (
     LIVE_TASK_STATUSES,
     UNSETTLED_DELIVERY_STATES,
@@ -112,14 +113,11 @@ class _LocalRetirementTransport:
         await self._run("fetch", "--no-tags", "--force", self.url, f"{oid}:{destination_ref}")
         return oid
 
-    async def adelete_repository_ref(
-        self, checkout, *, repository, branch, expected_old_oid, authority_deadline=None,
-    ):
+    async def adelete_repository_ref(self, checkout, *, repository, branch, expected_old_oid,
+                                     authority_deadline=None):
         ref = "refs/heads/" + branch
-        await self._run(
-            "push", f"--force-with-lease={ref}:{expected_old_oid}", self.url, ":" + ref,
-            authority_deadline=authority_deadline,
-        )
+        await self._run("push", f"--force-with-lease={ref}:{expected_old_oid}", self.url,
+                        ":" + ref, authority_deadline=authority_deadline)
 
 
 def retirement_report(results) -> list[str]:
@@ -302,10 +300,8 @@ class BranchRetirementService(BranchDiscardService):
                     decision = "archived" if table is archived_tasks else "terminal failed/abandoned"
                     reason = "daily backstop: " + decision + " task " + task["id"]
                     if table is tasks:
-                        await request_task_retirement_on(
-                            conn, task["id"], request_id=request_id,
-                            reason=reason, now=now,
-                        )
+                        await request_task_retirement_on(conn, task["id"], request_id=request_id,
+                                                         reason=reason, now=now)
                     else:
                         for name in (branch, branch + "-wip"):
                             await request_branch_retirement_on(
@@ -389,14 +385,11 @@ class BranchRetirementService(BranchDiscardService):
             # backstop leaves claimed rows due, and a concurrent drain claims
             # them again and supersedes the attempt in flight.
             await conn.execute(update(retirements).where(retirements.c.id == identity).values(
-                attempts=row["attempts"],
-                next_attempt_at=max(now, self.clock()) + max(
-                    self._backoff(row["attempts"]), ATTEMPT_LEASE_SECONDS,
-                ),
-            ))
-        state, error = "complete", None
+                attempts=row["attempts"], next_attempt_at=max(now, self.clock())
+                + max(self._backoff(row["attempts"]), ATTEMPT_LEASE_SECONDS)))
+        state, error, evidence = "complete", None, {}
         try:
-            await self._retire(row)
+            evidence = await self._retire(row)
         except RetirementWithdrawn as exc:
             state, error = "withdrawn", str(exc)
         except RetirementConflict as exc:
@@ -426,6 +419,10 @@ class BranchRetirementService(BranchDiscardService):
                 ).values(outcome={"complete": "deleted", "conflict": "moved",
                                   "withdrawn": "held"}[state], detail_reason=error,
                          next_attempt_at=None, deleted_at=now if state == "complete" else None))
+        if state != "pending":  # A deleted remote branch closes its open PR as the bot.
+            logger.info("Branch retirement %s of %s (task %s, %s %r): %s; remote %s", state,
+                        row["branch"], row["task_id"], row["request_id"], row["reason"], error,
+                        evidence.get("remote"))
         return state, error
 
     async def _guard(self, conn, row, *, holder=None):
@@ -449,6 +446,10 @@ class BranchRetirementService(BranchDiscardService):
                     or (row["claim_epoch"] is not None
                         and task["claim_epoch"] != row["claim_epoch"])):
                     raise RetirementWithdrawn("task changed or resumed after retirement")
+                # A failed close can restart on its branch; only a discard decides here.
+                if (not row["request_id"].startswith("origin:")
+                        and await task_resumes_on_branch(conn, task)):
+                    raise RetirementWithdrawn("restartable task keeps its branch")
             live = await conn.scalar(select(sessions.c.id).where(
                 sessions.c.task_id == row["task_id"], sessions.c.state.in_(LIVE_SESSION_STATES),
             ).limit(1))
@@ -622,9 +623,7 @@ class BranchRetirementService(BranchDiscardService):
                                 delete_ref = (self.git.adelete_remote_tracking_ref_exact
                                               if key.startswith("tracking:") else
                                               self.git.adelete_local_ref_exact)
-                                await delete_ref(
-                                    path, ref=ref, expected_old_oid=actual,
-                                )
+                                await delete_ref(path, ref=ref, expected_old_oid=actual)
                                 if await self.git.arev_parse(path, ref) is not None:
                                     raise GitError("local deletion was not confirmed")
                             local["state"] = "deleted" if local["sha"] else "absent"
@@ -632,6 +631,7 @@ class BranchRetirementService(BranchDiscardService):
             await self._audit(row, evidence)
         finally:
             await locks.release(fence)
+        return evidence
 
     @staticmethod
     def _local_refs(path, branch):
