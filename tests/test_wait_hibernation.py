@@ -3363,6 +3363,79 @@ async def test_workspace_transient_retry_preserves_reservation_and_then_resumes(
     assert (await intent(env))['launch_attempts'] == 1
 
 
+@pytest.mark.parametrize('fault', ['missing', 'unavailable', 'corrupt', 'broken_link', 'post_import'])
+async def test_resume_missing_object_recovery_or_existing_workspace_hold(
+    env, tmp_path, monkeypatch, fault,
+):
+    from src.git.manager import GitError, GitManager
+    from src.wait_runtime.resume import verify_saved_branch
+    from tests.test_git_app_auth import _git, _missing_object_case
+
+    source, checkout, oid = _missing_object_case(tmp_path, available=fault != 'unavailable')
+    _git(['branch', '-m', 'aq/owner'], checkout)
+    head = _git(['rev-parse', 'HEAD'], checkout)
+    # The saved unpublished tip must already have been published to resume.
+    if fault != 'unavailable':
+        _git(['push', str(source), 'aq/owner'], checkout)
+    if fault == 'corrupt':
+        (checkout / '.git' / 'objects' / oid[:2] / oid[2:]).write_bytes(b'truncated')
+    monkeypatch.setattr('src.git.manager._RETAINED_VERIFY_RETRY_DELAYS', ())
+    git = GitManager()
+    recover = AsyncMock(wraps=git._arecover_missing_retained_objects)
+    monkeypatch.setattr(git, '_arecover_missing_retained_objects', recover)
+    fetch = git._afetch_origin_with_auth_to_url
+
+    async def origin(path, *, repository_url):
+        assert repository_url == source.as_uri()
+        await fetch(path, source_url=repository_url, token=None)
+
+    monkeypatch.setattr(git, 'afetch_origin', origin)
+    if fault == 'post_import':
+        run = git._run_isolated_import_git
+        checks = 0
+
+        async def final_failure(args, **kwargs):
+            nonlocal checks
+            if args[0] == f'--git-dir={checkout / ".git"}' and 'fsck' in args:
+                checks += 1
+                if checks == 3:
+                    raise GitError('retained Git object integrity is unavailable: error')
+            return await run(args, **kwargs)
+
+        monkeypatch.setattr(git, '_run_isolated_import_git', final_failure)
+    if fault == 'broken_link':
+        monkeypatch.setattr(git, '_aretained_fetch_deadline', AsyncMock(side_effect=GitError(
+            'retained Git object integrity is unavailable: broken link ' + 'a' * 40,
+        )))
+    monkeypatch.setattr(env.db, 'get_repo', AsyncMock(return_value=SimpleNamespace(
+        url=source.as_uri())))
+    service, _, _ = await workspace_resume(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(saved_head=head, branch='aq/owner'))
+    await env.db.update_task('owner', branch_name='aq/owner')
+    service.orch.git = git
+
+    async def prepare(_action, task, _agent, _intent):
+        await verify_saved_branch(service.orch, task, str(checkout))
+        return str(checkout)
+
+    service.lifecycle.resume.fresh_workspace.side_effect = prepare
+    result = await service.lifecycle.resume.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=service.orch._command_handler)
+    row = await intent(env)
+    assert (row['saved_head'], row['branch']) == (head, 'aq/owner')
+    assert _git(['rev-parse', 'HEAD'], checkout) == head
+    if fault == 'missing':
+        assert result['dispatched'] and not result.get('held')
+        service.orch._launch_session_for_task_locked.assert_awaited_once()
+        assert _git(['cat-file', '-t', oid], checkout) == 'commit'
+    else:
+        assert result['held'] and result['hold_reason'] == 'resume_workspace_failed'
+        assert row['resume_state'] == 'held'
+        service.orch._launch_session_for_task_locked.assert_not_awaited()
+    assert recover.await_count == (1 if fault in {'missing', 'unavailable', 'post_import'} else 0)
+
+
 @pytest.mark.parametrize('retryable', [True, False])
 async def test_workspace_failure_holds_after_budget_or_immediately(env, retryable):
     from src.database.tables import escalations
