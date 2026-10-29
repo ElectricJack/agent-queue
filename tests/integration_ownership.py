@@ -933,6 +933,39 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'retained_recovery_pending_verification_composition': {'authorized_owned_delta': 5,
+                                                        'authorized_engine_delta': 5,
+                                                        'authorized_shared_owned_delta': 0,
+                                                        'authorized_table_delta': 0,
+                                                        'charged_files': {'src/integration/repository_recovery.py': 5},
+                                                        'dev_source_revision': '2545d9e121eb58dd2a4deeb01a9bc2b3427b25d3',
+                                                        'source_revision': '614884eb9e96cf5516d017db9fe1b590305defde',
+                                                        'previous_measured_owned_total': 161828,
+                                                        'previous_measured_engine_lines': 84825,
+                                                        'previous_measured_table_count': 45,
+                                                        'measured_owned_total': 161833,
+                                                        'measured_engine_lines': 84830,
+                                                        'measured_table_count': 45,
+                                                        'task_id': 'wise-pinnacle-14',
+                                                        'operator_decision': '6679052c',
+                                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                        'supervisor_decision_message_id': 'msg-e133fcf178a84b6b9a25378b5cf1a38f',
+                                                        'delegation_message_id': 'msg-c97dd6b225b845aa976f13ce04340df6',
+                                                        'request_message_id': 'msg-ccda3a19ff874120aaaf8989031c1d3d',
+                                                        'thread_id': 'wise-pinnacle-14-ownership',
+                                                        'reason': 'Exact supervisor-approved +5 '
+                                                                  'owned/+5 engine/+0 tables for '
+                                                                  'retained acquisition to '
+                                                                  'preserve bounded verification '
+                                                                  'refusals and avoid a duplicate '
+                                                                  'diagnostic fsck while the '
+                                                                  'shared full check runs. '
+                                                                  'Preserve every historical '
+                                                                  'grant, original baseline, '
+                                                                  'ownership classification, zero '
+                                                                  'remaining headroom, s4_modules '
+                                                                  'expiry and existing storage '
+                                                                  'categories.'},
  'attached_owner_close_atomicity_epoch11_composition': {'authorized_engine_delta': 0,
  'authorized_owned_delta': 4,
  'authorized_shared_owned_delta': 4,
@@ -2251,7 +2284,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6329,
+ 'authorized_owned_delta': 6334,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2859,8 +2892,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84825,
- 'measured_owned_total': 161828,
+ 'measured_engine_lines': 84830,
+ 'measured_owned_total': 161833,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
