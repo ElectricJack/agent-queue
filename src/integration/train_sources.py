@@ -35,6 +35,7 @@ from src.database.tables import (
     integration_source_ci,
     projects,
     repos,
+    system_config,
     task_branch_origins,
     task_completion_records,
     task_dependencies,
@@ -96,6 +97,7 @@ from src.integration.train import (
     BatchSelection,
     CandidateChecks,
     IntegrationTrain,
+    LaneRecord,
     TrainLane,
     TrainTarget,
 )
@@ -426,6 +428,63 @@ def _open_batch_rows(project_id: str, repository_id: str):
         integration_batches.c.intent != "aborted",
         integration_batches.c.lifecycle != "promoted",
     )
+
+
+class DatabaseLaneLedger:
+    """The train's lane history in the generic ``system_config`` store, so a
+    restart keeps visit order. One versioned key per lane.
+
+    Rows are diagnostics and scheduling order only; a visit always re-reads Git.
+    History a daemon has not touched for ``retention_seconds``, or whose project
+    is gone, is dropped on load.
+    """
+
+    PREFIX = "integration-train-lane:v1:"
+
+    def __init__(self, db, *, clock: Callable[[], float] = time.time,
+                 retention_seconds: float = 14 * 86400.0) -> None:
+        self.db, self.clock = db, clock
+        self.retention_seconds = retention_seconds
+
+    def _key(self, key) -> str:
+        return self.PREFIX + json.dumps(list(key))
+
+    async def load(self) -> list[LaneRecord]:
+        records, stale = [], []
+        async with self.db._engine.begin() as conn:
+            live = set((await conn.execute(select(projects.c.id))).scalars())
+            rows = (await conn.execute(select(system_config).where(
+                system_config.c.key.startswith(self.PREFIX)))).all()
+            for key, value in rows:
+                fields = json.loads(value)
+                updated_at = fields.pop("updated_at")
+                record = LaneRecord(*json.loads(key[len(self.PREFIX):]), **fields)
+                if (record.project_id not in live
+                        or updated_at < self.clock() - self.retention_seconds):
+                    stale.append(key)
+                else:
+                    records.append(record)
+            if stale:
+                await conn.execute(delete(system_config).where(system_config.c.key.in_(stale)))
+        return records
+
+    async def record(self, record: LaneRecord) -> None:
+        fields = asdict(record)
+        for name in ("project_id", "repository_id", "target_ref"):
+            del fields[name]  # they form the key
+        value = json.dumps({**fields, "updated_at": self.clock()}, sort_keys=True)
+        async with self.db._engine.begin() as conn:
+            if (await conn.execute(select(projects.c.id).where(
+                    projects.c.id == record.project_id))).first() is None:
+                return  # the project is gone; keep no orphaned history
+            await conn.execute(insert(system_config).values(
+                key=self._key(record.key), value=value,
+            ).on_conflict_do_update(index_elements=["key"], set_={"value": value}))
+
+    async def forget(self, keys) -> None:
+        async with self.db._engine.begin() as conn:
+            await conn.execute(delete(system_config).where(
+                system_config.c.key.in_([self._key(key) for key in keys])))
 
 
 class DatabaseTargets:
@@ -3875,6 +3934,7 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
             refresh_seconds=30,
             flow_problems=lambda: getattr(orchestrator, "promotion_flow_problems", None),
         ),
+        ledger=DatabaseLaneLedger(orchestrator.db, clock=clock),
         batches=batches,
         lane_for=lanes,
         repair=BatchFixerService(
