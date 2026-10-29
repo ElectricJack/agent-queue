@@ -24,6 +24,7 @@ from src.integration.checks import (
     RequiredChecks,
 )
 from src.integration.selection_metrics import selection_count, selection_stage
+from src.integration.visit_carry import CARRIED_STAGE_VISITS, StageCarries, carried
 from src.messages.delivery import MessageDeliveryEngine
 from src.models import Message
 from src.integration.train import (
@@ -1032,7 +1033,7 @@ async def test_slow_target_never_stalls_another():
     })
     first = await t.tick()
     assert sorted(first["started"]) == ["p/r/refs/heads/main", "q/s/refs/heads/main"]
-    for _ in range(5):
+    for _ in range(20):  # carried stages each run as their own task
         await asyncio.sleep(0)
     assert batches.settled == [("batch-2", "delivered")]
 
@@ -1517,9 +1518,240 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     assert (row["state"], row["running"]) == ("unknown", False)
     assert row["detail"] == {
         "reason": "visit_timeout", "stage": "fetch_snapshot", "timeout_seconds": 0.01,
+        "carried_stages": ["fetch_snapshot"],
     }
+    assert row["carried_stages"] == ["fetch_snapshot"]
     assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
     await t.stop()
+    assert "carried_stages" not in t.status()[0]
+
+
+async def test_visit_whose_stages_exceed_the_budget_progresses_and_collects_its_child():
+    """A slow fetch and a build longer than the whole budget still deliver.
+
+    Each stage is carried past its visit's deadline and adopted by the next
+    visit, so consecutive bounded visits add up instead of restarting work.
+    """
+    budget = 0.5
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    fetches, builds, completions = [], [], []
+
+    async def fetch():
+        fetches.append(True)
+        if len(fetches) == 1:  # an unverified retained store fetches in full
+            await asyncio.sleep(1.5 * budget)
+
+    class Build(Service):
+        async def visit(self, batch, members, snapshot):
+            async def assemble():
+                builds.append(batch.id)
+                await asyncio.sleep(1.2 * budget)
+                return CANDIDATE
+
+            head = await carried("build_candidate", (batch.id, members), assemble)
+            return BatchObservation("delivered", head, head)
+
+    async def complete_epic(snapshot):
+        completions.append(snapshot.target_oid)
+        return ({"blocking": False, "outcome": "completed", "task_id": "t-1"},)
+
+    batches = Batches({epic.key: (batch(ref=epic.target_ref), MEMBERS)})
+    t = train(Targets(epic), batches, {epic.key: replace(
+        lane(Build(), fetch=fetch), complete_epic=complete_epic)},
+        visit_timeout_seconds=budget)
+    rows = []
+    for _ in range(3):
+        assert (await t.tick())["started"] == ["p/r/refs/heads/epic"]
+        await t.drain()
+        [row] = t.status()
+        rows.append(row)
+    assert [(row["detail"].get("reason"), row["detail"].get("stage"),
+             row["detail"].get("carried_stages")) for row in rows[:2]] == [
+        ("visit_timeout", "fetch_snapshot", ["fetch_snapshot"]),
+        ("visit_timeout", "build_or_publish", ["build_candidate"]),
+    ]
+    assert rows[2]["state"] == "delivered"
+    assert rows[2]["detail"]["epic_completions"][0]["task_id"] == "t-1"
+    assert batches.settled == [("batch-1", "delivered")]
+    # One assembly, never restarted. The second visit adopted the first fetch;
+    # the third fetched again, then re-read the epic it had just published.
+    assert (len(fetches), builds, len(completions)) == (3, ["batch-1"], 1)
+    assert "carried_stages" not in rows[2]
+    await t.stop()
+
+
+async def test_select_batch_longer_than_the_budget_is_adopted_by_the_next_visit():
+    """A dev-lane selection that outlasts one visit is finished, never restarted."""
+    budget = 0.2
+    dev = TrainTarget("p", "r", "refs/heads/dev")
+    selections = []
+
+    class SlowSelection(Batches):
+        async def open_batch(self, target, snapshot, service):
+            selections.append(snapshot.target_oid)
+            await asyncio.sleep(1.5 * budget)
+            return await super().open_batch(target, snapshot, service)
+
+    batches = SlowSelection({dev.key: (batch(ref=dev.target_ref), MEMBERS)})
+    t = train(Targets(dev), batches, {dev.key: lane(Service("delivered"))},
+              visit_timeout_seconds=budget)
+    assert (await t.tick())["started"] == ["p/r/refs/heads/dev"]
+    await t.drain()
+    [row] = t.status()
+    assert (row["detail"]["reason"], row["detail"]["stage"], row["carried_stages"]) == (
+        "visit_timeout", "select_batch", ["select_batch"])
+    assert (await t.tick())["started"] == ["p/r/refs/heads/dev"]
+    await t.drain()
+    [row] = t.status()
+    assert row["state"] == "delivered" and batches.settled == [("batch-1", "delivered")]
+    assert selections == [TARGET_SHA] and "carried_stages" not in row
+    await t.stop()
+
+
+async def test_dev_select_batch_carry_is_bounded_by_its_hard_deadline():
+    """The dev lane's 900s budget carries selection to 2700s, then cancels it."""
+    dev = TrainTarget("p", "r", "refs/heads/dev")
+    calls, cancelled = [], []
+
+    class HungSelection(Batches):
+        async def open_batch(self, target, snapshot, service):
+            calls.append(True)
+            if hang:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.append(True)
+                    raise
+            return await super().open_batch(target, snapshot, service)
+
+    hang = False
+    t = train(Targets(dev), HungSelection(), {dev.key: lane(Service())})
+    await t.tick()
+    await t.drain()
+    [carries] = [lane.carries for lane in t._lanes.values()]
+    assert (carries.limit_seconds, carries.fresh_seconds) == (
+        CARRIED_STAGE_VISITS * 900.0, 900.0)
+    await t.stop()
+
+    hang, calls[:] = True, []
+    budget = 0.05  # the same bound at a test-sized budget
+    t = train(Targets(dev), HungSelection(), {dev.key: lane(Service())},
+              visit_timeout_seconds=budget)
+    rows = []
+    for _ in range(CARRIED_STAGE_VISITS + 1):
+        await t.tick()
+        await t.drain()
+        [row] = t.status()
+        rows.append((row["detail"]["reason"], row["detail"].get("stage")))
+        if row["detail"]["reason"] == "CarriedStageExpired":
+            break
+    assert rows[0] == ("visit_timeout", "select_batch")
+    assert rows[-1][0] == "CarriedStageExpired"
+    assert {reason for reason, _ in rows[:-1]} == {"visit_timeout"}
+    # One selection ran the whole time, and its own deadline cancelled it.
+    assert calls == [True] and cancelled == [True] and "carried_stages" not in t.status()[0]
+    await t.stop()
+
+
+async def test_carried_stage_keeps_its_repository_slot_until_it_settles():
+    other = TrainTarget("p", "r", "refs/heads/other")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow():
+        entered.set()
+        await release.wait()
+
+    t = train(Targets(ROOT, other), Batches(), {
+        ROOT.key: lane(Service(), fetch=slow), other.key: lane(Service()),
+    }, visit_timeout_seconds=0.05, repository_concurrency=1)
+    assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+    await t.drain()
+    # The timed-out visit's fetch still runs: its own lane adopts it, while
+    # the repository's other target waits for the slot as it would for a visit.
+    scheduled = await t.tick()
+    assert (scheduled["started"], scheduled["deferred"]) == (
+        ["p/r/refs/heads/main"], ["p/r/refs/heads/other"])
+    release.set()
+    await t.drain()
+    assert [row["state"] for row in t.status()] == ["idle", "unvisited"]
+    assert (await t.tick())["started"] == ["p/r/refs/heads/other"]
+    await t.stop()
+
+
+async def test_carried_stage_is_cancelled_at_its_own_deadline():
+    calls = []
+
+    async def hang():
+        calls.append(True)
+        await asyncio.Event().wait()
+
+    budget = 0.05
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=hang)},
+              visit_timeout_seconds=budget)
+    reasons = []
+    for _ in range(CARRIED_STAGE_VISITS + 1):
+        await t.tick()
+        await t.drain()
+        [row] = t.status()
+        reasons.append(row["detail"]["reason"])
+        if row["detail"]["reason"] == "CarriedStageExpired":
+            break
+    assert reasons[-1] == "CarriedStageExpired"
+    assert set(reasons[:-1]) == {"visit_timeout"}
+    assert "carried_stages" not in t.status()[0] and calls == [True]
+    await t.tick()  # the next visit starts the stage over
+    await t.drain()
+    assert calls == [True, True]
+    await t.stop()
+
+
+async def test_stage_carries_restart_on_new_inputs_and_never_reuse_a_stale_result():
+    now = [0.0]
+    carries = StageCarries(limit_seconds=60, fresh_seconds=5, clock=lambda: now[0])
+    started, release = [], asyncio.Event()
+
+    async def work(value):
+        started.append(value)
+        await release.wait()
+        return value
+
+    first = asyncio.create_task(carries.run("build", 1, lambda: work(1)))
+    await asyncio.sleep(0)
+    first.cancel()  # the visit's deadline
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert carries.live() == ("build",)
+    [stale] = carries._stages.values()
+    second = asyncio.create_task(carries.run("build", 2, lambda: work(2)))
+    await asyncio.sleep(0)
+    assert started == [1]  # the replacement waits for the old run to settle
+    await asyncio.gather(stale.task, return_exceptions=True)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert stale.task.cancelled() and started == [1, 2]
+    release.set()
+    assert await second == 2 and carries.live() == ()
+
+    # A result that finished while no visit waited is adopted once, if fresh.
+    release.clear()
+    third = asyncio.create_task(carries.run("build", 3, lambda: work(3)))
+    await asyncio.sleep(0)
+    third.cancel()
+    release.set()
+    await asyncio.gather(third, return_exceptions=True)
+    await asyncio.sleep(0)
+    assert await carries.run("build", 3, lambda: work(30)) == 3
+    assert await carries.run("build", 3, lambda: work(31)) == 31
+    third = asyncio.create_task(carries.run("build", 4, lambda: work(4)))
+    await asyncio.sleep(0)
+    third.cancel()
+    await asyncio.gather(third, return_exceptions=True)
+    await asyncio.sleep(0)
+    now[0] = 10.0  # older than a visit budget: observe again
+    assert await carries.run("build", 4, lambda: work(40)) == 40
+    assert started == [1, 2, 3, 31, 4, 40]  # 30 adopted the finished 3
+    # Outside a train visit there is no carry at all.
+    assert await carried("build", 5, lambda: work(5)) == 5 and carries.live() == ()
 
 
 @pytest.mark.parametrize("bounded_leader", [True, False])
@@ -1820,7 +2052,9 @@ async def test_selection_metrics_retain_interrupted_operations_without_cross_vis
     assert metrics["stages"]["provenance"]["seconds"] > 0
     await t.tick()
     await t.drain()
-    assert t.status()[0]["timing"]["selection"]["counts"] == metrics["counts"]
+    # The next visit adopts the carried fetch; its work stays with the first.
+    assert t.status()[0]["timing"]["selection"]["counts"] == {"carried_fetch_snapshot_adopted": 1}
+    await t.stop()
 
 
 def test_repository_concurrency_must_be_positive():
