@@ -1,0 +1,29 @@
+{
+  "data": [
+    "src/__init__.py",
+    "src/cli/integration.py",
+    "src/commands/handler.py",
+    "src/commands/integration_commands.py",
+    "src/config.py",
+    "src/database/__init__.py",
+    "src/database/adapters/__init__.py",
+    "src/database/adapters/postgresql.py",
+    "src/database/base.py",
+    "src/database/engine.py",
+    "src/database/tables.py",
+    "src/doctor/git_checks.py",
+    "src/doctor/integration_checks.py",
+    "src/git/github_contracts.py",
+    "src/integration/__init__.py",
+    "src/integration/app_mode.py",
+    "src/integration/attestation.py",
+    "src/integration/cancelled_collection_recovery.py",
+    "src/integration/delivery_observer.py",
+    "src/integration/models.py",
+    "src/integration/protection.py",
+    "src/integration/status.py",
+    "src/integration/trust_manifest.py",
+    "src/models.py",
+    "tests/fixtures/github_protection/*.json"
+  ]
+}

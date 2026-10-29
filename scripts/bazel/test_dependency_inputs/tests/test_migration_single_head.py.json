@@ -1,0 +1,9 @@
+{
+  "data": [
+    "alembic.ini",
+    "migrations/versions/*.py"
+  ],
+  "imports": [
+    "migrations.integration_guards"
+  ]
+}
