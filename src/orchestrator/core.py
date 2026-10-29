@@ -3414,6 +3414,9 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        maintenance = vars(self).get("_retained_store_maintenance")
+        if maintenance is not None:
+            await maintenance.stop()
         if self._promotion_flow_check is not None and not self._promotion_flow_check.done():
             self._promotion_flow_check.cancel()
             await asyncio.wait({self._promotion_flow_check}, timeout=5.0)

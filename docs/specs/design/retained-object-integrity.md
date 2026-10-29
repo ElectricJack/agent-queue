@@ -155,6 +155,9 @@ restarted the check and `owner_lease` ran out its 600 s.
   read, and the connectivity check proves that nothing reachable was lost.
   Nothing carries in these cases, and the full check stays due:
   - unverified additions;
+  - anything but the repack's own pack family (and derived metadata such as
+    `info/packs`) added during the repack, which runs outside the repository
+    transaction (`calm-lantern-36`), so another writer may add objects beside it;
   - a failed repack or a failed check;
   - a baseline replaced meanwhile.
 

@@ -933,6 +933,33 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'retained_store_repack_refresh_composition': {'task_id': 'keen-willow-36',
+ 'original_task_id': 'calm-lantern-36',
+ 'pull_request': 2175,
+ 'referenced_decision': 'size-cap-delegation-2026-10-23',
+ 'operator_decision': '6679052c',
+ 'supervisor_decision_message_id': 'msg-8ee61fa011464ba8adc22d6b879d99ca',
+ 'dev_source_revision': '3cf46dd30f5e45eba97f8fd32637e9361c2da752',
+ 'source_revision': '9e41b32405627c58ae6c7232f87f8c907c0f53b0',
+ 'previous_measured_owned_total': 161833,
+ 'previous_measured_engine_lines': 84830,
+ 'previous_measured_table_count': 45,
+ 'measured_owned_total': 161882,
+ 'measured_engine_lines': 84876,
+ 'measured_table_count': 45,
+ 'authorized_owned_delta': 49,
+ 'authorized_engine_delta': 46,
+ 'authorized_shared_owned_delta': 3,
+ 'authorized_table_delta': 0,
+ 'charged_files': {'src/integration/repository_maintenance.py': 46,
+                   'src/orchestrator/core.py': 3},
+ 'evidence_path': 'docs/reports/2026-10-29-pr2175-refresh-ownership.json',
+ 'reason': 'Ancestry-preserving PR2175 refresh onto dev 3cf46dd30. Complete dev archive and '
+           'merged tree measured with unchanged scanner and classifications confirm the existing '
+           '+49 owned/+46 engine/+3 shared/0 tables grant. Preserve all dev entries, including '
+           'PR2146 +19, PR2191 +4, PR2192 +5 owned/+5 engine, PR2185 and PR2182, all historical '
+           'measurements and original repack grant, original baselines, s4_modules expiry, zero '
+           'remaining headroom and existing storage categories. No new allowance.'},
  'retained_recovery_pending_verification_composition': {'authorized_owned_delta': 5,
                                                         'authorized_engine_delta': 5,
                                                         'authorized_shared_owned_delta': 0,
@@ -2064,6 +2091,48 @@ HAND_INTEGRATION_RECONCILIATION = {
  'supervisor_decision_message_id': 'msg-bb71c846812341e68b2a81bd464d39ef',
  'task_id': 'clear-beacon-42',
  'working_tree_source_sha256': {'src/task_graph/__init__.py': '998401020fc659dec2f7bbad56af455a6fa958717ab9fdba4742111477b2cb06'}},
+ 'retained_store_repack_budget_composition': {'authorized_engine_delta': 46,
+                                               'authorized_owned_delta': 49,
+                                               'authorized_shared_owned_delta': 3,
+                                               'authorized_table_delta': 0,
+                                               'charged_files': {'src/integration/repository_maintenance.py': 46,
+                                                                 'src/orchestrator/core.py': 3},
+                                               'dev_source_revision': '0ce9a88d9b85d2d401486739ce5d13138ae81621',
+                                               'evidence_path': 'docs/reports/2026-10-28-retained-store-repack-budget-ownership.json',
+                                               'measured_engine_lines': 84402,
+                                               'measured_owned_total': 161145,
+                                               'measured_table_count': 45,
+                                               'operator_decision': '6679052c',
+                                               'previous_measured_engine_lines': 84356,
+                                               'previous_measured_owned_total': 161096,
+                                               'previous_measured_table_count': 45,
+                                               'prior_grant_evidence': 'docs/reports/2026-10-28-retained-store-maintenance-landing-ownership.json',
+                                               'pull_request': 2175,
+                                               'reason': 'Exact measured +49 owned/+46 engine/+3 '
+                                                         'shared/0 tables over dev 0ce9a88d9, '
+                                                         'approved by the global supervisor '
+                                                         '(relayed by the project supervisor) for '
+                                                         'the retained-store repack budget '
+                                                         '(calm-lantern-36, PR 2175): the repack '
+                                                         'budget scales with store size (240 s '
+                                                         'floor, 3600 s cap) and runs outside the '
+                                                         'repository transaction, daemon stop '
+                                                         'cancels the maintenance visit, and the '
+                                                         '_repack_output_only guard carries the '
+                                                         "clean baseline only for the repack's own "
+                                                         'output (+46 engine in '
+                                                         'repository_maintenance; +3 shared in '
+                                                         'orchestrator/core). Preserve the original '
+                                                         'baseline, every historical grant and '
+                                                         'ownership classification, zero remaining '
+                                                         'headroom, the s4_modules expiry and '
+                                                         'existing storage categories.',
+                                               'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                               'request_message_id': 'msg-90274a306ff54e56bf6c43eac1376c50',
+                                               'source_revision': 'f363e33f08c3981a2b38731fb317901406e991da',
+                                               'supervisor_decision_message_id': 'msg-8ee61fa011464ba8adc22d6b879d99ca',
+                                               'task_id': 'calm-lantern-36',
+                                               'thread_id': 'calm-lantern-36-size'},
  'retained_store_maintenance_scope_refresh_measurement': {'additional_engine_delta': 29,
  'additional_owned_delta': 29,
  'authorized_engine_delta': 144,
@@ -2284,7 +2353,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6334,
+ 'authorized_owned_delta': 6383,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2892,8 +2961,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84830,
- 'measured_owned_total': 161833,
+ 'measured_engine_lines': 84876,
+ 'measured_owned_total': 161882,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
