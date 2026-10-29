@@ -43,6 +43,12 @@ from src.integration.git_truth import GitTruthSnapshot, snapshot_scope
 from src.integration.models import RepairPolicy
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.runtime_contracts import HeadIdentity
+from src.integration.visit_carry import (
+    CARRIED_STAGE_VISITS,
+    StageCarries,
+    carried,
+    stage_carries,
+)
 from src.logging_config import log_handled
 
 logger = logging.getLogger(__name__)
@@ -500,6 +506,13 @@ class _Lane:
     urgent: bool = False
     #: The previous daemon's record of this lane, until a visit replaces it.
     restored: LaneRecord | None = None
+    #: Stage work a timed-out visit left running for this lane's next visit.
+    carries: StageCarries | None = None
+
+    def busy(self) -> bool:
+        """Whether a visit, or a stage it carried past its deadline, holds the slot."""
+        return ((self.task is not None and not self.task.done())
+                or (self.carries is not None and bool(self.carries.live())))
 
 
 @dataclass
@@ -588,6 +601,8 @@ class IntegrationTrain:
                 for key in getattr(self.targets, "retired_targets", ()):
                     lane = self._lanes.get(key)
                     if lane is None or lane.task is None or lane.task.done():
+                        if lane is not None and lane.carries is not None:
+                            lane.carries.cancel()
                         self._lanes.pop(key, None)
                         self._dormant.pop(key, None)
                         if key in self._recorded:
@@ -596,7 +611,7 @@ class IntegrationTrain:
             self._urgent = {key: until for key, until in self._urgent.items() if until > now}
             occupied: dict[str, int] = {}
             for key, lane in self._lanes.items():
-                if lane.task is not None and not lane.task.done():
+                if lane.busy():
                     occupied[key[1]] = occupied.get(key[1], 0) + 1
             # Targets a wake named go first. Then unvisited targets (start=0) and
             # the longest-waiting lanes; stable ties retain discovery order.
@@ -625,15 +640,19 @@ class IntegrationTrain:
                         and lane.last.state in {"idle", "held"}
                         and (lane.last.detail or {}).get("reason") != "settling"):
                     continue
+                # A lane's own carried stage already holds its slot; its visit adopts it.
+                carrying = int(lane.busy())
                 if (lane.not_before > now
                         or (not lane.requested and lane.start
                             and (lane.last is None or lane.last.target == target)
                             and now < lane.started_at + self.minimum_visit_interval_seconds)
-                        or occupied.get(target.repository_id, 0) >= self.repository_concurrency
+                        or occupied.get(target.repository_id, 0) - carrying
+                        >= self.repository_concurrency
                         or not self._admit(target.key, now)):
                     deferred.append(label)
                     continue
-                occupied[target.repository_id] = occupied.get(target.repository_id, 0) + 1
+                if not carrying:
+                    occupied[target.repository_id] = occupied.get(target.repository_id, 0) + 1
                 self._starts += 1
                 lane.started_at, lane.start = now, self._starts
                 lane.requested = lane.urgent = False
@@ -671,6 +690,9 @@ class IntegrationTrain:
                  if lane.task is not None and not lane.task.done()]
         tasks += [item.task for item in self._speculative.values() if not item.task.done()]
         self._speculative.clear()
+        for lane in self._lanes.values():
+            if lane.carries is not None:
+                tasks += lane.carries.cancel()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -711,6 +733,8 @@ class IntegrationTrain:
             if running and lane.progress:
                 row["progress"] = dict(lane.progress)
                 row["visit_started_at"] = lane.started_at
+            if lane.carries is not None and lane.carries.live():
+                row["carried_stages"] = list(lane.carries.live())
             row["visits"], row["errors"] = lane.visits, lane.errors
             if lane.progress_at:
                 row["progress_at"] = lane.progress_at
@@ -843,19 +867,26 @@ class IntegrationTrain:
         token = _PROGRESS.set(progress)
         timing = lane.timing = _VisitTiming()
         timing_token = _TIMING.set(timing)
+        if lane.carries is None:
+            lane.carries = StageCarries(
+                limit_seconds=CARRIED_STAGE_VISITS * self.visit_timeout_seconds,
+                fresh_seconds=self.visit_timeout_seconds)
         try:
-            with selection_metrics_scope(timing.selection):
+            with selection_metrics_scope(timing.selection), stage_carries(lane.carries):
                 visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
         except asyncio.CancelledError:
+            lane.carries.cancel()  # only the visit deadline hands work on
             raise
         except TimeoutError:
             lane.errors += 1
+            # Carried stages keep running; the next visit adopts their result.
+            carrying = {"carried_stages": list(live)} if (live := lane.carries.live()) else {}
             visit = TrainVisit(target, "unknown", batch_id=progress.get("batch_id"),
                                candidate_sha=progress.get("candidate_sha"),
                                target_sha=progress.get("target_sha"),
                                detail={"reason": "visit_timeout", **progress,
                                        "timeout_seconds": self.visit_timeout_seconds,
-                                       **self._previous_state(lane)},
+                                       **carrying, **self._previous_state(lane)},
                                observed_at=self.clock())
             logger.warning("integration train visit timed out for %s", target.key)
         except Exception as exc:  # one target's failure never stops the train
@@ -961,13 +992,19 @@ class IntegrationTrain:
                 "reason": lane.train_policy_reason or "train_policy_unavailable",
                 "retry_at": self.clock() + 30}, observed_at=self.clock())
         _progress("fetch_snapshot")
-        snapshot = await lane.snapshot()
+        # A fetch outlives a timed-out visit, so a slow retained-store fetch
+        # is not discarded and restarted by every visit of a large target.
+        snapshot = await carried("fetch_snapshot", target.key, lane.snapshot)
         if lane.observe_source:
             _progress("observe_promotion_source")
             await lane.observe_source(snapshot)
         _progress("select_batch", target_sha=snapshot.target_oid)
-        opened = await self.batches.open_batch(
-            target, snapshot, lane.service, **({"seal_now": True} if seal_now else {}),
+        # Selection on a busy target can outlast one visit; the next visit of
+        # the same target OID adopts it rather than starting selection over.
+        opened = await carried(
+            "select_batch", (target.key, snapshot.target_oid, seal_now),
+            lambda: self.batches.open_batch(
+                target, snapshot, lane.service, **({"seal_now": True} if seal_now else {})),
         )
         if (target.kind == "epic" and opened.batch is None
                 and not opened.blockers and lane.sync_closed_epic):
@@ -1074,8 +1111,10 @@ class IntegrationTrain:
             # No speculative await belongs to N's visit or publication path.
             async def run():
                 try:
-                    async with asyncio.timeout(self.visit_timeout_seconds):
-                        await self._build_speculative(target, lane, snapshot, opened.batch, item)
+                    with stage_carries(None):  # bounded here, never carried
+                        async with asyncio.timeout(self.visit_timeout_seconds):
+                            await self._build_speculative(
+                                target, lane, snapshot, opened.batch, item)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
