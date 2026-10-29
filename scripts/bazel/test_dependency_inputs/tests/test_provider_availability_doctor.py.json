@@ -1,0 +1,10 @@
+{
+  "data": [
+    "src/prompts/reviewed_playbooks/provider-failover/artifact.json",
+    "src/prompts/reviewed_playbooks/provider-failover/artifact.sha256",
+    "src/prompts/reviewed_playbooks/provider-failover/diagnostics.json",
+    "src/prompts/reviewed_playbooks/provider-failover/manifest.md",
+    "src/prompts/reviewed_playbooks/provider-failover/source.md",
+    "src/prompts/default_playbooks/provider-failover.md"
+  ]
+}
