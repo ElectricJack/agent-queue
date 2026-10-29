@@ -154,6 +154,7 @@ filegroup(name = "sources", srcs = [
         "truth_reconciler.py",
         "truth_retention.py",
         "verifier_subject.py",
+        "visit_carry.py",
         "writers.py",
     ])
 exports_files([
@@ -307,6 +308,7 @@ exports_files([
         "truth_reconciler.py",
         "truth_retention.py",
         "verifier_subject.py",
+        "visit_carry.py",
         "writers.py",
     ])
 filegroup(name = "resources", srcs = [
@@ -464,6 +466,7 @@ py_library(
         "truth_reconciler.py",
         "truth_retention.py",
         "verifier_subject.py",
+        "visit_carry.py",
         "writers.py",
     ],
     imports = ["../.."],
