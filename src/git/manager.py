@@ -682,6 +682,25 @@ RETAINED_FSCK_TIMEOUT_SECONDS = 900.0
 #: Full-body verification is a separate phase from negotiated object transfer.
 _RETAINED_VERIFY_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
 _RETAINED_VERIFY_RETRY_DELAYS = (1.0, 2.0, 4.0)
+#: A timed-out transfer or full check is discarded whole (its scratch repository is
+#: removed), so retrying under the same fixed budget on a busy host only repeats
+#: the loss. Each consecutive timeout of one store doubles that store's next
+#: budget up to these ceilings; one success returns it to the base.
+_ESCALATED_FETCH_CEILING_SECONDS = 1200.0
+_ESCALATED_FSCK_CEILING_SECONDS = 7200.0
+
+
+def _escalated_budget(streaks: dict, key: str, base: float, ceiling: float) -> float:
+    """*base* doubled once per consecutive timeout recorded for *key*, capped."""
+    return min(base * 2 ** min(streaks.get(key, 0), 16), max(base, ceiling))
+
+
+def _record_budget_outcome(streaks: dict, key: str, exc: BaseException | None) -> None:
+    """Count a consecutive timeout for *key*; any success or other outcome resets."""
+    if exc is not None and "reason=git_timeout" in str(exc):
+        streaks[key] = streaks.get(key, 0) + 1
+    else:
+        streaks.pop(key, None)
 
 
 def _common_git_dir(git_dir: str) -> Path:
@@ -2432,6 +2451,23 @@ class GitManager:
         return specs
 
     async def _afetch_origin_with_auth_to_url(
+        self, checkout_path: str, **options: Any,
+    ) -> _OriginFetchTransfer:
+        """Run the staged fetch under a budget that grows while it keeps timing out."""
+        streaks = self.__dict__.setdefault("_origin_fetch_timeouts", {})
+        key = os.path.realpath(checkout_path)
+        budget = _escalated_budget(
+            streaks, key, self._GIT_TIMEOUT, _ESCALATED_FETCH_CEILING_SECONDS)
+        try:
+            transfer = await self._afetch_origin_with_auth_to_url_once(
+                checkout_path, budget=budget, **options)
+        except GitError as exc:
+            _record_budget_outcome(streaks, key, exc)
+            raise
+        _record_budget_outcome(streaks, key, None)
+        return transfer
+
+    async def _afetch_origin_with_auth_to_url_once(
         self,
         checkout_path: str,
         *,
@@ -2440,6 +2476,7 @@ class GitManager:
         refetch: bool = False,
         refs: Sequence[str] | None = None,
         lock_held: bool = False,
+        budget: float | None = None,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2468,7 +2505,8 @@ class GitManager:
                            *(["+refs/tags/*:refs/tags/*"] if refetch else [])]
         loop = asyncio.get_running_loop()
         started = loop.time()
-        deadline = started + self._GIT_TIMEOUT
+        budget = self._GIT_TIMEOUT if budget is None else budget
+        deadline = started + budget
         destination_git_dir, borrowable_objects = await self._aorigin_fetch_destination(
             checkout_path
         )
@@ -2520,7 +2558,7 @@ class GitManager:
                         repository_url=source_url,
                         token=token,
                         deadline=deadline,
-                        budget_seconds=self._GIT_TIMEOUT,
+                        budget_seconds=budget,
                     )
                 except GitError as exc:
                     raise GitError(
@@ -2849,7 +2887,9 @@ class GitManager:
         carried repack finished meanwhile) is not checked again.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + RETAINED_FSCK_TIMEOUT_SECONDS
+        streaks = self.__dict__.setdefault("_retained_fsck_timeouts", {})
+        deadline = loop.time() + _escalated_budget(
+            streaks, key, RETAINED_FSCK_TIMEOUT_SECONDS, _ESCALATED_FSCK_CEILING_SECONDS)
         async with _isolated_git_directory(prefix="aq-retained-verify-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
@@ -2865,12 +2905,14 @@ class GitManager:
                 try:
                     await self._afsck_retained_store(key, home=home, deadline=deadline)
                 except GitError as exc:
+                    _record_budget_outcome(streaks, key, exc)
                     if str(exc).startswith("retained Git object integrity"):
                         verified = self.__dict__.setdefault("_retained_verified", {})
                         if verified.get(key, (None, started))[1] <= started:
                             verified.pop(key, None)
                     raise
                 after = await asyncio.to_thread(_object_store_fingerprint, key)
+        _record_budget_outcome(streaks, key, None)
         if fingerprint is None or after is None:
             return None
         unchanged = set(after)
