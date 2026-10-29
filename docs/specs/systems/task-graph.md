@@ -347,6 +347,11 @@ hierarchy and stack comparisons, frontier policy and source inputs, delivery
 evidence, and PR freshness, input and lock failures; comparison details name the
 changed field or input group. Unknown observations permit preparation, but an
 identity or policy comparison that changed still requires a fresh admission pass.
+Delivery-request comparisons name the source task and changed fields. Admission
+fences delivery and lifecycle inputs independently of `tasks.updated_at`
+(`DeliveryRequest.task_version`): a timestamp-only bookkeeping change does not
+invalidate either the source or frontier-policy comparison. Debug diagnostics
+include exact before/after request fields, including ignored timestamp changes.
 After publication, activation failures read the current guard diagnostics separately
 from the immutable selection decision. PR checkout refusals name the missing source
 or unavailable ancestry check; an otherwise unexplained rejection names

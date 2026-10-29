@@ -287,8 +287,9 @@ class WaitSourceListener:
         if not window:
             return []
         keys = sorted({(row["source_key"], row["source_generation"]) for row in window
-                       if not (row["source_key"].startswith("ci_check:")
-                               and row["dispatched_at"] is not None)})
+                       if not (row["source_key"].startswith((
+                           "ci_check:", "resource_invalidation:pool:",
+                       )) and row["dispatched_at"] is not None)})
         watermarks = {}
         if keys:
             subscriptions = await conn.execute(select(
@@ -311,7 +312,9 @@ class WaitSourceListener:
             ))
         prefix = []
         for row in window:
-            if row["source_key"].startswith("ci_check:") and row["dispatched_at"] is not None:
+            if row["source_key"].startswith((
+                "ci_check:", "resource_invalidation:pool:",
+            )) and row["dispatched_at"] is not None:
                 prefix.append(row["seq"])
                 continue
             subscribed = watermarks.get((row["source_key"], row["source_generation"]))
@@ -596,6 +599,28 @@ class WaitSourceListener:
                 ).order_by(wait_source_events.c.seq)))
                 if candidate["seq"] not in coalesced:
                     coalesced.append(candidate["seq"])
+            pool = _invalidation(candidate) if candidate and not prefix else None
+            if pool and pool["producer"] == "pool":
+                # Pool hints have no per-event lifecycle effects. Retained
+                # retries and interleaved forward hints can share one fresh
+                # observation, without moving the cursor past unrelated work.
+                same_pool = (
+                    (wait_source_events.c.source_key == candidate["source_key"])
+                    & (wait_source_events.c.source_generation == candidate["source_generation"])
+                    & (wait_source_events.c.seq <= watermark)
+                    & (wait_source_events.c.payload["producer"].astext == "pool")
+                    & (wait_source_events.c.payload["identity"].astext == pool["identity"])
+                    & wait_source_events.c.payload["project_id"].astext.is_not_distinct_from(
+                        pool.get("project_id"))
+                )
+                latest = (await conn.execute(select(wait_source_events).where(
+                    same_pool, wait_source_events.c.seq >= candidate["seq"],
+                ).order_by(wait_source_events.c.seq.desc()).limit(1))).mappings().one()
+                candidate = latest
+                superseded = await conn.scalars(select(wait_source_events.c.seq).where(
+                    same_pool, wait_source_events.c.dispatched_at.is_(None),
+                ))
+                coalesced = sorted(set(coalesced) | set(superseded) | {candidate["seq"]})
             if candidate and not prefix:
                 attempt.update(position=position, event=dict(candidate), retry=bool(retry),
                                forward_seq=forward_seq, seqs=coalesced or [candidate["seq"]])

@@ -411,10 +411,10 @@ class PoolsMixin:
                 until, _reason = self._pool_quarantine_state(project.id, profile_id, now)
                 for kind_id in sorted(kind_ids):
                     ready, repair_ready = demand_by_profile.get((profile_id, kind_id), (0, 0))
-                    # Fresh resumes launch in project-repo workspaces. Their
-                    # queued intents need seats too, before occupancy owns one.
-                    if kind_id == "project-repo":
-                        ready += resume_demand.get((project.id, profile_id), 0)
+                    # Fresh resumes launch in project-repo workspaces and need seats, not starts.
+                    resumes = 0 if kind_id != "project-repo" else resume_demand.get(
+                        (project.id, profile_id), 0)
+                    ready += resumes
                     measurement.demand[key] += ready
                     local = PoolProjectSupply(running_busy=(
                         reserved.get((project.id, profile_id), 0) if kind_id == "project-repo" else 0
@@ -454,7 +454,7 @@ class PoolsMixin:
                                    if kind_id == "project-repo" else 0,
                         idle_session_ids=tuple(local.idle_session_ids),
                         starting=local.starting, repair_ready=repair_ready,
-                        evictable=local.evictable,
+                        evictable=local.evictable, resume_ready=resumes,
                     ))
 
         for key, sup in measurement.supply.items():
@@ -580,6 +580,10 @@ class PoolsMixin:
                          and (c.project_cap is None or c.project_live_total < c.project_cap))
                 for key, candidates in measurement.candidates.items()
             },
+            resume_demand={
+                key: sum(c.resume_ready for c in candidates)
+                for key, candidates in measurement.candidates.items()
+            },
         )
 
     async def _check_pool_progress(self) -> None:
@@ -606,7 +610,8 @@ class PoolsMixin:
             if start.reason != 'evict' and any(
                 candidate.project_id == start.project_id
                 and candidate.workspace_kind == start.workspace_kind
-                and candidate.ready > len(candidate.idle_session_ids) + candidate.starting
+                and candidate.ready - candidate.resume_ready
+                > len(candidate.idle_session_ids) + candidate.starting
                 for candidate in measurement.candidates[start.key]
             )
         }

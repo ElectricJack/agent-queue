@@ -255,6 +255,34 @@ One fast-high-claude test child that depends on all batches.
 - It also runs a Bazel query proof that `rdeps` of each scenario's changed files equals the static
   selection.
 
+## Child tasks
+
+| Child | Task | Depends on |
+|---|---|---|
+| S: shared mechanism | `bold-rapids-90.1` | — |
+| B01: integration trains | `bold-rapids-90.2` | `bold-rapids-90.1` |
+| B02: integration promotion and ownership | `bold-rapids-90.3` | `bold-rapids-90.1` |
+| B03: git, GitHub and delivery | `bold-rapids-90.4` | `bold-rapids-90.1` |
+| B04: migrations | `bold-rapids-90.5` | `bold-rapids-90.1` |
+| B05: database, claims and pools | `bold-rapids-90.6` | `bold-rapids-90.1` |
+| B06: playbook engine and authoring | `bold-rapids-90.7` | `bold-rapids-90.1` |
+| B07: shipped playbooks, profiles and classes | `bold-rapids-90.8` | `bold-rapids-90.1` |
+| B08: knowledge, memory and vault | `bold-rapids-90.9` | `bold-rapids-90.1` |
+| B09: task lifecycle and routing | `bold-rapids-90.10` | `bold-rapids-90.1` |
+| B10: task graph, formulas and layout | `bold-rapids-90.11` | `bold-rapids-90.1` |
+| B11: reviews, asks, escalations and digest | `bold-rapids-90.12` | `bold-rapids-90.1` |
+| B12: messages, Discord and events | `bold-rapids-90.13` | `bold-rapids-90.1` |
+| B13: sessions, tmux and transcripts | `bold-rapids-90.14` | `bold-rapids-90.1` |
+| B14: agent waits, roster and workspaces | `bold-rapids-90.15` | `bold-rapids-90.1` |
+| B15: providers, LLM client, metrics and orchestrator | `bold-rapids-90.16` | `bold-rapids-90.1` |
+| B16: CLI, command dispatch, API and MCP tools | `bold-rapids-90.17` | `bold-rapids-90.1` |
+| B17: config, install, doctor and projects | `bold-rapids-90.18` | `bold-rapids-90.1` |
+| B18: dashboard, plugins, selection, Bazel, docs guards and e2e | `bold-rapids-90.19` | `bold-rapids-90.1` |
+| E: verification | `bold-rapids-90.20` | every batch (`.2`–`.19`) |
+
+Worker tokens cannot add dependency edges (`out_of_scope: add_dependency`), so the
+supervisor was asked to add the 36 blocks edges in the table. Batches have no edges between them.
+
 ## Broad modules (kept conservative, with reason)
 
 - e2e: `test_e2e_cli_stateful`, `test_e2e_kit_fixtures`, `test_e2e_probe`.
