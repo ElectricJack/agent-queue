@@ -1,4 +1,10 @@
 {
+  "approval": {
+    "approved_by": "supervisor-global (session 8baaf8db), relayed by supervisor-agent-queue",
+    "authority": "size-cap-delegation-2026-10-23",
+    "decision_message_id": "msg-61dbbae9c12e4a60954ebd61892bd9b6",
+    "remaining_headroom": 0
+  },
   "base_revision": "b7fc79d107710a46d5bbf16af02cd3de19d0404e",
   "charged_files": {
     "src/wait_runtime/resume.py": 19
