@@ -2,7 +2,15 @@
 
 The listener must renew during its initial drain and run independently of maintenance.
 It queues briefly for the graph fence before releasing its connection on contention.
-Each source transaction has a five second work budget. A timed out transaction rolls
+Each background source transaction starts with a five second work budget, including
+sequential fresh observations for all subscribers. Budget exhaustion adds bounded
+headroom for database and preparation contention (up to three times the base, never
+more than half the listener lease); successful progress reduces that headroom. Graph
+acquisition retains its short independent timeout, and fenced source work keeps the
+base five-second allowance even when unlocked preparation has headroom. A supervisor
+re-dispatch instead has a thirty second unlocked preparation budget, then a separate
+five second budget for graph acquisition and fenced application. Each individual
+remote observation retains its own timeout. A timed out transaction rolls
 back completely; a separate leased cursor CAS may advance past that event, leaving
 its undispatched row as durable retry ownership. Later events may proceed. Cancellation
 and lease loss never authorize this advance. Retry passes are bounded and back off.
@@ -30,7 +38,7 @@ Contiguous pool/config/workspace invalidations with the same producer and projec
 scope may also reobserve once. Provider transitions and other event kinds remain
 individual because they carry lifecycle effects.
 
-Pool invalidations for the same pool and project scope also coalesce through the
+Pool invalidations across profile identities in the same project scope coalesce through the
 captured committed watermark across interleaved sources and retained retries.
 Reobserve the newest hint once and stamp superseded hints in the same fenced
 transaction. Preserve any contiguous hints already selected for that observation.
@@ -38,6 +46,10 @@ Lookahead never advances the forward cursor past unrelated events; later crossin
 of stamped pool hints retire without another observation. Different project scopes
 and provider lifecycle events retain their own dispatch. A failed transaction
 retains the entire pool batch for retry, with no satisfaction inferred from a hint.
+Each batch stamps a bounded window; every profile hint reobserves the same typed
+resource predicates, so different profile identities do not require separate
+observations. Retained cleanup also plans its bounded event window outside the
+graph fence and rechecks only those subscriptions inside it.
 
 After an authenticated CI observation reports an unfinished run, further explicit
 progress hints for that source share the listener's safety cadence. Keep only the
@@ -101,16 +113,31 @@ against current subscriptions. Preparation never authorizes an outcome itself.
 supervisor or local operator reobserve one persisted source through normal dispatch.
 The command requires a project, fences the leader lease, preserves the forward cursor,
 filters wait and lifecycle effects to that project, and records an audit event. It
-never trusts caller-supplied evidence. After validating project and source scope,
+never trusts caller-supplied evidence. Fresh observation preparation includes
+every matching verified subscriber in that
+project, including service-owned integration waits as well as task-owned waits.
+After validating project and source scope,
 an already dispatched source returns success with outcome `already_dispatched` and
 its `dispatched_at` timestamp, without acquiring the listener lock or lease,
 preparing observations, dispatching, retiring history or writing an audit event.
 Recheck dispatch state after acquiring the listener lock. For pending sources, a
+supervisor waits up to sixty seconds for the listener lock, independently of its
+thirty second preparation and five second fenced application budgets. Lock contention
+cannot consume the preparation/application allowance. Every timeout releases ownership
+and reports the budget for the phase that expired. A
 work-budget refusal includes the source sequence, phase, budget and elapsed seconds,
 and dispatch attempt count; an observation's own timeout is reported separately.
-Missing sources,
+Background dispatch deferrals likewise log the phase, failure reason and elapsed
+attempt time, including failures before acquiring the graph fence. Missing sources,
 contention and absent leadership return a refusal; no wake is fabricated.
-For a CI, pool, config or workspace source, the command also retires retained events
+Manual recovery queues for the listener lock for at most one lease interval, then
+starts its separate adaptive dispatch budget; a busy drain does not consume the
+observation allowance. For a pool source, this command is also the supervisor
+backlog-drain control: it retires unused pool hints across profile identities in
+the selected event's project scope through the requested sequence. It discovers
+that bounded window outside the graph fence and revalidates all subscribers
+under it, preserving foreign subscribers, provider transitions and the cursor.
+For a CI, config or workspace source, the command also retires retained events
 of that source/generation through the requested sequence when no pending verified
 subscriber anywhere needs each event. It reports and audits the number retired. A project-scoped recovery
 must preserve any event still needed by another project's subscriber. Retirement
