@@ -106,6 +106,7 @@ def db_current() -> None:
 def db_upgrade(yes: bool) -> None:
     """Run Alembic migrations against the configured database (operator only)."""
     from src.database.migration_guard import (
+        GLOBAL_SUPERVISOR,
         OPERATOR,
         WORKER,
         current_scope,
@@ -113,10 +114,10 @@ def db_upgrade(yes: bool) -> None:
         production_database_url,
     )
 
-    if current_scope() == WORKER:
+    if current_scope() in {WORKER, GLOBAL_SUPERVISOR}:
         console.print(
-            "[red]Refused:[/] this is a worker session (AQ_DB_SCOPE=worker). Worker "
-            "sessions must never migrate the production database — ask the operator to "
+            "[red]Refused:[/] worker and supervisor sessions must never migrate the "
+            "production database directly — ask the operator to "
             "run `aq db upgrade` outside a worktree slot."
         )
         raise SystemExit(2)
@@ -161,7 +162,14 @@ def _backup_destination(prefix: str) -> Path:
 @click.argument("destination", required=False, type=click.Path(dir_okay=False, path_type=Path))
 def db_backup(destination: Path | None) -> None:
     """Back up the configured database as one private pg_dump custom archive."""
-    _require_operator()
+    from src.database.migration_guard import GLOBAL_SUPERVISOR, current_scope
+
+    if current_scope() == GLOBAL_SUPERVISOR:
+        from .update import _authorize_supervisor_maintenance
+
+        _authorize_supervisor_maintenance("db.backup")
+    else:
+        _require_operator()
 
     async def _main() -> None:
         from src.database.backup import backup_database, postgres_clients

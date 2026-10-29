@@ -362,6 +362,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`list_workspace_kinds`](list_workspace_kinds.md) | List Workspace Kinds | List workspace kinds visible to a project (system + project overrides). |
 | [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status, owner identity and bounded diagnostics. |
 | [`load_tools`](load_tools.md) | Load Tools | Load tools by category or individual name. |
+| [`maintenance_preflight`](maintenance_preflight.md) | Maintenance Preflight | Authenticate and audit bounded maintenance before the CLI stops AQ. |
 | [`merge_branch`](merge_branch.md) | Merge Branch | Execute the merge_branch command. |
 | [`message_inbox`](message_inbox.md) | Message Inbox | List unread, unarchived mail; inject claims only undelivered messages. |
 | [`message_list`](message_list.md) | Message List | List messages with project/thread/recipient filters. |

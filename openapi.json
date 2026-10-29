@@ -17649,6 +17649,53 @@
         }
       }
     },
+    "/api/system/maintenance-preflight": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Authenticate and audit global supervisor update or database backup with a live session inventory.",
+        "description": "Authenticate and audit global supervisor update or database backup with a live session inventory.",
+        "operationId": "maintenance_preflight",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenancePreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenancePreflightResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/operational-retention": {
       "post": {
         "tags": [
@@ -54492,6 +54539,104 @@
         "type": "object",
         "title": "MachineMetrics",
         "description": "Nulls mean the platform does not expose the value, not zero."
+      },
+      "MaintenancePreflightRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "MaintenancePreflightRequest"
+      },
+      "MaintenancePreflightResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "audit_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Id"
+          },
+          "sessions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MaintenanceSession"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessions"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "MaintenancePreflightResponse",
+        "description": "Admission after authenticating, inventorying sessions, and recording an audit."
+      },
+      "MaintenanceSession": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "lifecycle"
+        ],
+        "title": "MaintenanceSession"
       },
       "ManualCheck": {
         "properties": {

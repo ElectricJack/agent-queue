@@ -729,3 +729,88 @@ async def test_backup_and_restore_clients_share_update_timeout(monkeypatch):
     for tool in ("pg_dump", "pg_restore", "psql"):
         await clients.run(tool, "--version")
     assert observed == [BACKUP_TIMEOUT] * 3
+
+
+@pytest.mark.parametrize("scope", ["worker", "global-supervisor"])
+def test_session_upgrade_and_restore_remain_refused(monkeypatch, tmp_path, scope):
+    monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: scope)
+    monkeypatch.setenv("AQ_API_TOKEN", "fixture-bearer")
+    monkeypatch.setattr(db_cli, "_load_config", lambda: pytest.fail("must refuse first"))
+    dump = tmp_path / "fixture.dump"
+    dump.write_bytes(b"PGDMP")
+    runner = CliRunner()
+    assert runner.invoke(cli, ["db", "upgrade", "--yes"]).exit_code == 2
+    assert "restore_operator_only" in runner.invoke(cli, ["db", "restore", str(dump)]).output
+
+
+def test_supervisor_backup_requires_authenticated_audit(preflight, monkeypatch, tmp_path):
+    from src.cli.client import CLIClient
+
+    monkeypatch.setattr("src.database.migration_guard.current_scope", lambda: "global-supervisor")
+    monkeypatch.setenv("AQ_DB_SCOPE", "global-supervisor")
+    monkeypatch.setenv("AQ_API_TOKEN", "fixture-bearer")
+    authorize = AsyncMock(return_value={"success": True, "audit_id": 47, "sessions": []})
+    monkeypatch.setattr(CLIClient, "connect", AsyncMock())
+    monkeypatch.setattr(CLIClient, "execute", authorize)
+    destination = tmp_path / "backup.dump"
+
+    async def write_backup(clients, path):
+        path.write_bytes(b"PGDMPfixture")
+        return preflight[1]
+
+    monkeypatch.setattr(backup, "backup_database", AsyncMock(side_effect=write_backup))
+    result = CliRunner().invoke(cli, ["db", "backup", str(destination)])
+    assert result.exit_code == 0, result.output
+    authorize.assert_awaited_once_with("maintenance_preflight", {"action": "db.backup"})
+    authorize.return_value = {"success": False}
+    backup.backup_database.reset_mock()
+    result = CliRunner().invoke(cli, ["db", "backup", str(destination)])
+    assert result.exit_code != 0
+    backup.backup_database.assert_not_awaited()
+
+
+@pytest.mark.parametrize("case", ["global", "worker", "project", "stale", "stopped", "audit"])
+async def test_maintenance_preflight_requires_live_global_identity_and_audit(case):
+    import json
+    from dataclasses import replace
+    from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, principal_context
+    from src.commands.system_commands import SystemCommandsMixin
+
+    row = SimpleNamespace(id="supervisor", project_id=None, profile_id="supervisor",
+                          lifecycle="named", state="running", desired_state="running",
+                          instance_token="launch")
+    principal = replace(TRUSTED_LOCAL, kind=PrincipalKind.SESSION, session_id=row.id,
+                        session_instance_token="launch", elevated=True)
+    if case == "worker":
+        principal = replace(principal, elevated=False)
+    elif case == "project":
+        principal = replace(principal, project_id="project")
+        row.project_id = "project"
+    elif case == "stale":
+        principal = replace(principal, session_instance_token="replaced")
+    elif case == "stopped":
+        row.state = "stopped"
+    db = SimpleNamespace(get_session=AsyncMock(return_value=row),
+                         list_sessions=AsyncMock(return_value=[row]),
+                         log_event=AsyncMock(return_value=0 if case == "audit" else 47))
+    handler = SystemCommandsMixin()
+    handler.db = db
+    with principal_context(principal):
+        result = await handler._cmd_maintenance_preflight({"action": "update"})
+    assert result["success"] is (case == "global")
+    if case == "global":
+        payload = json.loads(db.log_event.call_args.kwargs["payload"])
+        assert payload["actor"] == "supervisor session:supervisor"
+        assert payload["sessions"] == [{"id": row.id, "state": "running", "lifecycle": "named"}]
+    elif case != "audit":
+        db.list_sessions.assert_not_awaited()
+        db.log_event.assert_not_awaited()
+
+
+def test_global_supervisor_scope_never_migrates_production(monkeypatch):
+    from src.database.migration_guard import current_scope, migration_decision
+
+    monkeypatch.setenv("AQ_DB_SCOPE", "global-supervisor")
+    monkeypatch.setattr("src.database.migration_guard.is_production_database", lambda url: True)
+    assert current_scope() == "global-supervisor"
+    assert migration_decision("postgresql://fixture") == "verify"
