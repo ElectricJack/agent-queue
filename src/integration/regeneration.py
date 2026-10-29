@@ -26,6 +26,10 @@ from pathlib import Path
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.bookkeeping_guard import LegacyBookkeepingConflict, check_merge
 from src.integration.development import GENERATED_MERGE_DRIVER
+from src.integration.regeneration_settings import (
+    REGENERATION_TIMEOUT_SECONDS as REGENERATION_TIMEOUT_SECONDS,
+    regeneration_timeout_seconds,
+)
 from src.sessions.env import SCRATCH_DB_SENTINEL
 
 logger = logging.getLogger(__name__)
@@ -34,10 +38,6 @@ logger = logging.getLogger(__name__)
 #: legacy candidate, promotion and train defaults. A repository may configure
 #: another one; a merge never runs an empty command.
 DEFAULT_REGENERATE_COMMAND = "scripts/regenerate-generated.sh"
-
-#: Default timeout (seconds) applied to the regenerator subprocess. It is the
-#: budget on an idle box; :func:`load_scaled_timeout` stretches it under load.
-REGENERATION_TIMEOUT_SECONDS = 600
 
 #: Regenerator commands one daemon runs at once. Concurrent closes and train
 #: visits queue for a slot instead of starving each other's budgets, and the
@@ -85,6 +85,10 @@ class RegenerationPending(RuntimeError):
             "it continues detached and the same call rejoins it"
         )
         super().__init__(self.reason)
+
+
+class _RegenerationTimeout(RegenerationFailure):
+    """A killed subprocess whose detached scratch tree can be retried."""
 
 
 class GeneratedMergeConflict(RuntimeError):
@@ -337,6 +341,7 @@ class _Scheduler:
     )
     flights: dict[tuple, _Flight] = field(default_factory=dict)
     retained: OrderedDict = field(default_factory=OrderedDict)
+    scratch: OrderedDict = field(default_factory=OrderedDict)
 
     def settle(self, key: tuple, flight: _Flight) -> None:
         self.flights.pop(key, None)
@@ -383,9 +388,10 @@ async def regenerated_tree(
     failure raises :class:`RegenerationFailure` so the caller falls back to
     its existing conflict handling.
 
-    The scratch worktree is always removed (and its registration pruned),
-    including on failure.  Objects written during the sweep stay in the bare
-    store's object database, which is harmless unreachable object space.
+    Scratch worktrees are removed after success or terminal failure. A detached
+    subprocess timeout retains its tree for an identical retry, including partial
+    generated output and ignored caches. Retention is bounded per event loop by
+    :data:`REGENERATION_RETAINED_OUTCOMES`; evicted worktrees are removed.
 
     ``restore_only`` returns the tree after restoring the specified generated
     conflicts. It leaves the command for the batch's final combined sweep.
@@ -411,7 +417,7 @@ async def regenerated_tree(
         if retained is not None:
             return retained
         flight = scheduler.flights[key] = _Flight()
-        flight.task = asyncio.create_task(_slotted_run(scheduler, flight, args))
+        flight.task = asyncio.create_task(_slotted_run(scheduler, key, flight, args))
         flight.task.add_done_callback(lambda _task, f=flight: scheduler.settle(key, f))
     wait_seconds = _WAIT_SECONDS.get()
     try:
@@ -442,27 +448,44 @@ async def _retained_outcome(git, store, scheduler, key):
     return tree
 
 
-async def _slotted_run(scheduler: _Scheduler, flight: _Flight, args: tuple) -> str:
+async def _slotted_run(scheduler: _Scheduler, key: tuple, flight: _Flight, args: tuple) -> str:
     async with scheduler.gate:
         flight.state = "running"
-        return await _scratch_run(*args)
+        return await _scratch_run(*args, scheduler=scheduler, key=key, flight=flight)
 
 
 async def _scratch_run(
     git, store, merge_tree_sha, command, timeout_seconds, restore_from,
     restore_paths, restore_only, verified_merges,
+    *, scheduler=None, key=None, flight=None,
 ) -> str:
-    worktree = Path(tempfile.mkdtemp(prefix="aq-regen-", dir=str(store.parent)))
+    retained = scheduler.scratch.pop(key, None) if scheduler is not None else None
+    worktree = retained[2] if retained else Path(
+        tempfile.mkdtemp(prefix="aq-regen-", dir=str(store.parent))
+    )
+    keep = False
     try:
         return await _run(
             git, store, worktree, merge_tree_sha, command,
-            timeout_seconds if restore_only else load_scaled_timeout(timeout_seconds),
+            timeout_seconds if restore_only else load_scaled_timeout(
+                regeneration_timeout_seconds(timeout_seconds)
+            ),
             restore_from, restore_paths,
             restore_only,
             verified_merges,
+            initialized=retained is not None,
         )
+    except _RegenerationTimeout:
+        if flight is not None and flight.detached:
+            scheduler.scratch[key] = (git, store, worktree)
+            keep = True
+            while len(scheduler.scratch) > REGENERATION_RETAINED_OUTCOMES:
+                _, (old_git, old_store, old_worktree) = scheduler.scratch.popitem(last=False)
+                await _remove_worktree(old_git, old_store, old_worktree)
+        raise
     finally:
-        await _remove_worktree(git, store, worktree)
+        if not keep:
+            await _remove_worktree(git, store, worktree)
 
 
 async def _run(
@@ -476,18 +499,20 @@ async def _run(
     restore_paths: tuple[str, ...],
     restore_only: bool,
     verified_merges: tuple[tuple[str, str, str], ...],
+    *, initialized: bool = False,
 ) -> str:
     # ``git worktree add`` needs a commit, not a tree SHA; wrap the merge tree
     # in a placeholder commit first.
-    placeholder = (
-        await git.arun_git_result(
-            ["commit-tree", merge_tree_sha, "-m", "regeneration placeholder"],
-            cwd=str(store),
-        )
-    ).stdout.strip()
-    await git.aworktree_add(str(store), str(worktree), ref=placeholder)
+    if not initialized:
+        placeholder = (
+            await git.arun_git_result(
+                ["commit-tree", merge_tree_sha, "-m", "regeneration placeholder"],
+                cwd=str(store),
+            )
+        ).stdout.strip()
+        await git.aworktree_add(str(store), str(worktree), ref=placeholder)
 
-    if restore_paths:
+    if restore_paths and not initialized:
         # A generated file may be new on the other side or deleted on ours.
         # Remove merged versions first, then restore only paths our tree has.
         await _checked(
@@ -532,7 +557,8 @@ async def _run(
         output, _ = await asyncio.wait_for(process.communicate(), timeout_seconds)
     except TimeoutError as exc:
         _kill_process_group(process)
-        raise RegenerationFailure(
+        await process.communicate()
+        raise _RegenerationTimeout(
             f"`{command}` timed out after {timeout_seconds:g}s", retryable=True
         ) from exc
     except asyncio.CancelledError:

@@ -99,7 +99,7 @@ Options:
 | `--timeout-seconds` | Seconds each command may *run*. Default 300, maximum 3600. Time queued for a test slot is not counted. |
 | `--slot-wait-seconds` | Seconds a command may queue for a test slot (via `aq test`) before the batch is deferred to the next tick — never parked, never repaired. Default 600, maximum 3600. |
 | `--regenerate` | Command that rebuilds the repository's generated files — the paths its `.gitattributes` marks `merge=aq-generated` — for example `scripts/regenerate-generated.sh`. Run without a shell in AQ's clone after a merge in which both sides changed a generated file; see [Conflicts confined to generated files](#conflicts-confined-to-generated-files). Unset by default. |
-| `--regenerate-timeout-seconds` | Seconds one regeneration may run before that merge counts as failed. Default 600, maximum 3600. |
+| `--regenerate-timeout-seconds` | Seconds one regeneration may run before that merge counts as failed. Default 1800, maximum 3600. The daemon environment override `AQ_REGENERATION_TIMEOUT_SECONDS` takes precedence; load scaling applies afterward. |
 | `--reason` | Required, and kept in the journal. |
 
 Supported commands are `aq test …`, `pytest …`, `python[3] -m pytest …`,

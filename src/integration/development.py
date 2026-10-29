@@ -41,6 +41,7 @@ from src.integration.delivery_truth import (
     delivery_snapshot,
     load_delivery_requests,
 )
+from src.integration.regeneration_settings import REGENERATION_TIMEOUT_SECONDS
 from src.integration.publishable_artifact import (
     EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY,
 )
@@ -205,7 +206,7 @@ class DevelopmentPolicy(BaseModel):
     #: in those files parks its source like any other conflict.
     regenerate: str | None = None
     #: Seconds one regeneration may run before the merge counts as failed.
-    regenerate_timeout_seconds: int = Field(default=600, gt=0, le=3600)
+    regenerate_timeout_seconds: int = Field(default=REGENERATION_TIMEOUT_SECONDS, gt=0, le=3600)
 
     def checked(self):
         if self.validation not in {"focused", "advisory", "none"}:

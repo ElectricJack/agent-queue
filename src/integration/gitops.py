@@ -34,6 +34,7 @@ from src.integration.regeneration import (
     merge_generated_tree,
     regenerated_tree,
 )
+from src.integration.regeneration_settings import REGENERATION_TIMEOUT_SECONDS
 from src.integration.source_trailer import source_identity, with_source_trailers
 from src.integration.source_ancestry import effective_source_base
 from src.integration.runtime_contracts import (
@@ -65,7 +66,7 @@ class RetainedRepository:
     #: ``None`` is a deliberate configuration gap the merge reports as
     #: ``no_regenerator``; it never becomes an empty command.
     regenerate: str | None = DEFAULT_REGENERATE_COMMAND
-    regenerate_timeout_seconds: int = 600
+    regenerate_timeout_seconds: int = REGENERATION_TIMEOUT_SECONDS
 
 
 class SubjectGitAuthority:

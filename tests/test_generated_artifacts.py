@@ -969,6 +969,145 @@ def test_regeneration_budget_scales_with_load_per_cpu():
     assert load_scaled_timeout(600, load=30, cpus=1) == 600 * REGENERATION_LOAD_SCALE_MAX
 
 
+@pytest.mark.parametrize("override,expected", [
+    (None, 127), ("2400", 2400), ("1", 1), ("", 127), ("0", 127),
+    ("-1", 127), ("nan", 127), ("inf", 127), ("2.5", 127),
+])
+def test_regeneration_timeout_override(override, expected, monkeypatch, caplog):
+    from src.integration.regeneration_settings import regeneration_timeout_seconds
+
+    if override is None:
+        monkeypatch.delenv("AQ_REGENERATION_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("AQ_REGENERATION_TIMEOUT_SECONDS", override)
+    assert regeneration_timeout_seconds(127) == expected
+    assert bool(caplog.records) == (override is not None and expected == 127)
+
+
+async def test_regeneration_defaults_and_override_reach_subprocess(tmp_path, monkeypatch):
+    from src.integration import regeneration
+    from src.integration.development import DevelopmentPolicy
+    from src.integration.gitops import RetainedRepository
+
+    assert regeneration.REGENERATION_TIMEOUT_SECONDS == 1800
+    assert DevelopmentPolicy().regenerate_timeout_seconds == 1800
+    assert RetainedRepository.__dataclass_fields__["regenerate_timeout_seconds"].default == 1800
+    monkeypatch.setenv("AQ_REGENERATION_TIMEOUT_SECONDS", "2400")
+    monkeypatch.setattr(regeneration.os, "getloadavg", lambda: (48, 48, 48))
+    monkeypatch.setattr(regeneration.os, "cpu_count", lambda: 24)
+    run = regeneration._run
+    budgets = []
+
+    async def record_budget(git, store, worktree, tree, command, timeout, *args, **kwargs):
+        budgets.append(timeout)
+        return await run(git, store, worktree, tree, command, timeout, *args, **kwargs)
+
+    monkeypatch.setattr(regeneration, "_run", record_budget)
+    repo, _, (tree,), command = _scheduled_trees(tmp_path, 1)
+    # Both entry points, including an explicitly pinned repository budget,
+    # receive the override before load scaling.
+    await regeneration.regenerated_tree(GitManager(), repo, tree, command=command)
+    merged_path = tmp_path / "merged"
+    merged_path.mkdir()
+    repo, base, current, other = _catalogue_branches(merged_path)
+    await regeneration.merge_generated_tree(
+        GitManager(), repo,
+        [*GENERATED_MERGE_CONFIG, "merge-tree", "--write-tree",
+         f"--merge-base={base}", current, other],
+        timeout_seconds=127,
+    )
+    assert budgets == [4800, 4800]
+
+
+@pytest.mark.parametrize("outcome", ["success", "source", "exit"])
+async def test_detached_timeout_reuses_partial_output_and_cache(tmp_path, monkeypatch, outcome):
+    import asyncio
+
+    from src.integration import regeneration
+
+    monkeypatch.setattr(regeneration, "load_scaled_timeout", lambda seconds: seconds)
+    monkeypatch.delenv("AQ_REGENERATION_TIMEOUT_SECONDS", raising=False)
+    repo, _, (tree,), _ = _scheduled_trees(tmp_path, 1)
+    (repo / ".gitignore").write_text(".cache/\n")
+    (repo / "gen.txt").write_text("original")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "initial generated output and cache policy")
+    tree = _git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    script = tmp_path / "resume.py"
+    script.write_text(
+        "from pathlib import Path\nimport time\n"
+        "cache = Path('.cache/progress')\n"
+        "if not cache.exists():\n"
+        "    cache.parent.mkdir()\n"
+        "    cache.write_text('cached')\n"
+        "    Path('gen.txt').write_text('partial')\n"
+        + ("    Path('input.txt').write_text('unsafe source change')\n"
+           if outcome == "source" else "")
+        + "    time.sleep(30)\n"
+        "assert cache.read_text() == 'cached'\n"
+        "assert Path('gen.txt').read_text() == 'partial'\n"
+        + ("raise SystemExit(1)\n" if outcome == "exit" else
+           "Path('gen.txt').write_text('finished')\n")
+    )
+    args = dict(command=shlex.join([sys.executable, str(script)]), timeout_seconds=1,
+                restore_from=head, restore_paths=("gen.txt",))
+    with regeneration.regeneration_wait(0), pytest.raises(regeneration.RegenerationPending):
+        await regeneration.regenerated_tree(GitManager(), repo, tree, **args)
+    scheduler = regeneration._scheduler()
+    task = next(iter(scheduler.flights.values())).task
+    with pytest.raises(regeneration.RegenerationFailure, match="timed out"):
+        await task
+    await asyncio.sleep(0)  # Settle the detached flight's retained failure.
+    scratch, = tmp_path.glob("aq-regen-*")
+    assert (scratch / "gen.txt").read_text() == "partial"
+    with pytest.raises(regeneration.RegenerationFailure, match="timed out"):
+        await regeneration.regenerated_tree(GitManager(), repo, tree, **args)
+    if outcome == "success":
+        rebuilt = await regeneration.regenerated_tree(GitManager(), repo, tree, **args)
+        assert _git(repo, "show", f"{rebuilt}:gen.txt").stdout == "finished"
+    else:
+        reason = "non-generated path changed" if outcome == "source" else "exited 1"
+        with pytest.raises(regeneration.RegenerationFailure, match=reason):
+            await regeneration.regenerated_tree(GitManager(), repo, tree, **args)
+    assert not list(tmp_path.glob("aq-regen-*"))
+    assert not scheduler.scratch
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
+async def test_detached_timeout_cache_is_bounded_and_isolates_source_trees(tmp_path, monkeypatch):
+    import asyncio
+
+    from src.integration import regeneration
+
+    monkeypatch.setattr(regeneration, "load_scaled_timeout", lambda seconds: seconds)
+    monkeypatch.setattr(regeneration, "REGENERATION_RETAINED_OUTCOMES", 1)
+    monkeypatch.delenv("AQ_REGENERATION_TIMEOUT_SECONDS", raising=False)
+    repo, _, trees, command = _scheduled_trees(tmp_path, 2, sleep=0.3)
+    scheduler = regeneration._scheduler()
+    previous = None
+    for index, tree in enumerate(trees):
+        with regeneration.regeneration_wait(0), pytest.raises(regeneration.RegenerationPending):
+            await regeneration.regenerated_tree(
+                GitManager(), repo, tree, command=command, timeout_seconds=0.1,
+            )
+        task = next(iter(scheduler.flights.values())).task
+        with pytest.raises(regeneration.RegenerationFailure, match="timed out"):
+            await task
+        await asyncio.sleep(0)
+        scratch, = tmp_path.glob("aq-regen-*")
+        assert (scratch / "input.txt").read_text() == f"source {index}"
+        if previous is not None:
+            assert scratch != previous and not previous.exists()
+        previous = scratch
+        assert len(scheduler.scratch) == 1
+    with pytest.raises(regeneration.RegenerationFailure, match="timed out"):
+        await regeneration.regenerated_tree(GitManager(), repo, trees[1], command=command)
+    await regeneration.regenerated_tree(GitManager(), repo, trees[1], command=command)
+    assert not list(tmp_path.glob("aq-regen-*"))
+    assert not scheduler.scratch
+
+
 async def test_identical_concurrent_regenerations_share_one_run(tmp_path):
     import asyncio
 
