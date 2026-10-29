@@ -68,6 +68,14 @@ def module_source(root: Path, lock: dict) -> str:
     for name in ("python", "node", "typescript"):
         for key, value in lock[name].items():
             values[f"{name}_{key}"] = value
+    # pip's explicit --platform list does not expand PEP 600 compatibility.
+    # Use the test sysroot, never the fetch host's (possibly newer) glibc.
+    minor = int(lock["pip"]["python_platform"].removeprefix("x86_64-manylinux_2_"))
+    platforms = [f"manylinux_2_{version}_x86_64" for version in range(minor, 4, -1)]
+    platforms += [f"manylinux{year}_x86_64" for year in (2014, 2010, 1)]
+    values["pip_platform_args"] = "\n".join(
+        f'        "--platform={platform}",' for platform in platforms
+    )
     return Template((root / "tools/bazel/MODULE.bazel.template").read_text()).substitute(values)
 
 
@@ -132,6 +140,8 @@ def validate(root: Path) -> dict:
             or not sysroot.get("reason")
             or not {"sysroot_linux-64", "kernel-headers_linux-64"} <= names):
         raise ValueError("native runtime requires the declared locked glibc sysroot")
+    if lock["pip"]["python_platform"] != "x86_64-manylinux_" + sysroot["glibc"].replace(".", "_"):
+        raise ValueError("Python resolver platform must match the locked glibc sysroot")
     return lock
 
 

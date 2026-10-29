@@ -24,6 +24,29 @@ _spec.loader.exec_module(lock_tool)
 
 def test_committed_dependency_intent_and_lock():
     lock_tool.validate(ROOT)
+    from packaging.tags import compatible_tags, cpython_tags
+
+    module = ast.parse((ROOT / "MODULE.bazel").read_text())
+    parse = next(
+        node for node in ast.walk(module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "pip"
+        and node.func.attr == "parse"
+    )
+    args = {kw.arg: ast.literal_eval(kw.value) for kw in parse.keywords}
+    assert args["download_only"] is True  # pip wheel does not accept --platform.
+    assert {"--require-hashes", "--only-binary=:all:"} <= set(args["extra_pip_args"])
+    platforms = [arg.removeprefix("--platform=") for arg in args["extra_pip_args"]
+                 if arg.startswith("--platform=")]
+    tags = {str(tag) for tag in cpython_tags((3, 12), platforms=platforms)}
+    tags.update(str(tag) for tag in compatible_tags((3, 12), platforms=platforms))
+    # The failed cryptography wheel uses cp311-abi3-manylinux_2_34_x86_64.
+    assert "cp311-abi3-manylinux_2_34_x86_64" not in tags
+    assert "cp311-abi3-manylinux_2_28_x86_64" in tags
+    assert "cp311-abi3-manylinux_2_17_x86_64" in tags
+    assert "cp312-cp312-manylinux2014_x86_64" in tags
+    assert "py3-none-any" in tags
+    assert "cp312-cp312-linux_x86_64" not in tags
 
 
 @pytest.mark.parametrize(
@@ -91,6 +114,14 @@ def test_module_pin_drift_refused(tmp_path):
     module = tmp_path / "MODULE.bazel"
     module.write_text(module.read_text().replace('version = "1.8.2"', 'version = "0.0.0"'))
     with pytest.raises(ValueError, match="MODULE.bazel drift"):
+        lock_tool.validate(tmp_path)
+
+    path = tmp_path / lock_tool.LOCK_PATH
+    lock = json.loads(path.read_text())
+    lock["pip"]["python_platform"] = "x86_64-manylinux_2_34"
+    path.write_text(json.dumps(lock))
+    (tmp_path / "MODULE.bazel").write_text(lock_tool.module_source(tmp_path, lock))
+    with pytest.raises(ValueError, match="resolver platform must match"):
         lock_tool.validate(tmp_path)
 
 

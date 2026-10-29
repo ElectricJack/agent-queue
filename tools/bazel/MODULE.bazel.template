@@ -24,7 +24,13 @@ pip.parse(
     hub_name = "pypi",
     python_version = "${python_version}",
     requirements_lock = "//tools/bazel:requirements_linux_x86_64.txt",
-    extra_pip_args = ["--require-hashes", "--only-binary=:all:"],
+    # Fetch for H2's pinned sysroot, independently of the repository host ABI.
+    download_only = True,
+    extra_pip_args = [
+        "--require-hashes",
+        "--only-binary=:all:",
+${pip_platform_args}
+    ],
 )
 use_repo(pip, "pypi")
 
