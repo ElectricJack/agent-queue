@@ -7619,7 +7619,7 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:aeef4b38a8e350480e3e17fc5bbc978227754eeae797deee07a39c7524eaa558",
+      "digest": "sha256:6f76ae780549b3b393b4ce9dc4f8f039f65efe64361aba32079c753d4c131a2a",
       "imports": [
         "src.git.manager",
         "src.integration",
@@ -7633,7 +7633,8 @@
       ],
       "markers": [
         "parametrize",
-        "slow"
+        "slow",
+        "timeout"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
     },
@@ -8848,7 +8849,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:09a42b7ab6dafcfdb5d415063c914e614bc3aa15ae9a7e1f26cffc5d2a3d5b28",
+      "digest": "sha256:0ea81059e6592b701903b33bc532b1d9451e638791e498c7f076f5baebb4834a",
       "imports": [
         "src.commands",
         "src.config",
@@ -8870,6 +8871,7 @@
         "src.integration.repository_recovery",
         "src.integration.train",
         "src.integration.train_sources",
+        "src.integration.visit_carry",
         "src.models",
         "src.waits.sources"
       ],
@@ -10514,7 +10516,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:c9fdf038f75b1bb8873dc8d42fd384c53062557eec95d215f8cf64035827d33d",
+      "digest": "sha256:185f9cda47b8d508a80fd93364ec82f0055e10c3f7f1192bb3a6905297fc919b",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -10538,6 +10540,7 @@
         "src.integration.stall_alerts",
         "src.integration.train",
         "src.integration.train_sources",
+        "src.integration.visit_carry",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
