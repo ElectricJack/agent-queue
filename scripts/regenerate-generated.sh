@@ -43,6 +43,8 @@ GENERATED=(
     scripts/aq-client-boilerplate.sha256
     tools/bazel/test_suites.json
     tools/bazel/python_data.bzl
+    tests/BUILD.bazel
+    checks/BUILD.bazel
 )
 
 MODE=""
@@ -173,6 +175,21 @@ regenerate() {
             failed=1
         fi
     done
+    # The Bazel manifest and suite files hash test sources that the generators
+    # above may rewrite, so they run last.  The manifest retains its collection
+    # evidence: recollect only when a test or fixture changed since it was taken.
+    if [[ "$failed" == 0 ]]; then
+        local gen=scripts/bazel/generate_targets.py
+        if ! (cd "$root" && "$PYTHON" "$gen" >"$logs/bazel.log" 2>&1); then
+            if ! (cd "$root" \
+                && "$PYTHON" scripts/bazel/inventory.py collect --output "$logs/collection.json" \
+                && "$PYTHON" "$gen" --collection "$logs/collection.json") >"$logs/bazel.log" 2>&1; then
+                echo "Error: bazel target generation failed:" >&2
+                sed 's/^/  /' "$logs/bazel.log" >&2
+                failed=1
+            fi
+        fi
+    fi
     rm -rf "$logs"
     return "$failed"
 }

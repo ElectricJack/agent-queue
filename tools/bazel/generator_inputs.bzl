@@ -4170,6 +4170,7 @@ GENERATOR_INPUTS = [
     "src/integration/truth_reconciler.py",
     "src/integration/truth_retention.py",
     "src/integration/verifier_subject.py",
+    "src/integration/visit_carry.py",
     "src/integration/writers.py",
     "src/intelligence_classes/__init__.py",
     "src/intelligence_classes/editing.py",
