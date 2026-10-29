@@ -1261,9 +1261,10 @@ class TestOneShotOperatorCloseCommand:
         await self.live_writer(db)
         seen: list[TaskStatus] = []
 
-        async def pause_task(task_id):
+        async def pause_task(task_id, *, require_workspace_release):
             # Stand-in for Orchestrator.pause_task: PAUSED, writer stopped.
-            await db.pause_task(task_id)
+            assert require_workspace_release is True
+            await db.pause_task(task_id, require_workspace_release=require_workspace_release)
             seen.append(await status(db, task_id))
             async with db._engine.begin() as conn:
                 await conn.execute(
@@ -1298,7 +1299,8 @@ class TestOneShotOperatorCloseCommand:
     async def test_a_failed_pause_is_reported(self, db):
         await self.live_writer(db)
 
-        async def pause_task(task_id):
+        async def pause_task(task_id, *, require_workspace_release):
+            assert require_workspace_release is True
             raise ValueError("Cannot pause task in status IN_PROGRESS")
 
         result = await self.handler(db, pause_task=pause_task)._cmd_task_close(

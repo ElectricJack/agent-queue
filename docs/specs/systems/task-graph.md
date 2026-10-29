@@ -333,6 +333,11 @@ admission. The shared immutable, request-scoped `AdmissionView` in
 It observes completed prerequisites against fetched repository snapshots outside
 database locks and revalidates exact inputs before activation; missing evidence
 withholds affected tasks. Artifact-free prerequisites use the SQL fast path.
+Activation fences the selected candidate's route identity (profile, intelligence
+class, provider and route source), parent and repository inputs. An unrelated
+candidate's reroute or a refresh of router evidence that keeps the same identity
+does not invalidate that activation. Initial batch selection checks every
+candidate's identity; project policy, graph and prerequisite fences still apply.
 
 Prerequisite branch stacking is now the default unless project policy explicitly
 opts out (`src/integration/stacked_branches.py`). A dependent can prepare on a
@@ -433,6 +438,13 @@ For work no worker will close, the operator and supervisor have one-shot disposi
 `--no-change` (passing, `no-op`) and `--done` (passing, `shipped`). Each completes the
 task through its disposition-specific proof and hierarchy guards; the disposition
 itself performs no new source publication.
+Before an operator close creates a manual pause, it checks attached integration
+ownership in the same transaction. An owner that requires guarded handoff refuses
+the close without changing task status, claim epoch, or pause metadata. Explicit
+Pause still stops the writer and retains its resources when handoff is required.
+Pause, Resume and close report these safety fences as `task.pause_fence`, with
+`aq integration release-owner --task-id <id>` guidance for ownership refusals;
+the release command retains its stop and checkout proofs.
 See [superseded completion](../../guides/superseded-completion.md).
 
 #### 3.3.6 Containers settle themselves

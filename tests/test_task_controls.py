@@ -2222,7 +2222,9 @@ async def test_pause_retains_attached_owner_and_hold_after_checkpoint(env, tmp_p
             created_at=1, updated_at=1,
         ))
     result = await command(env, "pause_task")
+    assert result["code"] == "task.pause_fence", result
     assert "guarded handoff" in result.get("error", ""), result
+    assert "aq integration release-owner --task-id t" in result["error"]
     assert "task-session" not in provider.running
     assert (await env.db.get_session("s")).task_id == "t"
     assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
@@ -2231,6 +2233,67 @@ async def test_pause_retains_attached_owner_and_hold_after_checkpoint(env, tmp_p
     async with env.db.immediate() as conn:
         owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
     assert (owner["fence_token"], owner["session_id"], owner["handoff_state"]) == (1, "s", "attached")
+
+    # Resume's stale-pause recovery must expose the same actionable refusal
+    # to an authenticated supervisor and retain the stopped writer's source.
+    before = await env.db.get_task_meta("t", "manual_pause")
+    scope = RequestScope(kind="session", session_id="supervisor", project_id="p", elevated=True)
+    resumed = await command(env, "resume_task", _scope=asdict(scope))
+    assert resumed["code"] == "task.pause_fence", resumed
+    assert "aq integration release-owner --task-id t" in resumed["error"]
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+    assert await env.db.get_task_meta("t", "manual_pause") == before
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    async with env.db._engine.connect() as conn:
+        assert dict((await conn.execute(select(integration_branch_owners))).mappings().one()) == dict(owner)
+
+
+@pytest.mark.parametrize("disposition", ["done", "no_change", "obsolete"])
+@pytest.mark.parametrize("proof", ["stopped_published", "live", "unpublished"])
+async def test_operator_close_attached_owner_refuses_before_pause(
+    env, tmp_path, disposition, proof,
+):
+    from sqlalchemy import insert, select
+    from src.database.tables import integration_branch_owners
+
+    repo, git = make_git_repo(tmp_path, "close-owner")
+    git("update-ref", "refs/remotes/origin/main", git("rev-parse", "HEAD"))
+    if proof == "unpublished":
+        (repo / "unpublished.txt").write_text("preserve this commit\n")
+        git("add", ".")
+        git("commit", "-m", "unpublished work")
+    provider, _ = await running_session(env, repo)
+    if proof != "live":
+        provider.running.discard("task-session")
+        await env.db.update_session("s", state="stopped", desired_state="stopped")
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner", repository_id="repo", ref="main", owner_id="t", owner_role="task",
+            fence_token=1, handoff_state="attached", session_id="s", workspace_id="workspace",
+            created_at=1, updated_at=1,
+        ))
+        owner = dict((await conn.execute(select(integration_branch_owners))).mappings().one())
+    before = (await env.db.get_task("t"), await env.db.get_session("s"),
+              await env.db.get_workspace("workspace"), await env.db.get_agent("agent"))
+    head = git("rev-parse", "HEAD")
+    remote = git("rev-parse", "origin/main")
+    assert (head == remote) == (proof != "unpublished")
+    running = set(provider.running)
+
+    result = await command(env, "task_close", **{disposition: True, "reason": "landed elsewhere"})
+
+    assert result["success"] is False and result["code"] == "task.pause_fence", result
+    assert "aq integration release-owner --task-id t" in result["error"]
+    assert (await env.db.get_task("t"), await env.db.get_session("s"),
+            await env.db.get_workspace("workspace"), await env.db.get_agent("agent")) == before
+    assert before[0].status == TaskStatus.IN_PROGRESS
+    for key in ("manual_pause", "manual_pause_checkpoint", "obsolete", "completion"):
+        assert await env.db.get_task_meta("t", key) is None
+    async with env.db._engine.connect() as conn:
+        assert dict((await conn.execute(select(integration_branch_owners))).mappings().one()) == owner
+    assert provider.running == running
+    assert git("rev-parse", "HEAD") == head
+    assert git("rev-parse", "origin/main") == remote
 
 
 @pytest.mark.parametrize("failure", ["unborn", "unavailable"])

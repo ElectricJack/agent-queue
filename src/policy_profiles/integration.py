@@ -98,8 +98,7 @@ def updates(payload: IntegrationSettings, project, engine: str) -> dict:
             if not isinstance(boundary, dict) or "route" in boundary:
                 raise ValueError("portable integration boundaries must omit activation routes")
             # The git-first train never reads the legacy route: keep a
-            # target-local one if present, never fabricate one, and never
-            # refuse a target that has none.
+            # target-local one if present, never fabricate one.
             route = existing.get(name, {}).get("route")
             if route is not None:
                 boundary["route"] = copy.deepcopy(route)

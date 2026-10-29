@@ -11,16 +11,20 @@ Origin fetches also verify local-only refs when no origin tip can be advertised.
 Tip naming is transactional in the disposable import repository. The local
 exact-commit shortcut must walk the requested history without excluding seeded
 refs; an unreferenced commit needs the same full-body check before local success.
-Default isolated origin and exact acquisitions give retained verification its
-own bounded 900-second phase before lending objects. This accommodates measured
-full checks of over nine minutes on healthy multi-gigabyte retained stores.
-This phase includes the
-store-lock wait and all retries, and preserves the transfer's remaining budget
-instead of giving full verification only that remainder. An explicit exact-fetch
-timeout remains an overall cap; enclosing visit cancellation still propagates.
-No global lock or persistent integrity cache is introduced. Full verification
-has a cost proportional to the retained object store; timeout leaves that
-observation unavailable. Independent stores retain their existing concurrency.
+Full verification runs as one background flight per common object store, with
+its own 900-second budget (`RETAINED_FSCK_TIMEOUT_SECONDS`) that no caller's Git
+deadline or cancellation shortens. This accommodates measured full checks of over
+nine minutes on healthy multi-gigabyte retained stores. The budget includes the
+store-lock wait and all retries. Default isolated origin and exact acquisitions
+wait up to that phase before lending objects, and preserve the transfer's
+remaining budget instead of giving full verification only that remainder. An
+explicit exact-fetch timeout remains an overall cap; enclosing visit cancellation
+still propagates to the caller but not to the shared flight (see
+[Background full verification](#background-full-verification)). No persistent
+integrity cache is introduced. Full verification has a cost proportional to the
+retained object store; a caller that stops waiting leaves that observation
+unavailable to itself, never to the flight. Independent stores retain their
+existing concurrency.
 
 Ordinary authenticated origin fetches run full verification and tip lending
 before acquiring repository exclusion. Network transfer, checked local imports,
@@ -53,8 +57,8 @@ elapsed ownership and coroutine await chain, without arguments or locals, so
 subsequent refusals identify the remaining critical section directly.
 
 A failed full verification is retried up to three times with one-, two- and
-four-second backoff within the same integrity deadline (including lock waits
-and backoff). Verification and GitManager's foreground `gc`, `repack` and
+four-second backoff within the flight's own integrity deadline (including lock
+waits and backoff). Verification and GitManager's foreground `gc`, `repack` and
 `maintenance` share per-common-store exclusion, including linked worktrees and
 commands inside repository transactions. Independent Git processes do not take
 this in-process lock; their pack/ref changes can still invalidate an observation.
@@ -84,10 +88,77 @@ full checks and durable journal.
 The isolated origin and exact-fetch seams carry this baseline forward after
 successful transport, checked local import and exact ref readback. Both legs of
 an exact fetch enable `fetch.fsckObjects`, just as origin fetches do. Unknown
-additions still invalidate verification; only successful checked acquisitions
-under the caller's repository writer exclusion may extend it.
+additions are never trusted as checked: before lending, they pass the
+incremental gate below or a full check. Only successful checked acquisitions
+under the caller's repository writer exclusion, or the incremental gate, may
+extend the baseline.
 Full-fallback exact imports use `--refetch` so a partial destination's tips do
 not negotiate away promised blobs that the staged acquisition downloaded.
+
+## Background full verification
+
+Task: `wise-nexus-76`. A 2–3 GB retained store's full fsck exceeded the ~120 s
+deadline of the fetch that started it. The check was cancelled with its caller,
+the cache key differed per linked worktree and a busy store never matched its
+pre-check fingerprint, so nothing was recorded. Every claim preparation then
+restarted the check and `owner_lease` ran out its 600 s.
+
+- **One flight per store.** The key is the real path of the common gitdir, so
+  linked worktrees share it. The flight starts in a fresh context, holds the
+  store's verifier exclusion and runs with its own budget. It is not cancelled
+  when a caller is.
+- **Callers wait without owning.** A caller shields the flight and waits at most
+  the shorter of its own deadline and its repository-lock wait limit. Claim
+  preparation (five-second limit) receives `RetainedVerificationPending`, a
+  `RepositoryLockTimeout`. The claim records prepare stage
+  `retained_verification` and returns the retained refusal with a bounded
+  `retry_after`; this does not count toward quarantine. Any other caller receives
+  a Git preparation error with reason `verification_pending`. The flight continues
+  in both cases, and the next attempt reuses its result.
+- **Recording under concurrent writes.** The flight fingerprints the store before
+  and after its check and records only the files that are present and unchanged in
+  both. An object written mid-scan lives in a file absent from the first
+  fingerprint, so it never enters the baseline and stays an unchecked addition.
+- **Incremental foreground gate.** When the store has only gained files since a
+  clean baseline (new loose objects, or new packs with their indexes, at most
+  256 MiB together), the caller runs the gate itself, without the verifier
+  exclusion. First, a full fsck of just the added files, linked into a scratch
+  repository that borrows nothing else. Then a connectivity-only fsck of the whole
+  store, which also verifies commit-graph and multi-pack-index. The gate fails
+  over to the full flight if a baseline file has been replaced or truncated, if a
+  path is unknown, if an index has no pack, if the additions exceed the cap or
+  if either check fails. Removed files need no body check because connectivity
+  proves what remains. A pack whose index has not been written yet is still
+  arriving: Git does not use it, so it stays outside the checked inventory. Verification is never skipped, and
+  connectivity-only never admits an object no full check has read. The gate keeps
+  the baseline's original timestamp.
+- **Refresh.** A caller that reuses a baseline more than half the TTL old starts
+  a background refresh flight and proceeds on the still-valid baseline.
+- **Repack carry.** Task: `sound-journey-54`. The hourly background
+  `repack -a -d -k` replaces every pack with one larger than the incremental cap,
+  so every repack used to leave callers waiting on a full flight of up to 900 s.
+  `GitManager.arepack_retained_store` holds the verifier exclusion across the
+  repack and everything after it. The baseline carries only when three things
+  hold: the store matched its clean baseline exactly beforehand, the repack
+  exits zero with empty stderr, and a connectivity-only fsck of the result
+  passes. That fsck took 15 s on this repository's 1.9 GB store. The carried
+  baseline names the new files but keeps its original timestamp, so the
+  refresh still comes due on schedule and a full fsck still reads every body
+  within the TTL. A repack rewrites only objects the full check has already
+  read, and the connectivity check proves that nothing reachable was lost.
+  Nothing carries in these cases, and the full check stays due:
+  - unverified additions;
+  - a failed repack or a failed check;
+  - a baseline replaced meanwhile.
+
+  The exclusion is re-entrant only within its holder's context, so the repack
+  passes through it. A flight's fresh context never inherits the hold.
+- **Queued checks recheck.** A full flight that waited on the exclusion
+  fingerprints the store once it holds that exclusion. If the store exactly
+  matches a clean baseline younger than the refresh age, the flight returns
+  that baseline without running fsck, so a caller that saw the store mid-repack
+  reuses the carry. Refresh flights start only once a baseline reaches that
+  age, so they always reread the store.
 
 Admission shares a five-second snapshot-wait budget across one request's Git
 observations. A slow fetch or recovery continues as the existing shared flight
@@ -189,3 +260,38 @@ inconsistent readback retain the original store and unavailable observations.
 Any future applying seam must record durable operation intent and replay evidence
 through CommandHandler; neither a successful unit test nor a timer is a receipt.
 See the [incident procedure](../../guides/retained-git-corruption.md).
+
+### Missing-object origin acquisition
+
+Task `nimble-horizon-50`, supervisor decision
+`msg-a5d78ac44d89465892ad1823287a5083`, permits one bounded additive import
+inside an already authorized origin acquisition. The read-only verifier reports
+typed missing-object evidence only when every diagnostic is either an exact
+`missing <commit|tree|blob|tag> <oid>` line or a well-formed broken-link pair
+whose target type and OID match one of those absences. Standalone or unexplained
+broken links, errors, warnings, corruption, truncated objects and all other
+diagnostics retain unavailable evidence without attempting an import.
+
+Under common retained-store exclusion, recheck the evidence, then acquire a
+complete isolated origin store without borrowing
+retained objects, and prove every named object is available with its expected
+type. Import only those OIDs and their reachable closure, with incoming object
+checking, without changing destination refs or FETCH_HEAD. Preserve every local
+and unpublished object, the checkout, saved head and saved branch identity.
+Never replace the store or delete an object. A full clean destination fsck is
+required before lending objects; unavailable upstream objects, transport failure
+or a second integrity failure propagate to the existing workspace hold. There
+is one recovery attempt per acquisition, bounded by the retained integrity
+deadline, with no new workspace retry classification or relaxation of
+`verify_saved_branch`.
+
+Ordinary acquisition keeps every full integrity check and isolated network
+staging outside repository exclusion, preserving the bounded lock wait of claims.
+Only the additive import takes repository exclusion, followed by common-store
+exclusion. Revalidate the object-store fingerprint before importing; a changed
+store retains unavailable evidence. Release repository exclusion before the final
+full integrity check. An explicit enclosing transaction passed with
+`lock_held=True` retains its caller's existing stronger exclusion guarantee.
+The recovery deadline includes lock waits, and the additive local import disables
+automatic maintenance. This preserves the claim-lock guarantee of `ce8dc58cb`
+under supervisor decision `msg-3a67a988804742469c386795c725cd62`.
