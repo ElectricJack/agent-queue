@@ -2446,9 +2446,10 @@
         "agent-roster"
       ],
       "default_arm": true,
-      "digest": "sha256:070a4a5eb0e36eaa83ad8848b32df20010d7db9237e133efa04cfd8b8ad67e11",
+      "digest": "sha256:b1a6e36d1820b7d28e5841eba39af65158e44e5883a29bdcb6b9310fcbb4a554",
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.models",
         "src.orchestrator.agent_reconciler"
       ],
@@ -3388,10 +3389,11 @@
         "bazel-toolchains"
       ],
       "default_arm": true,
-      "digest": "sha256:ebafdc0f026e86f51c24718a87a948f6976ec9b8dc9d5d3fb46cc6e1babc7bf7",
+      "digest": "sha256:29808d65b829c59031a4851ce8e4f038a4694d31282113321b8480ae41877250",
       "imports": [],
       "markers": [
         "parametrize",
+        "skipif",
         "timeout"
       ],
       "summary": "H1 lock/ABI boundaries and opt-in, admitted clean-root toolchain verification."
@@ -7253,7 +7255,7 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:d93f104691b83337695ff52e4dd10291fa3a7d0fba60716299e3c8e9ace75545",
+      "digest": "sha256:482848c267dc1a68e3de8c1ad3789bb39d9a05c5ed4aaffa74cb22c61e81feb6",
       "imports": [
         "src.api.websocket",
         "src.config",
@@ -7264,7 +7266,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "timeout"
       ],
       "summary": "Work-graph WG-4: event replay + registry invariant."
     },
@@ -7619,7 +7622,7 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:aeef4b38a8e350480e3e17fc5bbc978227754eeae797deee07a39c7524eaa558",
+      "digest": "sha256:6f76ae780549b3b393b4ce9dc4f8f039f65efe64361aba32079c753d4c131a2a",
       "imports": [
         "src.git.manager",
         "src.integration",
@@ -7633,7 +7636,8 @@
       ],
       "markers": [
         "parametrize",
-        "slow"
+        "slow",
+        "timeout"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
     },
@@ -8848,7 +8852,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:09a42b7ab6dafcfdb5d415063c914e614bc3aa15ae9a7e1f26cffc5d2a3d5b28",
+      "digest": "sha256:0ea81059e6592b701903b33bc532b1d9451e638791e498c7f076f5baebb4834a",
       "imports": [
         "src.commands",
         "src.config",
@@ -8870,6 +8874,7 @@
         "src.integration.repository_recovery",
         "src.integration.train",
         "src.integration.train_sources",
+        "src.integration.visit_carry",
         "src.models",
         "src.waits.sources"
       ],
@@ -10516,7 +10521,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:891b86636db3615dabe5d758d2901fda16aafd80bf5060eb82ae18ded03137e0",
+      "digest": "sha256:5102f57d7726719ef1bedbefcc6b0c92481cc7790fcfc5b1e50ea5f9e77c08f4",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -10541,6 +10546,7 @@
         "src.integration.stall_alerts",
         "src.integration.train",
         "src.integration.train_sources",
+        "src.integration.visit_carry",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
@@ -20471,7 +20477,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3da935f1fa0774037644c6bdabb149890b21b52423c820d4b4eba2115f315122",
+      "digest": "sha256:dc4744ead63d66194e38309cf37ac94247913db6d4bfac8723714305d0e7f10f",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -20487,11 +20493,14 @@
         "src.database.queries.continuation_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.doctor.pool_checks",
+        "src.git.identity",
         "src.git.manager",
         "src.integration",
         "src.integration.admission",
         "src.integration.delivery_observer",
         "src.models",
+        "src.orchestrator.agent_reconciler",
         "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.worktree_manager",
         "src.prime",

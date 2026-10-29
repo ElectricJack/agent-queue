@@ -1,0 +1,194 @@
+{
+  "source_base": "fcbe9ca3dc89e65ec62332c3bc5552d990b9f856",
+  "reason": "clear-journey-76 extends the existing scoped supervisor recovery command with blocker inspection and audited integration CI retirement.",
+  "command": "wait_source_redispatch",
+  "previous_fingerprint": "sha256:6e6aac332f396ca3a135c98848201f62d5df8bbe3e41bb5f45789c0008700225",
+  "fingerprint": "sha256:bc512d76c8874d4b38f03dc3a2cafd25366e1423dc9b921ecd73b53074625250",
+  "execution": {
+    "schema_generation": 1,
+    "name": "wait_source_redispatch",
+    "args_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "action": {
+          "default": "redispatch",
+          "enum": [
+            "redispatch",
+            "blockers",
+            "retire"
+          ],
+          "type": "string"
+        },
+        "source_seq": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "limit": {
+          "default": 100,
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "result_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "result": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "outcomes": [
+      {
+        "name": "completed",
+        "classification": "success"
+      },
+      {
+        "name": "rejected",
+        "classification": "failure"
+      }
+    ],
+    "capability": "wait_source_redispatch",
+    "side_effect": "resolve",
+    "idempotency": {
+      "mode": "natural",
+      "key_field": null
+    },
+    "retry_safe": true,
+    "timeout_seconds": null,
+    "effects": [],
+    "sensitive_args": [],
+    "sensitive_result_fields": [],
+    "receipt_projection": [],
+    "supports_preview": false
+  },
+  "previous_definition": {
+    "name": "wait_source_redispatch",
+    "description": "Reobserve one durable source event in a supervisor project.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "minLength": 1,
+          "title": "Project Id",
+          "type": "string"
+        },
+        "source_seq": {
+          "minimum": 1,
+          "title": "Source Seq",
+          "type": "integer"
+        },
+        "note": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "source_seq",
+        "note"
+      ],
+      "title": "WaitSourceRedispatchArgs",
+      "type": "object"
+    }
+  },
+  "definition": {
+    "name": "wait_source_redispatch",
+    "description": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "minLength": 1,
+          "title": "Project Id",
+          "type": "string"
+        },
+        "action": {
+          "default": "redispatch",
+          "enum": [
+            "redispatch",
+            "blockers",
+            "retire"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "source_seq": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Seq"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "limit": {
+          "default": 100,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "title": "WaitSourceRedispatchArgs",
+      "type": "object"
+    }
+  },
+  "previous_cli_catalogue_sha256": "383914b22b66ce99368e0e7922a3ff3ea60bc7abf9680c44127f8439be7ac57c",
+  "cli_catalogue_sha256": "dac53e1a5808849e96ea3a1a46f7333988c70e8d7adfc69b6690f715a6c956e4"
+}

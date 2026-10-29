@@ -148,7 +148,8 @@ aq test tests/test_env_scrub.py tests/test_resolve_repo_path.py
 ```
 
 Until B4 exposes backend selection, real module execution also uses AQ's outer
-test slot. Supply the checksum-verified pinned Bazel executable:
+test slot. Supply the checksum-verified pinned Bazel executable, which
+`tools/bazel/provision.py` installs (see `ENVIRONMENT.md`):
 
 ```bash
 AQ_BAZEL_EXECUTABLE=/absolute/path/to/bazel-8.3.1 \

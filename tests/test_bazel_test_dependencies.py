@@ -299,6 +299,20 @@ def test_directory_data_excludes_build_metadata(tmp_path):
         assert result["data_files"] == ["src/templates/example.md"], checkout
 
 
+def test_directory_data_is_independent_of_checkout_parent(tmp_path):
+    for parent in ("checkout", ".aq/worktrees/slot-7", ".venv/checkout"):
+        root = tmp_path / parent
+        write(root, "src/templates/example.md", "required runtime data")
+        for excluded in ("BUILD", "BUILD.bazel", "__pycache__/cache.py", ".aq/private.txt"):
+            write(root, f"src/templates/{excluded}")
+        write(root, "tests/test_sample.py", """
+            from pathlib import Path
+            def test_sample(): return list(Path('src/templates').rglob('*'))
+        """)
+        result = discover(root, "tests/test_sample.py")
+        assert result["data_files"] == ["src/templates/example.md"], parent
+
+
 def test_literal_data_excludes_worktree_control_files(tmp_path):
     write(tmp_path, ".git", "gitdir: /operator/checkout/.git/worktrees/worker")
     write(tmp_path, ".aq/claim.json", "{}")
