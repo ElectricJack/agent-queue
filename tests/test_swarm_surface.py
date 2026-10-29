@@ -392,7 +392,10 @@ def test_skill_documents_planner_scoped_graph_filing():
     from src.api.scope import AGENT_COMMAND_SET
     from src.profiles.parser import parse_profile
 
-    skill = open("src/skills/aq-tasks/SKILL.md", encoding="utf-8").read()
+    skill = "".join(
+        open(f"src/skills/aq-tasks/{rel}", encoding="utf-8").read()
+        for rel in ("SKILL.md", "reference/task-graphs.md")
+    )
     planner = parse_profile(
         open("src/profiles/defaults/planner/profile.md", encoding="utf-8").read()
     )
