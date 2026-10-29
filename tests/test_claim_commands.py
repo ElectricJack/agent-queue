@@ -7834,31 +7834,51 @@ async def test_slow_claim_returns_progress_and_joins_one_preparation(handler, db
         await asyncio.gather(preparation, return_exceptions=True)
 
 
-async def test_deferred_prepare_failure_is_reported_once(handler, db, tmp_path):
+async def test_deferred_prepare_failure_is_reported_once(handler, db, tmp_path, monkeypatch):
     await mktask(db, "t1", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
-    finish = asyncio.Event()
+    finish, waiting = asyncio.Event(), asyncio.Event()
+    await_attempt = handler._await_attempt
+    prepare = handler._prepare_and_activate
+
+    async def gated_prepare(*args, **kwargs):
+        # Let the peer join before preparation locks the session row, which
+        # would block the peer's admission update during the slot reset.
+        await finish.wait()
+        return await prepare(*args, **kwargs)
+
+    async def joined_wait(*args, **kwargs):
+        waiting.set()
+        return await await_attempt(*args, **kwargs)
 
     async def reset(*args, **kwargs):
-        await finish.wait()
         raise RuntimeError("retained test blocker")
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
+    monkeypatch.setattr(handler, "_prepare_and_activate", gated_prepare)
+    monkeypatch.setattr(handler, "_await_attempt", joined_wait)
     with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
         result = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert result["result"] == "claim_in_progress"
     preparation = next(iter(handler.orchestrator.claim_preparations.values()))
     peer = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 5}))
-    finish.set()
-    outcome = await preparation
-    peer_result = await peer
-    # Every waiter can see the same job result without incrementing its refusal.
-    result = await handler._record_claim_refusal(outcome, await db.get_session(sid), 10)
-    assert peer_result["result"] == result["result"] == "prepare_failed"
-    assert peer_result["refusal_count"] == result["refusal_count"] == 1
-    assert "_refusal_recorded" not in result
-    assert (await db.get_session(sid)).claim_failure_count == 1
-    assert (await db.get_task_meta("t1", "claim_timing"))["result"] == "prepare_failed"
+    try:
+        # Creating a request does not mean it has joined the preparation. Hold
+        # the failure until the peer reaches the shared job's wait path.
+        await asyncio.wait_for(waiting.wait(), timeout=30)
+        finish.set()
+        outcome = await preparation
+        peer_result = await peer
+        # Every waiter can see the same job result without incrementing its refusal.
+        result = await handler._record_claim_refusal(outcome, await db.get_session(sid), 10)
+        assert peer_result["result"] == result["result"] == "prepare_failed"
+        assert peer_result["refusal_count"] == result["refusal_count"] == 1
+        assert "_refusal_recorded" not in result
+        assert (await db.get_session(sid)).claim_failure_count == 1
+        assert (await db.get_task_meta("t1", "claim_timing"))["result"] == "prepare_failed"
+    finally:
+        finish.set()
+        await asyncio.gather(preparation, peer, return_exceptions=True)
 
 
 async def test_daemon_shutdown_cancels_preparation_before_resource_release(handler, db, tmp_path):

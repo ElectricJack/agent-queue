@@ -106,6 +106,8 @@ action inputs. Unresolved dynamic loading, resource discovery, and fixture
 lookup widen the dependency closure conservatively. All fixture support files
 are included; uncertainty never makes a target pure. The current positive pure
 declaration is `tests/test_env_scrub.py`; other modules get private PostgreSQL.
+Directory-data exclusions apply within the checkout; parent directories named
+`.aq` or `.venv` must not remove repository inputs from worker-generated targets.
 `//tools/bazel:python_generator_inputs` crosses all new package boundaries for
 the generated-artifact checks.
 

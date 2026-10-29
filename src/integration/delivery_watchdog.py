@@ -388,7 +388,7 @@ async def _raise_incident_on(db, conn, *, key: str, entry: Mapping[str, Any],
 
 async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any, *,
                        threshold: DeliveryThreshold, repository_id: str, target_ref: str,
-                       now: float, hierarchy=None, target_oid: str | None = None
+                       now: float, status, hierarchy=None, target_oid: str | None = None
                        ) -> dict[str, Any]:
     """Classify one owed generation and write its projection; at most one handover."""
     from src.metrics.delivery_latency import generation_of
@@ -404,8 +404,8 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
             and not request.has_recorded_source):
         reason = "missing_source_provenance"
     async with db.immediate() as conn:
-        # Batch sealing takes this same fence. Recheck incoming ownership in
-        # the write transaction even if inventory observed an unowned epic.
+        # Batch freeze and hierarchy edits take this same lock. Keep ownership
+        # stable between the read below and filing a root takeover.
         await db.lock_hierarchy_project(conn, project_id)
         wait_id = "delivery-watchdog-" + _digest(key, 24)
         if previous is not None and previous["id"] != wait_id:
@@ -463,6 +463,15 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
         redrive = inputs.get("redrive")
         if redrive:
             state, reason = _takeover_progress(await _task_status_on(conn, redrive["task_id"]))
+        # The branch inventory explains reachability, not delivery authority.
+        # Read the same batch/source decisions as redrive on this transaction;
+        # a child always travels through its parent, even before source admission.
+        ownership = await status.delivery_ownership_on(conn, task_id)
+        if ownership is None and not entry["root"]:
+            ownership = {"kind": "parent", "blockers": []}
+        if ownership is not None and state != "unknown":
+            state = "slow" if age >= threshold.stuck_after_seconds else "progressing"
+            reason = "train_owned"
         from src.database.queries.integration_train_queries import open_target_batches
 
         incoming = await conn.scalar(select(open_target_batches(
@@ -471,8 +480,8 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
         ).exists()))
         if incoming:
             state, reason = "progressing", "batch_queued"
-        status = request.task_status if request is not None else None
-        if await _held_on(conn, project_id, task_id, status):
+        task_status = request.task_status if request is not None else None
+        if await _held_on(conn, project_id, task_id, task_status):
             state, reason = "held", "manual_hold"
         stuck_scans = inputs.get("stuck_scans", 0) + 1 if state == "stuck" else 0
         incident_id, refused = inputs.get("incident_id"), None
@@ -489,11 +498,11 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
             stuck_scans=stuck_scans, first_completed_at=first, threshold=threshold.as_dict(),
             redrive=redrive, repository_id=repository_id, target_ref=target_ref,
             target_oid=target_oid, head=entry["head"], head_on_target=False,
-            age_seconds=age, rule=entry["rule"],
+            age_seconds=age, rule=entry["rule"], delivery_owner=ownership,
         )
         if refused:
             inputs["redrive_refused"] = refused
-        if not incident_id and state != "held" and (refused or (redrive and (
+        if not incident_id and state != "held" and ownership is None and (refused or (redrive and (
                 reason == "repair_deferred"
                 or now >= redrive["at"] + threshold.stuck_after_seconds))):
             incident_id = await _raise_incident_on(db, conn, key=key, entry=entry,
@@ -511,7 +520,8 @@ async def _watch_entry(db, entry: Mapping[str, Any], request: Any, previous: Any
 
 
 async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
-                                page_size: int = PAGE_SIZE, hierarchy=None) -> dict[str, Any]:
+                                page_size: int = PAGE_SIZE, hierarchy=None,
+                                train=None) -> dict[str, Any]:
     """One bounded, oldest-first pass over projects after the persisted cursor.
 
     Projects are scanned whole, so an owed generation missing from a scanned
@@ -522,6 +532,9 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
     from src.database.tables import projects, repos
     from src.integration.delivery_branches import DELIVERING_MODES
     from src.integration.delivery_truth import load_delivery_requests
+    from src.integration.status import IntegrationStatusService
+
+    status = IntegrationStatusService(db, delivery=observer, train=train, cached_only=True)
 
     if observe is None:
         from functools import partial
@@ -608,7 +621,8 @@ async def scan_stuck_deliveries(db, *, observer, now: float, observe=None,
                 report["deliveries"].append(await _watch_entry(
                     db, entry, requests.get(entry["task_id"]), previous,
                     threshold=threshold, repository_id=target["repository_id"],
-                    target_ref=target_ref, now=now, hierarchy=hierarchy, target_oid=target_oid,
+                    target_ref=target_ref, now=now, hierarchy=hierarchy, status=status,
+                    target_oid=target_oid,
                 ))
             except Exception as exc:
                 logger.exception("delivery watchdog entry failed for %s/%s",

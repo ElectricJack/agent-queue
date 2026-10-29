@@ -1,4 +1,5 @@
 """Per-test Bazel dependency discovery preserves runtime inputs without global fanout."""
+import ast
 import json
 from pathlib import Path
 from textwrap import dedent
@@ -175,6 +176,57 @@ def test_explicit_document_read_and_source_data_are_declared(tmp_path):
     assert result["data_files"] == ["docs/guide.md", "src/template.txt"]
 
 
+def test_repeated_directory_literals_expand_once_per_analyzer(tmp_path, monkeypatch):
+    write(tmp_path, "src/templates/example.txt", "template")
+    for name in ("first", "second"):
+        write(tmp_path, f"tests/test_{name}.py", '''
+            from pathlib import Path
+            def test_sample():
+                paths = list(Path("src/templates").glob("*"))
+                assert paths
+        ''')
+    expansions = []
+    original = Path.rglob
+
+    def counted(path, pattern, *args, **kwargs):
+        if path in {tmp_path, tmp_path / "src/templates"} and pattern == "*":
+            expansions.append(path)
+        return original(path, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", counted)
+    analyzer = DependencyAnalyzer(tmp_path)
+    for name in ("first", "second"):
+        result = analyzer.discover(f"tests/test_{name}.py")
+        assert result["data_files"] == ["src/templates/example.txt"]
+    # The shared repository snapshot replaces per-literal recursive expansion.
+    assert expansions == [tmp_path]
+
+
+def test_nested_path_expressions_walk_each_subtree_once(tmp_path, monkeypatch):
+    write(tmp_path, "docs/guide.md", "guide")
+    expression = 'Path("docs/guide.md")'
+    for _ in range(40):
+        expression = f"wrap({expression})"
+    source = f"from pathlib import Path\ndef test_sample():\n    path = {expression}\n"
+    write(tmp_path, "tests/test_sample.py", source)
+    original = ast.walk
+    node_count = len(list(original(ast.parse(source))))
+    visits = 0
+
+    def counted(node):
+        nonlocal visits
+        for child in original(node):
+            visits += 1
+            yield child
+
+    monkeypatch.setattr(ast, "walk", counted)
+    result = discover(tmp_path, "tests/test_sample.py")
+    assert result["docs"]
+    assert result["data_files"] == ["docs/guide.md"]
+    # Alias indexing, fixture discovery and literal collection are linear walks.
+    assert visits <= 4 * node_count
+
+
 def test_imported_fixture_alias_keeps_parameter_dependencies(tmp_path):
     for name in ("imported", "dependency", "unused"):
         write(tmp_path, f"src/{name}.py")
@@ -232,15 +284,19 @@ def test_production_runtime_imports_are_not_pruned(tmp_path):
 
 
 def test_directory_data_excludes_build_metadata(tmp_path):
-    write(tmp_path, "src/templates/example.md", "template")
-    write(tmp_path, "src/templates/BUILD.bazel", "# generated")
-    write(tmp_path, "tests/test_sample.py", """
-        from pathlib import Path
-        def test_sample():
-            assert list(Path("src/templates").glob("*.md"))
-    """)
-    result = discover(tmp_path, "tests/test_sample.py")
-    assert result["data_files"] == ["src/templates/example.md"]
+    for checkout in ("repo", ".aq/worktrees/slot-9", ".venv/repo"):
+        root = tmp_path / checkout
+        write(root, "src/templates/example.md", "template")
+        for metadata in ("BUILD", "BUILD.bazel", ".aq/state.json", ".venv/cache.txt",
+                         ".git/config", "__pycache__/cache.pyc", "node_modules/cache.js"):
+            write(root, f"src/templates/{metadata}", "excluded")
+        write(root, "tests/test_sample.py", """
+            from pathlib import Path
+            def test_sample():
+                assert list(Path("src/templates").glob("*.md"))
+        """)
+        result = discover(root, "tests/test_sample.py")
+        assert result["data_files"] == ["src/templates/example.md"], checkout
 
 
 def test_directory_data_is_independent_of_checkout_parent(tmp_path):

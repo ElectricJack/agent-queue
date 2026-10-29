@@ -9316,7 +9316,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:d4bc888d42de354726cd1a9e8d421a31eb4825337614873177269d46fde7bf32",
+      "digest": "sha256:e9a30c6316fc0997097e086c6ec4f72aa251ced66e1029bd0354fbc24bff77cd",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -9327,6 +9327,8 @@
         "src.integration.delivery_watchdog",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.root_pull_requests",
+        "src.integration.status",
         "src.models"
       ],
       "markers": [
@@ -10519,7 +10521,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:185f9cda47b8d508a80fd93364ec82f0055e10c3f7f1192bb3a6905297fc919b",
+      "digest": "sha256:5102f57d7726719ef1bedbefcc6b0c92481cc7790fcfc5b1e50ea5f9e77c08f4",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -10534,6 +10536,7 @@
         "src.integration",
         "src.integration.batches",
         "src.integration.checks",
+        "src.integration.delivery_watchdog",
         "src.integration.git_truth",
         "src.integration.lock",
         "src.integration.models",

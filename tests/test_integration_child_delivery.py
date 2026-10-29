@@ -1090,7 +1090,8 @@ async def test_suspended_parent_recovery_keeps_children_filed_in_current_episode
     assert await case.db.get_integration_checkpoint(case.parent_id) == current
 
 
-@pytest.mark.parametrize("code", [None, "source_withheld", "queued_behind_open_batch"])
+@pytest.mark.parametrize("code", [None, "source_withheld", "queued_behind_open_batch",
+                                 "prerequisite_pending"])
 async def test_git_redrive_explains_pending_child_without_a_batch(case, tmp_path, code):
     from unittest.mock import AsyncMock
 

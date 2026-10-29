@@ -212,6 +212,17 @@ async def test_delivered_root_receipt_retires_only_current_pr_conflict(db, compl
     assert {b["code"] for b in (await service.task_blockers("r1"))["blockers"]} == {
         b["code"] for b in expected
     }
+    async with db._engine.connect() as conn:
+        owner = await service.delivery_ownership_on(conn, "r1")
+        assert owner["blockers"] == expected
+        # The watchdog must use the same current PR evidence as redrive diagnostics.
+        visit["detail"]["blockers"] = [conflict]
+        owner = await service.delivery_ownership_on(conn, "r1")
+        if guard in {None, "qualified_ref"}:
+            assert owner is None
+        else:
+            assert owner["blockers"] == [conflict]
+        visit["detail"]["blockers"] = [conflict, other]
     assert visit["detail"]["blockers"] == [conflict, other]
     if guard in {None, "qualified_ref"}:
         assert (await RootDeliveryRedrive(db, _git()).run("r1"))["outcome"] == "nothing_to_redrive"

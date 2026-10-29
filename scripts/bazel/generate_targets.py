@@ -115,14 +115,15 @@ def reads_docs(
         if not path.endswith(".py") or not (root / path).is_file():
             continue
         tree = source_tree(root, path, trees)
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.BinOp)) and any(
-                    isinstance(child, ast.Constant) and isinstance(child.value, str)
-                    and (child.value == "docs" or child.value.startswith("docs/"))
-                    for child in ast.walk(node)
-            ):
+        pending = [(tree, False)]
+        while pending:
+            node, expression = pending.pop()
+            expression |= isinstance(node, (ast.Call, ast.Assign, ast.AnnAssign, ast.BinOp))
+            if (expression and isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and (node.value == "docs" or node.value.startswith("docs/"))):
                 cache[path] = True
                 return True
+            pending.extend((child, expression) for child in ast.iter_child_nodes(node))
         cache[path] = False
     return False
 

@@ -264,26 +264,10 @@ class IntegrationStatusService:
     async def train_task_blockers(self, task_id: str) -> dict[str, Any] | None:
         """Why *task*'s delivery waits, from the open batch that carries it."""
         async with self._consistent_snapshot() as conn:
-            row = await self._one(
-                conn,
-                select(tasks.c.id, tasks.c.project_id, tasks.c.status,
-                       projects.c.hierarchical_integration_mode,
-                       projects.c.hierarchical_integration_desired_mode)
-                .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
-                .where(tasks.c.id == task_id),
-            )
-            if row is None:
+            state = await self._train_task_state_on(conn, task_id)
+            if state is None:
                 return None
-            visits = await self._current_train_visits_on(conn, row["project_id"])
-            carrying = select(integration_batch_members.c.batch_id).where(
-                integration_batch_members.c.task_id == task_id
-            )
-            batches = await self._train_batches_on(
-                conn, integration_batches.c.id.in_(carrying), visits=visits)
-            ahead = []
-            if not batches and row["status"] == "COMPLETED":
-                ahead = await self._open_batches_ahead_on(
-                    conn, row["project_id"], task_id, visits=visits)
+            row, batches, ahead, visits = state
         own = self._train_source_blockers(visits, task_id=task_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
@@ -317,6 +301,61 @@ class IntegrationStatusService:
             "batches": batches,
             "blockers": _sorted_blockers(blockers),
         }
+
+    async def _train_task_state_on(self, conn, task_id: str):
+        """The durable ownership inputs shared by diagnostics and the watchdog."""
+        row = await self._one(
+            conn,
+            select(tasks.c.id, tasks.c.project_id, tasks.c.status, tasks.c.parent_task_id,
+                   projects.c.hierarchical_integration_mode,
+                   projects.c.hierarchical_integration_desired_mode)
+            .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+            .where(tasks.c.id == task_id),
+        )
+        if row is None:
+            return None
+        visits = await self._current_train_visits_on(conn, row["project_id"])
+        carrying = select(integration_batch_members.c.batch_id).where(
+            integration_batch_members.c.task_id == task_id
+        )
+        batches = await self._train_batches_on(
+            conn, integration_batches.c.id.in_(carrying), visits=visits)
+        ahead = []
+        if not batches and row["status"] == "COMPLETED":
+            ahead = await self._open_batches_ahead_on(
+                conn, row["project_id"], task_id, visits=visits)
+        return row, batches, ahead, visits
+
+    async def delivery_ownership_on(self, conn, task_id: str) -> dict[str, Any] | None:
+        """Who still owns delivery; absence permits an orphaned root takeover.
+
+        Read on the caller's transaction immediately before a watchdog handover.
+        Batch/source decisions are the same ones redrive-child reports. Container
+        identity is the train's own (including archived children and explicit
+        containers), so missing legacy checkpoints cannot orphan a Git-first epic.
+        """
+        from src.integration.train_sources import _epic_branches_on
+
+        state = await self._train_task_state_on(conn, task_id)
+        if state is None:
+            raise ValueError("delivery ownership is unavailable: task is missing")
+        row, batches, ahead, visits = state
+        blockers = self._train_source_blockers(visits, task_id=task_id)
+        kind = None
+        if row["parent_task_id"] is not None:
+            kind = "parent"
+        elif task_id in await _epic_branches_on(conn, [task_id]):
+            kind = "aggregate"
+        elif batches:
+            kind = "batch"
+        elif ahead or blockers:
+            kind = "train"
+        if kind is None:
+            return None
+        return {"kind": kind, "parent_task_id": row["parent_task_id"],
+                "batch_ids": [batch["id"] for batch in batches],
+                "queued_behind": [batch["id"] for batch in ahead],
+                "blockers": blockers}
 
     async def _completed_branch_blockers(
         self, project_id: str, task_id: str

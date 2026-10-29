@@ -738,6 +738,7 @@ class IntegrationCommandsMixin:
                     from src.integration.delivery_watchdog import scan_stuck_deliveries
                     try:
                         await scan_stuck_deliveries(self.db, observer=observer, now=now,
+                                                  train=train,
                                                   hierarchy=self._hierarchy_integration_service())
                     except Exception:
                         import logging

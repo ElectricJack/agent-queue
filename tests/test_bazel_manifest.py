@@ -394,6 +394,21 @@ def _fine_graph_fixture(root):
     return {"tests/test_behavior.py": {}}
 
 
+@pytest.mark.parametrize("fine_grained", [False, True])
+def test_graph_parses_each_source_once(tmp_path, monkeypatch, fine_grained):
+    modules = _fine_graph_fixture(tmp_path)
+    parsed = []
+    original = targets.ast.parse
+
+    def counted(source, *args, **kwargs):
+        parsed.append(source)
+        return original(source, *args, **kwargs)
+
+    monkeypatch.setattr(targets.ast, "parse", counted)
+    targets.graph(tmp_path, modules, fine_grained=set(modules) if fine_grained else None)
+    assert sorted(parsed) == sorted(path.read_text() for path in tmp_path.rglob("*.py"))
+
+
 def _render_graph(root, modules, fine_grained):
     libraries, discovered = targets.graph(root, modules, fine_grained=fine_grained)
     entries = {
