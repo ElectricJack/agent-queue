@@ -933,6 +933,80 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'integration_train_epic_visits_composition': {'authorized_engine_delta': 207,
+                                               'authorized_owned_delta': 207,
+                                               'authorized_shared_owned_delta': 0,
+                                               'authorized_table_delta': 0,
+                                               'charged_files': {'src/integration/train.py': 147,
+                                                                 'src/integration/train_sources.py': 60},
+                                               'dev_source_revision': '0ce9a88d9b85d2d401486739ce5d13138ae81621',
+                                               'evidence_path': 'docs/reports/2026-10-28-integration-train-epic-visits-ownership.json',
+                                               'fix_task_id': 'wise-current-35',
+                                               'measured_engine_lines': 84563,
+                                               'measured_owned_total': 161303,
+                                               'measured_table_count': 45,
+                                               'operator_decision': '6679052c',
+                                               'previous_measured_engine_lines': 84356,
+                                               'previous_measured_owned_total': 161096,
+                                               'previous_measured_table_count': 45,
+                                               'reason': 'Exact measured +207 owned/+207 engine/+0 '
+                                                         'shared/+0 tables over dev 0ce9a88d9 for '
+                                                         'scheduling integration-train visits to '
+                                                         'epic target refs (wise-current-35). '
+                                                         'train.py IntegrationTrain gives a '
+                                                         'targeted wake an urgent lane, keeps a '
+                                                         '600s pending-urgent entry for a lane not '
+                                                         'yet discovered, orders lanes '
+                                                         'not-urgent/start, wakes before laning '
+                                                         'and restores lane order on the first '
+                                                         'tick (+147 engine); train_sources.py '
+                                                         'DatabaseLaneLedger keeps the lane '
+                                                         'history as versioned keys in the generic '
+                                                         'system_config store, with no new table '
+                                                         'or migration (+60 engine). Preserve the '
+                                                         'original baseline, every historical '
+                                                         'grant and ownership classification, zero '
+                                                         'remaining headroom, the s4_modules '
+                                                         'expiry and existing storage categories.',
+                                               'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                               'source_revision': '45b705eb09066dd7b8362e18c9ef59830dc55cc3',
+                                               'task_id': 'wise-current-35'},
+ 'settled_claim_wake_composition': {'authorized_engine_delta': 0,
+                                    'authorized_owned_delta': 5,
+                                    'authorized_shared_owned_delta': 5,
+                                    'authorized_table_delta': 0,
+                                    'charged_files': {'src/commands/claim_commands.py': 2,
+                                                      'src/sessions/reconciler.py': 3},
+                                    'dev_source_revision': '1473a49fe665890bb017b9a656e166bacd72c201',
+                                    'fix_task_id': 'nimble-journey-85',
+                                    'measured_engine_lines': 84356,
+                                    'measured_owned_total': 161096,
+                                    'measured_table_count': 45,
+                                    'operator_decision': '6679052c',
+                                    'previous_measured_engine_lines': 84356,
+                                    'previous_measured_owned_total': 161091,
+                                    'previous_measured_table_count': 45,
+                                    'reason': 'Exact supervisor-requested +5 owned/+0 engine/+5 '
+                                              'shared/+0 tables for landing the settled pool claim '
+                                              'wake and drained-preparation stop '
+                                              '(nimble-journey-85 / 4c0d396ec), measured over dev '
+                                              '1473a49fe. claim_commands.py '
+                                              'ClaimCommandsMixin._cmd_task_claim attaches '
+                                              'same-turn retry instructions to claim_in_progress '
+                                              '(+2 shared); reconciler.py '
+                                              'SessionReconciler._stop_drain_acked_holder routes a '
+                                              'drain-acked holder still claiming/preparing to the '
+                                              'unactivated-preparation stop proof (+3 shared). The '
+                                              'engine is unchanged. Preserve the original '
+                                              'baseline, every historical grant and ownership '
+                                              'classification, zero remaining headroom, the '
+                                              's4_modules expiry and existing storage categories, '
+                                              "including 2104's admission fencing, 2169's "
+                                              "retained_verification and 2115's store maintenance "
+                                              'entries.',
+                                    'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                    'source_revision': '4c0d396ec37513860b6a5d40daf99050c97c50dc',
+                                    'task_id': 'nimble-journey-85'},
  'delivery_watchdog_target_verification_composition': {'authorized_engine_delta': 77,
                                                        'authorized_owned_delta': 77,
                                                        'authorized_shared_owned_delta': 0,
@@ -1814,7 +1888,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 5592,
+ 'authorized_owned_delta': 5804,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2422,8 +2496,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84356,
- 'measured_owned_total': 161091,
+ 'measured_engine_lines': 84563,
+ 'measured_owned_total': 161303,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,

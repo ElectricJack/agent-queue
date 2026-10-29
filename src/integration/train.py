@@ -68,6 +68,10 @@ BLOCKED_MAX_WAIT_SECONDS = 60.0
 # Events accelerate readiness; an idle lane still revisits Git after a lost event.
 IDLE_REOBSERVATION_SECONDS = 30.0
 MINIMUM_VISIT_INTERVAL_SECONDS = 30.0
+#: A targeted wake for a lane the train has not discovered yet waits this long
+#: for the target to appear before it is dropped.
+URGENT_WAKE_SECONDS = 600.0
+LEDGER_TIMEOUT_SECONDS = 10.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -184,6 +188,36 @@ class TrainVisit:
 class TargetSource(Protocol):
     async def targets(self, now: float) -> Sequence[TrainTarget]:
         """Every target the train owns now; read-only."""
+
+
+@dataclass(frozen=True)
+class LaneRecord:
+    """A lane's durable visit history: diagnostics and restart order, never evidence."""
+
+    project_id: str
+    repository_id: str
+    target_ref: str
+    kind: str
+    visits: int
+    errors: int
+    state: str | None
+    observed_at: float | None
+    started_at: float
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.project_id, self.repository_id, self.target_ref)
+
+
+class LaneLedger(Protocol):
+    async def load(self) -> Sequence[LaneRecord]:
+        """Every recorded lane, as of the previous daemon's last visits."""
+
+    async def record(self, record: LaneRecord) -> None:
+        """Replace one lane's record after a visit ends."""
+
+    async def forget(self, keys: Sequence[tuple[str, str, str]]) -> None:
+        """Drop records of retired targets."""
 
 
 class BatchSource(Protocol):
@@ -468,6 +502,10 @@ class _Lane:
     progress: dict | None = None
     timing: _VisitTiming | None = None
     requested: bool = True
+    #: A wake named this target: its next visit goes ahead of discovery order.
+    urgent: bool = False
+    #: The previous daemon's record of this lane, until a visit replaces it.
+    restored: LaneRecord | None = None
     #: Stage work a timed-out visit left running for this lane's next visit.
     carries: StageCarries | None = None
 
@@ -510,6 +548,7 @@ class IntegrationTrain:
         event_driven: bool = False,
         minimum_visit_interval_seconds: float = MINIMUM_VISIT_INTERVAL_SECONDS,
         waits=None,
+        ledger: LaneLedger | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if visit_timeout_seconds <= 0:
@@ -534,6 +573,13 @@ class IntegrationTrain:
         self._speculative: dict[tuple[str, str, str], _Speculation] = {}
         self._starts = 0
         self._tick_lock = asyncio.Lock()
+        self.ledger = ledger
+        self._restored_once = ledger is None
+        #: Restored lanes whose target no tick has offered yet.
+        self._dormant: dict[tuple[str, str, str], _Lane] = {}
+        self._recorded: set[tuple[str, str, str]] = set()
+        #: Targeted wakes for undiscovered lanes: (project, repository|None, ref) -> expiry.
+        self._urgent: dict[tuple[str, str | None, str], float] = {}
 
     async def tick(
         self, now: float | None = None, *, target: TrainTarget | None = None,
@@ -548,22 +594,40 @@ class IntegrationTrain:
             return {'started': [], 'running': [], 'skipped': ['tick_in_progress'], 'deferred': []}
         async with self._tick_lock:
             started, running, deferred = [], [], []
+            await self._restore()
             targets = [target] if target is not None else await self.targets.targets(now)
             if target is None:
+                retired = []
                 for key in getattr(self.targets, "retired_targets", ()):
                     lane = self._lanes.get(key)
-                    if lane is not None and (lane.task is None or lane.task.done()):
-                        if lane.carries is not None:
+                    if lane is None or lane.task is None or lane.task.done():
+                        if lane is not None and lane.carries is not None:
                             lane.carries.cancel()
-                        del self._lanes[key]
+                        self._lanes.pop(key, None)
+                        self._dormant.pop(key, None)
+                        if key in self._recorded:
+                            retired.append(key)
+                await self._forget(retired)
+            self._urgent = {key: until for key, until in self._urgent.items() if until > now}
             occupied: dict[str, int] = {}
             for key, lane in self._lanes.items():
                 if lane.busy():
                     occupied[key[1]] = occupied.get(key[1], 0) + 1
-            # Unvisited targets have start=0. Stable ties retain discovery order.
-            targets = sorted(targets, key=lambda t: self._lanes.get(t.key, _Lane()).start)
+            # Targets a wake named go first. Then unvisited targets (start=0) and
+            # the longest-waiting lanes; stable ties retain discovery order.
+            targets = sorted(targets, key=lambda t: (
+                not (self._known(t.key).urgent or self._pending_urgent(t.key)),
+                self._known(t.key).start,
+            ))
             for target in targets:
-                lane = self._lanes.setdefault(target.key, _Lane())
+                lane = self._lanes.get(target.key)
+                if lane is None:
+                    lane = self._dormant.pop(target.key, None) or _Lane()
+                    self._lanes[target.key] = lane
+                    if self._pending_urgent(target.key):
+                        lane.urgent = True
+                        for key in (target.key, (target.project_id, None, target.target_ref)):
+                            self._urgent.pop(key, None)
                 label = "/".join(target.key)
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
@@ -591,7 +655,7 @@ class IntegrationTrain:
                     occupied[target.repository_id] = occupied.get(target.repository_id, 0) + 1
                 self._starts += 1
                 lane.started_at, lane.start = now, self._starts
-                lane.requested = False
+                lane.requested = lane.urgent = False
                 lane.task = asyncio.create_task(
                     self._bounded(target, lane), name=f"integration-train:{label}"
                 )
@@ -645,6 +709,11 @@ class IntegrationTrain:
                 # and how far it has got, until its result replaces this row.
                 "state": "visiting" if running else "unvisited",
             }
+            if lane.last is None and lane.restored is not None:
+                # What the previous daemon last saw: history, not current evidence.
+                row["observed_at"] = lane.restored.observed_at
+                if lane.restored.state:
+                    row["previous_state"] = lane.restored.state
             detail = row.get("detail") or {}
             if (row.get("state") == "unknown" and detail.get("reason") == "visit_timeout"
                     and detail.get("previous_state")):
@@ -676,19 +745,95 @@ class IntegrationTrain:
 
     def wake(self, project_id: str, repository_id: str | None = None,
              target_ref: str | None = None) -> int:
-        """Request readiness reconciliation, retaining events received during a visit."""
-        woken = 0
+        """Request readiness reconciliation, retaining events received during a visit.
+
+        A wake that names a target makes its next visit go ahead of every lane
+        that was not named, and is kept until the target is discovered when no
+        lane exists for it yet. A project-wide wake keeps the ordinary order.
+        """
+        woken, matched = 0, False
         for key, lane in self._lanes.items():
             if (key[0] == project_id and repository_id in (None, key[1])
                     and target_ref in (None, key[2])):
                 woken += bool(lane.not_before)
+                matched = True
                 lane.not_before, lane.requested = 0.0, True
                 lane.wait, lane.waits = None, 0
+                lane.urgent = lane.urgent or target_ref is not None
+        if target_ref is not None:
+            if not matched:
+                self._urgent[(project_id, repository_id, target_ref)] = (
+                    self.clock() + URGENT_WAKE_SECONDS)
+                invalidate = getattr(self.targets, "invalidate", None)
+                if callable(invalidate):
+                    invalidate()  # discover the new target on the next tick
+                if self.on_wake is not None:
+                    self.on_wake()
+            else:
+                self._notify_requested()
         return woken
 
     def _notify_requested(self) -> None:
         if self.on_wake is not None and any(lane.requested for lane in self._lanes.values()):
             self.on_wake()
+
+    def _known(self, key: tuple[str, str, str]) -> _Lane:
+        return self._lanes.get(key) or self._dormant.get(key) or _Lane()
+
+    def _pending_urgent(self, key: tuple[str, str, str]) -> bool:
+        return key in self._urgent or (key[0], None, key[2]) in self._urgent
+
+    async def _ledger(self, call: Awaitable[Any], failure: str) -> tuple[bool, Any]:
+        """Await one ledger call; its history is diagnostics and never blocks delivery."""
+        try:
+            return True, await asyncio.wait_for(call, LEDGER_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - lost history only reorders visits
+            log_handled(logger, logging.WARNING,
+                        "integration train lane ledger could not %s", failure, exc=exc)
+            return False, None
+
+    async def _restore(self) -> None:
+        """Seed lanes from the previous daemon's ledger, once, in longest-waiting order."""
+        if self._restored_once:
+            return
+        self._restored_once = True
+        _loaded, records = await self._ledger(self.ledger.load(), "load")
+        for record in sorted(records or (), key=lambda r: (r.started_at, r.key)):
+            if record.key in self._lanes or record.key in self._dormant:
+                continue
+            self._starts += 1
+            self._dormant[record.key] = _Lane(
+                started_at=record.started_at, start=self._starts,
+                visits=record.visits, errors=record.errors, restored=record,
+            )
+            self._recorded.add(record.key)
+
+    async def _record(self, target: TrainTarget, lane: _Lane) -> None:
+        visit = lane.last
+        record = LaneRecord(
+            *target.key, kind=target.kind, visits=lane.visits, errors=lane.errors,
+            state=self._previous_state(lane).get("previous_state"),
+            observed_at=visit.observed_at if visit is not None else None,
+            started_at=lane.started_at,
+        )
+        label = "/".join(target.key)
+        if (await self._ledger(self.ledger.record(record), f"record {label}"))[0]:
+            self._recorded.add(target.key)
+
+    async def _forget(self, keys: list[tuple[str, str, str]]) -> None:
+        if not keys or self.ledger is None:
+            return
+        if (await self._ledger(self.ledger.forget(keys), "forget retired lanes"))[0]:
+            self._recorded.difference_update(keys)
+
+    @staticmethod
+    def _previous_state(lane: _Lane) -> dict[str, str]:
+        """The lane's last known state, from this daemon's visits or the ledger."""
+        if lane.last is None and lane.restored is not None and lane.restored.state:
+            return {"previous_state": lane.restored.state}
+        return _previous_state(lane.last)
 
     def _wait(self, target: TrainTarget, lane: _Lane, visit: TrainVisit) -> TrainVisit:
         """Delay repeated refusals, without using the result as evidence on retry."""
@@ -741,7 +886,7 @@ class IntegrationTrain:
                                target_sha=progress.get("target_sha"),
                                detail={"reason": "visit_timeout", **progress,
                                        "timeout_seconds": self.visit_timeout_seconds,
-                                       **carrying, **_previous_state(lane.last)},
+                                       **carrying, **self._previous_state(lane)},
                                observed_at=self.clock())
             logger.warning("integration train visit timed out for %s", target.key)
         except Exception as exc:  # one target's failure never stops the train
@@ -779,6 +924,8 @@ class IntegrationTrain:
             # A state change while this visit awaited Git/checks belongs to
             # another observation, not the backoff of the stale one.
             lane.not_before, lane.wait, lane.waits = 0.0, None, 0
+        if self.ledger is not None:
+            await self._record(target, lane)
         if self.event_driven and (visit.state == "delivered"
                 or (visit.detail or {}).get("epic_completions")):
             # Parent publication and a newly retained aggregate can make the
