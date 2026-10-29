@@ -36,6 +36,22 @@ tests/fixtures/generated_sources/ownership/integration_ownership.json merge=aq-g
 tests/fixtures/generated_sources/ownership/integration_ownership_report.json merge=aq-generated linguist-generated
 tests/fixtures/contracts/generated-command-audit.json merge=aq-generated linguist-generated
 tests/test_command_descriptors.py merge=aq-generated linguist-generated
+# Bazel targets: scripts/bazel/generate_targets.py owns every BUILD.bazel/BUILD
+# file's generated sections (BEGIN/END markers) or, for per-package library
+# files and tests/BUILD.bazel, the whole file. Keep ours on conflict, then
+# scripts/regenerate-generated.sh reruns inventory.py collect + generate_targets.py.
+# Both a root-level bare name and a **/ glob are listed: git's gitattributes
+# matcher treats **/ as "zero or more directories" (so **/BUILD.bazel alone
+# already covers the root file), but git ls-files pathspec matching does not
+# -- it requires at least one directory component. The bare entry keeps
+# tests/test_generated_artifacts.py's ls-files-based reconciliation in sync
+# with the real attribute (see test_gitattributes_marks_exactly_what_the_script_regenerates).
+BUILD.bazel merge=aq-generated linguist-generated
+**/BUILD.bazel merge=aq-generated linguist-generated
+BUILD merge=aq-generated linguist-generated
+**/BUILD merge=aq-generated linguist-generated
+tools/bazel/test_suites.json merge=aq-generated linguist-generated
+tools/bazel/python_data.bzl merge=aq-generated linguist-generated
 # Approved policy and provenance live in the authored module shards and
 # playbook recordings. Only their deterministic projections are disposable.
 tests/fixtures/playbooks/v2/*/artifact.json merge=aq-generated linguist-generated

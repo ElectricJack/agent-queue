@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import fnmatch
 import gc
 import hashlib
 import importlib.util
@@ -58,19 +57,6 @@ def dependency_analyzer(root: Path, trees: dict[str, ast.Module] | None = None):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.DependencyAnalyzer(root, trees=trees)
-
-
-def select_areas(modules: dict, areas: list[str]) -> set[str]:
-    selected = set()
-    for area in areas:
-        matched = {
-            path for path, info in modules.items()
-            if fnmatch.fnmatchcase(path, area) or area in info.get("areas", [])
-        }
-        if not matched:
-            raise ValueError(f"dependency area matches no test modules: {area}")
-        selected.update(matched)
-    return selected
 
 
 def file_label(
@@ -314,7 +300,7 @@ def _graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> t
                 conservative_reasons=detail["conservative_reasons"],
             )
         else:
-            # The legacy source closure remains unchanged until its area opts in.
+            # mode: legacy keeps this module's conservative source closure.
             # Documentation is a separate input and only follows actual readers.
             if path not in edges:
                 edges[path], _ = imports(
@@ -327,6 +313,11 @@ def _graph(root: Path, modules: dict, fine_grained: set[str] | None = None) -> t
             tests[path]["docs"] = reads_docs(
                 root, sorted(closure({path, *conftests}, edges)), docs_cache, trees=trees
             )
+    if analyzer is not None:
+        stale = analyzer.check_stale_declarations()
+        if stale:
+            detail = "; ".join(f"{path}: {reasons}" for path, reasons in sorted(stale.items()))
+            raise ValueError(f"stale declared resolves no longer match recorded reasons: {detail}")
     return libraries, tests
 
 
@@ -793,14 +784,17 @@ def render(root: Path, manifest: dict, *, factor_inputs: bool = True) -> dict[st
         name = name,
         srcs = native.glob(
             ["*", ".github/**", "scripts/**", "migrations/**", "packages/aq-client/**"],
-            exclude = ["BUILD.bazel", ".git", "**/__pycache__/**", "**/*.pyc", "**/node_modules/**"],
+            exclude = [
+                "*.md", "LICENSE", "BUILD.bazel", ".git", "**/__pycache__/**", "**/*.pyc",
+                "**/node_modules/**",
+            ],
             allow_empty = True,
         ) + ["//tools/bazel:repository_inputs"],
         visibility = ["//visibility:public"],
     )
     native.filegroup(
         name = "python_documentation_data",
-        srcs = native.glob(["docs/**"], exclude = ["**/BUILD.bazel"]),
+        srcs = native.glob(["docs/**", "*.md", "LICENSE"], exclude = ["**/BUILD.bazel"]),
         visibility = ["//visibility:public"],
     )
 """
@@ -873,16 +867,17 @@ py_library(
     return output
 
 
-def generate(
-    root: Path, collection: dict | None = None, areas: list[str] | None = None,
-) -> dict[str, str]:
+def generate(root: Path, collection: dict | None = None) -> dict[str, str]:
     catalogue = json.loads((root / "tests/selection_catalogue.json").read_text())
-    existing = hydrate_manifest(json.loads((root / MANIFEST).read_text())) \
-        if (root / MANIFEST).exists() else {}
-    selected = set(existing.get("fine_grained_modules", []))
-    selected.update(select_areas(catalogue["modules"], areas or []))
-    selected.intersection_update(catalogue["modules"])
+    analyzer = dependency_analyzer(root)
+    legacy = {
+        path for path, declaration in analyzer.declarations.items()
+        if declaration.get("mode") == "legacy"
+    }
+    selected = set(catalogue["modules"]) - legacy
     if collection is None:
+        existing = hydrate_manifest(json.loads((root / MANIFEST).read_text())) \
+            if (root / MANIFEST).exists() else {}
         collection = existing["collection"]
     else:
         collection = compact_collection(collection)
@@ -892,7 +887,6 @@ def generate(
         )
     libraries, tests = graph(root, catalogue["modules"], selected)
     manifest = make_manifest(root, collection, libraries, tests)
-    manifest["fine_grained_modules"] = sorted(selected)
     return render(root, manifest)
 
 
@@ -900,14 +894,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--collection", type=Path)
     parser.add_argument("--check", action="store_true")
-    parser.add_argument(
-        "--area", action="append", default=[],
-        help="Opt in a catalogue area or quoted test-path glob; repeatable and retained in manifest",
-    )
     args = parser.parse_args()
     try:
         outputs = generate(
-            ROOT, json.loads(args.collection.read_text()) if args.collection else None, args.area
+            ROOT, json.loads(args.collection.read_text()) if args.collection else None
         )
         stale = []
         for relative, content in outputs.items():

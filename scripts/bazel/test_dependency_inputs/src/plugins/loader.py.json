@@ -1,0 +1,6 @@
+{
+  "reason": "spec_from_file_location loads an operator-installed plugin.py from a path outside the repository; there is nothing in-repo to import.",
+  "resolves": [
+    "src/plugins/loader.py: unresolved file import"
+  ]
+}
