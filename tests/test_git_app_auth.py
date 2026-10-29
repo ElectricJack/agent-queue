@@ -25,7 +25,11 @@ from src.git.askpass_fd import MAX_REQUEST_BYTES, answer_prompt
 from src.git.askpass_broker import make_request_channel, serve_one_credential
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.github_contracts import GitHubCredentialMode
-from src.git.repository_lock import RepositoryLock, repository_lock_wait_limit
+from src.git.repository_lock import (
+    RepositoryLock,
+    RetainedVerificationPending,
+    repository_lock_wait_limit,
+)
 from src.git.manager import (
     APP_AUTH_PUSH_TIMEOUT_SECONDS,
     GitError,
@@ -679,6 +683,9 @@ async def test_isolated_git_cleanup_runs_off_loop_and_retains_ownership(
                      else GitError)
             with pytest.raises(error):
                 await task
+        # A shared retained check owns its directory and may finish after the caller.
+        await asyncio.gather(*manager.__dict__.get("_retained_verify_flights", {}).values(),
+                             return_exceptions=True)
         assert not directories[0].exists()
     finally:
         release.set()
@@ -3628,8 +3635,13 @@ async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp
     loose.mkdir(parents=True)
     (loose / ("c" * 38)).write_bytes(b"x")
     manager = GitManager()
-    runs = AsyncMock(return_value=b"")
+    runs = AsyncMock(side_effect=lambda args, **kwargs: (
+        b"sha1" if "rev-parse" in args else b""))
     monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+
+    def store_checks(mode):
+        return sum(f"--git-dir={store}" in call.args[0] and mode in call.args[0]
+                   for call in runs.await_args_list)
 
     async def verify():
         await manager._averify_retained_objects(
@@ -3645,12 +3657,18 @@ async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp
     (loose / ("c" * 38)).write_bytes(b"")  # damage changes the store
     await verify()
     assert runs.await_count == 2
-    (loose / ("d" * 38)).write_bytes(b"y")  # a new object changes the store
+    assert store_checks("--full") == 2
+    (loose / ("d" * 38)).write_bytes(b"y")  # a new object is checked on its own
     await verify()
-    assert runs.await_count == 3
+    assert store_checks("--full") == 2
+    assert store_checks("--connectivity-only") == 1
+    scratch = [call.args[0] for call in runs.await_args_list
+               if "--full" in call.args[0] and f"--git-dir={store}" not in call.args[0]]
+    assert len(scratch) == 1
+    assert manager.retained_store_verified(str(store))
     monkeypatch.setattr("src.git.manager._RETAINED_VERIFY_TTL_SECONDS", 0.0)
     await verify()
-    assert runs.await_count == 4
+    assert store_checks("--full") == 3
 
 
 @pytest.mark.parametrize("operation", ["origin", "exact"])
@@ -3792,23 +3810,146 @@ async def test_concurrent_integrity_checks_of_one_store_run_one_fsck(tmp_path, m
     assert overlap == [1]
 
 
-async def test_retained_verification_lock_timeout_has_safe_reason(tmp_path, caplog):
+async def test_retained_verification_wait_timeout_has_safe_reason(
+    tmp_path, monkeypatch, caplog,
+):
     manager = GitManager()
     lock = asyncio.Lock()
     await lock.acquire()
     manager._retained_verify_locks = {str(tmp_path.resolve()): lock}
+    runs = AsyncMock(return_value=b"")
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
     with caplog.at_level(logging.WARNING), pytest.raises(GitError) as caught:
         await manager._averify_retained_objects(
             str(tmp_path), home=tmp_path,
             deadline=asyncio.get_running_loop().time() + 0.01,
         )
-    assert "reason=lock_wait_timeout" in str(caught.value)
+    assert "reason=verification_pending" in str(caught.value)
     record = caplog.records[-1]
-    assert record.reason_code == "lock_wait_timeout"
+    assert record.reason_code == "verification_pending"
     assert record.elapsed_seconds >= record.budget_seconds
     assert str(tmp_path) not in record.getMessage()
     assert lock.locked()  # Timing out cannot release another verifier's lock.
+    # The shared check outlives its caller and completes once the store is free.
+    flight = manager._retained_verify_flights[str(tmp_path.resolve())]
+    assert not flight.done()
+    runs.assert_not_awaited()
     lock.release()
+    await asyncio.wait_for(flight, timeout=10)
+    runs.assert_awaited_once()
+
+
+async def test_slow_full_fsck_outlives_caller_budget_and_is_reused(tmp_path, monkeypatch):
+    """wise-nexus-76: a store whose full fsck exceeds the caller's Git budget is
+    still verified once, and later fetches reuse that result without a rescan."""
+    store = tmp_path / "store.git"
+    _git(["init", "-q", "--bare", str(store)], tmp_path)
+    loose = store / "objects" / "ab"
+    loose.mkdir(parents=True)
+    (loose / ("c" * 38)).write_bytes(b"x")
+    manager = GitManager()
+    budgets = []
+
+    async def slow_fsck(args, **kwargs):
+        if "rev-parse" in args:
+            return b"sha1"
+        budgets.append(kwargs["deadline"] - asyncio.get_running_loop().time())
+        await asyncio.sleep(0.3)  # longer than every caller below is willing to wait
+        return b""
+
+    runs = AsyncMock(side_effect=slow_fsck)
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+
+    async def verify(budget):
+        await manager._averify_retained_objects(
+            str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + budget,
+        )
+
+    with repository_lock_wait_limit(0.05), pytest.raises(RetainedVerificationPending):
+        await verify(30)  # claim preparation: a short bounded wait, then retry_after
+    with pytest.raises(GitError, match="reason=verification_pending"):
+        await verify(0.05)  # the caller's own deadline is shorter than the check
+    flight = manager._retained_verify_flights[str(store.resolve())]
+    assert not flight.done()
+    await verify(30)  # a patient caller joins the same check
+    assert flight.done() and runs.await_count == 1
+    assert budgets[0] > 0.5 * manager_module.RETAINED_FSCK_TIMEOUT_SECONDS
+    assert manager.retained_store_verified(str(store))
+    for _ in range(3):
+        with repository_lock_wait_limit(0.05):
+            await verify(0.05)
+    assert runs.await_count == 1
+    assert not manager._retained_verify_flights
+
+
+async def test_queued_full_check_skips_only_a_fresh_exact_clean_result(tmp_path, monkeypatch):
+    """sound-journey-54: a full check that waited on the store exclusion reuses
+    a clean result recorded meanwhile, but a refresh still rereads the store."""
+    work = tmp_path / "work"
+    _git(["init", "-q", str(work)], tmp_path)
+    (work / "a.txt").write_text("a\n")
+    _git(["add", "a.txt"], work)
+    _git(["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "a"], work)
+    git_dir = str(work / ".git")
+    manager = GitManager()
+    await manager._averify_retained_objects(
+        git_dir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+    )
+    key = str((work / ".git").resolve())
+    fsck = AsyncMock(wraps=manager._afsck_retained_store)
+    monkeypatch.setattr(manager, "_afsck_retained_store", fsck)
+    fresh = manager._retained_verified[key]
+    assert await manager._retained_verification_flight(key) == fresh
+    assert fsck.await_count == 0
+    due = (fresh[0], fresh[1] - manager_module._RETAINED_REFRESH_AGE_SECONDS)
+    manager._retained_verified[key] = due
+    refreshed = await manager._retained_verification_flight(key)
+    assert fsck.await_count == 1 and refreshed[1] > due[1]
+    assert manager._retained_verified[key] == refreshed
+
+
+async def test_additions_verify_in_foreground_while_full_check_is_in_flight(tmp_path):
+    """A resume with a clean baseline checks only what was added and never queues
+    behind a store-wide fsck; a corrupt addition still falls back to that check."""
+    work = tmp_path / "work"
+    _git(["init", "-q", str(work)], tmp_path)
+    (work / "a.txt").write_text("a\n")
+    _git(["add", "a.txt"], work)
+    _git(["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "a"], work)
+    git_dir = str(work / ".git")
+    manager = GitManager()
+
+    async def verify():
+        await manager._averify_retained_objects(
+            git_dir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+
+    await verify()
+    key = str((work / ".git").resolve())
+    assert manager.retained_store_verified(git_dir)
+    lock = asyncio.Lock()
+    await lock.acquire()
+    manager._retained_verify_locks[key] = lock
+    flight = manager._retained_verification_flight(key)  # a store-wide check is queued
+    try:
+        added = tmp_path / "added.txt"
+        added.write_text("added after the full check\n")
+        _git(["hash-object", "-w", str(added)], work)
+        with repository_lock_wait_limit(0.05):
+            await verify()
+        assert manager.retained_store_verified(git_dir)
+        assert not flight.done()
+
+        corrupt = work / ".git" / "objects" / "de"
+        corrupt.mkdir(exist_ok=True)
+        (corrupt / ("f" * 38)).write_bytes(b"not a zlib stream")
+        with repository_lock_wait_limit(0.05), pytest.raises(RetainedVerificationPending):
+            await verify()
+        assert not manager.retained_store_verified(git_dir)
+    finally:
+        lock.release()
+        await asyncio.gather(flight, return_exceptions=True)
+    assert not manager.retained_store_verified(git_dir)
 
 
 @pytest.mark.parametrize("failure", [TimeoutError, FileNotFoundError])
@@ -3976,7 +4117,7 @@ async def test_exact_fetch_budget_is_finite_and_explicit_caller_wins(tmp_path, m
 
 
 async def test_exact_fetch_contended_lock_keeps_one_deadline(tmp_path, monkeypatch):
-    """A queue consuming the budget reports the lock, never starts a new fsck."""
+    """A queue consuming the budget reports the pending check, never a new fsck."""
     work, source, store = _exact_fetch_case(tmp_path)
     tip = _git(["rev-parse", "HEAD"], work)
     _git(["fetch", str(source), f"{tip}:refs/aq/held"], store)
@@ -3993,7 +4134,7 @@ async def test_exact_fetch_contended_lock_keeps_one_deadline(tmp_path, monkeypat
 
     monkeypatch.setattr(manager, "_run_isolated_import_git", record)
     try:
-        with pytest.raises(GitError, match="reason=lock_wait_timeout"):
+        with pytest.raises(GitError, match="reason=verification_pending"):
             await manager._afetch_exact_oid_with_app_auth_to_url(
                 str(store), destination_url=source.as_uri(), token=None, oid=tip,
                 destination_ref="refs/aq/exact/test", timeout_seconds=1.0,
@@ -4002,6 +4143,10 @@ async def test_exact_fetch_contended_lock_keeps_one_deadline(tmp_path, monkeypat
         assert not (store / "refs/aq/exact/test").exists()
     finally:
         lock.release()
+    await asyncio.wait_for(manager._retained_verify_flights[str(store.resolve())], timeout=30)
+    assert [args for args in commands if "fsck" in args] == [[
+        f"--git-dir={store.resolve()}", "fsck", "--full", "--no-dangling", "--no-reflogs",
+        "--no-progress"]]
 
 
 async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
@@ -4024,11 +4169,13 @@ async def test_integrity_transient_failure_rechecks_full_store_with_same_deadlin
     manager = GitManager()
     runs = AsyncMock(side_effect=[GitError('retained Git object integrity is unavailable'), b''])
     monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
-    deadline = asyncio.get_running_loop().time() + 30
-    await manager._averify_retained_objects(str(tmp_path), home=tmp_path, deadline=deadline)
+    started = asyncio.get_running_loop().time()
+    await manager._averify_retained_objects(str(tmp_path), home=tmp_path, deadline=started + 30)
     assert runs.await_count == 2
     assert runs.await_args_list[0] == runs.await_args_list[1]
-    assert runs.await_args.kwargs['deadline'] == deadline
+    # The shared check keeps its own budget, not the caller's shorter deadline.
+    budget = runs.await_args.kwargs['deadline'] - started
+    assert budget == pytest.approx(manager_module.RETAINED_FSCK_TIMEOUT_SECONDS, abs=5)
     assert runs.await_args.kwargs['verify_integrity'] is True
 
 
@@ -4037,15 +4184,21 @@ async def test_fsck_missing_objects_written_mid_scan_are_a_race(tmp_path, monkey
     """fsck reports a commit landing after its object scan as missing; it is no damage."""
     work, _source, _store = _exact_fetch_case(tmp_path)
     gitdir = _git(["rev-parse", "--absolute-git-dir"], work)
-    present = _git(["rev-parse", "HEAD", "HEAD^{tree}"], work).split()
     manager = GitManager()
     spawn = manager._spawn_isolated_git
     fscks = []
+    written = []
 
     async def raced(*args, **kwargs):
-        if "fsck" not in args:
+        if not ("--full" in args and f"--git-dir={gitdir}" in args):
             return await spawn(*args, **kwargs)
         fscks.append(args)
+        # A writer lands a commit and tree after fsck's object scan.
+        (work / "mid-scan").write_text(f"{len(fscks)}\n")
+        _git(["add", "mid-scan"], work)
+        _git(["-c", "gc.auto=0", "commit", "-q", "-m", "mid-scan"], work)
+        present = _git(["rev-parse", "HEAD", "HEAD^{tree}"], work).split()
+        written.extend(present)
         stdout = b"".join(b"missing %s %s\n" % (kind, oid.encode())
                           for kind, oid in zip((b"commit", b"tree"), present))
         return SimpleNamespace(returncode=2, communicate=AsyncMock(
@@ -4059,9 +4212,27 @@ async def test_fsck_missing_objects_written_mid_scan_are_a_race(tmp_path, monkey
             await manager._averify_retained_objects(gitdir, home=tmp_path, deadline=deadline)
         assert len(fscks) == 4
     else:
+        checks = AsyncMock(wraps=manager._acheck_retained_additions)
+        monkeypatch.setattr(manager, "_acheck_retained_additions", checks)
+        flight = manager._afull_retained_verification
+        baselines = []
+
+        async def recorded(key):
+            baselines.append(await flight(key))
+            return baselines[-1]
+
+        monkeypatch.setattr(manager, "_afull_retained_verification", recorded)
         await manager._averify_retained_objects(gitdir, home=tmp_path, deadline=deadline)
         assert len(fscks) == 1
-    # Objects fsck never read are not a reusable clean result.
+        # Objects fsck never read stay outside the clean scan's baseline; the
+        # incremental gate reads them before the busy store is reusable.
+        recorded_paths = {path for path, _size, _inode in baselines[0][0]}
+        objects = {f"{oid[:2]}/{oid[2:]}" for oid in written}
+        assert objects and not objects & recorded_paths
+        added = {path for path, _size, _inode in checks.await_args.args[1]}
+        assert objects <= added
+        assert manager.retained_store_verified(gitdir)
+        return
     assert not manager.retained_store_verified(gitdir)
 
 
@@ -4096,9 +4267,11 @@ async def test_integrity_retry_waits_for_independent_repack(tmp_path, monkeypatc
     commands = []
 
     async def check(args, **kwargs):
-        commands.append((args, kwargs))
-        if len(commands) <= 2:
-            raise GitError('retained Git object integrity is unavailable: missing ' + 'c' * 40)
+        if '--full' in args and f'--git-dir={gitdir}' in args:
+            commands.append((args, kwargs))
+            if len(commands) <= 2:
+                raise GitError(
+                    'retained Git object integrity is unavailable: missing ' + 'c' * 40)
         return await original(args, **kwargs)
 
     async def backoff(delay):
@@ -4114,8 +4287,8 @@ async def test_integrity_retry_waits_for_independent_repack(tmp_path, monkeypatc
     await manager._averify_retained_objects(gitdir, home=tmp_path, deadline=deadline)
     assert delays == [1.0, 2.0]
     assert len(commands) == 3
-    assert all('fsck' in args and '--full' in args for args, _kwargs in commands)
-    assert all(kwargs['deadline'] == deadline for _args, kwargs in commands)
+    # Every retry shares the flight's one deadline.
+    assert len({kwargs['deadline'] for _args, kwargs in commands}) == 1
     assert manager.retained_store_verified(gitdir)
     assert list((Path(gitdir) / 'objects' / 'pack').glob('*.pack'))
 
@@ -4223,9 +4396,10 @@ async def test_integrity_retry_cannot_renew_exhausted_deadline(tmp_path, monkeyp
     failure = GitError('retained Git object integrity is unavailable: missing ' + 'c' * 40)
     runs = AsyncMock(side_effect=failure)
     monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
+    monkeypatch.setattr(manager_module, 'RETAINED_FSCK_TIMEOUT_SECONDS', 0.5)
     with pytest.raises(GitError) as caught:
         await manager._averify_retained_objects(
-            str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 0.5,
+            str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
         )
     assert caught.value is failure
     assert runs.await_count == 1
@@ -4286,6 +4460,7 @@ async def test_repack_blocks_verification_only_for_its_store(tmp_path, monkeypat
 
 
 async def test_integrity_cancellation_during_backoff_releases_exclusion(tmp_path, monkeypatch):
+    """A cancelled caller leaves the shared check; cancelling the check frees the store."""
     manager = GitManager()
     runs = AsyncMock(side_effect=GitError('retained Git object integrity is unavailable'))
     monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
@@ -4300,10 +4475,17 @@ async def test_integrity_cancellation_during_backoff_releases_exclusion(tmp_path
         str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
     ))
     await asyncio.wait_for(sleeping.wait(), timeout=10)
+    key = str(tmp_path.resolve())
+    flight = manager._retained_verify_flights[key]
     verify.cancel()
     with pytest.raises(asyncio.CancelledError):
         await verify
-    assert not manager._retained_verify_locks[str(tmp_path.resolve())].locked()
+    assert not flight.done()
+    flight.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await flight
+    assert not manager._retained_verify_locks[key].locked()
+    assert key not in manager._retained_verify_flights
     assert not manager.retained_store_verified(str(tmp_path))
 
 
@@ -4332,22 +4514,31 @@ async def test_linked_gitdir_integrity_cache_observes_shared_object_changes(tmp_
     _git(['worktree', 'add', '--detach', str(linked), 'HEAD'], work)
     gitdir = _git(['rev-parse', '--absolute-git-dir'], linked)
     manager = GitManager()
-    runs = AsyncMock(return_value=b'')
+    runs = AsyncMock(wraps=manager._run_isolated_import_git)
     monkeypatch.setattr(manager, '_run_isolated_import_git', runs)
 
-    async def verify():
+    async def verify(directory):
         await manager._averify_retained_objects(
-            gitdir, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+            directory, home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
         )
 
-    await verify()
-    await verify()
-    assert runs.await_count == 1
+    def checks(mode):
+        return sum('fsck' in call.args[0] and mode in call.args[0]
+                   for call in runs.await_args_list)
+
+    await verify(gitdir)
+    await verify(gitdir)
+    # The main checkout shares the linked worktree's one clean check.
+    await verify(_git(['rev-parse', '--absolute-git-dir'], work))
+    assert checks('--full') == 1
     content = tmp_path / 'new-object'
     content.write_text('new linked worktree object\n')
     _git(['hash-object', '-w', str(content)], work)
-    await verify()
-    assert runs.await_count == 2
+    await verify(gitdir)
+    # A shared-store addition is no cache hit: the incremental gate reads it.
+    assert checks('--connectivity-only') == 1
+    assert checks('--full') == 2
+    assert manager.retained_store_verified(gitdir)
 
 
 _STALE_GC_LOG = (
