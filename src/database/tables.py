@@ -5965,6 +5965,9 @@ wait_source_events = Table(
     Column("payload_hash", Text, nullable=False),
     Column("payload", JSONB, nullable=False),
     Column("dispatched_at", Float, nullable=True),
+    Column("dispatch_failures", Integer, nullable=False, server_default="0"),
+    Column("dispatch_retry_at", Float, nullable=True),
+    Column("quarantined_at", Float, nullable=True),
     UniqueConstraint("id", name="uq_wait_source_events_id"),
     UniqueConstraint(
         "source_key", "source_generation", "source_revision", name="uq_wait_source_events_revision"

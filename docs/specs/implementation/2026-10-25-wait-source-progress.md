@@ -14,12 +14,29 @@ remote observation retains its own timeout. A timed out transaction rolls
 back completely; a separate leased cursor CAS may advance past that event, leaving
 its undispatched row as durable retry ownership. Later events may proceed. Cancellation
 and lease loss never authorize this advance. Retry passes are bounded and back off.
+Budget failures and retry deadlines persist with the source row. After three
+consecutive budget failures the row is quarantined, retaining its payload and
+subscription ownership, and retried behind the forward cursor at five minute
+intervals. A successful dispatch clears the failure streak and quarantine. A
+restart respects the persisted retry deadline. Quarantine never asserts a wait
+outcome or prevents later events from dispatching.
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
 PostgreSQL deadlocks (`40P01`) and serialization failures (`40001`) during a
 source attempt follow the same rollback, leased cursor CAS and retry backoff as
 an expired work budget. Reobserve the source on retry and keep unrelated events
 moving without restarting the listener. Other database errors still propagate.
+An event-local dispatch exception follows that same durable retry/quarantine path;
+it must not restart the listener and replay the forward head indefinitely. Lease
+loss, cancellation and graph contention retain their existing fences.
+For a hibernate wait whose continuation is held (including `push_failed`), return
+a per-wait `owner_held` dispatch disposition with the continuation's existing
+hold/escalation identity and a retry deadline. Preserve the pending wait, hold,
+claim and checkout; neither source satisfaction nor a resume is authorized by
+that disposition. Other subscribers to the event still dispatch. A not-yet-persisted
+hibernation intent similarly requests a bounded retry. Both ordinary sources and
+resource invalidations retain an undispatched source until every receipt permits
+retirement, and persist the retry deadline so a new leader respects it.
 Retained undispatched events older than the listener safety cadence share alternating
 turns with forward work once their observation backoff expires. Preserve the next
 turn across drain passes, including timeouts, so a continuous forward backlog cannot
@@ -84,7 +101,9 @@ events still on retry backoff, under the graph and listener lease fences. Resour
 matching conservatively preserves any pending verified resource subscriber with a
 preceding watermark. Provider invalidations always retain lifecycle dispatch: even
 with zero pending waits they can release held continuations. No source observation
-or owner progress preparation is needed for a retired batch. Registration remains
+or owner progress preparation is needed for a retired batch of observation hints.
+Aborted integration batch events always retain dispatch so their callback cancels
+obsolete CI subscriptions even without a subscriber to the batch source. Registration remains
 serialized by the graph fence. An empty retirement scan must still allow one
 forward/retry attempt before the pass yields.
 
@@ -142,6 +161,25 @@ of that source/generation through the requested sequence when no pending verifie
 subscriber anywhere needs each event. It reports and audits the number retired. A project-scoped recovery
 must preserve any event still needed by another project's subscriber. Retirement
 uses bounded batches; repeat the command to drain additional history.
+
+The same supervisor authority supplies `aq wait source-blockers --project P` and
+`aq wait source-retire --source-seq N --project P --note REASON`. These dispatch
+the source recovery command with action `blockers` or `retire`. Inspection lists
+old or failed undispatched sources, their cursor position, durable failure count,
+quarantine/deadline and matching project subscriptions. Retirement cancels only
+service-owned integration CI subscriptions for the selected source and project;
+it refuses agent subscriptions and lifecycle sources. It stamps the source only
+when no project still needs it and never jumps the forward cursor. Cancellation
+and the supervisor audit commit together, without remote CI observation.
+
+Canonical aborted/superseded batch events cancel that target's integration CI
+subscriptions whose exact head no longer belongs to a non-aborted batch. They
+preserve a head reused by an active batch and successful settlement of promoted
+candidates. Speculative subscriptions retain their existing train reconciliation.
+Reconciliation during train synchronization repeats this cleanup to recover old
+rows and crash windows. CI observation reuses the immutable candidate check policy
+captured during train synchronization, while still observing fresh remote evidence. Its remote read budget leaves time for listener transaction
+bookkeeping; trust reconstruction must not recur on every observation.
 
 An independent listener monitor checks undispatched row count and oldest commit age,
 including deferred rows behind the cursor. Alert when count exceeds configurable

@@ -43,10 +43,23 @@ from src.metrics.operation_profile import operation_profile
 
 
 def _git(args: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True
+        )
+    except subprocess.CalledProcessError as exc:
+        exc.add_note(f"Git fixture failed in {cwd}:\n{exc.stderr}")
+        raise
     return result.stdout.strip()
+
+
+def test_git_fixture_failure_reports_stderr(tmp_path):
+    _git(["init", "--initial-branch=main", "--template="], tmp_path)
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        _git(["add", "missing-fixture-file"], tmp_path)
+    assert caught.value.returncode == 128
+    assert "missing-fixture-file" in caught.value.stderr
+    assert caught.value.stderr in "\n".join(caught.value.__notes__)
 
 
 def _git_push_case(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
@@ -4509,7 +4522,13 @@ async def test_integrity_persistent_failure_keeps_safe_object_evidence(tmp_path,
 
 
 async def test_linked_gitdir_integrity_cache_observes_shared_object_changes(tmp_path, monkeypatch):
-    work, _source, _store = _exact_fetch_case(tmp_path)
+    # This cache test needs a committed common store and a linked gitdir.
+    # Transfer volume and remote repositories belong to the fetch tests.
+    work = tmp_path / 'work'
+    work.mkdir()
+    _git(['init', '--initial-branch=main', '--template='], work)
+    _git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+          'commit', '--allow-empty', '-m', 'base'], work)
     linked = tmp_path / 'linked'
     _git(['worktree', 'add', '--detach', str(linked), 'HEAD'], work)
     gitdir = _git(['rev-parse', '--absolute-git-dir'], linked)

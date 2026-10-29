@@ -933,6 +933,69 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+'wait_source_pr2183_final_refresh_composition': {'authorized_engine_delta': 79,
+                                                  'authorized_owned_delta': 283,
+                                                  'authorized_shared_owned_delta': 204,
+                                                  'authorized_table_delta': 0,
+                                                  'decision_message_id': 'msg-3737d47dcd5c4b3f8c7efc4423446bc8',
+                                                  'dev_source_revision': '0f535b6356710f58e2dd5a3b9e4e3f1e000d27de',
+                                                  'evidence_path': 'docs/reports/2026-10-29-wait-source-pr2183-final-refresh-ownership.json',
+                                                  'measured_engine_lines': 84825,
+                                                  'measured_owned_total': 161769,
+                                                  'measured_table_count': 45,
+                                                  'operator_decision': '6679052c',
+                                                  'original_task_id': 'clear-journey-76',
+                                                  'previous_measured_engine_lines': 84746,
+                                                  'previous_measured_owned_total': 161486,
+                                                  'previous_measured_table_count': 45,
+                                                  'previous_refresh_task_id': 'wise-falcon-26',
+                                                  'reason': 'Ancestry-preserving PR2183 final '
+                                                            'refresh onto dev 0f535b635, including '
+                                                            'PR2182 visit-carry and PR2180 '
+                                                            'generated-conflict regeneration. '
+                                                            'Complete dev archive and merged tree '
+                                                            'scored with unchanged classifications '
+                                                            'confirm the approved wait-listener '
+                                                            'delta +283 owned/+79 engine/+204 '
+                                                            'shared/0 tables. Preserve all '
+                                                            'historical measurements and grants, '
+                                                            'including the earlier 710 '
+                                                            'composition, with zero remaining '
+                                                            'headroom and no new authority, table '
+                                                            'or storage category.',
+                                                  'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                                  'source_revision': 'a2cb30b9ee1960d0345f226680b632a84bdbb510',
+                                                  'task_id': 'bold-beacon-75'},
+ 'wait_source_pr2183_refresh_composition': {'authorized_engine_delta': 79,
+                                            'authorized_owned_delta': 283,
+                                            'authorized_shared_owned_delta': 204,
+                                            'authorized_table_delta': 0,
+                                            'decision_message_id': 'msg-3737d47dcd5c4b3f8c7efc4423446bc8',
+                                            'dev_source_revision': '710be1949fefe7f8dca26a0eadc40d1b7511f8d6',
+                                            'evidence_path': 'docs/reports/2026-10-29-wait-source-pr2183-refresh-ownership.json',
+                                            'measured_engine_lines': 84825,
+                                            'measured_owned_total': 161769,
+                                            'measured_table_count': 45,
+                                            'operator_decision': '6679052c',
+                                            'original_task_id': 'clear-journey-76',
+                                            'previous_measured_engine_lines': 84746,
+                                            'previous_measured_owned_total': 161486,
+                                            'previous_measured_table_count': 45,
+                                            'previous_refresh_task_id': 'wise-falcon-26',
+                                            'reason': 'Ancestry-preserving PR2183 re-refresh onto '
+                                                      'dev 710be1949, including PR2182 visit-carry '
+                                                      '+183 owned/+183 engine. Complete dev '
+                                                      'archive and merged tree scored with the '
+                                                      'merged unchanged classifications confirm '
+                                                      'the previously approved wait-listener delta '
+                                                      '+283 owned/+79 engine/+204 shared/0 tables. '
+                                                      'Preserve every historical grant, original '
+                                                      'measurement and ownership classification, '
+                                                      'with zero remaining headroom and no new '
+                                                      'authority, table or storage category.',
+                                            'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                            'source_revision': '2ec04f2bd211c457a34b80faae60c609ca240013',
+                                            'task_id': 'bold-beacon-75'},
  'integration_train_visit_carry_composition': {'authorized_engine_delta': 183,
                                                'authorized_owned_delta': 183,
                                                'authorized_shared_owned_delta': 0,
@@ -1934,7 +1997,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 5987,
+ 'authorized_owned_delta': 6270,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2542,8 +2605,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84746,
- 'measured_owned_total': 161486,
+ 'measured_engine_lines': 84825,
+ 'measured_owned_total': 161769,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -3620,7 +3683,111 @@ HAND_INTEGRATION_RECONCILIATION = {
  'source_revision': 'c0441df3ca97b009541902623979e2c96a93a8ef',
  'supervisor_decision_message_id': 'msg-753d51c3263e4a05afeaba14020f619b',
  'task_id': 'eager-bridge-18',
- 'thread_id': 'eager-bridge-18-ownership-revision'}}
+ 'thread_id': 'eager-bridge-18-ownership-revision'},
+ 'held_listener_isolation_composition': {'authorized_engine_delta': 0,
+                                         'authorized_owned_delta': 2,
+                                         'authorized_shared_owned_delta': 2,
+                                         'authorized_table_delta': 0,
+                                         'charged_files': {'src/waits/listener.py:WaitSourceListener._dispatch': 2},
+                                         'decision_message_id': 'msg-e66af06a5cf24ecba22e415bf56f3089',
+                                         'dev_source_revision': '0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3',
+                                         'measured_engine_lines': 83732,
+                                         'measured_owned_total': 159449,
+                                         'measured_table_count': 45,
+                                         'operator_decision': '6679052c',
+                                         'previous_measured_engine_lines': 83732,
+                                         'previous_measured_owned_total': 159447,
+                                         'previous_measured_table_count': 45,
+                                         'reason': 'Exact supervisor-approved +2 shared owned '
+                                                   'lines for the WaitSourceListener._dispatch '
+                                                   'retry accumulator (initialization and maximum '
+                                                   'aggregation), preserving per-wait retry '
+                                                   'receipts during held hibernation isolation. '
+                                                   'Compose on the existing approved cap; preserve '
+                                                   'every historical grant, original baseline and '
+                                                   'ownership classification, with zero remaining '
+                                                   'headroom and no threshold or storage-category '
+                                                   'changes.',
+                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                         'request_message_id': 'msg-817a5b7565264655831ac5c0d229612a',
+                                         'source_revision': 'b7afd8397fb66a8134ec396fc830c84f44b03848',
+                                         'task_id': 'clear-journey-76',
+                                         'thread_id': 'clear-journey-76-held-size'},
+ 'wait_source_pr2032_refresh_composition': {'authorized_engine_delta': 79,
+                                            'authorized_owned_delta': 283,
+                                            'authorized_shared_owned_delta': 204,
+                                            'authorized_table_delta': 0,
+                                            'charged_files': {'src/database/queries/wait_queries.py': 11,
+                                                              'src/integration/dispatch_waits.py': 79,
+                                                              'src/waits/listener.py': 111,
+                                                              'src/waits/resource_sources.py': 81,
+                                                              'src/waits/watchers/ci.py': 1},
+                                            'decision_message_id': 'msg-3737d47dcd5c4b3f8c7efc4423446bc8',
+                                            'dev_source_revision': '7cc181259',
+                                            'held_listener_decision_message_id': 'msg-e66af06a5cf24ecba22e415bf56f3089',
+                                            'measured_engine_lines': 84642,
+                                            'measured_owned_total': 161586,
+                                            'measured_table_count': 45,
+                                            'measurement_report_message_id': 'msg-cabff29a40c24cc88d6f1870aa735a25',
+                                            'operator_decision': '6679052c',
+                                            'original_task_id': 'clear-journey-76',
+                                            'previous_measured_engine_lines': 84563,
+                                            'previous_measured_owned_total': 161303,
+                                            'previous_measured_table_count': 45,
+                                            'reason': 'Ancestry-preserving PR2032 refresh onto dev 7cc181259. Exact +283 owned (+79 engine, '
+                                                      '+204 shared) is within the original approved quarantine composition (+291 owned, +79 '
+                                                      'engine) and separately approved held-listener isolation (+2 shared). Preserve all '
+                                                      'historical grants and ownership classifications; no new authority, table, storage '
+                                                      'category or remaining headroom.',
+                                            'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                            'source_revision': '65696d97368efe1bd52a0902e963cdb19316f57b',
+                                            'task_id': 'wise-falcon-26'},
+ 'wait_source_quarantine_composition': {'authorized_engine_delta': 79,
+                                        'authorized_owned_delta': 291,
+                                        'authorized_shared_owned_delta': 212,
+                                        'authorized_table_delta': 0,
+                                        'charged_file_deltas': {'src/database/queries/wait_queries.py': {'engine': 0,
+                                                                                                         'owned': 11},
+                                                                'src/integration/dispatch_waits.py': {'engine': 79,
+                                                                                                      'owned': 79},
+                                                                'src/waits/listener.py': {'engine': 0,
+                                                                                          'owned': 109},
+                                                                'src/waits/recovery.py': {'engine': 0,
+                                                                                          'owned': 10},
+                                                                'src/waits/resource_sources.py': {'engine': 0,
+                                                                                                  'owned': 81},
+                                                                'src/waits/watchers/ci.py': {'engine': 0,
+                                                                                             'owned': 1}},
+                                        'charged_files': {'src/database/queries/wait_queries.py': 11,
+                                                          'src/integration/dispatch_waits.py': 79,
+                                                          'src/waits/listener.py': 109,
+                                                          'src/waits/recovery.py': 10,
+                                                          'src/waits/resource_sources.py': 81,
+                                                          'src/waits/watchers/ci.py': 1},
+                                        'decision_message_id': 'msg-3737d47dcd5c4b3f8c7efc4423446bc8',
+                                        'dev_source_revision': 'fcbe9ca3dc89e65ec62332c3bc5552d990b9f856',
+                                        'measured_engine_lines': 82728,
+                                        'measured_owned_total': 158216,
+                                        'measured_table_count': 45,
+                                        'operator_decision': '6679052c',
+                                        'previous_measured_engine_lines': 82649,
+                                        'previous_measured_owned_total': 157925,
+                                        'previous_measured_table_count': 45,
+                                        'reason': 'Exact supervisor-approved wait-source '
+                                                  'quarantine and obsolete CI subscription '
+                                                  'recovery composition. Preserve every historical '
+                                                  'grant and ownership classification, with zero '
+                                                  'remaining headroom. Migration a00000000124 adds '
+                                                  'only dispatch_failures, dispatch_retry_at and '
+                                                  'quarantined_at to existing wait_source_events; '
+                                                  'guarded idempotent upgrade preserves rows, no '
+                                                  'new table or storage category, and downgrade '
+                                                  'refuses while quarantined rows exist. Operator '
+                                                  'applies schema upgrade at deploy.',
+                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                        'source_revision': '79edb0bab5bce7897ff00a2b5443710f1e424299',
+                                        'task_id': 'clear-journey-76',
+                                        'thread_id': 'clear-journey-76-size'}}
 
 
 def integration_table(name: str) -> bool:
