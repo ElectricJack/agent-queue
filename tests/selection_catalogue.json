@@ -7620,7 +7620,7 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:aeef4b38a8e350480e3e17fc5bbc978227754eeae797deee07a39c7524eaa558",
+      "digest": "sha256:6f76ae780549b3b393b4ce9dc4f8f039f65efe64361aba32079c753d4c131a2a",
       "imports": [
         "src.git.manager",
         "src.integration",
@@ -7634,7 +7634,8 @@
       ],
       "markers": [
         "parametrize",
-        "slow"
+        "slow",
+        "timeout"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
     },
