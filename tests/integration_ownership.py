@@ -933,6 +933,33 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+'held_resume_grants_composition': {'authorized_engine_delta': 0,
+                                    'authorized_owned_delta': 19,
+                                    'authorized_shared_owned_delta': 19,
+                                    'authorized_table_delta': 0,
+                                    'charged_files': {'src/wait_runtime/resume.py': 19},
+                                    'decision_message_id': 'msg-61dbbae9c12e4a60954ebd61892bd9b6',
+                                    'dev_source_revision': 'b7fc79d107710a46d5bbf16af02cd3de19d0404e',
+                                    'evidence_path': 'docs/reports/2026-10-29-held-resume-grants-ownership.json',
+                                    'measured_engine_lines': 84825,
+                                    'measured_owned_total': 161824,
+                                    'measured_table_count': 45,
+                                    'operator_decision': '6679052c',
+                                    'previous_measured_engine_lines': 84825,
+                                    'previous_measured_owned_total': 161805,
+                                    'previous_measured_table_count': 45,
+                                    'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2146',
+                                    'reason': 'Exact global-supervisor-approved +19 shared owned '
+                                              'lines for expired held resume grants and dead '
+                                              'reserved resume seats. Preserve the original '
+                                              'baselines, every historical grant and ownership '
+                                              'classification, s4_modules expiry, zero remaining '
+                                              'headroom, and no new engine lines, tables or '
+                                              'storage category.',
+                                    'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                    'source_revision': '0975ab8d42c7b4852eca0de082432d1809110bcf',
+                                    'task_id': 'nimble-orbit-12',
+                                    'thread_id': 'nimble-orbit-12-ownership-ci'},
 'wait_source_pr2183_final_refresh_composition': {'authorized_engine_delta': 79,
                                                   'authorized_owned_delta': 283,
                                                   'authorized_shared_owned_delta': 204,
@@ -1997,7 +2024,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6317,
+ 'authorized_owned_delta': 6336,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2606,7 +2633,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 84836,
- 'measured_owned_total': 161816,
+ 'measured_owned_total': 161835,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
