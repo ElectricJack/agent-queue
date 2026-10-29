@@ -849,7 +849,7 @@ class SessionQueryMixin:
             return _row_to_session(result.mappings().one())
 
     async def request_idle_pool_recycle(
-        self, session_id: str, *, instance_token: str, stale_before: float
+        self, session_id: str, *, instance_token: str, stale_before: float | None
     ) -> bool:
         """Fence an idle pool worker whose claim loop went quiet for teardown.
 
@@ -865,24 +865,28 @@ class SessionQueryMixin:
         Requiring the durable instance token also prevents a stale observer
         from draining a same-id successor.  Intentional sleep, drain, and
         quarantine states never satisfy the running/running predicates.
+
+        *stale_before* ``None`` drops the activity predicate: the caller holds
+        transcript proof that the worker's turn ended, which a repainting pane
+        keeps ``last_activity`` from ever showing (nimble-journey-85).  The
+        idle-shape predicates still fence a concurrent claim.
         """
+        predicates = [
+            sessions.c.id == session_id,
+            sessions.c.instance_token == instance_token,
+            sessions.c.lifecycle == "pool",
+            sessions.c.state == "running",
+            sessions.c.desired_state == "running",
+            sessions.c.task_id.is_(None),
+            sessions.c.claim_phase.is_(None),
+        ]
+        if stale_before is not None:
+            predicates.append(
+                func.coalesce(sessions.c.last_activity, sessions.c.started_at) <= stale_before
+            )
         async with self.immediate() as conn:
             result = await conn.execute(
-                update(sessions)
-                .where(
-                    and_(
-                        sessions.c.id == session_id,
-                        sessions.c.instance_token == instance_token,
-                        sessions.c.lifecycle == "pool",
-                        sessions.c.state == "running",
-                        sessions.c.desired_state == "running",
-                        sessions.c.task_id.is_(None),
-                        sessions.c.claim_phase.is_(None),
-                        func.coalesce(sessions.c.last_activity, sessions.c.started_at)
-                        <= stale_before,
-                    )
-                )
-                .values(desired_state="stopped")
+                update(sessions).where(and_(*predicates)).values(desired_state="stopped")
             )
         return result.rowcount == 1
 

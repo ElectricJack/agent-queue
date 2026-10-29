@@ -210,7 +210,7 @@ async def git_first_frontier(orch, db, tmp_path):
     await db.update_profile("worker", default_class="standard-medium")
     orch.config.worktrees.enabled = False
     orch._worktree_slots = MagicMock(return_value=MagicMock(
-        prefetch_slot_for_task=AsyncMock(),
+        prefetch_slot_for_task=AsyncMock(return_value=False),
         reset_slot_for_task=AsyncMock(return_value="aq/second"),
     ))
     await db.create_repo(RepoConfig(id="repo", project_id=PROJECT_ID,
@@ -725,9 +725,11 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
         "target_branch": "aq/second",
         "preserve_branch": True,
         "fetch_origin": False,
+        "origin_refreshed": False,
     }
     orch._worktree_slots().prefetch_slot_for_task.assert_awaited_once_with(
         prepare.await_args.args[0], base_branch=env.source, preserve_branch=True,
+        target_branch="aq/second",
     )
 
 
@@ -2404,18 +2406,22 @@ async def test_suspended_status_pool_supply_and_frontier(orch, db, status, expec
     assert supply.running_idle == 0
 
 
-@pytest.mark.parametrize("resume_state,hold,status,expected", [
-    ("queued", None, TaskStatus.RESUME_PENDING, 1),
-    ("queued", "operator_hold", TaskStatus.RESUME_PENDING, 0),
-    ("held", "operator_hold", TaskStatus.RESUME_PENDING, 0),
-    ("reserved", None, TaskStatus.RESUME_PENDING, 0),
-    ("launching", None, TaskStatus.RESUME_PENDING, 0),
-    ("delivered", None, TaskStatus.RESUME_PENDING, 0),
-    ("acknowledged", None, TaskStatus.IN_PROGRESS, 0),
-    ("queued", None, TaskStatus.HIBERNATED, 0),
+@pytest.mark.parametrize("resume_state,hold,status,blocked,expected", [
+    ("queued", None, TaskStatus.RESUME_PENDING, None, 1),
+    # A capacity refusal still wants a seat; a policy hold does not (stark-ember-97).
+    ("queued", None, TaskStatus.RESUME_PENDING, ["slot"], 1),
+    ("queued", None, TaskStatus.RESUME_PENDING, ["policy_hold"], 0),
+    ("queued", None, TaskStatus.RESUME_PENDING, ["policy_hold", "slot"], 0),
+    ("queued", "operator_hold", TaskStatus.RESUME_PENDING, None, 0),
+    ("held", "operator_hold", TaskStatus.RESUME_PENDING, None, 0),
+    ("reserved", None, TaskStatus.RESUME_PENDING, None, 0),
+    ("launching", None, TaskStatus.RESUME_PENDING, None, 0),
+    ("delivered", None, TaskStatus.RESUME_PENDING, None, 0),
+    ("acknowledged", None, TaskStatus.IN_PROGRESS, None, 0),
+    ("queued", None, TaskStatus.HIBERNATED, None, 0),
 ])
 async def test_queued_continuation_increases_pool_desired_above_busy(
-    orch, db, resume_state, hold, status, expected,
+    orch, db, resume_state, hold, status, blocked, expected,
 ):
     from src.commands import CommandHandler
     from src.database.tables import admission_reservations, continuations, wait_records
@@ -2447,7 +2453,9 @@ async def test_queued_continuation_increases_pool_desired_above_busy(
         ))
         await conn.execute(insert(continuations).values(
             id="resume-intent", task_id="resume", wait_id="resume-wait",
-            suspension_generation=1, facts={}, branch="aq/resume", prior_status="IN_PROGRESS",
+            suspension_generation=1, branch="aq/resume", prior_status="IN_PROGRESS",
+            facts={} if blocked is None else {"reserve_retry": {
+                "refusals": 1, "due_at": 10, "blocked": blocked}},
             held_cursor_seq=0, resume_state=resume_state, hold_reason=hold, stopped_at=2,
         ))
         if resume_state in {"reserved", "launching"}:
@@ -2461,12 +2469,13 @@ async def test_queued_continuation_increases_pool_desired_above_busy(
     assert measurement.demand[key] == expected
     [candidate] = measurement.candidates[key]
     assert candidate.ready == expected and candidate.workspace_capacity > 0
+    assert candidate.resume_ready == expected
     actions, _ = orch._size_pool_actions(measurement, time.time())
     starts, drains, starved = place_pool_actions(
         actions=actions, candidates=measurement.candidates,
     )
-    assert len(starts) == expected
-    assert not drains and not starved
+    # The seat is the resume launch's own: no pool session can adopt it.
+    assert not starts and not drains and not starved
     assert measurement.supply[key].running_busy == (
         2 if resume_state in {"reserved", "launching"} else 1
     )
