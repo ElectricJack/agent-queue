@@ -401,6 +401,42 @@ def test_independent_test_changes_merge_all_generated_files_with_plain_git(tmp_p
                 assert (repo / file.relative_to(ROOT)).read_bytes() == file.read_bytes()
 
 
+def test_bazel_graph_files_merge_without_conflicting_under_the_driver(tmp_path):
+    """Two roots each regenerate the Bazel suite files at the same place: plain Git
+    conflicts, so the train used to eject one; the driver takes a side and the
+    post-merge regeneration (scripts/regenerate-generated.sh) rebuilds them."""
+    paths = ["tools/bazel/test_suites.json", "tests/BUILD.bazel", "checks/BUILD.bazel"]
+    assert set(paths) <= set(_marked())
+    repo = tmp_path / "repo"
+    _git(tmp_path, "init", "-q", "--initial-branch=main", str(repo))
+    (repo / ".gitattributes").write_text(
+        (ROOT / ".gitattributes").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    def write(suffix):
+        for path in paths:
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"head\n{suffix}\nfoot\n", encoding="utf-8")
+
+    write("base")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    _git(repo, "checkout", "-qb", "one")
+    write("one")
+    _git(repo, "commit", "-qam", "one")
+    _git(repo, "checkout", "-q", "main")
+    write("main")
+    _git(repo, "commit", "-qam", "main")
+
+    assert _git(repo, "merge", "--no-edit", "one", check=False).returncode == 1
+    unmerged = _git(repo, "diff", "--name-only", "--diff-filter=U").stdout.split()
+    assert sorted(unmerged) == sorted(paths)
+    _git(repo, "merge", "--abort")
+    merged = _git(repo, *GENERATED_MERGE_CONFIG, "merge", "--no-edit", "one", check=False)
+    assert merged.returncode == 0, merged.stdout + merged.stderr
+
+
 async def test_generated_catalogue_conflict_rebuilds_both_branches(tmp_path):
     repo, base, current, other = _catalogue_branches(tmp_path)
     args = ["merge-tree", "--write-tree", f"--merge-base={base}", current, other]
