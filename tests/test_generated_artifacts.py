@@ -565,6 +565,7 @@ async def test_generated_fallback_preserves_the_explicit_merge_base(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(900)
 def test_committed_generated_files_match_regeneration():
     """The one-command drift check: every generator, run in a scratch copy."""
     result = subprocess.run(

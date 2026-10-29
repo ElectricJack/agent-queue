@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "a65493dbec275731613db6f5fa315ddac9fa26ce",
+      "source_head": "e9226e32c6e4779af8c61dd99ed52fc2490b46fb",
       "tool_sha256": "edf71529d50a5c985c9ca33513ebee75a078b8d021bf06ea1b00a6a51e7cddf7"
     },
     "nodes": [
@@ -12220,7 +12220,7 @@
       {"collection_index": 12255, "keywords": ["pytestmark"], "markers": ["asyncio", "parametrize"], "nodeid": "tests/test_generated_artifacts.py::test_clean_single_sided_legacy_change_is_still_refused[tests/fixtures/generated_sources/ownership/integration_ownership.json]", "sort_kind": "Coroutine", "sort_offset": 35},
       {"collection_index": 12256, "keywords": ["pytestmark"], "markers": ["asyncio", "parametrize"], "nodeid": "tests/test_generated_artifacts.py::test_clean_single_sided_legacy_change_is_still_refused[tests/fixtures/generated_sources/ownership/integration_ownership_report.json]", "sort_kind": "Coroutine", "sort_offset": 35},
       {"collection_index": 12258, "keywords": ["pytestmark"], "markers": ["asyncio", "parametrize"], "nodeid": "tests/test_generated_artifacts.py::test_clean_single_sided_legacy_change_is_still_refused[tests/test_command_descriptors.py]", "sort_kind": "Coroutine", "sort_offset": 35},
-      {"collection_index": 12170, "keywords": ["pytestmark"], "markers": ["slow"], "nodeid": "tests/test_generated_artifacts.py::test_committed_generated_files_match_regeneration", "sort_kind": "Function", "sort_offset": 35},
+      {"collection_index": 12170, "keywords": ["pytestmark"], "markers": ["slow", "timeout"], "nodeid": "tests/test_generated_artifacts.py::test_committed_generated_files_match_regeneration", "sort_kind": "Function", "sort_offset": 35},
       {"collection_index": 12262, "keywords": [], "markers": ["asyncio"], "nodeid": "tests/test_generated_artifacts.py::test_detached_regeneration_failure_is_reported_once_then_reruns", "sort_kind": "Coroutine", "sort_offset": 35},
       {"collection_index": 12261, "keywords": [], "markers": ["asyncio"], "nodeid": "tests/test_generated_artifacts.py::test_eighteen_closes_under_load_queue_detach_and_all_complete", "sort_kind": "Coroutine", "sort_offset": 35},
       {"collection_index": 12205, "keywords": ["pytestmark"], "markers": ["asyncio", "parametrize"], "nodeid": "tests/test_generated_artifacts.py::test_epic_refresh_nets_inherited_legacy_evidence[False-earlier-merge-tests/fixtures/contracts/generated-command-audit.json]", "sort_kind": "Coroutine", "sort_offset": 35},
@@ -40083,7 +40083,7 @@
       "tests/test_formulas_provenance.py": "1b9b96d8b7f54c9bfb0ae3f76b0934e11ea9e9218e91a343b049fed7762351c0",
       "tests/test_formulas_resolve.py": "acdc1e7cc53b8e14d32fc273a0c103e8e0237a3f4f03a9cb17e55627adfa3837",
       "tests/test_gate_queries.py": "589be2b802952f1788d015fea14c4dbe8c46ed9ac96a75fc41895231baa74b83",
-      "tests/test_generated_artifacts.py": "db936a346bc916e387b6bf0a5b224863e3470aa72ebc439859e473badf8413a5",
+      "tests/test_generated_artifacts.py": "e3de7b47c1db01b77b1565fc612e25a34d4a966962f01977f90dfc9419d9aebc",
       "tests/test_generated_command_contracts.py": "96ea63c1d3e76bc68e722fc19977e36ced25596ae9ad197b5dc1f1ae092fd272",
       "tests/test_get_downstream_tasks.py": "4fbc4e4d001678fd5b67d4b37dce9e7b53a00778a428a38934384e13937a46ff",
       "tests/test_get_stuck_tasks_command.py": "1b2846cc3b47975adff4760d4e01cb6cce7063c211f7a96865531f613cb3879c",
