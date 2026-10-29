@@ -1,0 +1,9 @@
+{
+  "reason": "_revision() in test_migration_publication_delegations.py loads migrations/versions/a00000000109_publication_delegations.py via importlib.util.spec_from_file_location(name, path), where path is a local Path variable rather than an AST literal.",
+  "resolves": [
+    "tests/test_migration_publication_delegations.py: unresolved file import"
+  ],
+  "imports": [
+    "migrations.versions.a00000000109_publication_delegations"
+  ]
+}

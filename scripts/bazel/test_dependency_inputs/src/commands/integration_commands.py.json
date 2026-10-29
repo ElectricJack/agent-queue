@@ -1,0 +1,6 @@
+{
+  "reason": "getattr(contracts, model_name) at integration_commands.py:474 dynamically selects a request-contract class already defined in the statically imported src.commands.contracts.integration module; no additional file is loaded.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

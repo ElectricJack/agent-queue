@@ -1,0 +1,6 @@
+{
+  "reason": "_alembic_combined() in test_migration_postgres_upgrade_head.py runs subprocess.run([sys.executable, \"-m\", \"alembic\", \"-c\", ini, *args]); the analyzer's python -c heuristic misreads alembic's own -c (config path) flag as Python inline code, and ini is a function parameter it cannot resolve to a literal. No code is actually loaded dynamically at this call site.",
+  "resolves": [
+    "tests/test_migration_postgres_upgrade_head.py: unresolved dynamic import in subprocess Python execution"
+  ]
+}

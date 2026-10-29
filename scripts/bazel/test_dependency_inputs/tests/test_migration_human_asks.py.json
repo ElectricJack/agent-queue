@@ -1,0 +1,11 @@
+{
+  "reason": "migration(module=...) in test_migration_human_asks.py loads ROOT / \"migrations\" / \"versions\" / f\"{module}.py\" via importlib.util.spec_from_file_location; the f-string path is not AST-literal-reducible, but the three revisions it actually loads at call sites are fixed module names.",
+  "resolves": [
+    "tests/test_migration_human_asks.py: unresolved file import"
+  ],
+  "imports": [
+    "migrations.versions.a00000000096_human_ask_decisions",
+    "migrations.versions.a00000000097_ask_source_fences",
+    "migrations.versions.a00000000098_human_ask_transport"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "reason": "getattr(tables, table_name) at submission.py:28 dynamically selects a table object already defined in the statically imported src.database.tables module; no additional file is loaded.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}
