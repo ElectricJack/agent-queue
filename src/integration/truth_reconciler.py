@@ -29,7 +29,7 @@ from src.integration.models import BranchKey
 from src.integration.selection_metrics import (
     SelectionMetrics, selection_count, selection_metrics_scope,
 )
-from src.integration.truth_retention import retain_delivery, retain_objects
+from src.integration.truth_retention import delivery_identity_key, retain_delivery, retain_objects
 from src.logging_config import CorrelationContext
 from src.metrics.operation_profile import operation_profile
 
@@ -279,10 +279,7 @@ class GitTruthReconciler:
         ) == (evidence.request.project_id, evidence.request.repository_id,
               evidence.request.target_ref))
         request = evidence.request
-        key = hashlib.sha256(json.dumps([
-            request.project_id, request.repository_id, task_id, request.completion_id,
-            request.legacy_generation, request.target_ref, evidence.source_oid,
-        ]).encode()).hexdigest()
+        key = delivery_identity_key(request, evidence.source_oid)
         domain = "git-truth:" + key
         async with self.db._engine.connect() as conn:
             recorded = (await conn.execute(select(
