@@ -1273,14 +1273,14 @@ class GitManager:
     async def _amaintenance_exclusion(
         self, args: list[str], cwd: str | None, timeout: float,
     ) -> AsyncIterator[float]:
-        """Exclude full verification while foreground maintenance rewrites packs.
+        """Serialize diagnostic fsck and maintenance with full verification.
 
         Separate from the repository transaction: its callers may already hold
         that lock. Git's global options (notably maintenance's `-c`) are skipped
         when identifying the command. Independent Git processes still require
         the verifier's bounded retry.
         """
-        if _git_subcommand(args) not in {"gc", "repack", "maintenance"}:
+        if _git_subcommand(args) not in {"fsck", "gc", "repack", "maintenance"}:
             yield timeout
             return
         loop = asyncio.get_running_loop()
