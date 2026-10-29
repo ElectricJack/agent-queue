@@ -83,7 +83,8 @@ update.py          `aq update` — stop the daemon, fast-forward the source chec
                    reinstall / rebuild / restart to a fresh process on the new code
                    (src/install/update_finish.py); rolls back on any failure (src/install/update.py)
 waits.py           `aq wait {register,show,list,cancel,explain,graph,checkpoint,ack,decide,retire,lift,bridge,source-redispatch}`
-                   — versioned conditions, evidence and claim-fenced durable waits
+                   (also source-blockers/source-retire) — versioned conditions,
+                   evidence and claim-fenced durable waits
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 
