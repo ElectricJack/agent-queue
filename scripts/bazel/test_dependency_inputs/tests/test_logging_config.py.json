@@ -1,0 +1,6 @@
+{
+  "reason": "test_exception_logging_with_extremely_deep_tracebacks builds a synthetic chain of frame_N() functions as a string and runs exec(compile(source, \"deep_traceback.py\", \"exec\"), functions) to produce a deterministic deep traceback. The executed source is generated in-memory from a loop, not loaded from any repository file, so there is no further file reachable through this dispatch.",
+  "resolves": [
+    "tests/test_logging_config.py: unresolved dynamic import in test helper lookup"
+  ]
+}

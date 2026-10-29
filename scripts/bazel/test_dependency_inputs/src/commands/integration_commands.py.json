@@ -1,0 +1,6 @@
+{
+  "reason": "_train_control's getattr(contracts, model_name) and _train_control's getattr(controls, operation) select among a fixed, enumerable set of names (IntegrationRecordRootNoopArgs, IntegrationRepairTargetArgs, IntegrationRerequestCheckArgs, IntegrationAbortBatchArgs, IntegrationSealNowArgs, IntegrationRefreshEpicArgs, IntegrationReverifyEpicArgs, IntegrationSettleBatchArgs, IntegrationRetireOriginArgs) that only use names already imported at src/commands/contracts/integration.py's module level (startup, scanned unconditionally once that file is reached); no further file is reachable through this dispatch.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "reason": "load_script loads one of scripts/dashboard-perf/{load,inventory,pg_identity,seed,experiment}.py via importlib.util.spec_from_file_location(f\"aqperf_{name}\", KIT / f\"{name}.py\"); the path argument is a dynamic Path built from a variable, not a string literal, so the scanner cannot resolve it from the call site. `imports` lists the five loaded modules by dotted name so each is reached and fully scanned, which picks up their own src/ imports automatically (src.config, src.metrics.histogram, src.resources.limits from experiment.py; src.resources.procs from inventory.py); load.py, pg_identity.py and seed.py import no src/ modules.",
+  "resolves": [
+    "tests/test_dashboard_perf_kit.py: unresolved file import"
+  ],
+  "imports": [
+    "scripts.dashboard-perf.load",
+    "scripts.dashboard-perf.inventory",
+    "scripts.dashboard-perf.pg_identity",
+    "scripts.dashboard-perf.seed",
+    "scripts.dashboard-perf.experiment"
+  ]
+}

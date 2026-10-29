@@ -1,0 +1,6 @@
+{
+  "reason": "build_openapi_spec's getattr(deps, name) over _CREATE_APP_DEPS_GLOBALS selects among module-level globals in src/api/dependencies.py, which are startup and already scanned unconditionally once that file is reached via the enclosing from src.api import dependencies as deps; no further file is reachable through this dispatch.",
+  "resolves": [
+    "src/api/spec.py: unresolved dynamic import in test helper lookup"
+  ]
+}

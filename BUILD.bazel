@@ -4386,6 +4386,7 @@ exports_files([
         "scripts/cleanup-origin-integration-refs.py",
         "scripts/dashboard-perf/api.mjs",
         "scripts/dashboard-perf/experiment.py",
+        "scripts/dashboard-perf/harness.mjs",
         "scripts/dashboard-perf/inventory.py",
         "scripts/dashboard-perf/load.py",
         "scripts/dashboard-perf/pg_identity.py",

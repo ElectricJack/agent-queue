@@ -1,0 +1,11 @@
+{
+  "reason": "kit_module(name) loads a sibling scripts/dashboard-perf/{name}.py via importlib.util.spec_from_file_location(f\"dashboard_perf_{name}\", KIT / f\"{name}.py\"); the path argument references the function's own parameter, not a string literal, so the scanner cannot resolve it from the call site. All call sites in this file pass literal names: \"load\", \"pg_identity\", \"inventory\" — `imports` lists those three sibling modules by dotted name.",
+  "resolves": [
+    "scripts/dashboard-perf/experiment.py: unresolved file import"
+  ],
+  "imports": [
+    "scripts.dashboard-perf.load",
+    "scripts.dashboard-perf.pg_identity",
+    "scripts.dashboard-perf.inventory"
+  ]
+}

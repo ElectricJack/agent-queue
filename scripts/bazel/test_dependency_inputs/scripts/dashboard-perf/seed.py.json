@@ -1,0 +1,9 @@
+{
+  "reason": "_sibling(name) loads a sibling scripts/dashboard-perf/{name}.py via importlib.util.spec_from_file_location(module_name, Path(__file__).with_name(f\"{name}.py\")); the path argument is built from the function's own parameter, not a string literal, so the scanner cannot resolve it from the call site. The only call site in this file passes the literal \"pg_identity\" — `imports` lists that sibling module by dotted name.",
+  "resolves": [
+    "scripts/dashboard-perf/seed.py: unresolved file import"
+  ],
+  "imports": [
+    "scripts.dashboard-perf.pg_identity"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "reason": "_load_migration's spec_from_file_location(\"a00000000013\", REPO_ROOT / \"migrations\" / \"versions\" / \"a00000000013_provider_intent_and_reroutes.py\") builds its path from a Path-join expression, not a string literal, so the scanner cannot resolve it from the call site. `imports` lists that single migration module by dotted name so it is reached and scanned like any other migration source.",
+  "resolves": [
+    "tests/test_provider_intent.py: unresolved file import"
+  ],
+  "imports": [
+    "migrations.versions.a00000000013_provider_intent_and_reroutes"
+  ]
+}

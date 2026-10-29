@@ -1,0 +1,6 @@
+{
+  "reason": "getattr(tables, table_name) selects among sa.Table objects defined as module-level statements in src/database/tables.py, which are startup and already scanned unconditionally once that file is reached via the enclosing from src.database import tables; no further file is reachable through this dispatch.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}
