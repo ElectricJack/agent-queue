@@ -2446,9 +2446,10 @@
         "agent-roster"
       ],
       "default_arm": true,
-      "digest": "sha256:070a4a5eb0e36eaa83ad8848b32df20010d7db9237e133efa04cfd8b8ad67e11",
+      "digest": "sha256:b1a6e36d1820b7d28e5841eba39af65158e44e5883a29bdcb6b9310fcbb4a554",
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.models",
         "src.orchestrator.agent_reconciler"
       ],
@@ -20473,7 +20474,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3da935f1fa0774037644c6bdabb149890b21b52423c820d4b4eba2115f315122",
+      "digest": "sha256:dc4744ead63d66194e38309cf37ac94247913db6d4bfac8723714305d0e7f10f",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -20489,11 +20490,14 @@
         "src.database.queries.continuation_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.doctor.pool_checks",
+        "src.git.identity",
         "src.git.manager",
         "src.integration",
         "src.integration.admission",
         "src.integration.delivery_observer",
         "src.models",
+        "src.orchestrator.agent_reconciler",
         "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.worktree_manager",
         "src.prime",
