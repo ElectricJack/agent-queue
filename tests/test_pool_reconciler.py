@@ -809,6 +809,16 @@ class _FakeSlotManager:
 
     def __init__(self, db):
         self.db = db
+        self.normalized = []
+
+    async def normalize_pool_slot(self, workspace):
+        assert workspace.locked_by_agent_id
+        assert workspace.locked_by_task_id is None
+        assert all(
+            session.work_dir != workspace.workspace_path
+            for session in await self.db.list_sessions(lifecycle="pool", live_only=True)
+        )
+        self.normalized.append(workspace.id)
 
     async def ensure_slots(self, project, base_ws, kind, count):
         slots = await self.db.list_slots_for_base(base_ws.id)
@@ -1391,6 +1401,7 @@ class TestReconcilePools:
         slots = await db.list_slots_for_base("base0")
         assert len(slots) == workers
         assert {slot.locked_by_agent_id for slot in slots} == {row.agent_id for row in pool}
+        assert set(orch._worktree_slot_manager.normalized) == {slot.id for slot in slots}
 
     async def test_terminate_pool_session_full_teardown(self, orch, db):
         await ready(db, "t1")

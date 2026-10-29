@@ -2997,6 +2997,11 @@ class Orchestrator(
         for row in await self.db.list_sessions(live_only=True):
             if row.agent_id:
                 protected_agents.add(row.agent_id)
+        # Resume admission owns a fresh agent before its session is persisted.
+        # Preserve that reservation and its workspace across daemon restarts.
+        from src.waits.occupancy import continuation_agent_ids
+
+        protected_agents.update(await continuation_agent_ids(self.db))
 
         # Reset BUSY agents to IDLE
         await self.db.normalize_agent_state_casing()
@@ -4215,11 +4220,28 @@ class Orchestrator(
             # Diagnose them without confusing a retained owner with a dead one.
             if self._command_handler is not None:
                 try:
-                    findings = [f for f in await reconcile_slot_bindings(self.db, mgr, project.id)
-                                if f["kind"] == "slot_binding_retained"]
+                    audit = await reconcile_slot_bindings(self.db, mgr, project.id)
+                    findings = [f for f in audit if f["kind"] == "slot_binding_retained"]
                     previous = getattr(self, "_workspace_binding_findings", {})
+                    # A new pool reservation changes agent and generation,
+                    # but does not resolve the underlying retained source.
+                    # An unlocked or preparing slot has not been proved healthy
+                    # either. Keep its notice through the gap between sessions.
+                    preparing = {f["workspace_id"] for f in audit
+                                 if f["kind"] == "slot_binding_preparing"}
+                    unproved = {ws.id for ws in workspaces
+                                if not (ws.locked_by_task_id or ws.locked_by_agent_id)} | preparing
+                    old = previous.get(project.id, {})
+                    identities = {key: value for key, value in old.items() if key in unproved}
+                    current = {
+                        f["workspace_id"]: (f["locked_by_task_id"], f["detail"])
+                        for f in findings
+                    }
+                    identities.update(current)
+                    changed = [f for f in findings
+                               if old.get(f["workspace_id"]) != current[f["workspace_id"]]]
                     accepted = True
-                    if findings and previous.get(project.id) != findings:
+                    if changed:
                         result = await self._command_handler.execute("message_send", {
                             "project_id": project.id, "from_kind": "system",
                             "from_id": "workspace-binding-reconciler", "to_kind": "session",
@@ -4227,13 +4249,13 @@ class Orchestrator(
                             "subject": "Existing workspace bindings need fenced recovery",
                             "body": "\n".join(
                                 f"{f['workspace_id']} generation {f['generation']}: {f['detail']}"
-                                for f in findings[:50]
+                                for f in changed[:50]
                             ), "archive_after_inject": True,
                         })
                         if result.get("success") is False or result.get("error"):
                             accepted = False
                     if accepted:
-                        previous[project.id] = findings
+                        previous[project.id] = identities
                         self._workspace_binding_findings = previous
                 except Exception:
                     logger.warning("Existing workspace binding audit failed for %s", project.id)
