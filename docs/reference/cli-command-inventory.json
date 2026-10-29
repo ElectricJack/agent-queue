@@ -23568,12 +23568,79 @@
       }
     },
     {
+      "path": "aq wait source-blockers",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "wait_source_redispatch",
+      "callback": "src.cli.waits.wait_source_blockers",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
+          "--limit",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq wait source-redispatch",
       "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": "wait_source_redispatch",
       "callback": "src.cli.waits.wait_source_redispatch",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--source-seq",
+          "--project",
+          "--note"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq wait source-retire",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "wait_source_redispatch",
+      "callback": "src.cli.waits.wait_source_retire",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,

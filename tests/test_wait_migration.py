@@ -375,3 +375,44 @@ async def test_continuation_task_audit_fk_upgrade_is_idempotent():
             await conn.run_sync(verify)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.migration
+@pytest.mark.integration
+async def test_source_quarantine_upgrade_preserves_events_and_is_idempotent():
+    engine = create_async_engine(await create_scratch_database("sourcequarantine"))
+    revision = import_module("migrations.versions.a00000000124_wait_source_quarantine")
+    try:
+        await migrate(engine, "head")
+
+        def verify(bind):
+            operations = Operations(MigrationContext.configure(bind))
+            for name in ("dispatch_failures", "dispatch_retry_at", "quarantined_at"):
+                operations.drop_column("wait_source_events", name)
+            bind.execute(sa.text(
+                "INSERT INTO wait_source_events (id, payload_hash, source_key, source_generation, "
+                "source_revision, "
+                "outcome_ref, payload, occurred_at, committed_at) "
+                "VALUES ('source', 'hash', 'test:preserved', 0, 'v1', 'test', '{}', 1, 1)"))
+            with Operations.context(MigrationContext.configure(bind)):
+                revision.upgrade()
+                revision.upgrade()
+            assert bind.execute(sa.text(
+                "SELECT source_key, dispatch_failures, dispatch_retry_at, quarantined_at "
+                "FROM wait_source_events")).one() == ("test:preserved", 0, None, None)
+            bind.execute(sa.text(
+                "UPDATE wait_source_events SET dispatch_failures=3, "
+                "dispatch_retry_at=301, quarantined_at=1"))
+            with Operations.context(MigrationContext.configure(bind)):
+                revision.upgrade()
+                with pytest.raises(RuntimeError, match="quarantined"):
+                    revision.downgrade()
+            assert bind.execute(sa.text(
+                "SELECT dispatch_failures, dispatch_retry_at, quarantined_at "
+                "FROM wait_source_events")).one() == (3, 301, 1)
+            assert_schema(bind)
+
+        async with engine.begin() as conn:
+            await conn.run_sync(verify)
+    finally:
+        await engine.dispose()
