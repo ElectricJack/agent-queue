@@ -894,6 +894,45 @@ class TestDescribeTaskBlocker:
 
 
 class TestProjectReady:
+    async def test_withheld_tasks_share_admission_and_fleet_measurement(
+        self, handler, db, spill_pool, monkeypatch,
+    ):
+        """A project read must not rescan fleet demand once per withheld task."""
+        from src.integration import admission
+
+        observe = AsyncMock(wraps=admission.observe_admission)
+        monkeypatch.setattr(admission, "observe_admission", observe)
+        task_ids = {f"held-{i}" for i in range(12)}
+        for tid in sorted(task_ids):
+            await spill_task(db, tid, intent="pinned")
+            await db.add_task_label(tid, "hold:operator")
+
+        result = await handler._cmd_project_ready({"project_id": PROJECT_ID})
+
+        assert result["success"] is True
+        assert result["ready"] == []
+        assert {row["task_id"] for row in result["withheld"]} == task_ids
+        for row in result["withheld"]:
+            codes = {reason["code"] for reason in row["reasons"]}
+            assert {"held", "awaiting_pool_session"} <= codes
+        # One frontier observation and one cached withheld batch. Pool
+        # measurement includes count_ready_by_profile for every active project.
+        assert observe.await_count == 2
+        assert observe.await_args_list[1].kwargs["cached_only"] is True
+        assert set(observe.await_args_list[1].args[1]) == task_ids
+        handler.orchestrator._measure_pools.assert_awaited_once_with(for_display=True)
+
+        # The next request must observe current demand, rather than reusing
+        # a handler-wide cache after another worker claims or finishes work.
+        observe.reset_mock()
+        handler.orchestrator._measure_pools.reset_mock()
+        await db.remove_task_label("held-0", "hold:operator")
+        refreshed = await handler._cmd_project_ready({"project_id": PROJECT_ID})
+        assert {row["task_id"] for row in refreshed["ready"]} == {"held-0"}
+        assert len(refreshed["withheld"]) == len(task_ids) - 1
+        assert observe.await_count == 2
+        handler.orchestrator._measure_pools.assert_awaited_once_with(for_display=True)
+
     async def test_hold_labeled_tasks_excluded(self, handler, db):
         await mktask(db, "a", status=TaskStatus.READY)
         await mktask(db, "b", status=TaskStatus.READY)

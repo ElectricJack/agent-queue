@@ -115,7 +115,10 @@ public commands and covers recovery/undo/all-down. Select `S16` in the shell
 runner to run the original full serial transcript.
 
 Each shard uses one module-scoped disposable world. S1–S3 explicitly share state;
-selecting S2 or S3 alone prepares its missing predecessors. Other item boundaries
+selecting S2 or S3 alone prepares its missing predecessors. The S4 pytest item
+also prepares S1–S3 to cover formula dispatch after the pool claim sequence.
+S3 acknowledges its completed worker's drain so that worker can release capacity
+before S4's task sessions launch. Other item boundaries
 remove tasks (including terminal rows) and sessions and restore swarm/provider/
 playbook switches. Failed cleanup prevents further use of that world, and fixture
 teardown always destroys its owned resources. No daemon is shared across workers.
