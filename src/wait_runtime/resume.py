@@ -12,7 +12,7 @@ from sqlalchemy import insert, select, update
 
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.database.tables import (
-    admission_reservations, agents, continuations, events, messages, provider_availability,
+    admission_reservations, agents, continuations, escalations, events, messages, provider_availability,
     tasks, sessions, workspaces,
 )
 from src.models import Agent, AgentState
@@ -21,15 +21,22 @@ from src.waits.conditions import WaitError
 from src.waits.admission import AdmissionReader
 
 from src.waits.graph import background_graph_work, lock_graph
-from src.wait_runtime.hibernate import locked_suspension
+from src.wait_runtime.hibernate import locked_suspension, suspension_writer
 from src.waits.mail import held_messages
+from src.waits.resume_ack import bind_live_claim
 from src.waits.sources import insert_message_with_source_event
 from src.wait_runtime.legacy_parking import parked
 
 
 WORKSPACE_ATTEMPTS = 3
+WORKSPACE_CAPACITY_REASONS = frozenset({'slots_full', 'slot_warming', 'slot_lost_race'})
+WORKSPACE_CAPACITY_BACKOFF_MAX = 60
 # Outlast one listener batch's 30-second lease budget, including its handoff.
 RESUME_GRAPH_LOCK_TIMEOUT = 35.0
+# (base, ceiling) seconds between reservation attempts after a refusal. A
+# capacity wait looks again soon; a policy, provider or budget hold rarely clears.
+RESERVE_CAPACITY_BACKOFF = (5, 30)
+RESERVE_HOLD_BACKOFF = (10, 300)
 
 
 def retryable_workspace_error(exc):
@@ -110,6 +117,8 @@ class ResumeTransaction:
             task, wait, intent = await locked_suspension(conn, wait_id)
             if intent['id'] != continuation_id or intent['suspension_generation'] != generation:
                 raise WaitError('continuation.stale_generation', 'resume generation changed')
+            if intent['facts'].get('workspace_capacity', {}).get('due_at', 0) > self.clock():
+                return None
             if intent['resume_state'] == 'reserved' and task['status'] == 'RESUME_PENDING':
                 return AssignAction(task['assigned_agent_id'], task['id'], task['project_id'],
                                     continuation_id=intent['id'], generation=generation)
@@ -146,7 +155,7 @@ class ResumeTransaction:
                     if idle:
                         await conn.execute(update(sessions).where(sessions.c.id == idle).values(
                             desired_state='stopped'))
-                return None
+                return await self._back_off(conn, intent, blocked, now)
             agent = Agent(id=str(uuid.uuid4()), name=f"resume-{continuation_id}",
                           profile_id=task['profile_id'], state=AgentState.BUSY,
                           current_task_id=task['id'], last_heartbeat=now,
@@ -160,13 +169,28 @@ class ResumeTransaction:
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved', version=intent['version'] + 1,
                 launch_attempts=intent['launch_attempts'] + 1,
-                facts={**intent['facts'], 'resume_attempt_started_at': now},
+                facts={**intent['facts'], 'resume_attempt_started_at': now, 'reserve_retry': None},
             ))
             await conn.execute(update(tasks).where(tasks.c.id == task['id']).values(
                 assigned_agent_id=agent.id, updated_at=now,
             ))
             return AssignAction(agent.id, task['id'], task['project_id'],
                                 continuation_id=intent['id'], generation=generation)
+
+    async def _back_off(self, conn, intent, blocked, now):
+        """Record when to look at a refused reservation again, and why it waits.
+
+        Retrying each tick would retake the graph lock only to observe the same
+        blocker. ``blocked`` lets occupancy drop a policy, provider or budget
+        hold from queued pool demand: only a capacity refusal wants a seat.
+        """
+        refusals = (intent['facts'].get('reserve_retry') or {}).get('refusals', 0) + 1
+        base, ceiling = (RESERVE_CAPACITY_BACKOFF if blocked <= {'slot', 'workspace'}
+                         else RESERVE_HOLD_BACKOFF)
+        await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+            facts={**intent['facts'], 'reserve_retry': {
+                'refusals': refusals, 'due_at': now + min(ceiling, base * 2 ** (refusals - 1)),
+                'blocked': sorted(blocked)}}))
 
     async def fresh_workspace(self, action, task, agent, intent):
         """A newly provisioned directory, even when reusing a numbered slot.
@@ -201,6 +225,9 @@ class ResumeTransaction:
             return target
         path = await self.orch._prepare_workspace_locked(task, agent)
         workspace = await self.db.get_workspace_for_task(task.id)
+        reason = getattr(self.orch, '_workspace_wait_reasons', {}).get(task.id)
+        if not path and workspace is None and reason in WORKSPACE_CAPACITY_REASONS:
+            raise WaitError('wait.workspace_capacity', reason)
         if not path or not workspace or not workspace.is_slot:
             raise WaitError('wait.unavailable', 'fresh continuation requires a worktree slot')
         base = await self.db.get_workspace(workspace.base_workspace_id)
@@ -310,6 +337,10 @@ class ResumeTransaction:
                         continuations.c.id == current['id'],
                     ).values(facts=facts))
             except Exception as exc:
+                if isinstance(exc, WaitError) and exc.code == 'wait.workspace_capacity':
+                    retry_at = await self.workspace_capacity_retry(action, intent['wait_id'], exc)
+                    return {'success': True, 'retry_queued': True, 'retry_at': retry_at,
+                            'capacity_blocked': True}
                 if retry_at := await self.workspace_retry(action, intent['wait_id'], exc):
                     return {'success': True, 'retry_queued': True, 'retry_at': retry_at}
                 return await self.failed(action, task, f'workspace preparation: {exc}',
@@ -319,6 +350,43 @@ class ResumeTransaction:
             except Exception as exc:
                 return await self.failed(action, task, str(exc), handler=handler)
             return {'success': True, 'dispatched': True}
+
+    async def workspace_capacity_retry(self, action, wait_id, exc):
+        """Return an unacquired seat to admission; contention spends no failure budget."""
+        async with self.db._engine.begin() as conn:
+            task, _, intent = await locked_suspension(conn, wait_id)
+            if ((intent['id'], intent['suspension_generation'], intent['resume_state']) != (
+                    action.continuation_id, action.generation, 'reserved')
+                    or task['status'] != 'RESUME_PENDING'
+                    or task['assigned_agent_id'] != action.agent_id
+                    or intent['new_session_id'] is not None
+                    or await conn.scalar(select(workspaces.c.id).where(
+                        workspaces.c.locked_by_task_id == task['id']).limit(1))
+                    or await conn.scalar(select(sessions.c.id).where(
+                        sessions.c.task_id == task['id'],
+                        sessions.c.state.not_in(('stopped', 'failed'))).limit(1))):
+                raise WaitError('continuation.stale_generation', 'capacity retry ownership changed')
+            previous = intent['facts'].get('workspace_capacity', {})
+            attempts = previous.get('attempts', 0) + 1
+            now = self.clock()
+            # Cap the exponent as well as the delay for arbitrarily long queues.
+            retry_at = now + min(WORKSPACE_CAPACITY_BACKOFF_MAX, 5 * 2 ** min(attempts - 1, 4))
+            await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
+                resume_state='queued', version=intent['version'] + 1,
+                launch_attempts=intent['launch_attempts'] - 1,
+                facts={**intent['facts'], 'workspace_capacity': {
+                    'attempts': attempts, 'first_blocked_at': previous.get('first_blocked_at', now),
+                    'due_at': retry_at, 'reason': str(exc)}},
+            ))
+            await conn.execute(update(admission_reservations).where(
+                admission_reservations.c.continuation_id == intent['id'],
+                admission_reservations.c.state == 'granted',
+            ).values(state='pending', granted_at=None))
+            await conn.execute(update(tasks).where(tasks.c.id == task['id']).values(
+                assigned_agent_id=None))
+            await conn.execute(update(agents).where(agents.c.id == action.agent_id).values(
+                state='RETIRED', current_task_id=None))
+            return retry_at
 
     async def workspace_retry(self, action, wait_id, exc):
         """Keep the reservation and checkout for a backoff; None means hold instead."""
@@ -335,7 +403,7 @@ class ResumeTransaction:
         if task['status'] != 'PAUSED' and failures < WORKSPACE_ATTEMPTS and retryable_workspace_error(exc):
             return retry_at
 
-    async def requeue(self, args, *, principal, scope, handler):
+    async def requeue(self, args, *, principal, scope, handler, incident_id=None):
         """Supervisor repair of a resolved wait's held resume, fenced by generation."""
         async with self.db._engine.begin() as conn:
             # Join the same fair queue as automatic resume. Acquire before any
@@ -348,24 +416,64 @@ class ResumeTransaction:
             if (intent['id'], intent['suspension_generation']) != (
                     args['continuation_id'], args['expected_generation']):
                 raise WaitError('continuation.stale_generation', 'held resume generation changed')
+            if (intent['resume_state'] == 'held' and intent['hold_reason'] == 'push_failed'
+                    and intent['stopped_at'] is None and task['status'] in {'WAITING', 'IN_PROGRESS'}
+                    and wait['cleared_at'] is None):
+                # The stored session can still say running after its process died.
+                # Requeue only schedules suspension; advance repeats provider death
+                # proof before any publication or checkout release.
+                await suspension_writer(conn, task, wait, intent)
+                audit = {'wait_id': wait['id'], 'continuation_id': intent['id'],
+                         'generation': intent['suspension_generation'], 'at': self.clock(),
+                         'note': args['note'], 'principal_kind': principal.kind,
+                         'session_id': principal.session_id, 'hold_reason': intent['hold_reason']}
+                await conn.execute(update(continuations).where(
+                    continuations.c.id == intent['id'],
+                ).values(version=intent['version'] + 1, facts={
+                    **intent['facts'], 'resume_requeue': audit,
+                    'hibernation': {**intent['facts'].get('hibernation', {}), 'push_retry_at': 0},
+                }))
+                await conn.execute(insert(events).values(
+                    event_type='wait.resume_requeued', project_id=task['project_id'],
+                    task_id=task['id'], timestamp=audit['at'], payload=json.dumps(audit)))
+                return {'success': True, 'wait_id': wait['id'], 'decision': 'requeue',
+                        'generation': intent['suspension_generation'], 'next_step': 'end_turn'}
             if (intent['resume_state'] != 'held' or task['status'] != 'RESUME_PENDING'
                     or intent['hold_reason'] not in {'resume_workspace_failed', 'resume_launch_failed'}
                     or wait['outcome'] == 'pending' or wait['cleared_at'] is not None):
                 raise WaitError('wait.unavailable', 'continuation has no repairable resume hold')
+            if task['branch_name'] != intent['branch']:
+                raise WaitError('continuation.head_drift', 'saved branch binding changed')
+            if incident_id is not None:
+                incident = (await conn.execute(select(escalations).where(
+                    escalations.c.id == incident_id,
+                ).with_for_update())).mappings().first()
+                identity = (f"continuation:{intent['id']}:{intent['suspension_generation']}:"
+                            f"{intent['hold_reason']}")
+                if (not incident or intent['facts'].get('hold_escalation_id') != incident_id
+                        or incident['task_id'] != task['id']
+                        or incident['project_id'] != task['project_id']
+                        or incident['source_kind'] != 'continuation'
+                        or incident['source_identity'] != identity
+                        or incident['incident_key'] != identity
+                        or incident['state'] not in {'needs_human', 'reply_received', 'resolving'}):
+                    raise WaitError('wait.unavailable', 'continuation incident is stale or not found')
             if await conn.scalar(select(sessions.c.id).where(sessions.c.task_id == task['id'],
                                  sessions.c.state.not_in(('stopped', 'failed'))).limit(1)):
                 raise WaitError('continuation.stop_uncertain', 'task still has a live process')
             audit = {'wait_id': wait['id'], 'continuation_id': intent['id'],
                      'generation': intent['suspension_generation'], 'at': self.clock(),
                      'note': args['note'], 'principal_kind': principal.kind,
-                     'session_id': principal.session_id, 'hold_reason': intent['hold_reason']}
+                     'session_id': principal.session_id, 'hold_reason': intent['hold_reason'],
+                     'incident_id': incident_id}
             # A workspace hold keeps its reserved agent and grant; a launch hold released both.
             kept = task['assigned_agent_id'] is not None
             await conn.execute(update(continuations).where(continuations.c.id == intent['id']).values(
                 resume_state='reserved' if kept else 'queued', hold_reason=None,
                 launch_attempts=intent['launch_attempts'] if kept else 0, new_session_id=None,
                 envelope_id=None, version=intent['version'] + 1,
-                facts={**intent['facts'], 'workspace_retry': {}, 'resume_requeue': audit}))
+                facts={**intent['facts'], 'workspace_retry': {}, 'workspace_capacity': {},
+                       'resume_requeue': audit}))
             await conn.execute(insert(events).values(
                 event_type='wait.resume_requeued', project_id=task['project_id'],
                 task_id=task['id'], timestamp=audit['at'], payload=json.dumps(audit)))
@@ -405,6 +513,8 @@ class ResumeTransaction:
                 'session_id': record.id, 'instance_token': record.instance_token,
                 'claim_epoch': record.last_claim_epoch,
             }, conn=conn)
+            await bind_live_claim(conn, task_id=task['id'], agent_id=action.agent_id,
+                                  session_id=record.id, now=self.clock())
             held = await held_messages(conn, wait)
             ids = [m['id'] for m in held]
             envelope = wait_outcome_envelope(wait, intent, held_messages=ids)
