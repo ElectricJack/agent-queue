@@ -1,0 +1,9 @@
+{
+  "reason": "lookup() resolves its table via getattr(tables, table_name), where table_name is a parameter; the target module is known and fully enumerable from call sites.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ],
+  "imports": [
+    "src.database.tables"
+  ]
+}

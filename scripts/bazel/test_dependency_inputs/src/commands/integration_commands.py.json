@@ -1,0 +1,9 @@
+{
+  "reason": "_train_control resolves its pydantic contract via getattr(contracts, model_name), where model_name is a parameter; the target module is known and fully enumerable from call sites.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ],
+  "imports": [
+    "src.commands.contracts.integration"
+  ]
+}

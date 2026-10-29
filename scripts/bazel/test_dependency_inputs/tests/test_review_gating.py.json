@@ -1,0 +1,4 @@
+{
+  "docs": false,
+  "reason": "the only \"docs\" literals in this module are an unrelated test-fixture task-graph node key and title (\"docs\" / \"Document the design\"), not a reference to the docs/ directory or any docs file."
+}

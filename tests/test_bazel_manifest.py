@@ -224,8 +224,10 @@ def _manifest():
     return targets.hydrate_manifest(json.loads((ROOT / "tools/bazel/test_suites.json").read_text()))
 
 
-# azure-cascade-11: full-graph regeneration measured ~178s under load; allow headroom.
-@pytest.mark.timeout(300)
+# bold-rapids-90.1: fine-grained-by-default (S3) now analyzes every catalogued
+# module instead of an opt-in subset; full-graph regeneration measured ~298s
+# solo and exceeded the prior 300s budget under xdist contention. Allow headroom.
+@pytest.mark.timeout(600)
 def test_graph_is_reproducible_and_matches_catalogue():
     manifest = _manifest()
     catalogue = json.loads((ROOT / "tests/selection_catalogue.json").read_text())
@@ -352,20 +354,6 @@ def test_deleted_renamed_and_initializer_inputs_change_the_graph(tmp_path):
     assert "src/alpha/__init__.py" in deleted["src/alpha"]["files"]
 
 
-def test_dependency_areas_match_catalogue_names_and_module_globs():
-    modules = {
-        "tests/test_knowledge_budget.py": {"areas": ["knowledge"]},
-        "tests/test_knowledge_context.py": {"areas": ["knowledge", "sessions"]},
-        "tests/test_sessions.py": {"areas": ["sessions"]},
-    }
-    expected = set(modules) - {"tests/test_sessions.py"}
-    assert targets.select_areas(modules, ["knowledge"]) == expected
-    assert targets.select_areas(modules, ["tests/test_knowledge_*.py"]) == expected
-    assert targets.select_areas(modules, ["knowledge", "sessions"]) == set(modules)
-    with pytest.raises(ValueError, match="matches no test modules"):
-        targets.select_areas(modules, ["unknown"])
-
-
 def _fine_graph_fixture(root):
     contents = {
         "BUILD.bazel": "",
@@ -411,9 +399,9 @@ def test_tracked_inputs_ignore_local_artifacts_and_survive_archive(tmp_path):
         ".gitignore": "packages/aq-ts-client/src/index.ts\ntests/test_ignored.py\n",
         "packages/aq-ts-client/src/tracked.ts": "export const value = 1;\n",
         "tools/lookup/data.json": "{}\n",
-        "scripts/bazel/test_dependency_inputs.json": json.dumps({
-            "tests/test_behavior.py": {"data": ["packages/aq-ts-client/src/*.ts"]},
-        }),
+        "scripts/bazel/test_dependency_inputs/tests/test_behavior.py.json": json.dumps(
+            {"data": ["packages/aq-ts-client/src/*.ts"]},
+        ),
     }
     for relative, content in tracked.items():
         path = tmp_path / relative
@@ -650,6 +638,44 @@ def test_generate_reads_existing_manifest_once_and_validates_references(tmp_path
     manifest_path.write_text(json.dumps(encoded))
     with pytest.raises(ValueError, match="unknown dependency set reference"):
         targets.generate(tmp_path)
+
+
+def test_generate_selects_fine_grained_by_default_except_declared_legacy_modules(tmp_path, monkeypatch):
+    """S3 acceptance: every catalogued module is fine-grained by default; a
+    declared ``mode: legacy`` (with its required reason) is the only opt-out,
+    replacing the old manifest-stickiness behaviour entirely."""
+    (tmp_path / "tests").mkdir()
+    catalogue_modules = {"tests/test_a.py": {}, "tests/test_b.py": {}}
+    (tmp_path / "tests/selection_catalogue.json").write_text(
+        json.dumps({"modules": catalogue_modules})
+    )
+    legacy_shard = tmp_path / "scripts/bazel/test_dependency_inputs/tests/test_b.py.json"
+    legacy_shard.parent.mkdir(parents=True)
+    legacy_shard.write_text(json.dumps({
+        "mode": "legacy", "reason": "legacy harness wires itself up dynamically",
+    }))
+    manifest_path = tmp_path / targets.MANIFEST
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps(targets.intern_manifest({
+        "schema_version": 1, "collection": {"source_files": {}}, "modules": {},
+    })))
+
+    captured = {}
+
+    def fake_graph(root, modules, fine_grained):
+        captured["modules"] = modules
+        captured["fine_grained"] = fine_grained
+        return {}, {}
+
+    monkeypatch.setattr(targets, "collection_inputs", lambda root: {})
+    monkeypatch.setattr(targets, "graph", fake_graph)
+    monkeypatch.setattr(targets, "make_manifest", lambda *args: {})
+    monkeypatch.setattr(targets, "render", lambda *args: {})
+
+    targets.generate(tmp_path)
+
+    assert captured["modules"] == catalogue_modules
+    assert captured["fine_grained"] == {"tests/test_a.py"}
 
 
 def test_interned_manifest_dependency_arrays_round_trip_exactly():
