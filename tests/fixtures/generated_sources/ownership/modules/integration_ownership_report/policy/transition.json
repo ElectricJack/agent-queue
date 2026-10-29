@@ -1959,6 +1959,28 @@
         "source_revision": "65696d97368efe1bd52a0902e963cdb19316f57b",
         "task_id": "wise-falcon-26"
       },
+      "wait_source_pr2183_final_refresh_composition": {
+        "authorized_engine_delta": 79,
+        "authorized_owned_delta": 283,
+        "authorized_shared_owned_delta": 204,
+        "authorized_table_delta": 0,
+        "decision_message_id": "msg-3737d47dcd5c4b3f8c7efc4423446bc8",
+        "dev_source_revision": "0f535b6356710f58e2dd5a3b9e4e3f1e000d27de",
+        "evidence_path": "docs/reports/2026-10-29-wait-source-pr2183-final-refresh-ownership.json",
+        "measured_engine_lines": 84825,
+        "measured_owned_total": 161769,
+        "measured_table_count": 45,
+        "operator_decision": "6679052c",
+        "original_task_id": "clear-journey-76",
+        "previous_measured_engine_lines": 84746,
+        "previous_measured_owned_total": 161486,
+        "previous_measured_table_count": 45,
+        "previous_refresh_task_id": "wise-falcon-26",
+        "reason": "Ancestry-preserving PR2183 final refresh onto dev 0f535b635, including PR2182 visit-carry and PR2180 generated-conflict regeneration. Complete dev archive and merged tree scored with unchanged classifications confirm the approved wait-listener delta +283 owned/+79 engine/+204 shared/0 tables. Preserve all historical measurements and grants, including the earlier 710 composition, with zero remaining headroom and no new authority, table or storage category.",
+        "referenced_decision": "size-cap-delegation-2026-10-23",
+        "source_revision": "a2cb30b9ee1960d0345f226680b632a84bdbb510",
+        "task_id": "bold-beacon-75"
+      },
       "wait_source_pr2183_refresh_composition": {
         "authorized_engine_delta": 79,
         "authorized_owned_delta": 283,
