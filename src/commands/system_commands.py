@@ -19,6 +19,33 @@ logger = logging.getLogger(__name__)
 class SystemCommandsMixin:
     """System command methods mixed into CommandHandler."""
 
+    async def _cmd_maintenance_preflight(self, args: dict) -> dict:
+        """Authenticate and audit bounded maintenance before the CLI stops AQ."""
+        import json
+
+        from src.commands.supervisor_authority import operator_or_global_supervisor
+
+        action = args.get("action")
+        if action not in {"update", "update.check", "db.backup"}:
+            return {"success": False, "error": "unsupported maintenance action"}
+        actor, error = await operator_or_global_supervisor(self.db)
+        if error:
+            return {"success": False, "error": error}
+        # Fetch the inventory before authorizing: an unavailable session view
+        # must not silently turn into proof that no agents need preserving.
+        sessions = [
+            {"id": row.id, "state": row.state, "lifecycle": row.lifecycle}
+            for row in await self.db.list_sessions()
+            if row.state not in {"stopped", "failed"}
+        ]
+        audit_id = await self.db.log_event(
+            "maintenance.preflight",
+            payload=json.dumps({"actor": actor, "action": action, "sessions": sessions}),
+        )
+        if not isinstance(audit_id, int) or audit_id <= 0:
+            return {"success": False, "error": "maintenance audit was not recorded"}
+        return {"success": True, "actor": actor, "audit_id": audit_id, "sessions": sessions}
+
     # -----------------------------------------------------------------------
 
     async def _cmd_operational_retention(self, args: dict) -> dict:

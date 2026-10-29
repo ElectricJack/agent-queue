@@ -1033,6 +1033,10 @@ from .loop_node_detail_dto import LoopNodeDetailDTO
 from .loop_node_detail_dto_failure_policy import LoopNodeDetailDTOFailurePolicy
 from .loop_perf import LoopPerf
 from .machine_metrics import MachineMetrics
+from .maintenance_preflight_request import MaintenancePreflightRequest
+from .maintenance_preflight_response import MaintenancePreflightResponse
+from .maintenance_preflight_response_422 import MaintenancePreflightResponse422
+from .maintenance_session import MaintenanceSession
 from .manual_check import ManualCheck
 from .manual_position import ManualPosition
 from .mcp_server_summary import McpServerSummary
@@ -3329,6 +3333,10 @@ __all__ = (
     "LoopNodeDetailDTOFailurePolicy",
     "LoopPerf",
     "MachineMetrics",
+    "MaintenancePreflightRequest",
+    "MaintenancePreflightResponse",
+    "MaintenancePreflightResponse422",
+    "MaintenanceSession",
     "ManualCheck",
     "ManualPosition",
     "McpServerSummary",

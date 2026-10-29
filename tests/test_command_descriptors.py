@@ -1969,7 +1969,7 @@ def _before_wait_source_recovery_catalogue(catalogue=None):
         catalogue = _before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(
                 _before_claim_abort_catalogue(
-                    _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+                    _before_store_maintenance_catalogue(_before_supervisor_maintenance_catalogue())
                 )
             )
         )
@@ -1996,7 +1996,7 @@ def test_wait_source_recovery_only_extends_existing_scoped_command():
     catalogue = _before_unread_inbox_catalogue(
         _before_batch_authority_catalogue(_before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue(
-                _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+                _before_store_maintenance_catalogue(_before_supervisor_maintenance_catalogue())
             ))
         ))
     )
@@ -2075,7 +2075,7 @@ def _store_maintenance_changes():
 
 def _before_store_maintenance_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+        catalogue = _before_wait_source_recovery_catalogue(_before_supervisor_maintenance_catalogue())
     evidence = _store_maintenance_changes()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
@@ -2087,7 +2087,7 @@ def test_store_maintenance_catalogue_only_adds_scoped_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+    catalogue = _before_wait_source_recovery_catalogue(_before_supervisor_maintenance_catalogue())
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
@@ -2143,3 +2143,35 @@ def test_publication_hold_only_adds_fenced_continuation_retirement():
         _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue()), indent=2
     ) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _supervisor_maintenance_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/supervisor-maintenance-contract-changes.json").read_text()
+    )
+
+
+def _before_supervisor_maintenance_catalogue():
+    evidence = _supervisor_maintenance_changes()
+    catalogue = json.loads(render_command_catalogue())
+    [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
+    assert definition == evidence["explicit_entry"]
+    catalogue["explicit"].remove(definition)
+    assert catalogue["tool_categories"].pop(evidence["command"]) == evidence["tool_category"]
+    return catalogue
+
+
+def test_supervisor_maintenance_only_adds_authenticated_audit_command():
+    evidence = _supervisor_maintenance_changes()
+    assert evidence["source_base"] == "9a9b8e8ef992d1ff699755a9383ed3c91e2844ea"
+    assert evidence["command"] == "maintenance_preflight"
+    assert evidence["explicit_entry"]["input_schema"]["properties"]["action"]["enum"] == [
+        "update", "update.check", "db.backup",
+    ]
+    assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
+        evidence["contract_fingerprint"]
+    )
+    rendered = render_command_catalogue()
+    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    previous = json.dumps(_before_supervisor_maintenance_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]

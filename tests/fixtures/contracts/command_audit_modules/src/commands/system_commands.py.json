@@ -409,6 +409,49 @@
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
     ]
   },
+  "maintenance_preflight": {
+    "argument_reads_diagnostic_only": [
+      "action"
+    ],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "explicit_tool",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_maintenance_preflight",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'unsupported maintenance action'}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': error}"
+      },
+      {
+        "protocol": "explicit_boolean: False",
+        "return": "{'success': False, 'error': 'maintenance audit was not recorded'}"
+      },
+      {
+        "protocol": "explicit_boolean: True",
+        "return": "{'success': True, 'actor': actor, 'audit_id': audit_id, 'sessions': sessions}"
+      }
+    ],
+    "review_notes": "Installation-scoped preflight authorizes only the local operator or a live elevated global named supervisor with matching launch instance. Inventory and durable audit must succeed before admission; it neither stops sessions nor changes the database schema. Inventory/audit exceptions propagate and the CLI refuses maintenance. Repeating creates another audit event.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:fa388758314322fac9ebd4d3c5423f07ac2c937ffa83918dc68e5fe162d99dff",
+    "tests": [
+      "tests/test_db_cli.py::test_maintenance_preflight_requires_live_global_identity_and_audit",
+      "tests/test_update.py::test_supervisor_preflight_failures_prevent_update",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ]
+  },
   "operational_retention": {
     "argument_reads_diagnostic_only": [
       "batch_size",

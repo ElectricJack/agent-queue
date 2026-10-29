@@ -262,6 +262,8 @@ def fake(tmp_path):
 
 def _no_worker_scope(monkeypatch):
     monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+    monkeypatch.delenv("AQ_API_TOKEN", raising=False)
 
 
 # -- planning ---------------------------------------------------------------
@@ -1767,3 +1769,104 @@ def test_automatic_migration_update_requires_backup(repo, fake, monkeypatch):
     monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
     result = CliRunner().invoke(cli, ["update", "--yes", "--automatic", "--no-backup"])
     assert result.exit_code == 10 and fake.calls == []
+
+
+@pytest.mark.parametrize("check", [False, True])
+def test_global_supervisor_update_authenticates_before_preserving_sessions(
+    repo, fake, monkeypatch, check
+):
+    from unittest.mock import AsyncMock
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+    from src.cli.client import CLIClient
+
+    monkeypatch.setenv("AQ_DB_SCOPE", "global-supervisor")
+    monkeypatch.setenv("AQ_API_TOKEN", "fixture-bearer")
+    target = repo.push("README.md", "supervisor update\n")
+    preflight = AsyncMock(return_value={
+        "success": True, "audit_id": 47, "sessions": [{"id": "supervisor"}],
+    })
+    monkeypatch.setattr(CLIClient, "connect", AsyncMock())
+    monkeypatch.setattr(CLIClient, "execute", preflight)
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--check" if check else "--yes"])
+    assert result.exit_code == 0, result.output
+    preflight.assert_awaited_once_with(
+        "maintenance_preflight", {"action": "update.check" if check else "update"}
+    )
+    assert "Maintenance audit 47" in result.output
+    if check:
+        assert repo.head() != target and not fake.calls
+    else:
+        assert repo.head() == target
+        assert fake.ran("stop", "--keep-sessions")
+
+
+@pytest.mark.parametrize("option", ["--no-backup", "--automatic"])
+def test_supervisor_cannot_skip_update_safeguards(monkeypatch, option):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    monkeypatch.setenv("AQ_DB_SCOPE", "global-supervisor")
+    monkeypatch.setattr(update_cli, "_host", lambda: pytest.fail("must refuse first"))
+    result = CliRunner().invoke(cli, ["update", "--yes", option])
+    assert result.exit_code == 10
+
+
+@pytest.mark.parametrize("response", [
+    {"success": False, "error": "stale session"},
+    {"success": True, "sessions": []},
+    {"success": True, "audit_id": 47},
+])
+def test_supervisor_preflight_failures_prevent_update(monkeypatch, response):
+    from unittest.mock import AsyncMock
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+    from src.cli.client import CLIClient
+
+    monkeypatch.setenv("AQ_DB_SCOPE", "global-supervisor")
+    monkeypatch.setenv("AQ_API_TOKEN", "fixture-bearer")
+    monkeypatch.setattr(CLIClient, "connect", AsyncMock())
+    monkeypatch.setattr(CLIClient, "execute", AsyncMock(return_value=response))
+    monkeypatch.setattr(update_cli, "_host", lambda: pytest.fail("must refuse first"))
+    result = CliRunner().invoke(cli, ["update", "--check"])
+    assert result.exit_code != 0 and "preflight" in result.output
+
+
+@pytest.mark.parametrize("failure", ["bearer", "transport"])
+def test_supervisor_maintenance_cannot_proceed_without_authentication(monkeypatch, failure):
+    from unittest.mock import AsyncMock
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+    from src.cli.client import CLIClient
+
+    monkeypatch.setenv("AQ_DB_SCOPE", "global-supervisor")
+    if failure == "bearer":
+        monkeypatch.delenv("AQ_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("AQ_API_TOKEN", "fixture-bearer")
+    connect = AsyncMock(side_effect=RuntimeError("private transport details"))
+    monkeypatch.setattr(CLIClient, "connect", connect)
+    monkeypatch.setattr(update_cli, "_host", lambda: pytest.fail("must refuse first"))
+    result = CliRunner().invoke(cli, ["update", "--check"])
+    assert result.exit_code != 0
+    assert "private transport details" not in result.output
+    if failure == "bearer":
+        connect.assert_not_awaited()
+
+
+def test_session_markers_without_worker_scope_do_not_grant_update(monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
+    monkeypatch.setenv("AQ_API_TOKEN", "fixture-worker-bearer")
+    monkeypatch.setattr(update_cli, "_host", lambda: pytest.fail("must refuse first"))
+    result = CliRunner().invoke(cli, ["update", "--yes"])
+    assert result.exit_code == 10

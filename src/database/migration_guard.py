@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CLI",
     "DAEMON",
+    "GLOBAL_SUPERVISOR",
     "MIGRATE",
     "OPERATOR",
     "SCOPES",
@@ -89,8 +90,10 @@ WORKER = "worker"
 CLI = "cli"
 #: pytest.  Free to migrate its own scratch databases, never production.
 TEST = "test"
+#: Global named supervisor: bounded maintenance, still VERIFY on production.
+GLOBAL_SUPERVISOR = "global-supervisor"
 
-SCOPES: frozenset[str] = frozenset({DAEMON, OPERATOR, WORKER, CLI, TEST})
+SCOPES: frozenset[str] = frozenset({DAEMON, OPERATOR, WORKER, CLI, TEST, GLOBAL_SUPERVISOR})
 
 #: Environment override, and the marker every worker session carries.
 SCOPE_ENV = "AQ_DB_SCOPE"

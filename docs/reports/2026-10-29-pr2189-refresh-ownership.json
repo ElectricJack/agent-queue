@@ -1,0 +1,46 @@
+{
+  "after": {
+    "engine": 84830,
+    "owned": 161873,
+    "source_heads": [
+      "b8a293b8763e6d155285a86ff1716a3458c9c39c",
+      "3cf46dd30f5e45eba97f8fd32637e9361c2da752"
+    ],
+    "tables": 45
+  },
+  "authority": "size-cap-delegation-2026-10-23",
+  "before": {
+    "engine": 84830,
+    "owned": 161833,
+    "revision": "3cf46dd30f5e45eba97f8fd32637e9361c2da752",
+    "tables": 45
+  },
+  "charged_files": {
+    "src/commands/system_commands.py": {
+      "after": 224,
+      "before": 197,
+      "delta": 27
+    },
+    "src/sessions/env.py": {
+      "after": 144,
+      "before": 134,
+      "delta": 10
+    },
+    "src/sessions/spec.py": {
+      "after": 213,
+      "before": 210,
+      "delta": 3
+    }
+  },
+  "delta": {
+    "engine": 0,
+    "owned": 40,
+    "tables": 0
+  },
+  "inventory": "tests.integration_ownership.inventory",
+  "method": "Complete dev src, dashboard/src and migration archive compared with the merged worktree using the unchanged dev scanner and ownership classifications. Physical charged lines include comments and blank lines.",
+  "new_storage_categories": [],
+  "original_task_id": "nimble-pinnacle-47",
+  "supervisor_decision_message_id": "msg-2d9ea71ae8c24c24973bf7575c1af011",
+  "task_id": "bold-torrent-45"
+}
