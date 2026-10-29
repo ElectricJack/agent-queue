@@ -5214,31 +5214,20 @@ async def test_lane_ledger_keeps_visit_history_for_the_next_daemon(world):
     assert await ledger.load() == []
 
 
-async def test_lane_ledger_migration_is_idempotent_and_matches_the_table(world):
-    from importlib import import_module
+async def test_lane_ledger_uses_the_generic_config_store(world):
+    from src.database.tables import metadata, system_config
 
-    import sqlalchemy as sa
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-
-    from src.database.tables import integration_train_lanes
-
-    migration = import_module("migrations.versions.a00000000124_integration_train_lanes")
-
-    def rebuild(bind):
-        integration_train_lanes.drop(bind)
-        with Operations.context(MigrationContext.configure(bind)):
-            migration.upgrade()
-            migration.upgrade()
-        inspector = sa.inspect(bind)
-        assert {c["name"] for c in inspector.get_columns("integration_train_lanes")} == set(
-            integration_train_lanes.c.keys())
-        primary = inspector.get_pk_constraint("integration_train_lanes")
-        assert primary["name"] == "pk_integration_train_lanes"
-        assert primary["constrained_columns"] == ["project_id", "repository_id", "target_ref"]
-
+    ledger = DatabaseLaneLedger(world.db, clock=lambda: 1000.0)
+    record = LaneRecord("p", "r", "refs/heads/aq/epic", kind="epic", visits=3, errors=1,
+                        state="blocked", observed_at=None, started_at=900.0)
+    await ledger.record(record)
     async with world.db._engine.begin() as conn:
-        await conn.run_sync(rebuild)
+        rows = (await conn.execute(select(system_config))).all()
+    # No integration table of its own: one versioned system_config key per lane.
+    assert [key for key, _value in rows if key.startswith(ledger.PREFIX)] == [
+        ledger.PREFIX + '["p", "r", "refs/heads/aq/epic"]']
+    assert not [name for name in metadata.tables if "train_lane" in name]
+    assert await ledger.load() == [record]
 
 
 async def test_default_config_train_delivers_to_git(world, monkeypatch):

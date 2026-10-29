@@ -199,8 +199,6 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "agent_cron",
         # Project-owned one-shot notifications arrived in PostgreSQL revision 123.
         "project_schedules",
-        # The integration train's lane visit history shipped in PostgreSQL revision 124.
-        "integration_train_lanes",
         # Verified waits and continuation admission shipped in PostgreSQL
         # revisions 97/103 and later; legacy SQLite has no lifecycle to import.
         "admission_reservations", "continuations", "wait_bridge_progress",

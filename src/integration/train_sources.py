@@ -33,9 +33,9 @@ from src.database.tables import (
     integration_legacy_deliveries,
     integration_review_evidence,
     integration_source_ci,
-    integration_train_lanes,
     projects,
     repos,
+    system_config,
     task_branch_origins,
     task_completion_records,
     task_dependencies,
@@ -431,58 +431,60 @@ def _open_batch_rows(project_id: str, repository_id: str):
 
 
 class DatabaseLaneLedger:
-    """The train's lane history in PostgreSQL, so a restart keeps visit order.
+    """The train's lane history in the generic ``system_config`` store, so a
+    restart keeps visit order. One versioned key per lane.
 
     Rows are diagnostics and scheduling order only; a visit always re-reads Git.
-    History a daemon has not touched for ``retention_seconds`` is dropped on load.
+    History a daemon has not touched for ``retention_seconds``, or whose project
+    is gone, is dropped on load.
     """
+
+    PREFIX = "integration-train-lane:v1:"
 
     def __init__(self, db, *, clock: Callable[[], float] = time.time,
                  retention_seconds: float = 14 * 86400.0) -> None:
         self.db, self.clock = db, clock
         self.retention_seconds = retention_seconds
 
+    def _key(self, key) -> str:
+        return self.PREFIX + json.dumps(list(key))
+
     async def load(self) -> list[LaneRecord]:
-        table = integration_train_lanes
+        records, stale = [], []
         async with self.db._engine.begin() as conn:
-            await conn.execute(delete(table).where(
-                table.c.updated_at < self.clock() - self.retention_seconds))
-            rows = (await conn.execute(select(table))).mappings().all()
-        return [LaneRecord(
-            row["project_id"], row["repository_id"], row["target_ref"], kind=row["kind"],
-            visits=row["visits"], errors=row["errors"], state=row["state"],
-            observed_at=row["observed_at"], started_at=row["started_at"],
-        ) for row in rows]
+            live = set((await conn.execute(select(projects.c.id))).scalars())
+            rows = (await conn.execute(select(system_config).where(
+                system_config.c.key.startswith(self.PREFIX)))).all()
+            for key, value in rows:
+                fields = json.loads(value)
+                updated_at = fields.pop("updated_at")
+                record = LaneRecord(*json.loads(key[len(self.PREFIX):]), **fields)
+                if (record.project_id not in live
+                        or updated_at < self.clock() - self.retention_seconds):
+                    stale.append(key)
+                else:
+                    records.append(record)
+            if stale:
+                await conn.execute(delete(system_config).where(system_config.c.key.in_(stale)))
+        return records
 
     async def record(self, record: LaneRecord) -> None:
-        values = {
-            "project_id": record.project_id, "repository_id": record.repository_id,
-            "target_ref": record.target_ref, "kind": record.kind, "visits": record.visits,
-            "errors": record.errors, "state": record.state,
-            "observed_at": record.observed_at, "started_at": record.started_at,
-            "updated_at": self.clock(),
-        }
-        statement = insert(integration_train_lanes).values(**values)
-        statement = statement.on_conflict_do_update(
-            index_elements=["project_id", "repository_id", "target_ref"],
-            set_={key: statement.excluded[key] for key in values
-                  if key not in {"project_id", "repository_id", "target_ref"}},
-        )
+        fields = asdict(record)
+        for name in ("project_id", "repository_id", "target_ref"):
+            del fields[name]  # they form the key
+        value = json.dumps({**fields, "updated_at": self.clock()}, sort_keys=True)
         async with self.db._engine.begin() as conn:
             if (await conn.execute(select(projects.c.id).where(
                     projects.c.id == record.project_id))).first() is None:
-                return  # the project is gone; its CASCADE already removed the history
-            await conn.execute(statement)
+                return  # the project is gone; keep no orphaned history
+            await conn.execute(insert(system_config).values(
+                key=self._key(record.key), value=value,
+            ).on_conflict_do_update(index_elements=["key"], set_={"value": value}))
 
     async def forget(self, keys) -> None:
-        table = integration_train_lanes
         async with self.db._engine.begin() as conn:
-            for project_id, repository_id, target_ref in keys:
-                await conn.execute(delete(table).where(
-                    table.c.project_id == project_id,
-                    table.c.repository_id == repository_id,
-                    table.c.target_ref == target_ref,
-                ))
+            await conn.execute(delete(system_config).where(
+                system_config.c.key.in_([self._key(key) for key in keys])))
 
 
 class DatabaseTargets:
