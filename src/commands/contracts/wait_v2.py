@@ -125,8 +125,8 @@ class WaitAckArgs(WaitV2ScopeArgs):
 
 class WaitDecideArgs(CommandArgs):
     project_id: str | None = None
-    wait_id: str = Field(min_length=1)
-    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human", "requeue"]
+    wait_id: str | None = Field(default=None, min_length=1)
+    decision: Literal["extend", "wake", "cancel", "reroute", "escalate_to_human", "requeue", "retire"]
     note: str = Field(min_length=1, max_length=4000)
     extend_seconds: float | None = Field(default=None, ge=60, le=86400, allow_inf_nan=False)
     to: str | None = Field(default=None, min_length=1)
@@ -141,11 +141,13 @@ class WaitDecideArgs(CommandArgs):
             raise ValueError("extend_seconds is only valid for extend")
         if (self.decision == "reroute") != (self.to is not None):
             raise ValueError("to is required only for reroute")
-        if self.decision == "requeue":
+        if self.decision != "retire" and self.wait_id is None:
+            raise ValueError("wait_id is required for this decision")
+        if self.decision in {"requeue", "retire"}:
             if not self.continuation_id or self.expected_generation is None:
-                raise ValueError("requeue requires continuation_id and expected_generation")
+                raise ValueError(f"{self.decision} requires continuation_id and expected_generation")
         elif self.continuation_id is not None:
-            raise ValueError("continuation_id is only valid for requeue")
+            raise ValueError("continuation_id is only valid for requeue or retire")
         return self
 
 
