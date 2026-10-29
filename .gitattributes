@@ -30,6 +30,11 @@ src/tools/command_catalogue.json merge=aq-generated linguist-generated
 openapi.json merge=aq-generated linguist-generated
 packages/aq-client/** merge=aq-generated linguist-generated
 scripts/aq-client-boilerplate.sha256 merge=aq-generated linguist-generated
+# Bazel graph: the manifest and the suite/test BUILD files are pure functions of the
+# sources plus the manifest's retained collection (scripts/bazel/generate_targets.py).
+tools/bazel/test_suites.json merge=aq-generated linguist-generated
+tests/BUILD.bazel merge=aq-generated linguist-generated
+checks/BUILD.bazel merge=aq-generated linguist-generated
 tests/integration_ownership.json merge=aq-generated linguist-generated
 tests/integration_ownership_report.json merge=aq-generated linguist-generated
 tests/fixtures/generated_sources/ownership/integration_ownership.json merge=aq-generated linguist-generated

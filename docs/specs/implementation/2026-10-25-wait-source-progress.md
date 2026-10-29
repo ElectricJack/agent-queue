@@ -2,20 +2,41 @@
 
 The listener must renew during its initial drain and run independently of maintenance.
 It queues briefly for the graph fence before releasing its connection on contention.
-Each source transaction starts with a five second work budget. Budget exhaustion
-adds bounded headroom for database and preparation contention (up to three times
-the base, never more than half the listener lease); successful progress reduces
-that headroom. Graph acquisition retains its short independent timeout, and fenced source work
-keeps the base five-second allowance even when unlocked preparation has headroom. A timed out transaction rolls
+Each background source transaction starts with a five second work budget, including
+sequential fresh observations for all subscribers. Budget exhaustion adds bounded
+headroom for database and preparation contention (up to three times the base, never
+more than half the listener lease); successful progress reduces that headroom. Graph
+acquisition retains its short independent timeout, and fenced source work keeps the
+base five-second allowance even when unlocked preparation has headroom. A supervisor
+re-dispatch instead has a thirty second unlocked preparation budget, then a separate
+five second budget for graph acquisition and fenced application. Each individual
+remote observation retains its own timeout. A timed out transaction rolls
 back completely; a separate leased cursor CAS may advance past that event, leaving
 its undispatched row as durable retry ownership. Later events may proceed. Cancellation
 and lease loss never authorize this advance. Retry passes are bounded and back off.
+Budget failures and retry deadlines persist with the source row. After three
+consecutive budget failures the row is quarantined, retaining its payload and
+subscription ownership, and retried behind the forward cursor at five minute
+intervals. A successful dispatch clears the failure streak and quarantine. A
+restart respects the persisted retry deadline. Quarantine never asserts a wait
+outcome or prevents later events from dispatching.
 A drain pass yields between attempts after five seconds and schedules another tick,
 so a backlog cannot indefinitely delay watermark refresh or a recovery command.
 PostgreSQL deadlocks (`40P01`) and serialization failures (`40001`) during a
 source attempt follow the same rollback, leased cursor CAS and retry backoff as
 an expired work budget. Reobserve the source on retry and keep unrelated events
 moving without restarting the listener. Other database errors still propagate.
+An event-local dispatch exception follows that same durable retry/quarantine path;
+it must not restart the listener and replay the forward head indefinitely. Lease
+loss, cancellation and graph contention retain their existing fences.
+For a hibernate wait whose continuation is held (including `push_failed`), return
+a per-wait `owner_held` dispatch disposition with the continuation's existing
+hold/escalation identity and a retry deadline. Preserve the pending wait, hold,
+claim and checkout; neither source satisfaction nor a resume is authorized by
+that disposition. Other subscribers to the event still dispatch. A not-yet-persisted
+hibernation intent similarly requests a bounded retry. Both ordinary sources and
+resource invalidations retain an undispatched source until every receipt permits
+retirement, and persist the retry deadline so a new leader respects it.
 Retained undispatched events older than the listener safety cadence share alternating
 turns with forward work once their observation backoff expires. Preserve the next
 turn across drain passes, including timeouts, so a continuous forward backlog cannot
@@ -80,7 +101,9 @@ events still on retry backoff, under the graph and listener lease fences. Resour
 matching conservatively preserves any pending verified resource subscriber with a
 preceding watermark. Provider invalidations always retain lifecycle dispatch: even
 with zero pending waits they can release held continuations. No source observation
-or owner progress preparation is needed for a retired batch. Registration remains
+or owner progress preparation is needed for a retired batch of observation hints.
+Aborted integration batch events always retain dispatch so their callback cancels
+obsolete CI subscriptions even without a subscriber to the batch source. Registration remains
 serialized by the graph fence. An empty retirement scan must still allow one
 forward/retry attempt before the pass yields.
 
@@ -109,14 +132,22 @@ against current subscriptions. Preparation never authorizes an outcome itself.
 supervisor or local operator reobserve one persisted source through normal dispatch.
 The command requires a project, fences the leader lease, preserves the forward cursor,
 filters wait and lifecycle effects to that project, and records an audit event. It
-never trusts caller-supplied evidence. After validating project and source scope,
+never trusts caller-supplied evidence. Fresh observation preparation includes
+every matching verified subscriber in that
+project, including service-owned integration waits as well as task-owned waits.
+After validating project and source scope,
 an already dispatched source returns success with outcome `already_dispatched` and
 its `dispatched_at` timestamp, without acquiring the listener lock or lease,
 preparing observations, dispatching, retiring history or writing an audit event.
 Recheck dispatch state after acquiring the listener lock. For pending sources, a
+supervisor waits up to sixty seconds for the listener lock, independently of its
+thirty second preparation and five second fenced application budgets. Lock contention
+cannot consume the preparation/application allowance. Every timeout releases ownership
+and reports the budget for the phase that expired. A
 work-budget refusal includes the source sequence, phase, budget and elapsed seconds,
 and dispatch attempt count; an observation's own timeout is reported separately.
-Missing sources,
+Background dispatch deferrals likewise log the phase, failure reason and elapsed
+attempt time, including failures before acquiring the graph fence. Missing sources,
 contention and absent leadership return a refusal; no wake is fabricated.
 Manual recovery queues for the listener lock for at most one lease interval, then
 starts its separate adaptive dispatch budget; a busy drain does not consume the
@@ -130,6 +161,25 @@ of that source/generation through the requested sequence when no pending verifie
 subscriber anywhere needs each event. It reports and audits the number retired. A project-scoped recovery
 must preserve any event still needed by another project's subscriber. Retirement
 uses bounded batches; repeat the command to drain additional history.
+
+The same supervisor authority supplies `aq wait source-blockers --project P` and
+`aq wait source-retire --source-seq N --project P --note REASON`. These dispatch
+the source recovery command with action `blockers` or `retire`. Inspection lists
+old or failed undispatched sources, their cursor position, durable failure count,
+quarantine/deadline and matching project subscriptions. Retirement cancels only
+service-owned integration CI subscriptions for the selected source and project;
+it refuses agent subscriptions and lifecycle sources. It stamps the source only
+when no project still needs it and never jumps the forward cursor. Cancellation
+and the supervisor audit commit together, without remote CI observation.
+
+Canonical aborted/superseded batch events cancel that target's integration CI
+subscriptions whose exact head no longer belongs to a non-aborted batch. They
+preserve a head reused by an active batch and successful settlement of promoted
+candidates. Speculative subscriptions retain their existing train reconciliation.
+Reconciliation during train synchronization repeats this cleanup to recover old
+rows and crash windows. CI observation reuses the immutable candidate check policy
+captured during train synchronization, while still observing fresh remote evidence. Its remote read budget leaves time for listener transaction
+bookkeeping; trust reconstruction must not recur on every observation.
 
 An independent listener monitor checks undispatched row count and oldest commit age,
 including deferred rows behind the cursor. Alert when count exceeds configurable

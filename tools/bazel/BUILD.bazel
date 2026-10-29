@@ -181,6 +181,7 @@ exports_files([
         "import_npm.py",
         "lock.py",
         "postgres_cluster.py",
+        "provision.py",
         "pytest_plugin.py",
         "python_data.bzl",
         "runtime.py",
