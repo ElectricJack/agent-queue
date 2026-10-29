@@ -14,15 +14,17 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:6e6aac332f396ca3a135c98848201f62d5df8bbe3e41bb5f45789c0008700225` |
+| Contract fingerprint | `sha256:bc512d76c8874d4b38f03dc3a2cafd25366e1423dc9b921ecd73b53074625250` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `project_id` | `string` | yes | — | — |
-| `source_seq` | `integer` | yes | — | — |
-| `note` | `string` | yes | — | — |
+| `action` | `"redispatch" \| "blockers" \| "retire"` | no | `"redispatch"` | — |
+| `source_seq` | `integer \| null` | no | `null` | — |
+| `note` | `string \| null` | no | `null` | — |
+| `limit` | `integer` | no | `100` | — |
 
 ## Result
 
@@ -43,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Resolve using project_id, source_seq, note | — | always |
+| Resolve using project_id, action, source_seq, note, limit | — | always |
 
 <!-- aq:generated:end -->
 

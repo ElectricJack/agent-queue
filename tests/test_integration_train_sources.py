@@ -8917,7 +8917,8 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     assert hold and "child" in hold and "has no retained completion witness" in hold
     assert git(origin.url, "rev-parse", "aq/epic") == head
     reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
-    await reconciler.tick(case.now[0])
+    reconciled = await reconciler.tick(case.now[0])
+    assert reconciled["repaired"] >= len(case.children)
     async with db._engine.connect() as conn:
         assert await train_cleanup_hold(
             conn, repository_id="r", ref=case.target.target_ref,
