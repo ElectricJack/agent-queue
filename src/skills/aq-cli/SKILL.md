@@ -1,6 +1,6 @@
 ---
 name: aq-cli
-description: Discovery and orientation for the aq (agent-queue) command-line interface. Use when you need to find or invoke any daemon command, or when another aq skill directs you to run an aq subcommand. Answers "what can I do with aq" and "how do I get more detail on a specific command".
+description: Orients an agent in the aq (agent-queue) command-line interface — the command groups, the discovery workflow (`--help`, `--help-all`, `aq schema`), global output flags (`--json`, `--brief`, `--save-output`), token scope and `out of scope` errors, profiles and intelligence classes, and which focused aq-* skill covers a workflow. Use when looking for an aq command, checking a command's flags or an enum value before running it, reading JSON output, or when another aq skill points here. Also covers how shipped skills are installed and refreshed.
 allowed-tools:
   - Bash
 ---
@@ -15,47 +15,19 @@ source of truth.
 
 ## Command groups
 
-```
-aq agent        — profile CRUD, list agents, live-worker messaging
-aq chat         — talk to a project's supervisor session
-aq costs        — token spend rolled up into USD
-aq db           — inspect the daemon's schema (`current`) / upgrade it (operator only)
-aq discord      — Discord channel and thread housekeeping
-aq doctor       — health checks for this install, with fixes
-aq file         — read / write / edit / glob / grep on files
-aq formula      — reusable task-graph templates (list / show / cook)
-aq git          — branch / commit / push / PR / merge
-aq graph        — server-side spatial task-graph layout
-aq handoff      — record a handoff note, request a session restart
-aq inbox        — pending messages (alias for `aq message inbox`)
-aq integration  — inspect and control hierarchical integration trains
-aq knowledge    — create, read, revise and protect versioned durable knowledge
-aq logs         — tail and filter daemon logs (reads JSONL directly, no daemon needed)
-aq mcp          — MCP server registry + tool catalog
-aq message      — inter-agent and user message queue
-aq playbook     — playbook compilation, runs, HITL, health
-aq plugin       — plugin management
-aq pool         — worker pool sizing (status / scale)
-aq prime        — print this task's startup prime document
-aq project      — project CRUD, workspaces, channels, budgets
-aq question     — pending worker questions (list / answer / escalate)
-aq record       — scoped lexical search, capabilities and informational links
-aq reply        — reply to a message (alias for `aq message reply`)
-aq schema       — the system's enum catalog (statuses, outcomes, error codes)
-aq session      — inspect and steer agent sessions
-aq status       — one-shot system-status overview
-aq stream       — streamable-command registry (console-stream pane view)
-aq subagent     — native sub-agent telemetry reported by harness hooks
-aq system       — diagnostics, config, prompt management
-aq task         — task lifecycle, gates, dependencies, results, archives
-aq test         — run pytest under the box-wide test semaphore
-aq vault        — vault migration and inspection
-aq start / stop / restart — daemon lifecycle (operator only)
-```
-
-`aq --help` lists the full set, and this list will drift before the CLI
-does — treat it as a map, and confirm a shape with `--help` before you
+`aq --help` is the authoritative list; this map groups the ones agents use
+most and drifts before the CLI does. Confirm a shape with `--help` before you
 run something new.
+
+| Purpose | Groups |
+|---|---|
+| Your task and its loop | `aq prime`, `aq task`, `aq handoff`, `aq wait`, `aq schema` |
+| Messages and decisions | `aq message` (`aq inbox`, `aq reply` are aliases), `aq question`, `aq collaboration`, `aq cron`, `aq ask`, `aq escalation` |
+| Code and delivery | `aq git`, `aq test`, `aq job`, `aq ci`, `aq integration`, `aq batch` |
+| Documents and knowledge | `aq review`, `aq knowledge`, `aq record`, `aq note`, `aq file` |
+| Workflows | `aq playbook`, `aq formula`, `aq graph` |
+| Fleet and diagnostics | `aq session`, `aq pool`, `aq agent`, `aq provider`, `aq status`, `aq logs`, `aq doctor`, `aq costs`, `aq system` |
+| Operator only | `aq start` / `stop` / `restart` / `update`, `aq db`, `aq install`, `aq service`, `aq supervisor`, `aq vault` |
 
 ## Durable knowledge
 
@@ -161,12 +133,11 @@ Nobody files queued work on a profile: the project's router picks every
 task's profile, provider and model, and a filing that names one is refused
 (`routing.choice_forbidden`). A filer gives the kind (`--type`) and, when it
 matters, an intelligence-class hint (`--intelligence-class`); see the aq-tasks
-skill. Worker profile IDs are installation-specific, so never infer one from
-an ID prefix or an example in documentation. Shipped
-intelligence classes are `fast-{low,high}`, `standard-high`, `deep-{low,high}`
-and `astra-{low,high}` — Astra is OpenAI-only, and nothing from the deep tier
-upward runs on Gemini. Anything you see in an example is not a guarantee that
-the id exists here.
+skill. Worker profile IDs are installation-specific, so never infer one from an ID
+prefix or an example in documentation. The shipped intelligence classes are
+`fast-{low,high}`, `standard-high`, `deep-{low,high}` and `astra-{low,high}` —
+Astra is OpenAI-only, and nothing from the deep tier upward runs on Gemini — but
+an install can retire or add classes, so the list command above is the answer.
 
 ## When to reach for a specialized aq-* skill
 
@@ -185,23 +156,27 @@ command shapes and gotchas. Use them instead of re-deriving:
   when dispatched, and the cross-family adversarial review recipe.
 - **aq-mini-projects** — explicitly requested quick ideation in one task:
   frozen brief, proposal/critique/synthesis and a roadmap for human plan review.
+- **aq-bazel-upgrade** — adding reproducible Bazel test support to an
+  AQ-managed Python or JS/TS repository.
 
 If a workflow needs a command none of those cover, come back here and
 use the discovery workflow above.
 
 ## Keeping these skills current (operators)
 
-These skills ship in the repo at `src/skills/<name>/SKILL.md` and are
-copied into every harness skill directory (`~/.claude/skills/`,
+These skills ship in the repo as `src/skills/<name>/SKILL.md`, plus any
+`reference/<topic>.md` files a skill links to. `src.vault.ensure_default_aq_skills`
+copies them into every harness skill directory (`~/.claude/skills/`,
 `~/.gemini/skills/`, `~/snap/gemini-cli/common/.gemini/skills/`,
-`~/.codex/skills/`) by `src.vault.ensure_default_aq_skills` at daemon
-start. That copy is **write-if-absent**: an installed `SKILL.md` is never
-overwritten, so operator edits survive upgrades — and so does a stale copy
-after the in-tree source is fixed.
+`~/.codex/skills/`) at daemon start. The copy is **write-if-absent per file**:
+an installed file is never overwritten, so operator edits survive upgrades — and
+so does a stale copy after the in-tree source is fixed. A reference file added
+to an already-installed skill is copied in beside it.
 
-`aq doctor --check skills.installed_drift` reports installed copies that
-differ from the shipped source; `--fix` backs each one up next to itself
-as `SKILL.md.bak` and re-copies the shipped version. Review the reported drift
+`aq doctor --check skills.installed_drift` reports installed files that differ
+from the shipped source and reference files missing beside an installed skill;
+`--fix` backs each drifted file up next to itself as `<file>.bak`, re-copies the
+shipped version and copies in missing references. Review the reported drift
 before applying the fix and reconcile custom edits from the backups afterwards:
 
 ```bash
@@ -210,9 +185,10 @@ aq doctor --check skills.installed_drift --fix    # back up + re-copy
 ```
 
 An agent inside a task worktree cannot do this: the installed copies live
-outside the workspace and re-seeding is a daemon/operator action. Ship the
-fix in `src/skills/` and tell the operator to run the check.
-New skills are discovered by directory scan and seeded when absent for Claude,
-Codex and both Gemini installations with the applicable harness homes present.
-See `docs/guides/knowledge-records.md` in the agent-queue repository for the
-canonical workflow and the separate profile-text refresh procedure.
+outside the workspace and re-seeding is a daemon/operator action. Ship the fix
+in `src/skills/` and tell the operator to run the check. New skills are
+discovered by directory scan and seeded when absent for Claude, Codex and both
+Gemini installations with the applicable harness homes present.
+Profile text has a separate refresh path (grants-only reseeding does not refresh
+role or rules); see `docs/guides/knowledge-records.md` in the agent-queue
+repository.
