@@ -3389,10 +3389,11 @@
         "bazel-toolchains"
       ],
       "default_arm": true,
-      "digest": "sha256:ebafdc0f026e86f51c24718a87a948f6976ec9b8dc9d5d3fb46cc6e1babc7bf7",
+      "digest": "sha256:29808d65b829c59031a4851ce8e4f038a4694d31282113321b8480ae41877250",
       "imports": [],
       "markers": [
         "parametrize",
+        "skipif",
         "timeout"
       ],
       "summary": "H1 lock/ABI boundaries and opt-in, admitted clean-root toolchain verification."
