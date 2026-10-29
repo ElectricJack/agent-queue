@@ -21,6 +21,8 @@ class SessionNudgeRequest:
         task_id (None | str | Unset): Resolve session from this task id
         text (None | str | Unset): Text to inject and submit
         message (None | str | Unset): Alias for text
+        submit_pending (bool | None | Unset): Recover pending AQ input without new text; clears collapsed input for
+            retry
     """
 
     session_id: None | str | Unset = UNSET
@@ -29,6 +31,7 @@ class SessionNudgeRequest:
     task_id: None | str | Unset = UNSET
     text: None | str | Unset = UNSET
     message: None | str | Unset = UNSET
+    submit_pending: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,6 +71,12 @@ class SessionNudgeRequest:
         else:
             message = self.message
 
+        submit_pending: bool | None | Unset
+        if isinstance(self.submit_pending, Unset):
+            submit_pending = UNSET
+        else:
+            submit_pending = self.submit_pending
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -83,6 +92,8 @@ class SessionNudgeRequest:
             field_dict["text"] = text
         if message is not UNSET:
             field_dict["message"] = message
+        if submit_pending is not UNSET:
+            field_dict["submit_pending"] = submit_pending
 
         return field_dict
 
@@ -144,6 +155,15 @@ class SessionNudgeRequest:
 
         message = _parse_message(d.pop("message", UNSET))
 
+        def _parse_submit_pending(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        submit_pending = _parse_submit_pending(d.pop("submit_pending", UNSET))
+
         session_nudge_request = cls(
             session_id=session_id,
             id=id,
@@ -151,6 +171,7 @@ class SessionNudgeRequest:
             task_id=task_id,
             text=text,
             message=message,
+            submit_pending=submit_pending,
         )
 
         session_nudge_request.additional_properties = d

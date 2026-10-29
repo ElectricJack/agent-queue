@@ -548,6 +548,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             settlement = _delivered_design_changes()
             assert _digest(settlement["previous_definition"]) == digest
             digest = _digest(settlement["definition"])
+        if name == "session_nudge":
+            approved = _session_nudge_recovery_changes()["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         if name in _unread_inbox_changes()["transport_definitions"]:
             approved = _unread_inbox_changes()["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
@@ -1642,8 +1646,8 @@ def _supervisor_say_changes():
 
 
 def _before_supervisor_say_catalogue():
-    catalogue = _before_task_list_limit_catalogue(
-        _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
+    catalogue = _before_unread_inbox_catalogue(
+        _before_session_nudge_recovery_catalogue(_before_task_list_limit_catalogue())
     )
     evidence = _supervisor_say_changes()
     [definition] = [row for row in catalogue["explicit"] if row["name"] == evidence["command"]]
@@ -1659,13 +1663,11 @@ def test_supervisor_say_catalogue_only_adds_initiated_conversation_post():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = json.dumps(
-        _before_task_list_limit_catalogue(
-            _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
-        ),
-        indent=2,
-    ) + "\n"
-    assert hashlib.sha256(catalogue.encode()).hexdigest() == (
+    catalogue = _before_unread_inbox_catalogue(
+        _before_session_nudge_recovery_catalogue(_before_task_list_limit_catalogue())
+    )
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
     previous = json.dumps(_before_supervisor_say_catalogue(), indent=2) + "\n"
@@ -1809,7 +1811,7 @@ def test_unread_inbox_only_changes_transport_description():
     )
     assert _digest(approved["previous"]) == approved["previous_sha256"]
     assert _digest(approved["current"]) == approved["sha256"]
-    catalogue = _before_task_list_limit_catalogue()
+    catalogue = _before_session_nudge_recovery_catalogue(_before_task_list_limit_catalogue())
     rendered = json.dumps(catalogue, indent=2) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
@@ -1838,16 +1840,57 @@ def test_wait_source_redispatch_only_adds_scoped_recovery_command():
     assert _wait_source_recovery_changes()["previous_fingerprint"] == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_task_list_limit_catalogue(_before_unread_inbox_catalogue())
-    rendered = json.dumps(catalogue, indent=2) + "\n"
-    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    # Undo independent additions while preserving each recording's original hashes.
+    catalogue = _before_session_nudge_recovery_catalogue(_before_unread_inbox_catalogue())
+    assert hashlib.sha256(
+        (json.dumps(_before_task_list_limit_catalogue(catalogue), indent=2) + "\n").encode()
+    ).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
     previous = json.dumps(
-        _before_task_list_limit_catalogue(
-            _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
-        ),
-        indent=2,
+        _before_unread_inbox_catalogue(
+            _before_task_list_limit_catalogue(_before_session_nudge_recovery_catalogue())
+        ), indent=2,
     ) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
+
+
+def _session_nudge_recovery_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/session-nudge-recovery-contract-changes.json").read_text()
+    )
+
+
+def _before_session_nudge_recovery_catalogue(catalogue=None):
+    """Undo only optional nudge recovery before checking frozen catalogue history."""
+    if catalogue is None:
+        catalogue = _before_wait_source_redispatch_catalogue()
+    evidence = _session_nudge_recovery_changes()
+    schema = catalogue["fallback"][evidence["command"]]["input_schema"]
+    [(prop, definition)] = evidence["added_property"].items()
+    assert schema["properties"].pop(prop) == definition
+    assert prop not in schema.get("required", ())
+    return catalogue
+
+
+def test_session_nudge_catalogue_only_adds_optional_pending_recovery():
+    evidence = _session_nudge_recovery_changes()
+    assert evidence["command"] == "session_nudge"
+    assert set(evidence["added_property"]) == {"submit_pending"}
+    assert set(evidence["transport_definitions"]) == {"session_nudge"}
+    # Each sibling recording predates the other optional transport addition.
+    catalogue = _before_unread_inbox_catalogue(_before_task_list_limit_catalogue())
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
+    previous = json.dumps(_before_session_nudge_recovery_catalogue(catalogue), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )
+    assert evidence["previous_cli_catalogue_sha256"] == (
+        _supervisor_say_changes()["cli_catalogue_sha256"]
+    )
 
 
 def _task_list_limit_changes():
@@ -1891,9 +1934,10 @@ def test_task_list_limit_only_adds_optional_positive_limit():
     assert definition == transport["previous_definition"]
     assert _digest(transport["definition"]) == transport["sha256"]
     assert _digest(transport["previous_definition"]) == transport["previous_sha256"]
-    catalogue = _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
-    rendered = json.dumps(catalogue, indent=2) + "\n"
-    assert hashlib.sha256(rendered.encode()).hexdigest() == (
+    # Each recording predates the other independent transport additions.
+    catalogue = _before_unread_inbox_catalogue(_before_session_nudge_recovery_catalogue())
+    original = json.dumps(catalogue, indent=2) + "\n"
+    assert hashlib.sha256(original.encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
     previous = json.dumps(_before_task_list_limit_catalogue(catalogue), indent=2) + "\n"
@@ -1949,7 +1993,9 @@ def test_batch_authority_catalogue_only_adds_supervisor_recovery_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_unread_inbox_catalogue(_before_wait_source_recovery_catalogue())
+    catalogue = _before_session_nudge_recovery_catalogue(
+        _before_unread_inbox_catalogue(_before_wait_source_recovery_catalogue())
+    )
     rendered = json.dumps(catalogue, indent=2) + "\n"
     previous = json.dumps(_before_batch_authority_catalogue(catalogue), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
@@ -1993,13 +2039,14 @@ def test_wait_source_recovery_only_extends_existing_scoped_command():
     assert schema["required"] == ["project_id"]
     assert set(schema["properties"]) - set(evidence["previous_definition"]["input_schema"][
         "properties"]) == {"action", "limit"}
-    catalogue = _before_unread_inbox_catalogue(
+    # The sibling nudge recovery recording predates this one.
+    catalogue = _before_session_nudge_recovery_catalogue(_before_unread_inbox_catalogue(
         _before_batch_authority_catalogue(_before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue(
                 _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
             ))
         ))
-    )
+    ))
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"])
     previous = json.dumps(_before_wait_source_recovery_catalogue(catalogue), indent=2) + "\n"
@@ -2029,8 +2076,11 @@ def test_claim_abort_catalogue_only_adds_fenced_supervisor_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_retained_holder_repair_catalogue(
-        _before_publication_hold_catalogue(_before_store_maintenance_catalogue())
+    # The sibling nudge recovery recording predates this one.
+    catalogue = _before_session_nudge_recovery_catalogue(
+        _before_retained_holder_repair_catalogue(
+            _before_publication_hold_catalogue(_before_store_maintenance_catalogue())
+        )
     )
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
@@ -2061,11 +2111,17 @@ def test_retained_holder_repair_only_adds_evidence_fenced_recovery_command():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
+    # The sibling nudge recovery recording predates this one.
     rendered = json.dumps(
-        _before_publication_hold_catalogue(_before_claim_abort_catalogue()), indent=2
+        _before_session_nudge_recovery_catalogue(
+            _before_publication_hold_catalogue(_before_claim_abort_catalogue())
+        ), indent=2
     ) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
-    previous = json.dumps(_before_retained_holder_repair_catalogue(), indent=2) + "\n"
+    previous = json.dumps(
+        _before_session_nudge_recovery_catalogue(_before_retained_holder_repair_catalogue()),
+        indent=2,
+    ) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
 def _store_maintenance_changes():
     return json.loads(
@@ -2087,11 +2143,16 @@ def test_store_maintenance_catalogue_only_adds_scoped_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+    # The sibling nudge recovery recording predates this one.
+    catalogue = _before_session_nudge_recovery_catalogue(
+        _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+    )
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
-    previous = json.dumps(_before_store_maintenance_catalogue(), indent=2) + "\n"
+    previous = json.dumps(
+        _before_session_nudge_recovery_catalogue(_before_store_maintenance_catalogue()), indent=2
+    ) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == (
         evidence["previous_cli_catalogue_sha256"]
     )
@@ -2137,9 +2198,14 @@ def test_publication_hold_only_adds_fenced_continuation_retirement():
     schema["properties"]["wait_id"] = previous["args_schema"]["properties"]["wait_id"]
     schema["required"] = previous["args_schema"]["required"]
     assert current == previous
-    before = json.dumps(_before_publication_hold_catalogue(), indent=2) + "\n"
+    # The sibling nudge recovery recording predates this one.
+    before = json.dumps(
+        _before_session_nudge_recovery_catalogue(_before_publication_hold_catalogue()), indent=2
+    ) + "\n"
     assert hashlib.sha256(before.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
     rendered = json.dumps(
-        _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue()), indent=2
+        _before_session_nudge_recovery_catalogue(
+            _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue())
+        ), indent=2
     ) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]

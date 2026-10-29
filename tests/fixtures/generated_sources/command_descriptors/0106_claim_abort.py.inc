@@ -23,8 +23,11 @@ def test_claim_abort_catalogue_only_adds_fenced_supervisor_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_retained_holder_repair_catalogue(
-        _before_publication_hold_catalogue(_before_store_maintenance_catalogue())
+    # The sibling nudge recovery recording predates this one.
+    catalogue = _before_session_nudge_recovery_catalogue(
+        _before_retained_holder_repair_catalogue(
+            _before_publication_hold_catalogue(_before_store_maintenance_catalogue())
+        )
     )
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]

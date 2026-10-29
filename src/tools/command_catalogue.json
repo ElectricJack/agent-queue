@@ -20796,6 +20796,10 @@
           "message": {
             "type": "string",
             "description": "Alias for text"
+          },
+          "submit_pending": {
+            "type": "boolean",
+            "description": "Recover pending AQ input without new text; clears collapsed input for retry"
           }
         }
       }

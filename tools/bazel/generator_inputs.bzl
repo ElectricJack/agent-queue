@@ -5100,6 +5100,7 @@ GENERATOR_INPUTS = [
     "tests/fixtures/generated_sources/command_descriptors/0103a007a016_project_schedules.py.inc",
     "tests/fixtures/generated_sources/command_descriptors/0103a007a017_unread_inbox.py.inc",
     "tests/fixtures/generated_sources/command_descriptors/0103a007a017_wait_source_redispatch.py.inc",
+    "tests/fixtures/generated_sources/command_descriptors/0104_session_nudge_recovery.py.inc",
     "tests/fixtures/generated_sources/command_descriptors/0104_task_list_limit.py.inc",
     "tests/fixtures/generated_sources/command_descriptors/0105_batch_authority.py.inc",
     "tests/fixtures/generated_sources/command_descriptors/0105_wait_source_recovery.py.inc",

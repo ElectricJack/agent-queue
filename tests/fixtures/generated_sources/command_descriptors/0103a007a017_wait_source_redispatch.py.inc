@@ -20,13 +20,16 @@ def test_wait_source_redispatch_only_adds_scoped_recovery_command():
     assert _wait_source_recovery_changes()["previous_fingerprint"] == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_task_list_limit_catalogue(_before_unread_inbox_catalogue())
-    rendered = json.dumps(catalogue, indent=2) + "\n"
-    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    # Undo independent additions while preserving each recording's original hashes.
+    catalogue = _before_session_nudge_recovery_catalogue(_before_unread_inbox_catalogue())
+    assert hashlib.sha256(
+        (json.dumps(_before_task_list_limit_catalogue(catalogue), indent=2) + "\n").encode()
+    ).hexdigest() == (
+        evidence["cli_catalogue_sha256"]
+    )
     previous = json.dumps(
-        _before_task_list_limit_catalogue(
-            _before_unread_inbox_catalogue(_before_wait_source_redispatch_catalogue())
-        ),
-        indent=2,
+        _before_unread_inbox_catalogue(
+            _before_task_list_limit_catalogue(_before_session_nudge_recovery_catalogue())
+        ), indent=2,
     ) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]

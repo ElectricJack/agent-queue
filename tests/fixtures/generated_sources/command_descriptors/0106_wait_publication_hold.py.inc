@@ -40,9 +40,14 @@ def test_publication_hold_only_adds_fenced_continuation_retirement():
     schema["properties"]["wait_id"] = previous["args_schema"]["properties"]["wait_id"]
     schema["required"] = previous["args_schema"]["required"]
     assert current == previous
-    before = json.dumps(_before_publication_hold_catalogue(), indent=2) + "\n"
+    # The sibling nudge recovery recording predates this one.
+    before = json.dumps(
+        _before_session_nudge_recovery_catalogue(_before_publication_hold_catalogue()), indent=2
+    ) + "\n"
     assert hashlib.sha256(before.encode()).hexdigest() == evidence["previous_cli_catalogue_sha256"]
     rendered = json.dumps(
-        _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue()), indent=2
+        _before_session_nudge_recovery_catalogue(
+            _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue())
+        ), indent=2
     ) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]

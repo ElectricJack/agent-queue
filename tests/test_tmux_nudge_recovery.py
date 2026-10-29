@@ -157,6 +157,109 @@ def typed_text(composer) -> list[str]:
     return [args[-1] for args in composer.mutations if "-l" in args]
 
 
+@pytest.mark.parametrize("prefix", ["› ", "❯ "])
+@pytest.mark.parametrize("racing", [False, True], ids=["already-busy", "busy-after-paste"])
+async def test_busy_turn_never_strands_new_input(fast_polls, prefix, racing):
+    class BusyComposer(FlakyComposer):
+        async def tmux(self, *args, stdin=None, **kwargs):
+            result = await super().tmux(*args, stdin=stdin, **kwargs)
+            if racing and args[0] == "send-keys" and "-l" in args:
+                self.above = ["Working (esc to interrupt)", "────────────────────"]
+            return result
+
+    composer = BusyComposer(prefix=prefix, row=prefix, clear_keys=("C-u",))
+    if prefix == "› ":
+        composer.below = ["", ""]
+    if not racing:
+        composer.above = ["Working (esc to interrupt)", "────────────────────"]
+    provider = provider_for(composer)
+    with pytest.raises(NotSubmitted) as caught:
+        await provider.nudge(handle(), REMINDER)
+    assert caught.value.composer_dirty is False
+    assert composer.draft == "" and composer.submitted == []
+    assert await provider.pending_submit_detail(handle()) is None
+    if not racing:
+        assert composer.mutations == []
+    else:
+        assert typed_text(composer) == [REMINDER]
+        assert composer.clears > 0 and composer.enters == 0
+
+
+async def test_codex_model_spinner_defers_before_typing():
+    composer = Composer(
+        row=CODEX_PLACEHOLDER,
+        below=["", "  GPT-6-Sol high · ~/project · ⠦"],
+    )
+    with pytest.raises(NudgeDeferred):
+        await provider_for(composer).nudge(handle(), REMINDER)
+    assert composer.mutations == [] and composer.draft == ""
+
+
+class CodexPasteComposer(FlakyComposer):
+    """Codex's collapsed paste retains the original text behind its label."""
+
+    def __init__(self):
+        super().__init__(prefix="› ", row="› ", below=["", ""], clear_keys=("C-u",))
+
+    async def tmux(self, *args, stdin=None, **kwargs):
+        if args[0] == "capture-pane" and len(self.draft) > 800:
+            text = self.draft
+            self.draft = f"[Pasted Content {len(text)} chars]"
+            try:
+                return await super().tmux(*args, stdin=stdin, **kwargs)
+            finally:
+                self.draft = text
+        return await super().tmux(*args, stdin=stdin, **kwargs)
+
+
+@pytest.mark.parametrize("size", [1022, 5000], ids=["literal-keys", "paste-buffer"])
+async def test_fresh_codex_collapsed_paste_is_cleared_then_next_nudge_submits(fast_polls, size):
+    composer = CodexPasteComposer()
+    provider = provider_for(composer)
+    with pytest.raises(NotSubmitted) as caught:
+        await provider.nudge(handle(), "x" * size)
+    assert caught.value.composer_dirty is False
+    assert composer.draft == "" and composer.submitted == []
+    assert "AQ_PENDING_SUBMIT" not in composer.environment
+    await provider.nudge(handle(), REMINDER)
+    assert composer.submitted == [REMINDER]
+
+
+async def test_old_codex_collapsed_paste_is_replaced_after_restart(fast_polls):
+    composer = CodexPasteComposer()
+    composer.draft = "x" * 1022
+    composer.typed = True
+    await provider_for(composer)._remember_pending(
+        handle(), tmux_module._PendingSubmit(
+            instance_token=handle().instance_token, marker="x" * 48, text=composer.draft,
+        ),
+    )
+    result = await provider_for(composer).nudge(handle(), REMINDER)
+    assert result == {"pending_action": "cleared"}
+    assert composer.submitted == [REMINDER]
+
+
+@pytest.mark.parametrize("change", ["draft", "attached", "recent-input", "busy"])
+async def test_explicit_resubmit_preserves_changed_or_busy_input(fast_polls, change):
+    composer = FlakyComposer(clear_keys=("C-u",))
+    composer.draft = REMINDER
+    composer.typed = True
+    provider = provider_for(composer)
+    await provider._remember_pending(handle(), tmux_module._PendingSubmit(
+        instance_token=handle().instance_token, marker=MARKER, text=REMINDER,
+    ))
+    if change == "draft":
+        composer.draft += " human edit"
+    elif change == "attached":
+        composer.attached = 1
+    elif change == "recent-input":
+        provider._last_input_at[handle().name] = time.monotonic()
+    else:
+        composer.above = ["Working (esc to interrupt)", "────────────────────"]
+    assert await provider.resubmit_pending(handle()) is False
+    assert composer.submitted == [] and composer.mutations == []
+
+
 class TestSubmitBackoff:
     def test_schedule_widens_and_keeps_a_fast_first_attempt(self):
         polls = tmux_module._SUBMIT_POLLS

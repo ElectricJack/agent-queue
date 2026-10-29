@@ -35,13 +35,14 @@ def test_wait_source_recovery_only_extends_existing_scoped_command():
     assert schema["required"] == ["project_id"]
     assert set(schema["properties"]) - set(evidence["previous_definition"]["input_schema"][
         "properties"]) == {"action", "limit"}
-    catalogue = _before_unread_inbox_catalogue(
+    # The sibling nudge recovery recording predates this one.
+    catalogue = _before_session_nudge_recovery_catalogue(_before_unread_inbox_catalogue(
         _before_batch_authority_catalogue(_before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue(
                 _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
             ))
         ))
-    )
+    ))
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"])
     previous = json.dumps(_before_wait_source_recovery_catalogue(catalogue), indent=2) + "\n"

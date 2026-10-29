@@ -1,0 +1,20 @@
+{
+  "source_base": "b96aa82c9a573458d1f8d0e6486e18dcfb3c45b1",
+  "source_commit": "2bca8a10555eff225066f1105b304004618a48fe",
+  "reason": "solid-quest-83 adds only optional submit_pending recovery to the session_nudge transport; preserve prior catalogue evidence.",
+  "command": "session_nudge",
+  "added_property": {
+    "submit_pending": {
+      "type": "boolean",
+      "description": "Recover pending AQ input without new text; clears collapsed input for retry"
+    }
+  },
+  "previous_cli_catalogue_sha256": "e688cbb6b101db3bf624cf268b9727727163554a5b7786d3af2afad4f2ad91c9",
+  "cli_catalogue_sha256": "6cf6859f593f59b71d15c48b70abe339d4448fc72909315d4e390a5fd236a2f2",
+  "transport_definitions": {
+    "session_nudge": {
+      "previous_sha256": "0311a1e129cf7f4867b93118fff776e8732607954cee65997b9c29d7faccd9d5",
+      "sha256": "3eb67676e7f07cadc42ef25c27021179bb9d92a80e385861094a696a84ad5878"
+    }
+  }
+}
