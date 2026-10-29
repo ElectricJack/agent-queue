@@ -1997,7 +1997,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6270,
+ 'authorized_owned_delta': 6306,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2606,7 +2606,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 84825,
- 'measured_owned_total': 161769,
+ 'measured_owned_total': 161805,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -3787,7 +3787,30 @@ HAND_INTEGRATION_RECONCILIATION = {
                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
                                         'source_revision': '79edb0bab5bce7897ff00a2b5443710f1e424299',
                                         'task_id': 'clear-journey-76',
-                                        'thread_id': 'clear-journey-76-size'}}
+                                        'thread_id': 'clear-journey-76-size'},
+ 'project_ready_observation_batching': {'authorized_engine_delta': 0,
+                                        'authorized_owned_delta': 36,
+                                        'authorized_shared_owned_delta': 36,
+                                        'authorized_table_delta': 0,
+                                        'charged_files': {'src/commands/task_commands.py': 36},
+                                        'decision_message_id': 'msg-00c1d067780840ba9ae709b8e46df523',
+                                        'dev_source_revision': '4f713c63b9f6dce0e28df7a460814049b23e7b0f',
+                                        'operator_decision': '6679052c',
+                                        'previous_measured_engine_lines': 82532,
+                                        'previous_measured_owned_total': 157785,
+                                        'previous_measured_table_count': 45,
+                                        'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/1987',
+                                        'reason': 'Exact approved +36 shared owned lines for '
+                                                  'batched withheld admission and lazy pool demand '
+                                                  'once per project_ready request, with relocated '
+                                                  '_explain_task classified as shared. Preserve '
+                                                  'original baselines, all historical grants and '
+                                                  'ownership classifications, with zero remaining '
+                                                  'headroom and no new storage category.',
+                                        'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                        'source_revision': 'e93ba2b1b39f46c6ccc6e645a8860a95bcb8a726',
+                                        'task_id': 'solid-dune-98',
+                                        'thread_id': 'solid-dune-98-size-repair'}}
 
 
 def integration_table(name: str) -> bool:
