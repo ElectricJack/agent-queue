@@ -19,13 +19,16 @@ from sqlalchemy.dialects.postgresql import insert
 
 from src.database import tables as t
 from src.database.queries.integration_state_queries import session_attached_clause
+from src.git.manager import bounded_git_reads, within_git_read_budget
 from src.integration.delegate_release import live_integration_owner
 from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState
 from src.integration.git_truth import GitTruth, snapshot_scope
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
-from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
+from src.integration.selection_metrics import (
+    SelectionMetrics, selection_count, selection_metrics_scope,
+)
 from src.integration.truth_retention import delivery_identity_key, retain_delivery, retain_objects
 from src.logging_config import CorrelationContext
 from src.metrics.operation_profile import operation_profile
@@ -56,6 +59,7 @@ class GitTruthReconciler:
         self._stage = 0
         self._lock = asyncio.Lock()
 
+    @bounded_git_reads
     async def tick(self, now):
         with snapshot_scope(reuse=True):
             return await self._tick(now)
@@ -227,8 +231,15 @@ class GitTruthReconciler:
         self._cursor = ids[-1] if len(ids) == self.page_size else ""
         if ids:
             # Final/chain target: the immediate parent still needs collection inputs.
-            view = await self.observer.observe(ids, target_loader=delivery_targets)
             counts["examined"] = len(ids)
+            # Acquisition and immutable proof fan-out share the tick read deadline.
+            # A timed-out reader leaves its producer and all repair fences intact.
+            view = await within_git_read_budget(
+                lambda: self.observer.observe(ids, target_loader=delivery_targets),
+            )
+            if view is None:
+                selection_count("observation_budget_exhausted")
+                return counts["repaired"]
             for task_id in ids:
                 try:
                     counts["repaired"] += await self._repair(view, task_id, now)

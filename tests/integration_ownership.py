@@ -2024,7 +2024,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6325,
+ 'authorized_owned_delta': 6336,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2632,8 +2632,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84825,
- 'measured_owned_total': 161824,
+ 'measured_engine_lines': 84836,
+ 'measured_owned_total': 161835,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,
@@ -3837,7 +3837,32 @@ HAND_INTEGRATION_RECONCILIATION = {
                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
                                         'source_revision': 'e93ba2b1b39f46c6ccc6e645a8860a95bcb8a726',
                                         'task_id': 'solid-dune-98',
-                                        'thread_id': 'solid-dune-98-size-repair'}}
+                                        'thread_id': 'solid-dune-98-size-repair'},
+ 'git_truth_read_deadline_composition': {'approval_message_ids': ['msg-5eaf42adf2514d9581f197af77e446db',
+                                                                  'msg-bb36892fc18e4c018017f95572443008'],
+                                         'authorized_engine_delta': 11,
+                                         'authorized_owned_delta': 11,
+                                         'authorized_table_delta': 0,
+                                         'charged_files': {'src/integration/truth_reconciler.py': 11},
+                                         'decision_message_id': 'msg-91e492a3f4a344679083d3a0523dc2c3',
+                                         'dev_source_revision': '2373e54bf',
+                                         'measured_engine_lines': 83445,
+                                         'measured_owned_total': 158875,
+                                         'measured_table_count': 45,
+                                         'operator_decision': '6679052c',
+                                         'previous_measured_engine_lines': 83434,
+                                         'previous_measured_owned_total': 158864,
+                                         'previous_measured_table_count': 45,
+                                         'reason': 'Exact supervisor-approved shared tick read '
+                                                   'deadline and bounded completed-task '
+                                                   'observation/proof fanout. Compose +11 '
+                                                   'owned/+11 engine/+0 tables on current dev; '
+                                                   'preserve all historical grants, baselines and '
+                                                   'ownership classifications, with zero remaining '
+                                                   'headroom.',
+                                         'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                         'source_revision': '3a7257715e0441b876d327fca96ad76dc9bab291',
+                                         'task_id': 'sound-meadow-89'}}
 
 
 def integration_table(name: str) -> bool:

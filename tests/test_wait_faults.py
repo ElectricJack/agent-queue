@@ -1180,7 +1180,11 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
         await conn.execute(update(tasks).where(tasks.c.id == "source").values(title="aborted"))
         entered.set()
         # Cancellation during a real query invalidates the asyncpg connection.
-        await conn.execute(select(func.pg_sleep(60)))
+        # Inject the listener timeout after its outcome writes and our update.
+        # A short whole-dispatch lease can expire before reaching this fault on CI.
+        async with asyncio.timeout(0.01 if driver == "listener" and interruption == "timeout"
+                                   else None):
+            await conn.execute(select(func.pg_sleep(60)))
 
     original_dispatch = service.listener._dispatch
     if driver == "scheduler":
@@ -1205,7 +1209,6 @@ async def test_interrupted_wait_transaction_retries_and_resolves_message(
                 await stall(conn)
 
         monkeypatch.setattr(service.listener, "_dispatch", dispatch)
-        service.listener.lease_seconds = 1
         tick = service.listener.tick
 
     active_budget = fault_budget = None

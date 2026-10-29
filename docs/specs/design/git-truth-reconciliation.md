@@ -17,6 +17,23 @@ starve later rows. A restart safely revisits rows. The service bounds each
 pass and prevents overlapping instances. Each source has a 60-second budget;
 source order rotates so repeated timeouts cannot starve later sources.
 
+The 2026-10-26 live capture on `7bff0f25e` (08:30:55–09:00:55 UTC,
+15 runs) measured 79.14 seconds average and 127.32 seconds maximum. Delivery
+averaged 50.39 seconds with ten timeouts; origins averaged 22.60 seconds with
+five. Shared-observation and snapshot-lock waits dominated; SQL accounted for
+43.66 seconds across all runs. The prior read wrapper had no active deadline
+in this command. The supervisor owns the final 30-minute deployment acceptance.
+
+Each tick installs the existing five-second request Git read deadline, shared
+across its phases. Completed-task observation includes acquisition and immutable
+proof evaluation in that deadline; snapshot joins in later phases use the same
+deadline. Expiry returns unknown/deferred evidence and records
+`observation_budget_exhausted`, leaving shared producers running under their own
+store locks. The next visit can consume their completed observation. Keyset
+cursors and rotating stage priority retain progress across pages and sources;
+no stale snapshot or incomplete proof authorizes repair. Publication and guarded
+mutations still finish with their existing freshness and authority checks.
+
 Every completed, failed or cancelled pass emits one structured
 `git truth reconciliation timing` log with `git_truth_timing`. Its phase entries
 include elapsed seconds, outcome, repository/project fan-out, Git proof counters,
