@@ -13077,6 +13077,53 @@
         }
       }
     },
+    "/api/project/recover-retained-holder": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply recovery of a positively stopped historical task holder. Preserves local Git work before releasing exact legacy owner/job pins and stale assignment. Leaves recovered workspaces disabled. Apply requires expected_proof from preview. Local operator or live global supervisor only.",
+        "description": "Preview or apply recovery of a positively stopped historical task holder. Preserves local Git work before releasing exact legacy owner/job pins and stale assignment. Leaves recovered workspaces disabled. Apply requires expected_proof from preview. Local operator or live global supervisor only.",
+        "operationId": "recover_retained_holder",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverRetainedHolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoverRetainedHolderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/release-constraint": {
       "post": {
         "tags": [
@@ -21721,6 +21768,53 @@
         }
       }
     },
+    "/api/task/claim-abort": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+        "description": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+        "operationId": "task_claim_abort",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskClaimAbortRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskClaimAbortResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/close": {
       "post": {
         "tags": [
@@ -23508,8 +23602,8 @@
         "tags": [
           "wait"
         ],
-        "summary": "Reobserve one durable source event in a supervisor project.",
-        "description": "Reobserve one durable source event in a supervisor project.",
+        "summary": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
+        "description": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
         "operationId": "wait_source_redispatch",
         "requestBody": {
           "content": {
@@ -70992,6 +71086,174 @@
         "type": "object",
         "title": "RecordShowResponse"
       },
+      "RecoverRetainedHolderRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": ""
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": ""
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "task_id",
+          "session_id",
+          "reason"
+        ],
+        "title": "RecoverRetainedHolderRequest"
+      },
+      "RecoverRetainedHolderResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proof"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "checkpoints": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Checkpoints",
+            "default": []
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "RecoverRetainedHolderResponse"
+      },
       "RedactionRowDTO": {
         "properties": {
           "field": {
@@ -81769,6 +82031,139 @@
         ],
         "title": "TaskChildrenResponse"
       },
+      "TaskClaimAbortRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Preparing task ID."
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Exact preparing session ID."
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "instance_token": {
+            "type": "string",
+            "title": "Instance Token",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "session_id",
+          "claim_epoch",
+          "instance_token",
+          "reason"
+        ],
+        "title": "TaskClaimAbortRequest"
+      },
+      "TaskClaimAbortResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "cleanup_pending",
+                  "settled"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "claim_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "TaskClaimAbortResponse",
+        "description": "Exact preparation cancellation, including cleanup still in progress."
+      },
       "TaskClaimRequest": {
         "properties": {
           "task_id": {
@@ -88197,8 +88592,15 @@
             "title": "Project Id"
           },
           "wait_id": {
-            "type": "string",
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wait Id"
           },
           "decision": {
@@ -88209,7 +88611,8 @@
               "cancel",
               "reroute",
               "escalate_to_human",
-              "requeue"
+              "requeue",
+              "retire"
             ],
             "title": "Decision"
           },
@@ -88272,7 +88675,6 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "wait_id",
           "decision",
           "note"
         ],
@@ -90173,24 +90575,53 @@
             "minLength": 1,
             "title": "Project Id"
           },
+          "action": {
+            "type": "string",
+            "enum": [
+              "redispatch",
+              "blockers",
+              "retire"
+            ],
+            "title": "Action",
+            "default": "redispatch"
+          },
           "source_seq": {
-            "type": "integer",
-            "minimum": 1.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Source Seq"
           },
           "note": {
-            "type": "string",
-            "maxLength": 4000,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Note"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "project_id",
-          "source_seq",
-          "note"
+          "project_id"
         ],
         "title": "WaitSourceRedispatchArgs"
       },

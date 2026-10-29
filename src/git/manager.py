@@ -63,16 +63,18 @@ See specs/git/git.md for the full behavioral specification.
 
 from __future__ import annotations
 
-from src.claim_timing import timed_claim_git
+from src.claim_timing import claim_phase, timed_claim_git
 
 import asyncio
 import contextvars
+import errno
 import functools
 import logging
 import math
 import os
 import random
 import re
+import shutil
 import shlex
 import signal
 import subprocess
@@ -80,7 +82,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -105,6 +107,11 @@ from src.git.github_contracts import (
 )
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 from src.git.process import ProcessCleanupError, run_owned_process
+from src.git.repository_lock import (
+    RepositoryLock,
+    RetainedVerificationPending,
+    repository_lock_wait_seconds,
+)
 from src.git.locks import common_git_dir_from_cwd, remove_stale_locks
 from src.metrics.perf import operation_timing, timed_operation
 
@@ -131,6 +138,26 @@ def _zeroized_credential(buffer: bytearray):
         zeroize(buffer)
 
 
+def _cleanup_isolated_git_directory(directory: tempfile.TemporaryDirectory) -> None:
+    """Best-effort removal, called off-loop after the store's writers stop."""
+    for attempt in range(3):
+        try:
+            directory.cleanup()
+            return
+        except Exception as exc:
+            if (isinstance(exc, OSError) and exc.errno in {errno.ENOTEMPTY, errno.EBUSY}
+                    and attempt < 2):
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            # cleanup() detaches TemporaryDirectory's finalizer before removal,
+            # so a retained path will not cause another unhandled cleanup later.
+            logger.warning(
+                "isolated Git temporary directory leaked: path=%s error=%s errno=%s",
+                directory.name, type(exc).__name__, getattr(exc, "errno", None),
+            )
+            return
+
+
 @asynccontextmanager
 async def _isolated_git_directory(**kwargs):
     """Remove large temporary stores off-loop, retaining ownership on cancellation."""
@@ -138,7 +165,7 @@ async def _isolated_git_directory(**kwargs):
     try:
         yield directory.name
     finally:
-        cleanup = asyncio.create_task(asyncio.to_thread(directory.cleanup))
+        cleanup = asyncio.create_task(asyncio.to_thread(_cleanup_isolated_git_directory, directory))
         try:
             await asyncio.shield(cleanup)
         except asyncio.CancelledError:
@@ -228,6 +255,40 @@ def _without_stale_gc_report(stderr: bytes) -> bytes:
 
 class GitError(Exception):
     pass
+
+
+class RetainedMissingObjects(GitError):
+    """Full fsck found only absent objects, with no independent corruption."""
+
+    def __init__(self, message: str, objects: tuple[tuple[str, str], ...]):
+        super().__init__(message)
+        self.objects = objects
+
+
+def _missing_retained_objects(lines: list[bytes]) -> tuple[tuple[str, str], ...]:
+    """Accept missing objects and only links explained by those exact absences."""
+    missing = set()
+    targets = set()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        absent = re.fullmatch(rb"missing (commit|tree|blob|tag) ([0-9a-f]{40}|[0-9a-f]{64})", line)
+        if absent:
+            missing.add((absent[2].decode("ascii"), absent[1].decode("ascii")))
+        elif re.fullmatch(
+            rb"broken link from +(?:commit|tree|tag) (?:[0-9a-f]{40}|[0-9a-f]{64})", line,
+        ) and index + 1 < len(lines):
+            index += 1
+            target = re.fullmatch(
+                rb" +to +(commit|tree|blob|tag) ([0-9a-f]{40}|[0-9a-f]{64})", lines[index],
+            )
+            if target is None:
+                return ()
+            targets.add((target[2].decode("ascii"), target[1].decode("ascii")))
+        else:
+            return ()
+        index += 1
+    return tuple(sorted(missing)) if targets <= missing and len(missing) <= 512 else ()
 
 
 class ChildPreparationConflict(GitError):
@@ -649,9 +710,31 @@ def _parse_status_branch_header(header: str) -> str:
 
 #: How long a clean full fsck of an unchanged object store is reused.
 _RETAINED_VERIFY_TTL_SECONDS = 3600.0
+#: Healthy multi-gigabyte stores have measured full checks lasting over nine minutes.
+#: Recovery and lender verification share this full-body command budget.
+RETAINED_FSCK_TIMEOUT_SECONDS = 900.0
 #: Full-body verification is a separate phase from negotiated object transfer.
-_RETAINED_VERIFY_TIMEOUT_SECONDS = 300.0
+_RETAINED_VERIFY_TIMEOUT_SECONDS = RETAINED_FSCK_TIMEOUT_SECONDS
 _RETAINED_VERIFY_RETRY_DELAYS = (1.0, 2.0, 4.0)
+#: A timed-out transfer or full check is discarded whole (its scratch repository is
+#: removed), so retrying under the same fixed budget on a busy host only repeats
+#: the loss. Each consecutive timeout of one store doubles that store's next
+#: budget up to these ceilings; one success returns it to the base.
+_ESCALATED_FETCH_CEILING_SECONDS = 1200.0
+_ESCALATED_FSCK_CEILING_SECONDS = 7200.0
+
+
+def _escalated_budget(streaks: dict, key: str, base: float, ceiling: float) -> float:
+    """*base* doubled once per consecutive timeout recorded for *key*, capped."""
+    return min(base * 2 ** min(streaks.get(key, 0), 16), max(base, ceiling))
+
+
+def _record_budget_outcome(streaks: dict, key: str, exc: BaseException | None) -> None:
+    """Count a consecutive timeout for *key*; any success or other outcome resets."""
+    if exc is not None and "reason=git_timeout" in str(exc):
+        streaks[key] = streaks.get(key, 0) + 1
+    else:
+        streaks.pop(key, None)
 
 
 def _common_git_dir(git_dir: str) -> Path:
@@ -687,6 +770,94 @@ def _object_store_fingerprint(git_dir: str) -> tuple | None:
     except OSError:
         return None
     return tuple(sorted(entries))
+
+
+def _retained_store_key(git_dir: str) -> str:
+    """The common object store's cache key; linked worktrees share it."""
+    return os.path.realpath(_common_git_dir(git_dir))
+
+
+def _retained_store_state(git_dir: str) -> tuple[str, tuple | None]:
+    """The common store's cache key and current fingerprint."""
+    return _retained_store_key(git_dir), _object_store_fingerprint(git_dir)
+
+
+#: Object files the incremental gate can check on their own: loose objects and
+#: pack families (sha1 or sha256 names).
+_RETAINED_LOOSE_RE = re.compile(r"[0-9a-f]{2}/(?:[0-9a-f]{38}|[0-9a-f]{62})")
+_RETAINED_PACK_RE = re.compile(
+    r"pack/(pack-(?:[0-9a-f]{40}|[0-9a-f]{64}))\.(pack|idx|rev|bitmap|keep|mtimes|promisor)")
+#: Derived indexes that connectivity-only fsck verifies (commit-graph and
+#: multi-pack-index verify) or that only serve dumb transports.
+_RETAINED_METADATA_RE = re.compile(
+    r"info/(?:commit-graph|packs|commit-graphs/[^/]+)"
+    r"|pack/multi-pack-index(?:-[0-9a-f]+\.(?:bitmap|rev))?")
+#: Larger additions (a whole-store repack) fall back to full verification.
+_RETAINED_INCREMENT_BYTES = 256 * 1024 * 1024
+#: The check after which a background full refresh starts, before expiry.
+_RETAINED_REFRESH_AGE_SECONDS = _RETAINED_VERIFY_TTL_SECONDS / 2
+#: Common stores whose exclusion the current context already holds.
+_RETAINED_EXCLUSIONS_HELD: ContextVar[frozenset[str]] = ContextVar(
+    "retained_store_exclusions_held", default=frozenset())
+
+
+def _retained_increment(previous: tuple, current: tuple) -> tuple[tuple, tuple] | None:
+    """Object files added since *previous* and the inventory they complete.
+
+    Returns None when the change is not a plain addition the incremental gate
+    can check: unknown paths, a replaced or truncated baseline file, an index
+    without its pack, or too many bytes. Removed files need no body check;
+    connectivity proves what remains.
+    """
+    known = set(previous)
+    baseline = {path for path, _size, _inode in previous}
+    present = {path for path, _size, _inode in current}
+    added = []
+    checked = []
+    total = 0
+    for entry in current:
+        path, size, _inode = entry
+        if entry in known or _RETAINED_METADATA_RE.fullmatch(path):
+            checked.append(entry)
+            continue
+        if path in baseline:
+            return None
+        if not _RETAINED_LOOSE_RE.fullmatch(path):
+            match = _RETAINED_PACK_RE.fullmatch(path)
+            if match is None:
+                return None
+            stem = f"pack/{match[1]}"
+            if f"{stem}.idx" not in present:
+                # index-pack writes the index last: the pack is still arriving
+                # and Git does not use it yet. It is not part of this inventory.
+                continue
+            if f"{stem}.pack" not in present:
+                return None
+        added.append(entry)
+        checked.append(entry)
+        total += size
+    if total > _RETAINED_INCREMENT_BYTES:
+        return None
+    return tuple(added), tuple(checked)
+
+
+def _link_retained_additions(source: Path, target: Path, added: tuple) -> bool:
+    """Link each added (path, size, inode) into *target*'s object directory.
+
+    False when an addition was replaced since it was observed. Additions removed
+    since then are skipped: they are no longer part of the store.
+    """
+    for path, _size, inode in added:
+        origin = source / path
+        try:
+            if os.stat(origin).st_ino != inode:
+                return False
+        except FileNotFoundError:
+            continue
+        link = target / path
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(origin)
+    return True
 
 
 #: One request's shared budget for Git reads that may queue behind a fetch or
@@ -1008,6 +1179,7 @@ class GitManager:
         env: dict[str, str] | None = None,
         timeout: int | None = None,
         lock_held: bool = False,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         """Run Git while preserving expected nonzero status and diagnostics.
 
@@ -1031,10 +1203,12 @@ class GitManager:
         if lock is not None:
             async with lock:
                 return await self._arun_git_result_unlocked(
-                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+                    args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+                    low_priority=low_priority,
                 )
         return await self._arun_git_result_unlocked(
-            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout
+            args, cwd=cwd, stdin=stdin, env=overrides, timeout=timeout,
+            low_priority=low_priority,
         )
 
     async def _arun_git_result_unlocked(
@@ -1045,9 +1219,12 @@ class GitManager:
         stdin: str | None,
         env: dict[str, str],
         timeout: int | None,
+        low_priority: bool = False,
     ) -> subprocess.CompletedProcess:
         effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
+        if low_priority and shutil.which("nice"):
+            command = ["nice", "-n", "10", *command]
         try:
             try:
                 async with self._amaintenance_exclusion(args, cwd, effective_timeout) as remaining:
@@ -1106,7 +1283,7 @@ class GitManager:
         lock = self._lock_provider(cwd) if self._lock_provider else None
         if lock is None:
             key = str(Path(cwd).resolve())
-            lock = self._repository_operation_locks.setdefault(key, asyncio.Lock())
+            lock = self._repository_operation_locks.setdefault(key, RepositoryLock())
         async with lock:
             yield
 
@@ -2287,19 +2464,13 @@ class GitManager:
         self.github_access.validate_repository_reference(binding, configured_origin)
         source_url = f"https://github.com/{binding.full_name}.git"
 
-        async def acquire() -> None:
-            token = await self._atoken_for_repository(binding)
-            await self._afetch_origin_with_auth_to_url(
-                checkout_path, source_url=source_url, token=token,
-                **({"refetch": True} if refetch else {}),
-                **({"refs": refs} if refs is not None else {}),
-            )
-
-        if lock_held:
-            await acquire()
-        else:
-            async with self.arepository_transaction(checkout_path):
-                await acquire()
+        token = await self._atoken_for_repository(binding)
+        await self._afetch_origin_with_auth_to_url(
+            checkout_path, source_url=source_url, token=token,
+            **({"refetch": True} if refetch else {}),
+            **({"refs": refs} if refs is not None else {}),
+            **({"lock_held": True} if lock_held else {}),
+        )
 
     @staticmethod
     def _origin_refspecs(refs: Sequence[str], *, staged: bool = False) -> list[str]:
@@ -2314,6 +2485,23 @@ class GitManager:
         return specs
 
     async def _afetch_origin_with_auth_to_url(
+        self, checkout_path: str, **options: Any,
+    ) -> _OriginFetchTransfer:
+        """Run the staged fetch under a budget that grows while it keeps timing out."""
+        streaks = self.__dict__.setdefault("_origin_fetch_timeouts", {})
+        key = os.path.realpath(checkout_path)
+        budget = _escalated_budget(
+            streaks, key, self._GIT_TIMEOUT, _ESCALATED_FETCH_CEILING_SECONDS)
+        try:
+            transfer = await self._afetch_origin_with_auth_to_url_once(
+                checkout_path, budget=budget, **options)
+        except GitError as exc:
+            _record_budget_outcome(streaks, key, exc)
+            raise
+        _record_budget_outcome(streaks, key, None)
+        return transfer
+
+    async def _afetch_origin_with_auth_to_url_once(
         self,
         checkout_path: str,
         *,
@@ -2321,6 +2509,8 @@ class GitManager:
         token: str | None,
         refetch: bool = False,
         refs: Sequence[str] | None = None,
+        lock_held: bool = False,
+        budget: float | None = None,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2349,7 +2539,8 @@ class GitManager:
                            *(["+refs/tags/*:refs/tags/*"] if refetch else [])]
         loop = asyncio.get_running_loop()
         started = loop.time()
-        deadline = started + self._GIT_TIMEOUT
+        budget = self._GIT_TIMEOUT if budget is None else budget
+        deadline = started + budget
         destination_git_dir, borrowable_objects = await self._aorigin_fetch_destination(
             checkout_path
         )
@@ -2369,88 +2560,109 @@ class GitManager:
             )
             seeded_tips = 0
             if borrowable_objects is not None:
-                deadline = await self._aretained_fetch_deadline(
-                    destination_git_dir, home=home, deadline=deadline,
-                )
+                verification_started = loop.time()
+                try:
+                    deadline = await self._aretained_fetch_deadline(
+                        destination_git_dir, home=home, deadline=deadline,
+                    )
+                except RetainedMissingObjects:
+                    recovery_deadline = loop.time() + _RETAINED_VERIFY_TIMEOUT_SECONDS
+                    async with asyncio.timeout_at(recovery_deadline):
+                        await self._arecover_missing_retained_objects(
+                            destination_git_dir, source_url=source_url, token=token, home=home,
+                            deadline=recovery_deadline, checkout_path=checkout_path,
+                            lock_held=lock_held,
+                        )
+                    deadline += loop.time() - verification_started
                 seeded_tips = await self._alend_fetch_objects(
                     imported, destination_git_dir, borrowable_objects,
                     patterns=("refs/remotes/origin", "refs/tags", "refs/aq/provenance"),
                     home=home, deadline=deadline,
                 )
-            reusable = await self.aretained_store_verified(destination_git_dir)
-            mode = "incremental" if borrowable_objects is not None else "full"
-            prepared_at = loop.time()
-            try:
-                await self._arun_authenticated_git(
-                    # The checkout's tips reach negotiation only through the
-                    # seeded refs: the no-op alternateRefsCommand keeps the
-                    # credentialed process from running for-each-ref against
-                    # the checkout (and so reading its worker-writable config).
-                    ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
-                     "-c", "fetch.fsckObjects=true",
-                     f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
-                     *transport_refs],
-                    home=home,
-                    repository_url=source_url,
-                    token=token,
-                    deadline=deadline,
-                    budget_seconds=self._GIT_TIMEOUT,
+            # Full verification uses its own maintenance exclusion before
+            # taking repository exclusion. Keep the transfer/import serialized,
+            # including the lifetime of the borrowed objects, without starving
+            # bounded claim/reconciliation waiters during fsck.
+            transaction = (
+                nullcontext() if lock_held else self.arepository_transaction(checkout_path)
+            )
+            async with transaction:
+                mode = "incremental" if borrowable_objects is not None else "full"
+                prepared_at = loop.time()
+                try:
+                    await self._arun_authenticated_git(
+                        # The checkout's tips reach negotiation only through the
+                        # seeded refs: the no-op alternateRefsCommand keeps the
+                        # credentialed process from running for-each-ref against
+                        # the checkout (and so reading its worker-writable config).
+                        ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
+                         "-c", "fetch.fsckObjects=true",
+                         f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
+                         *transport_refs],
+                        home=home,
+                        repository_url=source_url,
+                        token=token,
+                        deadline=deadline,
+                        budget_seconds=budget,
+                    )
+                except GitError as exc:
+                    raise GitError(
+                        f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
+                    ) from None
+                acquired_at = loop.time()
+                received_objects, received_kib = await self._areceived_objects(
+                    imported, home=home, deadline=deadline
                 )
-            except GitError as exc:
-                raise GitError(
-                    f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
-                ) from None
-            acquired_at = loop.time()
-            received_objects, received_kib = await self._areceived_objects(
-                imported, home=home, deadline=deadline
-            )
-            await self._run_isolated_import_git(
-                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                 "-c", "fetch.fsckObjects=true",
-                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                 *(["--prune"] if refs is None else []),
-                 *(["--refetch"] if refetch else []),
-                 str(imported), *import_refs],
-                home=home,
-                deadline=deadline,
-            )
-            if not refetch and refs is None:
+                # Recheck after staging: another writer may have invalidated the
+                # verified baseline while no repository lock was held.
+                reusable = await self.aretained_store_verified(destination_git_dir)
                 await self._run_isolated_import_git(
                     ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                     "-c", "fetch.fsckObjects=true",
+                     "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
                      f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                     str(imported), "+refs/tags/*:refs/tags/*"],
+                     *(["--prune"] if refs is None else []),
+                     *(["--refetch"] if refetch else []),
+                     str(imported), *import_refs],
                     home=home,
                     deadline=deadline,
                 )
-            imported_refs = await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
-                 "refs/heads", "refs/tags", "refs/aq/provenance"],
-                home=home, deadline=deadline,
-            )
-            destination_refs = await self._run_isolated_import_git(
-                [f"--git-dir={destination_git_dir}", "for-each-ref",
-                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
-                 "refs/aq/provenance"],
-                home=home, deadline=deadline,
-            )
-            imported_map = dict(
-                (ref, oid) for oid, ref in
-                (line.split(" ", 1) for line in imported_refs.decode("ascii").splitlines())
-            )
-            destination_map = dict(
-                (ref, oid) for oid, ref in
-                (line.split(" ", 1) for line in destination_refs.decode("ascii").splitlines())
-            )
-            for ref, oid in imported_map.items():
-                destination_ref = (
-                    ref.replace("refs/heads/", "refs/remotes/origin/", 1)
-                    if ref.startswith("refs/heads/") else ref
+                if not refetch and refs is None:
+                    await self._run_isolated_import_git(
+                        ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                         "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
+                         f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                         str(imported), "+refs/tags/*:refs/tags/*"],
+                        home=home,
+                        deadline=deadline,
+                    )
+                imported_refs = await self._run_isolated_import_git(
+                    [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
+                     "refs/heads", "refs/tags", "refs/aq/provenance"],
+                    home=home, deadline=deadline,
                 )
-                if destination_map.get(destination_ref) != oid:
-                    raise GitError("authenticated Git fetch imported a different ref")
-            if reusable:
-                await self.aextend_retained_store_verified(destination_git_dir)
+                destination_refs = await self._run_isolated_import_git(
+                    [f"--git-dir={destination_git_dir}", "for-each-ref",
+                     "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
+                     "refs/aq/provenance"],
+                    home=home, deadline=deadline,
+                )
+                imported_map = dict(
+                    (ref, oid) for oid, ref in
+                    (line.split(" ", 1) for line in imported_refs.decode("ascii").splitlines())
+                )
+                destination_map = dict(
+                    (ref, oid) for oid, ref in
+                    (line.split(" ", 1) for line in destination_refs.decode("ascii").splitlines())
+                )
+                for ref, oid in imported_map.items():
+                    destination_ref = (
+                        ref.replace("refs/heads/", "refs/remotes/origin/", 1)
+                        if ref.startswith("refs/heads/") else ref
+                    )
+                    if destination_map.get(destination_ref) != oid:
+                        raise GitError("authenticated Git fetch imported a different ref")
+                if reusable:
+                    await self.aextend_retained_store_verified(destination_git_dir)
         transfer = _OriginFetchTransfer(
             mode=mode,
             seeded_tips=seeded_tips,
@@ -2572,13 +2784,90 @@ class GitManager:
         )
         return len(tips)
 
+    async def _arecover_missing_retained_objects(
+        self, git_dir: str, *, source_url: str, token: str | None, home: Path, deadline: float,
+        checkout_path: str, lock_held: bool,
+    ) -> None:
+        """Add absent objects from the authorized origin, without changing refs.
+
+        The caller has validated repository identity. Only the additive import
+        takes repository exclusion; full checks and staging leave ordinary
+        repository waiters free. Never lend, replace or remove damaged objects.
+        """
+        check = [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                 "--no-reflogs", "--no-progress"]
+        async with self._aretained_store_exclusion(git_dir, deadline=deadline):
+            fingerprint, started = await self.aretained_store_baseline(git_dir)
+            try:
+                await self._run_isolated_import_git(
+                    check, home=home, deadline=deadline, verify_integrity=True,
+                )
+                await self.arecord_retained_store_verified(git_dir, fingerprint, started)
+                return  # An independent writer already completed the store.
+            except RetainedMissingObjects as exc:
+                missing = exc.objects
+        staged = home / "missing-objects.git"
+        await self._run_isolated_import_git(
+            ["init", "--bare", "--template=", str(staged)], home=home, deadline=deadline,
+        )
+        await self._arun_authenticated_git(
+            ["-c", "maintenance.auto=false", "-c", "fetch.fsckObjects=true",
+             f"--git-dir={staged}", "fetch", "--no-tags", source_url,
+             "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+             "+refs/aq/provenance/*:refs/aq/provenance/*"],
+            home=home, repository_url=source_url, token=token, deadline=deadline,
+            budget_seconds=max(0.0, deadline - asyncio.get_running_loop().time()),
+        )
+        found = await self._run_isolated_import_git(
+            [f"--git-dir={staged}", "cat-file", "--batch-check"],
+            home=home, deadline=deadline,
+            input="".join(f"{oid}\n" for oid, _kind in missing).encode("ascii"),
+        )
+        if [(parts[0], parts[1]) for line in found.decode("ascii").splitlines()
+                if len(parts := line.split()) == 3] != list(missing):
+            raise GitError("retained Git object integrity is unavailable: "
+                           "missing objects are unavailable from origin: "
+                           + " ".join(oid for oid, _kind in missing))
+        await self._run_isolated_import_git(
+            [f"--git-dir={staged}", *check[1:]], home=home, deadline=deadline,
+            verify_integrity=True,
+        )
+        transaction = nullcontext() if lock_held else self.arepository_transaction(checkout_path)
+        async with transaction:
+            async with self._aretained_store_exclusion(git_dir, deadline=deadline):
+                current, _ = await self.aretained_store_baseline(git_dir)
+                if current != fingerprint:
+                    raise GitError("retained Git object integrity is unavailable: "
+                                   "object store changed during missing-object acquisition")
+                await self._run_isolated_import_git(
+                    ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                     "-c", "fetch.fsckObjects=true", "-c", "maintenance.auto=false",
+                     f"--git-dir={git_dir}", "fetch",
+                     "--refetch", "--no-tags", "--no-write-fetch-head", str(staged),
+                     *(oid for oid, _kind in missing)], home=home, deadline=deadline,
+                )
+        async with self._aretained_store_exclusion(git_dir, deadline=deadline):
+            fingerprint, started = await self.aretained_store_baseline(git_dir)
+            await self._run_isolated_import_git(
+                check, home=home, deadline=deadline, verify_integrity=True,
+            )
+            await self.arecord_retained_store_verified(git_dir, fingerprint, started)
+
     @asynccontextmanager
     async def _aretained_store_exclusion(
         self, git_dir: str, *, deadline: float,
     ) -> AsyncIterator[None]:
-        """Serialize full checks and foreground maintenance for one common store."""
+        """Serialize full checks and foreground maintenance for one common store.
+
+        Re-entrant within the holder's own context, so maintenance it runs
+        passes; a full check's fresh context never inherits the hold.
+        """
         common = await asyncio.to_thread(_common_git_dir, git_dir)
         key = os.path.realpath(common)
+        held = _RETAINED_EXCLUSIONS_HELD.get()
+        if key in held:
+            yield
+            return
         lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
             key, asyncio.Lock())
         loop = asyncio.get_running_loop()
@@ -2591,9 +2880,11 @@ class GitManager:
                 "lock_wait_timeout", elapsed=loop.time() - started_waiting,
                 budget=max(0.0, deadline - started_waiting),
             ) from exc
+        token = _RETAINED_EXCLUSIONS_HELD.set(held | {key})
         try:
             yield
         finally:
+            _RETAINED_EXCLUSIONS_HELD.reset(token)
             lock.release()
 
     async def _averify_retained_objects(
@@ -2607,50 +2898,265 @@ class GitManager:
         The caller must separately fence repository identity and all writers
         before using any inspection as a recovery precondition.
 
-        A clean result is reused only while the object store holds the same
-        files (path, size, inode) and for at most
-        ``_RETAINED_VERIFY_TTL_SECONDS``: unverified object writes invalidate it. A
-        full check holds the repository lock for many seconds on a large store,
-        so repeating it on every no-op fetch starves the integration train.
+        A full check covers one common object store, shared by its linked
+        worktrees, and runs as that store's single background flight with its
+        own ``RETAINED_FSCK_TIMEOUT_SECONDS`` budget: no caller's deadline or
+        cancellation abandons it. Its clean result is reused for at most
+        ``_RETAINED_VERIFY_TTL_SECONDS``. Within that time an unchanged store
+        passes at once, and a store that only gained objects passes the
+        incremental gate. Otherwise the caller waits for the flight until
+        *deadline* or its repository-lock wait limit, then fails retryably while
+        the flight continues.
         """
-        # One full check per store at a time: concurrent fetches into the same
-        # store wait for it and reuse a clean result instead of each running
-        # their own. The object-store walks run off the event loop.
-        loop = asyncio.get_running_loop()
-        key = os.path.realpath(git_dir)
-        async with self._aretained_store_exclusion(git_dir, deadline=deadline):
-            fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
-            if self._retained_verified_matches(key, fingerprint):
+        key, current = await asyncio.to_thread(_retained_store_state, git_dir)
+        cached = self._retained_baseline(key)
+        for attempt in range(3):
+            if cached is not None and current is not None and (
+                    current == cached[0] or await self._aincremental_retained_check(
+                        git_dir, key, cached, current, home=home, deadline=deadline)):
+                if time.monotonic() - cached[1] >= _RETAINED_REFRESH_AGE_SECONDS:
+                    # Refresh before expiry so callers never queue behind it.
+                    self._retained_verification_flight(key)
                 return
-            started = time.monotonic()
-            for attempt in range(len(_RETAINED_VERIFY_RETRY_DELAYS) + 1):
+            if attempt == 2:
+                break
+            flight = self._retained_verification_flight(key)
+            cached = await self._await_retained_verification(flight, deadline=deadline)
+            if cached is None:
+                # The clean check stands, but the store could not be inventoried.
+                return
+            current = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        raise GitError("retained Git object integrity is unavailable: unchecked additions")
+
+    async def aretained_store_check_running(self, git_dir: str) -> bool:
+        """Whether *git_dir*'s common store has a full check or exclusive maintenance active."""
+        key = await asyncio.to_thread(_retained_store_key, git_dir)
+        flight = self.__dict__.get("_retained_verify_flights", {}).get(key)
+        lock = self.__dict__.get("_retained_verify_locks", {}).get(key)
+        return (flight is not None and not flight.done()) or (lock is not None and lock.locked())
+
+    def _retained_verification_flight(self, key: str) -> asyncio.Task:
+        """Common store *key*'s running full check, starting one if none is."""
+        loop = asyncio.get_running_loop()
+        flights = self.__dict__.setdefault("_retained_verify_flights", {})
+        flight = flights.get(key)
+        if flight is None or flight.done() or flight.get_loop() is not loop:
+            # A fresh context: no caller's wait limit, claim timing or request
+            # read deadline applies to the shared check.
+            flight = loop.create_task(
+                self._afull_retained_verification(key), name="aq-retained-verify",
+                context=contextvars.Context(),
+            )
+            flights[key] = flight
+            flight.add_done_callback(functools.partial(self._retained_flight_done, key))
+        return flight
+
+    def _retained_flight_done(self, key: str, flight: asyncio.Task) -> None:
+        flights = self.__dict__.get("_retained_verify_flights", {})
+        if flights.get(key) is flight:
+            del flights[key]
+        if not flight.cancelled():
+            # Every waiter may have stopped waiting; the outcome is still observed.
+            flight.exception()
+
+    async def _await_retained_verification(
+        self, flight: asyncio.Task, *, deadline: float,
+    ) -> tuple | None:
+        """Wait for *flight* within the caller's bounds, never cancelling it."""
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        limit = repository_lock_wait_seconds()
+        bound = deadline if limit is None else min(deadline, started + limit)
+        with claim_phase("retained_verification"):
+            scope = asyncio.timeout_at(bound)
+            try:
+                async with scope:
+                    return await asyncio.shield(flight)
+            except TimeoutError as exc:
+                if not scope.expired():
+                    raise
+                if bound < deadline:
+                    raise RetainedVerificationPending(limit) from exc
+                raise _git_preparation_error(
+                    "verification_pending", subcommand="fsck",
+                    elapsed=loop.time() - started, budget=max(0.0, deadline - started),
+                ) from exc
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if flight.cancelled() and not (current and current.cancelling()):
+                    raise GitError(
+                        "retained Git object integrity is unavailable: "
+                        "verification interrupted") from None
+                raise
+
+    async def _afull_retained_verification(self, key: str) -> tuple | None:
+        """Fully check common store *key* once, under its own bounded budget.
+
+        Records and returns ``(files, started)``: the files present unchanged
+        throughout a clean check. Files written meanwhile remain additions for
+        the incremental gate. Returns None when the store could not be
+        inventoried. A persistent integrity failure also discards the store's
+        earlier clean result. A store that, once this check holds the exclusion,
+        exactly matches a clean result not yet due for refresh (a check or a
+        carried repack finished meanwhile) is not checked again.
+        """
+        loop = asyncio.get_running_loop()
+        streaks = self.__dict__.setdefault("_retained_fsck_timeouts", {})
+        deadline = loop.time() + _escalated_budget(
+            streaks, key, RETAINED_FSCK_TIMEOUT_SECONDS, _ESCALATED_FSCK_CEILING_SECONDS)
+        async with _isolated_git_directory(prefix="aq-retained-verify-") as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            async with self._aretained_store_exclusion(key, deadline=deadline):
+                fingerprint = await asyncio.to_thread(_object_store_fingerprint, key)
+                cached = self._retained_baseline(key)
+                if (cached is not None and fingerprint == cached[0]
+                        and time.monotonic() - cached[1] < _RETAINED_REFRESH_AGE_SECONDS):
+                    return cached
+                started = time.monotonic()
                 try:
-                    await self._run_isolated_import_git(
-                        [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
-                         "--no-reflogs", "--no-progress"],
-                        home=home, deadline=deadline, verify_integrity=True,
-                    )
-                    break
+                    await self._afsck_retained_store(key, home=home, deadline=deadline)
                 except GitError as exc:
-                    if (attempt == len(_RETAINED_VERIFY_RETRY_DELAYS)
-                            or not str(exc).startswith("retained Git object integrity")):
-                        raise
-                    delay = _RETAINED_VERIFY_RETRY_DELAYS[attempt]
-                    if loop.time() + delay >= deadline:
-                        raise
-                    # Independent writers may still be repacking the store.
-                    # Back off before checking again, without renewing the budget.
-                    try:
-                        async with asyncio.timeout_at(deadline):
-                            await asyncio.sleep(delay)
-                    except TimeoutError as timeout:
-                        raise _git_preparation_error(
-                            "git_timeout", subcommand="fsck", elapsed=loop.time() - started,
-                            budget=max(0.0, deadline - started),
-                        ) from timeout
-                    fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
-            after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
-            self._record_retained_verified(key, fingerprint, after, started)
+                    _record_budget_outcome(streaks, key, exc)
+                    if str(exc).startswith("retained Git object integrity"):
+                        verified = self.__dict__.setdefault("_retained_verified", {})
+                        if verified.get(key, (None, started))[1] <= started:
+                            verified.pop(key, None)
+                    raise
+                after = await asyncio.to_thread(_object_store_fingerprint, key)
+        _record_budget_outcome(streaks, key, None)
+        if fingerprint is None or after is None:
+            return None
+        unchanged = set(after)
+        baseline = (tuple(entry for entry in fingerprint if entry in unchanged), started)
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        if verified.get(key, (None, started))[1] <= started:
+            verified[key] = baseline
+        return baseline
+
+    async def _afsck_retained_store(self, git_dir: str, *, home: Path, deadline: float) -> None:
+        """Full fsck, retried while independent writers may still be repacking."""
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        for attempt in range(len(_RETAINED_VERIFY_RETRY_DELAYS) + 1):
+            try:
+                await self._run_isolated_import_git(
+                    [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+                     "--no-reflogs", "--no-progress"],
+                    home=home, deadline=deadline, verify_integrity=True,
+                )
+                return
+            except GitError as exc:
+                # Objects reported missing that exist now were written mid-scan.
+                if await self._aonly_concurrent_writes(git_dir, exc, home=home,
+                                                       deadline=deadline):
+                    return
+                if (attempt == len(_RETAINED_VERIFY_RETRY_DELAYS)
+                        or not str(exc).startswith("retained Git object integrity")):
+                    raise
+                delay = _RETAINED_VERIFY_RETRY_DELAYS[attempt]
+                if loop.time() + delay >= deadline:
+                    raise
+                # Back off before checking again, without renewing the budget.
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await asyncio.sleep(delay)
+                except TimeoutError as timeout:
+                    raise _git_preparation_error(
+                        "git_timeout", subcommand="fsck", elapsed=loop.time() - started,
+                        budget=max(0.0, deadline - started),
+                    ) from timeout
+
+    async def _aincremental_retained_check(
+        self, git_dir: str, key: str, cached: tuple, current: tuple, *,
+        home: Path, deadline: float,
+    ) -> bool:
+        """Whether a store that only gained objects since *cached* is still clean.
+
+        Full fsck reads every added file's objects in a scratch repository that
+        links nothing else. Connectivity-only fsck of the whole store then proves
+        every reference resolves, and verifies commit-graph and multi-pack-index.
+        Baseline files are unchanged (path, size, inode) since their full check.
+        Takes no store exclusion; any failure leaves the decision to a full check.
+        """
+        increment = _retained_increment(cached[0], current)
+        if increment is None:
+            return False
+        added, checked = increment
+        complete = True
+        try:
+            if added:
+                await self._acheck_retained_additions(git_dir, added, home=home,
+                                                      deadline=deadline)
+            try:
+                await self._run_isolated_import_git(
+                    [f"--git-dir={git_dir}", "fsck", "--connectivity-only", "--no-dangling",
+                     "--no-reflogs", "--no-progress"],
+                    home=home, deadline=deadline, verify_integrity=True,
+                )
+            except GitError as exc:
+                if not await self._aonly_concurrent_writes(git_dir, exc, home=home,
+                                                           deadline=deadline):
+                    raise
+                complete = False
+        except GitError as exc:
+            logger.info("retained incremental check deferred to a full check: %s",
+                        type(exc).__name__)
+            return False
+        after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        if (complete and after is not None and set(checked).issubset(after)
+                and verified.get(key) == cached):
+            # The original full check's age is kept: additions never defer it.
+            verified[key] = (checked, cached[1])
+        return True
+
+    async def _acheck_retained_additions(
+        self, git_dir: str, added: tuple, *, home: Path, deadline: float,
+    ) -> None:
+        """Full fsck of only *added* object files, linked into a scratch store."""
+        object_format = (await self._run_isolated_import_git(
+            [f"--git-dir={git_dir}", "rev-parse", "--show-object-format"],
+            home=home, deadline=deadline,
+        )).decode("ascii", errors="replace")
+        if object_format not in {"sha1", "sha256"}:
+            raise GitError("retained Git object format is invalid")
+        async with _isolated_git_directory(prefix="aq-retained-additions-") as temporary:
+            scratch = Path(temporary) / "additions.git"
+            Path(temporary).chmod(0o700)
+            await self._run_isolated_import_git(
+                ["init", "--bare", "--quiet", "--template=",
+                 f"--object-format={object_format}", str(scratch)],
+                home=home, deadline=deadline,
+            )
+            objects = (await asyncio.to_thread(_common_git_dir, git_dir)) / "objects"
+            if not await asyncio.to_thread(
+                    _link_retained_additions, objects, scratch / "objects", added):
+                raise GitError("retained Git object addition was replaced")
+            await self._run_isolated_import_git(
+                [f"--git-dir={scratch}", "fsck", "--full", "--no-dangling",
+                 "--no-reflogs", "--no-progress"],
+                home=home, deadline=deadline, verify_integrity=True,
+            )
+
+    async def _aonly_concurrent_writes(
+        self, git_dir: str, exc: GitError, *, home: Path, deadline: float,
+    ) -> bool:
+        """Whether every object fsck called missing exists now, written mid-scan."""
+        oids = getattr(exc, "missing_oids", ())
+        if not oids:
+            return False
+        try:
+            found = await self._run_isolated_import_git(
+                [f"--git-dir={git_dir}", "cat-file", "--batch-check=%(objectname)"],
+                home=home, deadline=deadline,
+                input="".join(f"{oid}\n" for oid in oids).encode("ascii"),
+            )
+        except GitError:
+            return False
+        return found.decode("ascii").split() == list(oids)
 
     async def _aretained_fetch_deadline(
         self, git_dir: str, *, home: Path, deadline: float,
@@ -2668,17 +3174,20 @@ class GitManager:
         )
         return deadline + (loop.time() - started)
 
-    def _retained_verified_matches(self, key: str, fingerprint: tuple | None) -> bool:
+    def _retained_baseline(self, key: str) -> tuple | None:
+        """Common store *key*'s unexpired clean check, discarding an expired one."""
         verified = self.__dict__.setdefault("_retained_verified", {})
         cached = verified.get(key)
-        if cached is None:
-            return False
-        recorded, at = cached
-        if (time.monotonic() - at < _RETAINED_VERIFY_TTL_SECONDS
-                and fingerprint is not None and fingerprint == recorded):
-            return True
+        if cached is None or cached[0] is None:
+            return None
+        if time.monotonic() - cached[1] < _RETAINED_VERIFY_TTL_SECONDS:
+            return cached
         verified.pop(key, None)
-        return False
+        return None
+
+    def _retained_verified_matches(self, key: str, fingerprint: tuple | None) -> bool:
+        cached = self._retained_baseline(key)
+        return cached is not None and fingerprint is not None and fingerprint == cached[0]
 
     def _record_retained_verified(
         self, key: str, fingerprint: tuple | None, after: tuple | None, started: float,
@@ -2694,13 +3203,12 @@ class GitManager:
         Walks the object store synchronously; async callers use
         :meth:`aretained_store_verified`.
         """
-        return self._retained_verified_matches(
-            os.path.realpath(git_dir), _object_store_fingerprint(git_dir))
+        return self._retained_verified_matches(*_retained_store_state(git_dir))
 
     async def aretained_store_verified(self, git_dir: str) -> bool:
         """:meth:`retained_store_verified` with the walk off the event loop."""
-        fingerprint = await asyncio.to_thread(_object_store_fingerprint, git_dir)
-        return self._retained_verified_matches(os.path.realpath(git_dir), fingerprint)
+        return self._retained_verified_matches(
+            *await asyncio.to_thread(_retained_store_state, git_dir))
 
     def record_retained_store_verified(
         self, git_dir: str, fingerprint: tuple | None, started: float,
@@ -2709,15 +3217,15 @@ class GitManager:
 
         Nothing is recorded when the store changed while the check ran.
         """
-        self._record_retained_verified(
-            os.path.realpath(git_dir), fingerprint, _object_store_fingerprint(git_dir), started)
+        key, after = _retained_store_state(git_dir)
+        self._record_retained_verified(key, fingerprint, after, started)
 
     async def arecord_retained_store_verified(
         self, git_dir: str, fingerprint: tuple | None, started: float,
     ) -> None:
         """:meth:`record_retained_store_verified` with the walk off the event loop."""
-        after = await asyncio.to_thread(_object_store_fingerprint, git_dir)
-        self._record_retained_verified(os.path.realpath(git_dir), fingerprint, after, started)
+        key, after = await asyncio.to_thread(_retained_store_state, git_dir)
+        self._record_retained_verified(key, fingerprint, after, started)
 
     async def aretained_store_baseline(self, git_dir: str) -> tuple[tuple | None, float]:
         """The fingerprint and start time to record after a clean full fsck."""
@@ -2742,7 +3250,7 @@ class GitManager:
         passed fetch.fsckObjects. Keep the original age so incremental traffic
         cannot indefinitely postpone the next full check.
         """
-        key = os.path.realpath(git_dir)
+        key = await asyncio.to_thread(_retained_store_key, git_dir)
         verified = self.__dict__.setdefault("_retained_verified", {})
         cached = verified.get(key)
         if cached is None:
@@ -2757,6 +3265,50 @@ class GitManager:
             return False
         verified[key] = (current, started)
         return True
+
+    async def arepack_retained_store(
+        self, git_dir: str, args: list[str], *, cwd: str, timeout: float,
+    ) -> subprocess.CompletedProcess:
+        """Repack *git_dir*'s common store, carrying an exact clean result across it.
+
+        A whole-store repack replaces every pack, which the incremental gate
+        cannot follow. When the store was exactly the verified one beforehand,
+        the rewrite holds only checked objects: a clean connectivity check of
+        the result carries that clean result over with its original age, so the
+        background refresh still comes due on schedule. Unverified additions,
+        a failed repack or a failed check leave the store to the full check.
+        The store exclusion is held throughout, so no full check overlaps.
+        """
+        loop = asyncio.get_running_loop()
+        async with self._aretained_store_exclusion(git_dir, deadline=loop.time() + timeout):
+            key, before = await asyncio.to_thread(_retained_store_state, git_dir)
+            cached = self._retained_baseline(key)
+            result = await self.arun_git_result(
+                args, cwd=cwd, lock_held=True, env={"LC_ALL": "C"},
+                timeout=timeout, low_priority=True,
+            )
+            if (result.returncode or result.stderr.strip() or cached is None
+                    or before is None or before != cached[0]):
+                return result
+            try:
+                async with _isolated_git_directory(prefix="aq-retained-repack-") as temporary:
+                    root = Path(temporary)
+                    root.chmod(0o700)
+                    home = root / "home"
+                    home.mkdir(mode=0o700)
+                    await self._run_isolated_import_git(
+                        [f"--git-dir={key}", "fsck", "--connectivity-only", "--no-dangling",
+                         "--no-reflogs", "--no-progress"],
+                        home=home, deadline=loop.time() + timeout, verify_integrity=True,
+                    )
+            except GitError as exc:
+                logger.info("retained repack left the full check due: %s", type(exc).__name__)
+                return result
+            after = await asyncio.to_thread(_object_store_fingerprint, key)
+            verified = self.__dict__.setdefault("_retained_verified", {})
+            if after is not None and verified.get(key) == cached:
+                verified[key] = (after, cached[1])
+        return result
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,
@@ -5398,12 +5950,28 @@ class GitManager:
             # The child can already be running while asyncio connects its pipes.
             # Finish acquiring its handle before closing inherited credential FDs
             # or returning cancellation to the operation's caller.
-            process = None
-            # Preserve cancellation if startup itself failed.
-            with suppress(Exception):
-                process = await asyncio.shield(spawn)
-            if process is not None:
+            async def stop_spawn():
+                # Preserve cancellation if startup itself failed.
+                try:
+                    process = await spawn
+                except Exception:
+                    return
                 await self._kill_app_git_group(process)
+
+            cleanup = asyncio.create_task(stop_spawn())
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    # TaskGroup shutdown or an outer deadline can cancel again
+                    # while startup or process-group reaping is still pending.
+                    pass
+                except Exception:
+                    break
+            try:
+                cleanup.result()
+            except Exception as exc:
+                logger.warning("isolated Git process cleanup failed: error=%s", type(exc).__name__)
             raise
 
     @staticmethod
@@ -5556,7 +6124,16 @@ class GitManager:
                     if detail not in evidence:
                         evidence.append(detail)
                 detail = "; ".join(evidence[:16]) or f"fsck exit {process.returncode}"
-                raise GitError(f"retained Git object integrity is unavailable: {detail}")
+                message = f"retained Git object integrity is unavailable: {detail}"
+                missing = _missing_retained_objects(unexpected)
+                error = RetainedMissingObjects(message, missing) if missing else GitError(message)
+                # fsck scans objects before refs and indexes, so a concurrent
+                # commit can be reported missing. Keep every such id for re-checks.
+                absent = [re.fullmatch(rb"missing [a-z]+ ([0-9a-f]{40,64})", line)
+                          for line in unexpected]
+                if absent and all(absent):
+                    error.missing_oids = tuple(m[1].decode("ascii") for m in absent)
+                raise error
         elif process.returncode == 0 and re.search(
             rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
         ):

@@ -38,6 +38,13 @@ input/output roots fail admission. Output roots must belong to this target/shard
 never declare the host /tmp, operator home, an entire checkout containing private
 state, or a shared output ancestor. These declarations are trusted build inputs.
 
+The module launcher sets `PYTHONTZPATH` to `runtime/share/zoneinfo` beneath the
+runfiles-resolved native toolchain. The existing native runtime filegroup declares
+that data, and the same subtree verification and read-only mounts used for
+PostgreSQL retain it inside H2. Python configuration validation can resolve IANA
+zones without a host zoneinfo directory or an additional wheel. Coverage includes
+the default report zone, UTC, and the full pinned toolchain's IANA database.
+
 `environment.child_env(settings)` returns an independent environment copy for
 local child launchers. Explicit per-target settings cannot override isolation or
 interpreter startup controls, session identifiers, tokens or database DSNs.
@@ -87,6 +94,40 @@ admission the helper proves a loopback TCP connection works and an external
 connection has no route. Namespace, mount or self-test failure returns 125;
 there is no host-network fallback. Unsupported platforms receive an explicit
 instruction to select the legacy backend.
+
+`Runtime.read_only_mappings` is an additive interface for the locked H1 sysroot.
+Runtime manifests retain these mappings, the sysroot, shell and `env` executable
+across the module, PostgreSQL and E2E child boundaries. Module PostgreSQL targets
+also pass their declared Python import paths to H3's E2E environment manifest.
+Each `ReadOnlyMapping(source, target)` source must resolve inside the explicit
+`Runtime.sysroot`, itself inside declared inputs. Targets are restricted to
+`/lib`, `/lib64`, `/usr/lib`, and `/usr/lib64`; duplicates, undeclared sources,
+symlink escapes, and shadowing declared inputs or private outputs are refused.
+Mappings are always read-only binds and have no writable option; nested host
+mounts are never imported.
+Existing callers keep their same-absolute-path input binds. B1 supplied this
+H1/H2 extension with supervisor authorization because the H epic was closed.
+
+B1 also preserves H1's native installation prefix: Conda PostgreSQL embeds that
+prefix for server data, timezone files and loadable libraries. Before mounting,
+`pytest_main.native_runtime_inputs` verifies every file in each native subtree
+against the declared runfiles and rejects undeclared siblings or escaping
+symlinks. Those complete subtrees use the existing `Runtime.read_only` input
+binds at their original absolute paths. The enclosing cache/repository and
+excluded `conda-meta` metadata remain absent. This prefix preservation is covered
+by the same supervisor authorization; it adds no writable mount or host fallback.
+
+To verify the pinned ABI, supply the already materialized, locked runtime roots
+alongside AQ admission (these settings are never discovered from host paths):
+
+```bash
+AQ_BAZEL_NATIVE_RUNTIME=/absolute/locked/aq_native/runtime \
+AQ_BAZEL_PYTHON_RUNTIME=/absolute/locked/python \
+aq test tests/test_bazel_environment.py -k locked_sysroot
+```
+
+This executes the declared Python and native tools in H2's real jail, checks
+glibc 2.28, refuses writes through the mappings, and proves host libc paths absent.
 
 The public launch deadline includes namespace setup and execution, with two
 bounded cleanup grace periods. The total must fit 300 seconds (default 290 +
@@ -162,3 +203,58 @@ AQ_BAZEL_ISOLATION=1 AQ_BAZEL_POSTGRES_RUNTIME=/absolute/path/to/native/runtime 
 The outer legacy harness still needs a separate disposable POSTGRES_TEST_DSN.
 The marker override includes the substrate's `slow` arm. Without the runtime
 setting, real PostgreSQL lifecycle cases visibly skip and do not prove acceptance.
+
+## Pinned Bazel executable for worker boxes
+
+`aq test --aq-backend bazel` runs `AQ_BAZEL_EXECUTABLE`, falling back to the first
+`bazel` on PATH (`src/cli/test_runner.py`). On a worker box, set it explicitly to
+the checksum-verified pin and do not rely on PATH discovery. Install it once per
+box as the operator:
+
+```bash
+python tools/bazel/provision.py            # --data-dir defaults to ~/.agent-queue
+```
+
+The script downloads the URL in `toolchains.lock.json` (`bazel` entry; it must
+match `.bazelversion`). It checks the lock's SHA-256, which is the reviewed pin,
+not a checksum fetched next to the download. It then publishes the binary
+atomically and read-only at:
+
+```
+~/.agent-queue/toolchain/bazel-8.3.1-linux-x86_64/bin/bazel
+sha256 17247e8a84245f59d3bc633d0cfe0a840992a7760a11af1a30012d03da31604c
+```
+
+The install root and `bin/` are mode 0555, the binary 0555, and `.aq-verified`
+(holding the digest) 0444. A rerun reuses the install only when both the marker and
+the binary's bytes match the pin. A mismatch installs nothing. An altered or partial
+root is refused and must be inspected and removed by hand. The release is also
+signed: `bazel-8.3.1-linux-x86_64.sig` verifies against the Bazel release key
+`71A1 D0EF CFEB 6281 FD04 37C9 3D59 19B4 4845 7EE0`
+(https://bazel.build/bazel-release.pub.gpg). Checking the signature is an optional
+cross-check; the lock digest is the gate.
+
+Wire the path into worker sessions through each harness's explicit `env` map, in
+the `## Config` block of `~/.agent-queue/vault/harnesses/<harness>.md`:
+
+```json
+"env": {
+  "AQ_BAZEL_EXECUTABLE": "/home/<user>/.agent-queue/toolchain/bazel-8.3.1-linux-x86_64/bin/bazel"
+}
+```
+
+That map is merged last into the session environment and is never scrubbed
+(`src/sessions/env.py`). The other places are wrong for this:
+
+- **The daemon's environment.** `build_session_env` drops inherited `AQ_*` keys,
+  so a value exported there never reaches a session.
+- **`security.env_scrub`.** It only removes variables; it cannot supply one.
+
+This is an operator edit to the harness file. From then on,
+`aq doctor --check harness.drift` reports the file as edited, the daemon stops
+refreshing it from the shipped copy, and `aq vault reset-harness` drops the map.
+Re-add the entry after a reset. Sessions started after the edit see the
+variable; running sessions keep the environment they started with. Inside a
+session, check it with `aq test --aq-backend bazel tests/test_env_scrub.py`, a
+pure target with no PostgreSQL reservation. The first run on a box fetches the
+locked repositories into `~/.cache/aq/bazel/v1`.

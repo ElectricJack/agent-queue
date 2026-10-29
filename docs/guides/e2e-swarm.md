@@ -101,6 +101,12 @@ preparations of an unexpected task fail immediately. S2 and S3 accept only the
 remaining S1 fixtures, including when separate pytest items run them in different
 subprocesses. A timeout reports the last claim and the fixture state.
 
+S2 and S3 finish their worker protocol by acknowledging the drain and waiting for
+`session_show` to confirm `state=stopped` with `end_reason=drained`. Task close
+leaves the worker process live during the shutdown grace period. Confirming its
+stop before returning keeps that process from consuming S4's formula execution
+seat alongside the replacement pool workers.
+
 CI covers all 20 scenarios as **21 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,
 S17, S20), `graphs` (S10, S16b, S18, S6), and `failover` (S4, S11, S13–S15, S16a).
@@ -109,7 +115,10 @@ public commands and covers recovery/undo/all-down. Select `S16` in the shell
 runner to run the original full serial transcript.
 
 Each shard uses one module-scoped disposable world. S1–S3 explicitly share state;
-selecting S2 or S3 alone prepares its missing predecessors. Other item boundaries
+selecting S2 or S3 alone prepares its missing predecessors. The S4 pytest item
+also prepares S1–S3 to cover formula dispatch after the pool claim sequence.
+S3 acknowledges its completed worker's drain so that worker can release capacity
+before S4's task sessions launch. Other item boundaries
 remove tasks (including terminal rows) and sessions and restore swarm/provider/
 playbook switches. Failed cleanup prevents further use of that world, and fixture
 teardown always destroys its owned resources. No daemon is shared across workers.

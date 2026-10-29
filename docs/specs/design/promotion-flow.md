@@ -52,6 +52,25 @@ source checks, exact-candidate checks, review and publication fences still apply
 
 ## Implementation boundaries
 
+Each project's promotion-flow policy selects `ci: reuse_source` (the default)
+or `ci: rerun` independently for each step. Both require green exact-source
+push evidence at admission. Reuse freezes the actual trusted check names that
+admitted the source, including a configured source-audit set, and re-observes
+that evidence without requesting new runs. Rerun freezes the selected canonical
+`gate.checks` set and requires fresh `workflow_dispatch` evidence from the
+request's private ref and configured `ci_workflow` (default `tests.yml`). Neither
+mode relaxes PR identity, human approval, App trust or publication fences.
+
+AQ journals one dispatch attempt per rerun intent before contacting GitHub.
+Restart or an ambiguous response cannot create a dispatch loop; an operator can
+dispatch the same workflow on the pinned ref if no run materialized. A dispatch
+receipt alone never proves CI passed. The cache separates this ref/workflow
+scope from source checks and from other promotion steps on the same SHA.
+Existing frozen intents without a CI setting retain their push-check semantics.
+New policy changes apply to subsequent intents; active steps retain their frozen
+CI mode and workflow. Promotion push triggers and automatic promotion-PR jobs
+are removed from the workflow: AQ policy is the sole automatic rerun decision.
+
 The new train and release flow use retained Git readers, ownership guards and
 shared contracts. Legacy publishers and subject runtimes are retired. Historical recovery,
 archival and cleanup consumers retain their fenced records; active startup
@@ -145,9 +164,10 @@ by audit success. The complete audit set must independently pass the existing
 exact-head, push-event, producer App and workflow-attempt checks. Missing,
 pending, failed or untrusted audit evidence still refuses admission.
 
-The source audit does not authorize publication or supply candidate evidence.
-Candidate checks, promotion attestation, private pinned PR CI and release
-approvals continue to require their configured exact names. Enabling the
+Source admission alone does not authorize publication. For `ci: reuse_source`,
+the request freezes the actual source-audit names for its checks and promotion
+attestation. Hosted `ci: rerun` requires canonical names from its private-ref
+dispatch. Release approvals remain independent in both modes. Enabling the
 alternative requires committing its full named check set to the designated
 default branch and running daemon code that understands source admission.
 
@@ -159,8 +179,9 @@ be cancelled or skipped; a pending, failed or malformed attempt prevents this
 exception. Cancellation without alternative evidence still refuses admission.
 The remaining checks must pass the existing exact-head, producer App, push-event
 and latest-attempt validation. Real failures and unfinished checks remain
-blocking, including those from batch branches. Candidate and attestation gates
-continue to select the newest check without this source-only exception.
+blocking, including those from batch branches. Reused source checks retain this
+exception; rerun and ordinary candidate gates select the newest check within
+their required evidence scope.
 
 ## Trust-manifest bootstrap without hierarchical routes
 

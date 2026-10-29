@@ -21,7 +21,7 @@ def test_initialized_database_survives_row_reset_and_new_event_loop(monkeypatch,
 
     from src.database import Database
     from src.models import Project
-    from tests.db_fixtures import InitializedDatabases
+    from tests.reuse_databases import InitializedDatabases
 
     dsn = lease_dsn("reused")
     cache = InitializedDatabases()
@@ -314,18 +314,23 @@ async def test_reset_clears_relation_and_column_planner_stats():
     ]
 
 
-async def test_reset_clears_column_stats_from_an_already_empty_table():
-    """A fixture can delete its own rows after ANALYZE, before the pool reset."""
+async def test_reset_clears_storage_and_stats_from_an_already_empty_table():
+    """Self-deleted rows must not leave pages or statistics for the next lease."""
     dsn = lease_dsn("empty-stats")
     stats = (
         "SELECT count(*) FROM pg_stats WHERE schemaname = 'public' AND tablename = 'projects'"
     )
     conn = await db_fixtures._connect_admin(dsn)
     try:
-        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p1', 0)")
+        await conn.execute(
+            "INSERT INTO projects (id, name, created_at) "
+            "SELECT 'p' || g, repeat('p', 500), 0 FROM generate_series(1, 2000) g"
+        )
         await conn.execute("ANALYZE projects")
         assert await conn.fetchval(stats) > 0
         await conn.execute("DELETE FROM projects")
+        assert await conn.fetchval("SELECT pg_relation_size('projects')") > 64 * 8192
+        before = await _relfilenodes(conn)
     finally:
         await conn.close()
 
@@ -334,6 +339,11 @@ async def test_reset_clears_column_stats_from_an_already_empty_table():
     conn = await db_fixtures._connect_admin(dsn)
     try:
         assert await conn.fetchval(stats) == 0
+        assert await conn.fetchval("SELECT pg_relation_size('projects')") == 0
+        assert await conn.fetchval(
+            "SELECT reltuples FROM pg_class WHERE oid = 'projects'::regclass"
+        ) == -1
+        assert await _relfilenodes(conn) == before
     finally:
         await conn.close()
 

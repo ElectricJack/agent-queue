@@ -13,6 +13,9 @@ import functools
 import re
 from pathlib import Path
 
+# The retirement assertions inspect the complete source tree as data.
+BAZEL_DATA = ("src/",)
+
 ROOT = Path(__file__).parents[1]
 TABLE = "task_delivery_receipts"
 WRITE_CALLS = {"insert", "update", "delete", "pg_insert"}
@@ -38,7 +41,6 @@ READERS = {
     "src/integration/cancelled_collection_recovery.py": "cutover: historical recovery",
     "src/integration/child_delivery.py": "watchdog: stale-child diagnosis",
     "src/integration/cutover.py": "cutover: inventory and retagging",
-    "src/integration/delivery_branches.py": "cleanup: retained child witness deletion fence",
     "src/integration/epic_delivery.py": "dashboard: shadow display",
     "src/integration/failed_verification_recovery.py": "cutover: historical recovery",
     "src/integration/legacy_backfill.py": "cutover: historical attestation",
@@ -53,12 +55,6 @@ READERS = {
     "src/integration/suspended_parent_recovery.py": "cutover: historical recovery",
     "src/integration/task_deletion.py": "audit: deletion snapshot",
     "src/integration/truth_reconciler.py": "audit after Git verification",
-}
-
-# branch-retirement.md requires this deletion fence for current child sources.
-# Pin its exact scope as well as its entry in the module inventory above.
-CLEANUP_WITNESS_READERS = {
-    "src/integration/delivery_branches.py": "unrecorded_epic_children",
 }
 
 # Admission projects Git-first containment only (strict-git-containment.md,
@@ -117,12 +113,6 @@ def test_receipt_readers_only_shrink_and_admission_reads_none():
                if any(_names_table(node) for node in ast.walk(tree))}
     assert readers == set(READERS)
     assert not readers.intersection(ADMISSION)
-    for path, scope in CLEANUP_WITNESS_READERS.items():
-        tree = dict(_sources())[path]
-        assert {
-            getattr(node, "name", "<module>") for node in tree.body
-            if any(_names_table(child) for child in ast.walk(node))
-        } == {scope}
 
 
 def test_retired_receipt_authority_is_absent():

@@ -294,6 +294,43 @@
       }
     },
     {
+      "name": "recover_retained_holder",
+      "description": "Preview or apply recovery of a positively stopped historical task holder. Preserves local Git work before releasing exact legacy owner/job pins and stale assignment. Leaves recovered workspaces disabled. Apply requires expected_proof from preview. Local operator or live global supervisor only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expected_proof": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "project_id",
+          "task_id",
+          "session_id",
+          "reason"
+        ]
+      }
+    },
+    {
       "name": "project_doctor",
       "description": "Check a project's repository authorization and offer an audited binding command.",
       "input_schema": {
@@ -5293,6 +5330,42 @@
             "description": "Seconds to long-poll for ready work before returning `no_ready_work` (optional, clamped to `swarm.claim_wait_max`)."
           }
         }
+      }
+    },
+    {
+      "name": "task_claim_abort",
+      "description": "Abort one exact hung pool claim preparation (operator or live supervisor only). Waits up to ten seconds for owned Git/SQL cleanup. Unproved cleanup retains the claim and branch ownership; active workers are refused.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Preparing task ID."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Exact preparing session ID."
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "instance_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "task_id",
+          "session_id",
+          "claim_epoch",
+          "instance_token",
+          "reason"
+        ]
       }
     },
     {
@@ -12564,9 +12637,17 @@
             "title": "Project Id"
           },
           "wait_id": {
-            "minLength": 1,
-            "title": "Wait Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wait Id"
           },
           "decision": {
             "enum": [
@@ -12575,7 +12656,8 @@
               "cancel",
               "reroute",
               "escalate_to_human",
-              "requeue"
+              "requeue",
+              "retire"
             ],
             "title": "Decision",
             "type": "string"
@@ -12641,7 +12723,6 @@
           }
         },
         "required": [
-          "wait_id",
           "decision",
           "note"
         ],
@@ -12813,7 +12894,7 @@
     },
     {
       "name": "wait_source_redispatch",
-      "description": "Reobserve one durable source event in a supervisor project.",
+      "description": "Inspect blocked sources, retire integration CI subscriptions, or reobserve a durable source in a supervisor project.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -12822,22 +12903,53 @@
             "title": "Project Id",
             "type": "string"
           },
+          "action": {
+            "default": "redispatch",
+            "enum": [
+              "redispatch",
+              "blockers",
+              "retire"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
           "source_seq": {
-            "minimum": 1,
-            "title": "Source Seq",
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Seq"
           },
           "note": {
-            "maxLength": 4000,
-            "minLength": 1,
-            "title": "Note",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Note"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
           }
         },
         "required": [
-          "project_id",
-          "source_seq",
-          "note"
+          "project_id"
         ],
         "title": "WaitSourceRedispatchArgs",
         "type": "object"
@@ -17536,6 +17648,30 @@
         "type": "object"
       }
     },
+    "integration_store_maintenance": {
+      "name": "integration_store_maintenance",
+      "description": "Preview or consolidate configured retained stores while keeping unreachable objects.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationStoreMaintenanceArgs",
+        "type": "object"
+      }
+    },
     "integration_supersede_completion": {
       "name": "integration_supersede_completion",
       "description": "Operator or owning supervisor retires an exact stopped Subject with original verified human evidence.",
@@ -21366,6 +21502,7 @@
     "project_doctor": "project",
     "repair_repository_checkout": "project",
     "repair_workspace_checkout": "project",
+    "recover_retained_holder": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
@@ -21640,6 +21777,7 @@
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
+    "task_claim_abort": "task",
     "memory_save": "memory",
     "memory_search": "memory",
     "knowledge_create": "knowledge",

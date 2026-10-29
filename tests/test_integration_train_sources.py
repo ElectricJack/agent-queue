@@ -151,12 +151,19 @@ from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.status import IntegrationStatusService
-from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
+from src.integration.train import (
+    CandidateChecks,
+    IntegrationTrain,
+    LaneRecord,
+    TrainLane,
+    TrainTarget,
+)
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import (
     RETAINED_CANDIDATE_PREFIX,
     DaemonLanes,
     DatabaseBatches,
+    DatabaseLaneLedger,
     DatabaseTargets,
     LeasedPublish,
     _never_trusted,
@@ -750,6 +757,9 @@ async def test_reopen_retires_source_ci_repairs_atomically(world, status, reopen
     before = git(world.origin.url, "rev-parse", "main")
     if reopen == "feedback":
         handler = TaskCommandsMixin()
+        handler.orchestrator = SimpleNamespace(
+            aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+        )
         handler.db, handler._current_scope = db, {}
         assert (await handler._cmd_reopen_with_feedback({
             "task_id": "source", "feedback": "reject this head",
@@ -2967,6 +2977,9 @@ async def test_abort_first_member_conflict_at_target_releases_member(world):
     assert git(origin.url, "rev-parse", candidate_ref(batch.id)) == target
 
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db, handler._current_scope = db, {}
     refusal = await handler._cmd_reopen_with_feedback({
         "task_id": "rework", "feedback": "resolve conflict",
@@ -3046,6 +3059,9 @@ async def test_aborted_batch_visit_releases_reopen_but_other_batch_stays_sealed(
         await conn.execute(update(integration_batches).where(integration_batches.c.id == "abort")
             .values(lifecycle=lifecycle))
     handler = TaskCommandsMixin()
+    handler.orchestrator = SimpleNamespace(
+        aprepare_reopened_integration_owner=AsyncMock(return_value=True),
+    )
     handler.db, handler._current_scope = db, {}
     refusal = await handler._cmd_reopen_with_feedback({
         "task_id": "rework", "feedback": "fix regression",
@@ -4224,7 +4240,8 @@ async def test_train_recovers_empty_loose_object_and_delivers_sealed_batch(world
         async def fetch(store, *, repository_url, all_heads=False, lock_held=False,
                         refetch=False):
             await transport._afetch_origin_with_auth_to_url(
-                store, source_url=Path(repository_url).as_uri(), token=None, refetch=refetch)
+                store, source_url=Path(repository_url).as_uri(), token=None,
+                refetch=refetch, lock_held=lock_held)
         transport.afetch_origin = fetch
 
     delivered = await train.visit(MAIN)
@@ -4284,6 +4301,93 @@ async def cross_epic_world(world):
     await completed(world, "child", parent="epic", needs=("prerequisite",), done=False)
     await world.db.transition_task("child", TaskStatus.READY)
     return epic, prerequisite, TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+
+
+@pytest.mark.parametrize("child_done", [False, True])
+async def test_idle_epic_refreshes_default_delivered_prerequisites_once(world, child_done):
+    db, origin = world.db, world.origin
+    epic, prerequisite, target = await cross_epic_world(world)
+    if child_done:
+        await close(db, "child", [git(origin.url, "rev-parse", "aq/child")], origin=origin)
+    origin.land("prerequisite")
+    train, checks, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+
+    first = await train.visit(target)
+    assert first.state == "blocked"
+    [blocker] = first.detail["blockers"]
+    assert blocker["code"] == "epic_refresh_pending"
+    assert blocker["prerequisite_task_ids"] == ["prerequisite"]
+    refresh = await DatabaseBatches(db).current(target)
+    assert refresh.epic_refresh and blocker["refresh"]["batch_id"] == refresh.id
+    assert git(origin.url, "rev-parse", "aq/epic") == epic
+
+    testing = await train.visit(target)
+    assert testing.state == "testing" and testing.batch_id == refresh.id
+    repeated = await train.visit(target)
+    assert repeated.state == "testing" and repeated.batch_id == refresh.id
+    async with db._engine.connect() as conn:
+        refresh_ids = list((await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.id.like("train-epic-refresh-%")))).scalars())
+    assert refresh_ids == [refresh.id]
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(target)).state == "delivered"
+    git(origin.url, "merge-base", "--is-ancestor", prerequisite,
+        git(origin.url, "rev-parse", "aq/epic"))
+    if child_done:
+        admitted = await train.visit(target)
+        assert admitted.state == "testing" and admitted.batch_id != refresh.id
+        assert [m.task_id for m in await BatchStore(db).members(admitted.batch_id)] == ["child"]
+    else:
+        assert await db.is_hierarchy_task_runnable("child")
+        assert (await train.visit(target)).state == "idle"
+
+
+@pytest.mark.parametrize("child_done", [False, True])
+async def test_idle_epic_keeps_genuinely_undelivered_prerequisite_pending(world, child_done):
+    db, origin = world.db, world.origin
+    _, _, target = await cross_epic_world(world)
+    if child_done:
+        await close(db, "child", [git(origin.url, "rev-parse", "aq/child")], origin=origin)
+    # Main has advanced, but still lacks the prerequisite's source.
+    origin.land("other")
+    train, _, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    for _ in range(2):
+        visit = await train.visit(target)
+        assert visit.state == "blocked"
+        assert {item["code"] for item in visit.detail["blockers"]} == {"prerequisite_pending"}
+        assert await DatabaseBatches(db).current(target) is None
+
+
+async def test_idle_epic_does_not_refreeze_aborted_prerequisite_refresh(world):
+    db, origin = world.db, world.origin
+    _, _, target = await cross_epic_world(world)
+    origin.land("prerequisite")
+    train, _, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    first = await train.visit(target)
+    refresh_id = first.detail["blockers"][0]["refresh"]["batch_id"]
+    await TrainControls(db).abort_batch(refresh_id, dry_run=False,
+        operator_id="operator", reason="retain failed refresh inputs")
+    for _ in range(2):
+        visit = await train.visit(target)
+        [blocker] = visit.detail["blockers"]
+        assert blocker["code"] == "epic_refresh_pending"
+        assert blocker["refresh"]["outcome"] == "settled"
+        assert blocker["refresh"]["batch_id"] == refresh_id
+        assert await DatabaseBatches(db).current(target) is None
+
+
+async def test_idle_epic_needs_all_missing_prerequisites_delivered(world):
+    db, origin = world.db, world.origin
+    _, _, target = await cross_epic_world(world)
+    origin.land("prerequisite")
+    await completed(world, "undelivered")
+    await db.add_dependency("child", "undelivered")
+    train, _, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    visit = await train.visit(target)
+    [blocker] = visit.detail["blockers"]
+    assert blocker["code"] == "prerequisite_pending"
+    assert blocker["prerequisite_task_ids"] == ["prerequisite", "undelivered"]
+    assert await DatabaseBatches(db).current(target) is None
 
 
 @pytest.mark.parametrize("delivery", ["ancestry", "trailer", "patch"])
@@ -5089,6 +5193,41 @@ async def test_default_config_constructs_the_train(world):
     # A minimal integration config also constructs the same train.
     orchestrator.config = SimpleNamespace(integration=SimpleNamespace())
     assert isinstance(train_for(orchestrator), IntegrationTrain)
+    assert isinstance(train_for(orchestrator).ledger, DatabaseLaneLedger)
+
+
+async def test_lane_ledger_keeps_visit_history_for_the_next_daemon(world):
+    now = [1000.0]
+    ledger = DatabaseLaneLedger(world.db, clock=lambda: now[0], retention_seconds=100)
+    first = LaneRecord("p", "r", "refs/heads/aq/epic", kind="epic", visits=1, errors=0,
+                       state="idle", observed_at=990.0, started_at=980.0)
+    second = replace(first, visits=2, observed_at=995.0)
+    await ledger.record(first)
+    await ledger.record(second)
+    # A project deleted while its visit ran leaves no orphaned history.
+    await ledger.record(replace(first, project_id="deleted"))
+    assert await ledger.load() == [second]
+    await ledger.forget([second.key])
+    assert await ledger.load() == []
+    await ledger.record(first)
+    now[0] = 1101.0
+    assert await ledger.load() == []
+
+
+async def test_lane_ledger_uses_the_generic_config_store(world):
+    from src.database.tables import metadata, system_config
+
+    ledger = DatabaseLaneLedger(world.db, clock=lambda: 1000.0)
+    record = LaneRecord("p", "r", "refs/heads/aq/epic", kind="epic", visits=3, errors=1,
+                        state="blocked", observed_at=None, started_at=900.0)
+    await ledger.record(record)
+    async with world.db._engine.begin() as conn:
+        rows = (await conn.execute(select(system_config))).all()
+    # No integration table of its own: one versioned system_config key per lane.
+    assert [key for key, _value in rows if key.startswith(ledger.PREFIX)] == [
+        ledger.PREFIX + '["p", "r", "refs/heads/aq/epic"]']
+    assert not [name for name in metadata.tables if "train_lane" in name]
+    assert await ledger.load() == [record]
 
 
 async def test_default_config_train_delivers_to_git(world, monkeypatch):
@@ -8778,9 +8917,12 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     assert hold and "child" in hold and "has no retained completion witness" in hold
     assert git(origin.url, "rev-parse", "aq/epic") == head
     reconciler = GitTruthReconciler(db, case.world.truth.git, data_dir=tmp_path)
-    await reconciler.tick(case.now[0])
+    reconciled = await reconciler.tick(case.now[0])
+    assert reconciled["repaired"] >= len(case.children)
     async with db._engine.connect() as conn:
-        assert await train_cleanup_hold(conn, repository_id="r", ref=case.target.target_ref) is None
+        assert await train_cleanup_hold(
+            conn, repository_id="r", ref=case.target.target_ref,
+        ) is None
 
     # Retire the child collection and root batches; both source and private refs go.
     number = int(url.rsplit("/", 1)[-1])

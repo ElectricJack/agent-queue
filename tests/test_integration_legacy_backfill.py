@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import runpy
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from sqlalchemy import delete, insert, select, update
 from src.config import AppConfig
 from src.database.tables import (
     branch_retirements,
+    events,
     integration_legacy_deliveries,
     projects,
     task_branch_origins,
@@ -247,6 +249,11 @@ async def test_originless_backfill_retains_provenance_for_dependency_admission(w
     base = git(world.origin.clone, "rev-list", "--max-parents=0", "origin/main")
     git(world.origin.clone, "push", "--force", "origin", f"{base}:main")
     assert not await after.is_fresh("azure-cascade.6")
+    assert after.rejection_reasons("azure-cascade.6") == ({
+        "code": "development_snapshot_changed",
+        "ref": "azure-cascade.6",
+        "detail": f"Stale development target: {MAIN.target_ref}; retry",
+    },)
     assert (await admission()).allowed == set()
 
 
@@ -570,6 +577,12 @@ async def test_deleted_epic_backfill_admits_only_proven_child(world, recorded, m
     base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
     git(origin.clone, "push", "--force", "origin", f"{base}:main")
     assert not await after.is_fresh("dependent")
+    if mode == "development":
+        assert after.rejection_reasons("dependent") == ({
+            "code": "development_snapshot_changed",
+            "ref": "dependent",
+            "detail": f"Stale development target: {MAIN.target_ref}; retry",
+        },)
     view = await db._delivery_observer.prerequisite_view("p", task_ids=["dependent"])
     assert not view.default.satisfied("child")
 
@@ -625,6 +638,22 @@ async def test_epic_deletion_holds_until_child_witness_is_retained(world, tmp_pa
     assert git(world.origin.clone, "ls-remote", "origin", "refs/heads/aq/epic")
     reconciler = GitTruthReconciler(db, world.truth.git, data_dir=tmp_path)
     await reconciler.tick(time.time())
+    # Existing receipts cannot release this fence: missing/mismatched retention
+    # audit data fails closed, independently of the receipt history.
+    async with db.immediate() as conn:
+        retained = dict((await conn.execute(select(events).where(
+            events.c.event_type == "integration.git_truth_reconciled",
+            events.c.task_id == "child",
+        ))).mappings().one())
+        payload = json.loads(retained["payload"])
+        for key, value in (("receipt", "git-truth:other-completion"), ("source_oid", "f" * 40)):
+            await conn.execute(update(events).where(events.c.id == retained["id"]).values(
+                payload=json.dumps({**payload, key: value})))
+            assert "child" in await train_cleanup_hold(
+                conn, repository_id="r", ref="refs/heads/aq/epic")
+        await conn.execute(delete(events).where(events.c.id == retained["id"]))
+        assert "child" in (await live_branch_references(conn))["aq/epic"]
+        await conn.execute(insert(events).values(**retained))
     async with db._engine.connect() as conn:
         assert "aq/epic" not in await live_branch_references(conn)
         assert await train_cleanup_hold(conn, repository_id="r", ref="refs/heads/aq/epic") is None

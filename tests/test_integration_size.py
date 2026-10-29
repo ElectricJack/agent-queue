@@ -22,6 +22,9 @@ import pytest
 from tests import integration_ownership as ownership
 
 ROOT = Path(__file__).resolve().parents[1]
+# Source inspection reads these trees rather than importing them, so declare
+# their generator data inputs explicitly.
+BAZEL_DATA = ("src/", "dashboard/src/", "tests/integration_ownership.json")
 
 
 @pytest.fixture(autouse=True)

@@ -43,7 +43,9 @@ from enum import StrEnum
 from pathlib import Path
 
 from src.claim_file import CLAIM_FILE, read_claim_file, remove_claim_file_if_matches
-from src.models import ProjectStatus, SessionRecord, TaskStatus
+from src.claim_preparation import same_session_launch
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
 from src.pool_claims import (
     CLAIM_FAILURE_DRAIN_REASON,
     MAX_IDENTICAL_CLAIM_FAILURES,
@@ -62,6 +64,7 @@ from src.sessions.exit_classifier import (
 )
 from src.sessions.harness_registry import runs_cli
 from src.sessions.opencode_store import OpenCodeActivity, resolve_liveness_store
+from src.sessions.proctable import MarkedProc, agent_command_running, marked_inventory
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -96,6 +99,11 @@ DRAIN_ACK_KEY = "AQ_DRAIN_ACK"
 #: concept starts as a key.
 META_STALL_NUDGES = "stall_nudges"
 META_STALL_LAST_ACTION = "stall_last_action_at"
+
+#: ``needs_attention`` codes for a live holder whose claim binding is broken.
+#: A worker in that state can heartbeat and comment but every live-claim
+#: check (worker git, message send, wait registration) refuses it.
+CLAIM_BINDING_ATTENTION = ("claim_binding_empty", "claim_binding_mismatch", "claim_agent_unpinned")
 
 
 def stall_reminder(task_id: str, minutes: int) -> str:
@@ -258,6 +266,17 @@ class SessionReconciler:
         #: breaks; a daemon restart costs at most one more grace, which is
         #: why ``sessions.stop_intent_pending`` exists.
         self._idle_stop_intent_seen: dict[tuple[str, str], float] = {}
+        self._drain_instruction_sent: set[tuple[str, str]] = set()
+        #: (session id, instance token) -> (claim epoch, result, nudged at) for
+        #: a claim preparation that settled after its worker's turn ended.
+        #: Nothing else reaches an ended turn: the result waits in
+        #: ``claim_preparation_results`` for a claim that never comes
+        #: (nimble-journey-85).
+        self._settled_claim_wakes: dict[tuple[str, str], tuple[int, str, float]] = {}
+        #: session id -> its in-flight idle branch release. Off the tick: an
+        #: origin refresh queued behind a preparation once held drain-ack past
+        #: the stage bound, so exits and stalls never ran (2026-10-27).
+        self._branch_detaches: dict[str, asyncio.Task] = {}
         #: (session id, instance token) -> (read at, the harness store's
         #: activity for that session, or ``None`` when unreadable).  The wedge
         #: check's own cache: a wedged TUI repaints forever, so without it the
@@ -277,6 +296,8 @@ class SessionReconciler:
         self._deferred_prefixes: set[str] = set()
         self._execution_wait_cache = {}
         self._execution_wait_pass = None
+        #: ``(tick, processes)``: one /proc scan serves every session a tick.
+        self._command_inventory: tuple[float, list[MarkedProc]] | None = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -342,6 +363,7 @@ class SessionReconciler:
         self._deferred_prefixes.clear()
         self._execution_wait_cache.clear()
         self._execution_wait_pass = now
+        self._command_inventory = None
 
         live = await self._step_observe(now)
         for step in (
@@ -352,10 +374,12 @@ class SessionReconciler:
             self._step_prepare_timeout,
             self._step_missing_pool_claim_file,
             self._step_exits,
+            self._step_settled_claim_wake,
             self._step_abandoned_pool_claim_loop,
             self._step_orphans,
             self._step_disabled_project_supervisors,
             self._step_idle_stop_intent,
+            self._step_claim_binding,
             self._step_stall_ladder,
             self._step_named,
             self._step_backstop,
@@ -567,6 +591,10 @@ class SessionReconciler:
         with the task still open is a *premature* drain and gets one nudge
         before being treated as an exit.
         """
+        self._drain_instruction_sent.intersection_update(
+            (row.id, row.instance_token) for row in live
+            if row.lifecycle == "pool" and row.desired_state == "stopped"
+        )
         profiles = {}
         for row in live:
             if row.lifecycle == "pool":
@@ -581,9 +609,9 @@ class SessionReconciler:
                             row, reason="profile_deleted"
                         )
                     continue
-                # Pool sessions never send a provider-side drain ack -- an
-                # idle one marked stopped or sleeping is torn down the pool
-                # way. A task pointer left from a released claim can name a
+                # Taskless stopped pools get a submitted drain instruction
+                # and bounded ack grace before guarded teardown. A task
+                # pointer left from a released claim can name a
                 # task already requeued or claimed by another worker; detach
                 # it using the current assignment before deciding to wait.
                 if row.desired_state not in ("stopped", "sleeping"):
@@ -609,6 +637,32 @@ class SessionReconciler:
                         "— skipping", row.id,
                     )
                     continue
+                if row.desired_state == "stopped":
+                    # A released preparation can leave its branch checked out
+                    # while the harness is idle. Free it alongside asking the
+                    # worker to leave, under the same fences as slot reset; the
+                    # release refreshes origin, so it never holds this tick.
+                    instance_token = row.instance_token
+                    row = await self._still_live(row)
+                    if (row is None or row.desired_state != "stopped"
+                            or row.instance_token != instance_token
+                            or row.task_id or row.claim_phase is not None):
+                        continue
+                    self._start_branch_detach(row)
+                    key = (row.id, row.instance_token)
+                    if not await self._agent_acked_drain(row):
+                        first = self._idle_stop_intent_seen.setdefault(key, now)
+                        if key not in self._drain_instruction_sent:
+                            provider = self._provider_for(row)
+                            if provider is not None:
+                                outcome = await self._try_nudge(
+                                    provider, row, "Your pool session is draining and holds no task. "
+                                    "Run `aq session drain-ack` and exit 0.",
+                                )
+                                if outcome.delivered:
+                                    self._drain_instruction_sent.add(key)
+                        if now - first < self._idle_stop_grace():
+                            continue
                 reason = "sleeping" if row.desired_state == "sleeping" else "drained"
                 await self.orchestrator._terminate_pool_session(row, reason=reason)
                 continue
@@ -642,12 +696,31 @@ class SessionReconciler:
                 project_id=row.project_id,
             )
 
+    def _start_branch_detach(self, row: SessionRecord) -> None:
+        """Release an idle pool's branch in the background, one release per session."""
+        detach = getattr(self.orchestrator, "_detach_idle_pool_branch", None)
+        running = self._branch_detaches.get(row.id)
+        if detach is None or (running is not None and not running.done()):
+            return
+        task = asyncio.create_task(detach(row), name=f"pool-branch-detach-{row.id}")
+        self._branch_detaches[row.id] = task
+
+        def finished(done: asyncio.Task, session_id=row.id) -> None:
+            if self._branch_detaches.get(session_id) is done:
+                del self._branch_detaches[session_id]
+            if not done.cancelled() and done.exception() is not None:
+                logger.warning("Pool session %s: branch release failed", session_id,
+                               exc_info=done.exception())
+
+        task.add_done_callback(finished)
+
     async def _stop_drain_acked_holder(self, row: SessionRecord) -> bool:
         """Stop a drain-acked pool worker whose held task no close can change.
 
         Each row takes exactly one proof -- a retired delegate's, else a
-        settled claim's -- so an unconfirmed stop is retried next tick under
-        the same one rather than repeated under the other.  The indexed
+        settled claim's, else an unactivated preparation's -- so an
+        unconfirmed stop is retried next tick under the same one rather than
+        repeated under another.  The indexed
         database proofs come first: a worker drained over ordinary work
         reaches this branch every tick, and the provider read is a subprocess
         call.  Returns whether a stop was confirmed.
@@ -660,7 +733,47 @@ class SessionReconciler:
         settlement = await self.db.get_settled_pool_claim(row.id)
         if settlement is not None and settlement["task_id"] == row.task_id:
             return await self._stop_settled_claim_holder(row, settlement)
+        if row.claim_phase in ("claiming", "preparing"):
+            return await self._stop_drained_preparation_holder(row)
         return False
+
+    async def _stop_drained_preparation_holder(self, row: SessionRecord) -> bool:
+        """Stop a drain-acked pool worker bound to a preparation that never activated.
+
+        A retained preparation keeps its task pointer and ``preparing`` phase,
+        and its preparation branch owner (``attached`` or ``handoff_pending``)
+        keeps ``release_displaced_pool_claim`` from detaching it.  The worker
+        acknowledged its drain and stayed at its prompt, and the owner row
+        could not be released until a supervisor killed the session, because
+        owner recovery needs the writer's stop proof (nimble-journey-85).
+        All of these must hold before anything is stopped:
+
+        * the agent itself acknowledged its drain (the provider meta key);
+        * the claim never activated, so the worker did no work on the task
+          that a close could still record; and
+        * no preparation of this exact claim is still running in this daemon,
+          and no command holds the task's control lock: either may still
+          activate or release the claim.
+
+        The teardown is the one the other drain-acked proofs use: a confirmed
+        stop first; an attached owner keeps the claim, checkout and binding
+        for owner recovery.  Returns whether the stop was confirmed.
+        """
+        preparations = getattr(self.orchestrator, "claim_preparations", {})
+        preparation = preparations.get((row.id, row.task_id, row.last_claim_epoch))
+        if (preparation is not None and not preparation.done()) or (
+            self.orchestrator._task_control_held(row.task_id)
+        ):
+            return False
+        if not await self._agent_acked_drain(row):
+            return False
+        logger.warning(
+            "Pool session %s drain-acked bound to unactivated %s claim of %s — stopping it",
+            row.id,
+            row.claim_phase,
+            row.task_id,
+        )
+        return await self._confirmed_pool_stop(row, reason="drained_preparation")
 
     async def _stop_retired_delegate_writer(self, row: SessionRecord, retirement: dict) -> bool:
         """Stop a drain-acked pool worker whose held delegate can never close.
@@ -989,6 +1102,94 @@ class SessionReconciler:
                     claim_epoch=current.last_claim_epoch,
                 )
 
+    # -- pool: settled claim wake --------------------------------------------
+
+    async def _step_settled_claim_wake(
+        self, live: list[SessionRecord], now: float
+    ) -> None:
+        """Wake an ended turn whose claim preparation settled off-turn.
+
+        A claim that outlives its response window answers
+        ``claim_in_progress`` and keeps preparing.  ``_run_claim_preparation``
+        then activates the claim or releases it as ``prepare_failed`` and parks
+        the result in ``claim_preparation_results``, which only the worker's
+        next claim consumes.  A worker that ended its turn on
+        ``claim_in_progress`` never makes that claim, and nothing else saw it:
+        its repainting pane keeps ``last_activity`` fresh, and the completed-turn
+        backstop bounds the transcript by an activation that came after the
+        turn ended (nimble-journey-85).
+
+        The transcript is read from when the preparation started, so a turn
+        that ended on ``claim_in_progress`` counts.  It gets one nudge per
+        settled result.  An activated claim still undelivered a stall window
+        after that nudge is torn down and its task goes back to READY: the
+        worker never learned it held the claim.  A released one is the idle
+        recycle's (:meth:`_step_abandoned_pool_claim_loop`).
+        """
+        if not getattr(self.config.swarm, "enabled", True) or self.orchestrator is None:
+            return
+        results = getattr(self.orchestrator, "claim_preparation_results", None) or {}
+        pending = {(row.id, row.instance_token) for row in live if row.id in results}
+        self._settled_claim_wakes = {
+            key: wake for key, wake in self._settled_claim_wakes.items() if key in pending
+        }
+        stall_seconds = self._pool_claim_loop_stall_seconds()
+        for row in live:
+            cached = results.get(row.id)
+            if (
+                cached is None
+                or row.lifecycle != "pool"
+                or row.state != "running"
+                or row.desired_state != "running"
+                or row.claim_phase in ("claiming", "preparing")
+                or row.last_claim_epoch != cached.claim_epoch
+                or not same_session_launch(cached.session, row)
+                or self._is_deferred(row.name)
+            ):
+                continue
+            result = cached.outcome.get("result", "unknown")
+            ended = await completed_turn_at(
+                dataclasses.replace(row, claim_phase_at=cached.preparation_started_at),
+                base_dir=self.transcript_base_dir,
+            )
+            if ended is None:
+                continue
+            key = (row.id, row.instance_token)
+            wake = self._settled_claim_wakes.get(key)
+            if wake is not None and wake[:2] == (cached.claim_epoch, result):
+                if (
+                    now - wake[2] < stall_seconds
+                    or row.task_id != cached.task_id
+                    or row.claim_phase != "active"
+                ):
+                    continue
+                logger.warning(
+                    "Pool session %s never received its claim of %s (epoch %s) %.0fs "
+                    "after a wake; recycling and returning the task",
+                    row.id, cached.task_id, cached.claim_epoch, now - wake[2],
+                )
+                await self.orchestrator._terminate_pool_session(
+                    row, reason="claim_result_undelivered",
+                )
+                if results.get(row.id) is cached:
+                    results.pop(row.id)
+                continue
+            provider = self._provider_for(row)
+            if provider is None:
+                continue
+            outcome = await self._try_nudge(
+                provider, row,
+                f"Your claim preparation for task {cached.task_id} settled ({result}) "
+                "after your turn ended. Run `aq task claim --next --wait 60` now to "
+                "receive it, then continue your pool loop.",
+            )
+            if outcome.delivered:
+                self._settled_claim_wakes[key] = (cached.claim_epoch, result, now)
+                logger.info(
+                    "Pool session %s woken for its settled claim preparation of %s (%s)",
+                    row.id, cached.task_id, result,
+                )
+
     # -- pool: abandoned claim loop ----------------------------------------
 
     def _pool_claim_loop_stall_seconds(self) -> float:
@@ -1070,9 +1271,10 @@ class SessionReconciler:
                 or observed.claim_phase is not None
             ):
                 continue
-            if not idle_pool_claim_loop_stalled(
-                observed, now=now, stall_seconds=stall_seconds
-            ) or self._is_deferred(observed.name):
+            if self._is_deferred(observed.name):
+                continue
+            quiet = idle_pool_claim_loop_stalled(observed, now=now, stall_seconds=stall_seconds)
+            if not quiet and not await self._idle_pool_turn_ended(observed, stale_before):
                 continue
             waiting, _ = await self._wait_lease(observed, now)
             if waiting:
@@ -1084,7 +1286,7 @@ class SessionReconciler:
             fenced = await self.db.request_idle_pool_recycle(
                 observed.id,
                 instance_token=observed.instance_token,
-                stale_before=stale_before,
+                stale_before=stale_before if quiet else None,
             )
             if not fenced:
                 continue
@@ -1120,6 +1322,23 @@ class SessionReconciler:
                         resets_at=now + screen.retry_after if screen.retry_after else None,
                     )
             await self.orchestrator._terminate_pool_session(current, reason=reason)
+
+    async def _idle_pool_turn_ended(self, row: SessionRecord, stale_before: float) -> bool:
+        """Whether an idle pool worker's turn ended a stall window ago.
+
+        A worker in its claim loop is inside a tool call, never at an ended
+        turn, so an ended turn that old means no loop is running, even while a
+        repainting pane keeps ``last_activity`` fresh: the worker that ended
+        its turn on ``claim_in_progress`` and was then released
+        ``prepare_failed`` held a pool slot as idle supply indefinitely
+        (nimble-journey-85).  A settled-claim wake sent within the window
+        gets that window to be answered.
+        """
+        wake = self._settled_claim_wakes.get((row.id, row.instance_token))
+        if wake is not None and wake[2] > stale_before:
+            return False
+        ended = await completed_turn_at(row, base_dir=self.transcript_base_dir)
+        return ended is not None and ended <= stale_before
 
     async def _idle_pool_usage_limit_screen(self, row: SessionRecord) -> UsageLimitScreen | None:
         """The limit line if an idle pool worker's pane is its usage-limit screen.
@@ -1325,7 +1544,27 @@ class SessionReconciler:
         if task is not None and verdict.verdict is not Verdict.DRAINED:
             record = await self._record_worker_failure(row, task, verdict.verdict.value, now)
             if record is None:
-                return  # A newer claim, manual stop, or close owns this task.
+                if row.lifecycle == "pool" and await self._pool_task_requeued(row, task):
+                    # A failed close requeued the task but left this dead
+                    # session holding it; end it instead of every tick.
+                    return await self._apply_pool_verdict(row, verdict, task, now)
+                # A newer claim, manual stop, or close owns the task. That
+                # vetoes recovery, not the observed death of this instance.
+                # Keep its claim/workspace binding for the owner to recover.
+                current = await self._still_live(row)
+                if current is None or current.instance_token != row.instance_token:
+                    return
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    logger.warning("Stopping dead session %s failed", row.id, exc_info=True)
+                    return
+                await self.db.update_session_instance(
+                    row.id, row.instance_token,
+                    state="stopped", desired_state="stopped", ended_at=now,
+                    end_reason=verdict.verdict.name.lower(),
+                )
+                return
             if verdict.verdict is Verdict.CONTEXT_THRASH:
                 await self._recover_guarded_failure(provider, row, task, record, now)
                 return
@@ -1721,11 +1960,11 @@ class SessionReconciler:
         """Release a stopped pool writer's train/hierarchy owner before its teardown.
 
         An attached integration owner retains a pool claim through
-        ``terminate_pool_session``, leaving the task to owner recovery.  The
-        checkpoint just left the checkout clean and on ``origin`` -- the pool
-        handoff's proof -- so hand the owner back now, as a failed claim
-        preparation does; the teardown then releases the claim.  Refused or
-        unmanaged, nothing changes and the claim stays retained.
+        ``terminate_pool_session``, leaving the task to owner recovery.  When
+        the checkout is clean and on ``origin`` -- the pool handoff's proof --
+        hand the owner back now, as a failed claim preparation does; the
+        teardown then releases the claim.  Refused or unmanaged, nothing
+        changes and the claim stays retained.
         """
         release = getattr(self.orchestrator, "arelease_integration_writer_for_retry", None)
         if release is None:
@@ -1734,7 +1973,7 @@ class SessionReconciler:
             await release(task, reason=reason, pool=True)
         except Exception:
             logger.warning(
-                "Task %s: integration owner hand-back after provider failover failed",
+                "Task %s: pool integration owner hand-back failed",
                 task.id,
                 exc_info=True,
             )
@@ -1899,7 +2138,11 @@ class SessionReconciler:
                 "Pool session %s exited but no orchestrator is wired — skipping", row.id,
             )
             return
-        if task is not None:
+        if task is not None and await self._pool_task_requeued(row, task):
+            # The task is back in the queue, but an attached owner would keep
+            # the teardown from releasing the claim: hand it back first.
+            await self._hand_back_requeued_owner(task, verdict)
+        elif task is not None:
             note = {"RAPID_CRASH": "rapid_crash"}.get(verdict.verdict.name, "exited_holding_task")
             await self.db.set_task_meta(task.id, "needs_attention", note)
         # A rapid crash while the provider is already unavailable is the
@@ -1927,6 +2170,18 @@ class SessionReconciler:
                 reason=f"provider rate limit; retrying in {verdict.cooldown_seconds:.0f}s",
             )
         await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
+
+    async def _pool_task_requeued(self, row: SessionRecord, task) -> bool:
+        """True when *row*'s own claim on *task* is already back in the queue."""
+        current = await self.db.get_task(task.id)
+        return (
+            current is not None
+            and current.status == TaskStatus.READY
+            and current.claim_epoch == row.last_claim_epoch
+        )
+
+    async def _hand_back_requeued_owner(self, task, verdict: ExitVerdict) -> None:
+        await self._hand_back_pool_integration_owner(task, reason=f"session_{verdict.verdict.value}")
 
     def _provider_availability(self):
         return getattr(self.orchestrator, "provider_availability", None)
@@ -2029,6 +2284,26 @@ class SessionReconciler:
             return None
         agent = await self.db.get_agent(row.agent_id) if row.agent_id else None
         return max(at, (agent.last_heartbeat or 0.0) if agent else 0.0)
+
+    async def _running_own_command(self, row: SessionRecord, since: float, now: float) -> bool:
+        """A command the session runs counts as activity, within a grace.
+
+        A harness that hands a long command to its shell -- a foreground
+        ``aq test`` under load, a background task its ended turn waits on --
+        leaves pane and transcript quiet for as long as it runs, and the
+        ladder used to spend a rung every interval on a session doing its
+        work (fair-ember-83).  *since* is the session's last own activity, so
+        a command still running ``stall_command_grace_seconds`` after it is
+        no cover.
+        """
+        grace = float(self.sessions_config.stall_command_grace_seconds)
+        if grace <= 0 or now - since > grace or not row.instance_token:
+            return False
+        if self._command_inventory is None or self._command_inventory[0] != now:
+            self._command_inventory = (now, await marked_inventory())
+        return agent_command_running(
+            self._command_inventory[1], row.instance_token, self._process_names(row)
+        )
 
     async def _screen_digest(self, provider, row: SessionRecord) -> str | None:
         """A digest of everything this session's pane is showing, read-only.
@@ -2361,6 +2636,59 @@ class SessionReconciler:
         await self._apply_verdict(provider, row, task, verdict, now, screen=last_screen)
         return True
 
+    async def _step_claim_binding(self, live: list[SessionRecord], now: float) -> None:
+        """Flag a live holder whose claim record or agent pin is gone.
+
+        The worker keeps heartbeating, so no other step sees it, while ``aq git
+        push`` and ``aq message send`` refuse it (bold-rapids-90.3); a binding
+        that is whole again clears the flag.
+        """
+        rows = [
+            row for row in live
+            if row.lifecycle in ("task", "pool") and row.task_id and row.agent_id
+            and row.state == "running"
+            and (row.lifecycle == "task" or row.claim_phase == "active")
+        ]
+        if not rows:
+            return
+        task_ids = sorted({row.task_id for row in rows})
+        tasks = {task.id: task for task in await self.db.list_tasks(task_ids=task_ids)}
+        records = await self.db.get_task_meta_bulk(task_ids, CLAIMED_BY_SESSION_KEY)
+        flags = await self.db.get_task_meta_bulk(task_ids, "needs_attention")
+        agents = {agent.id: agent for agent in await self.db.list_agents()}
+        for row in rows:
+            task = tasks.get(row.task_id)
+            if (
+                task is None or task.status is not TaskStatus.IN_PROGRESS
+                or task.assigned_agent_id != row.agent_id
+                or task.claim_epoch != row.last_claim_epoch
+            ):
+                continue  # not this session's live claim; other steps own it
+            agent = agents.get(row.agent_id)
+            record = records.get(task.id)
+            code = None
+            if record is not None and record != row.id:
+                # Absent is a scheduler-launched session, which never records one.
+                code = "claim_binding_empty" if not record else "claim_binding_mismatch"
+            elif (
+                agent is None or agent.state is not AgentState.BUSY
+                or agent.current_task_id != task.id
+            ):
+                code = "claim_agent_unpinned"
+            flagged = flags.get(task.id)
+            if code is None:
+                if flagged in CLAIM_BINDING_ATTENTION:
+                    await self.db.delete_task_meta(task.id, "needs_attention")
+                continue
+            if flagged == code or (flagged is not None and flagged not in CLAIM_BINDING_ATTENTION):
+                continue  # already surfaced, or a stronger flag already stands
+            logger.warning("Task %s live holder %s: %s (record=%r)", task.id, row.id, code, record)
+            await self.db.set_task_meta(task.id, "needs_attention", code)
+            await self._emit(
+                "task.needs_attention", task_id=task.id, project_id=task.project_id,
+                title=task.title, session_id=row.id, reason=code,
+            )
+
     async def _step_stall_ladder(self, live: list[SessionRecord], now: float) -> None:
         """Nudge → backoff → restart → quarantine.
 
@@ -2442,6 +2770,8 @@ class SessionReconciler:
                 if wedged is None:
                     continue
                 last = min(last, wedged.progress_at)
+            if await self._running_own_command(row, last, now):
+                continue  # the command is the work; no rung is spent
             if await self._still_live(row) is None:
                 continue  # already stopped/slept/quarantined this tick
 
@@ -3340,6 +3670,8 @@ class SessionReconciler:
                 baseline = max(baseline or 0.0, resumed)
                 elapsed = now - (baseline or now)
             if effective_limit <= 0 or elapsed <= effective_limit:
+                continue
+            if await self._running_own_command(row, now - elapsed, now):
                 continue
             fresh = await self._still_live(row)
             if fresh is None:
