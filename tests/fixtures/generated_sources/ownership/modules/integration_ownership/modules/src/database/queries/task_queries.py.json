@@ -324,7 +324,7 @@
       "integration_signal": false,
       "line": 1382,
       "owner": "TaskQueryMixin.finish_task_pause",
-      "owner_fingerprint": "49a112a0687e0856863fc71c0f0b91034084f0e746fc105e92d3859c705ce991",
+      "owner_fingerprint": "bc19e85b5ad0ef1ad890ba714b0329b1857fd81f70e29f43163e6149a25ad43f",
       "reason": "Reviewed smart-nexus-83: ordinary configuration, metadata, event or recovery observation; never replayable delivery truth. Legacy subject journal remains retired."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.resume_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {

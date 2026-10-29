@@ -3495,6 +3495,79 @@ async def test_workspace_transient_retry_preserves_reservation_and_then_resumes(
     assert (await intent(env))['launch_attempts'] == 1
 
 
+@pytest.mark.parametrize('fault', ['missing', 'unavailable', 'corrupt', 'broken_link', 'post_import'])
+async def test_resume_missing_object_recovery_or_existing_workspace_hold(
+    env, tmp_path, monkeypatch, fault,
+):
+    from src.git.manager import GitError, GitManager
+    from src.wait_runtime.resume import verify_saved_branch
+    from tests.test_git_app_auth import _git, _missing_object_case
+
+    source, checkout, oid = _missing_object_case(tmp_path, available=fault != 'unavailable')
+    _git(['branch', '-m', 'aq/owner'], checkout)
+    head = _git(['rev-parse', 'HEAD'], checkout)
+    # The saved unpublished tip must already have been published to resume.
+    if fault != 'unavailable':
+        _git(['push', str(source), 'aq/owner'], checkout)
+    if fault == 'corrupt':
+        (checkout / '.git' / 'objects' / oid[:2] / oid[2:]).write_bytes(b'truncated')
+    monkeypatch.setattr('src.git.manager._RETAINED_VERIFY_RETRY_DELAYS', ())
+    git = GitManager()
+    recover = AsyncMock(wraps=git._arecover_missing_retained_objects)
+    monkeypatch.setattr(git, '_arecover_missing_retained_objects', recover)
+    fetch = git._afetch_origin_with_auth_to_url
+
+    async def origin(path, *, repository_url):
+        assert repository_url == source.as_uri()
+        await fetch(path, source_url=repository_url, token=None)
+
+    monkeypatch.setattr(git, 'afetch_origin', origin)
+    if fault == 'post_import':
+        run = git._run_isolated_import_git
+        checks = 0
+
+        async def final_failure(args, **kwargs):
+            nonlocal checks
+            if args[0] == f'--git-dir={checkout / ".git"}' and 'fsck' in args:
+                checks += 1
+                if checks == 3:
+                    raise GitError('retained Git object integrity is unavailable: error')
+            return await run(args, **kwargs)
+
+        monkeypatch.setattr(git, '_run_isolated_import_git', final_failure)
+    if fault == 'broken_link':
+        monkeypatch.setattr(git, '_aretained_fetch_deadline', AsyncMock(side_effect=GitError(
+            'retained Git object integrity is unavailable: broken link ' + 'a' * 40,
+        )))
+    monkeypatch.setattr(env.db, 'get_repo', AsyncMock(return_value=SimpleNamespace(
+        url=source.as_uri())))
+    service, _, _ = await workspace_resume(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(saved_head=head, branch='aq/owner'))
+    await env.db.update_task('owner', branch_name='aq/owner')
+    service.orch.git = git
+
+    async def prepare(_action, task, _agent, _intent):
+        await verify_saved_branch(service.orch, task, str(checkout))
+        return str(checkout)
+
+    service.lifecycle.resume.fresh_workspace.side_effect = prepare
+    result = await service.lifecycle.resume.dispatch({'continuation_id': 'c', 'generation': 1},
+        principal=None, scope=None, handler=service.orch._command_handler)
+    row = await intent(env)
+    assert (row['saved_head'], row['branch']) == (head, 'aq/owner')
+    assert _git(['rev-parse', 'HEAD'], checkout) == head
+    if fault == 'missing':
+        assert result['dispatched'] and not result.get('held')
+        service.orch._launch_session_for_task_locked.assert_awaited_once()
+        assert _git(['cat-file', '-t', oid], checkout) == 'commit'
+    else:
+        assert result['held'] and result['hold_reason'] == 'resume_workspace_failed'
+        assert row['resume_state'] == 'held'
+        service.orch._launch_session_for_task_locked.assert_not_awaited()
+    assert recover.await_count == (1 if fault in {'missing', 'unavailable', 'post_import'} else 0)
+
+
 @pytest.mark.parametrize('retryable', [True, False])
 async def test_workspace_failure_holds_after_budget_or_immediately(env, retryable):
     from src.database.tables import escalations
@@ -3771,6 +3844,120 @@ async def test_requeue_of_a_launch_hold_returns_to_the_capacity_queue(env):
         assert (await service.orch._command_handler.execute('wait_decide', args))['success']
     row = await intent(env)
     assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
+
+
+async def released_resume_seat(env):
+    """The reservation, assignment and checkout lock a dead resume seat held."""
+    from src.database.tables import admission_reservations, agents, workspaces
+
+    async with env.db._engine.connect() as conn:
+        return (
+            await conn.scalar(select(admission_reservations.c.state).where(
+                admission_reservations.c.id == 'reservation')),
+            (await env.db.get_task('owner')).assigned_agent_id,
+            await conn.scalar(select(agents.c.state).where(agents.c.id == 'a')),
+            (await conn.execute(select(workspaces.c.locked_by_task_id, workspaces.c.locked_by_agent_id)
+                                .where(workspaces.c.id == 'resume-slot'))).one(),
+        )
+
+
+async def readmit_resume(env):
+    """A real admission scheduler for the released continuation's next pass."""
+    from src.database.tables import workspaces
+    from src.models import AgentProfile, RepoConfig, RepoSourceType
+    from src.wait_runtime.resume import ResumeTransaction
+    from src.wait_runtime.scheduler import SchedulerWaitService
+
+    await env.db.create_profile(AgentProfile(id='worker', name='Worker', lifecycle='pool',
+                                            max_active=1))
+    await env.db.create_repo(RepoConfig(id='repo', project_id='p', url='https://example.test/repo',
+        source_type=RepoSourceType.CLONE, checkout_base_path='/tmp/resume-admission'))
+    await env.db.update_project('p', integration_repository_id='repo')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(workspaces).where(workspaces.c.id == 'resume-slot').values(
+            kind_id='project-repo'))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker', route_source='override'))
+    config = AppConfig()
+    config.wait_policy.v2_enabled = config.wait_policy.hibernation_enabled = True
+    config.swarm.global_max_active = 1
+    orch = SimpleNamespace(db=env.db, config=config, _worktrees_enabled=lambda: False,
+                           _delivery_admission=lambda ids: observe_admission(env.db, ids, None),
+                           _pool_quarantine_state=lambda *a: (None, None))
+    service = SimpleNamespace(orch=orch, scheduler=SchedulerWaitService(orch, clock=lambda: NOW))
+    return ResumeTransaction(service, clock=lambda: NOW + 400)
+
+
+async def test_requeue_of_a_dead_reserved_seat_releases_it_and_reserves_afresh(env):
+    """solid-torrent-24: a held seat whose grant expired must not be reused."""
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import admission_reservations
+
+    service, _, now = await workspace_resume(env)
+    # The workspace hold kept agent 'a', its grant and checkout lock; no process
+    # runs for it and the grant's deadline has passed.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='resume_workspace_failed'))
+        await conn.execute(update(admission_reservations).values(deadline_at=NOW + 60))
+    now[0] = NOW + 400
+    args = {'wait_id': env.wait_id, 'decision': 'requeue', 'continuation_id': 'c',
+            'expected_generation': 1, 'note': 'Checkout repaired'}
+    with principal_context(TRUSTED_LOCAL):
+        assert (await service.orch._command_handler.execute('wait_decide', args))['success']
+    row = await intent(env)
+    assert (row['resume_state'], row['launch_attempts'], row['hold_reason']) == ('queued', 0, None)
+    assert await released_resume_seat(env) == ('cancelled', None, 'IDLE', (None, None))
+    action = await (await readmit_resume(env)).reserve('c', 1)
+    assert action is not None and action.agent_id != 'a'
+    async with env.db._engine.connect() as conn:
+        grant = (await conn.execute(select(admission_reservations).where(
+            admission_reservations.c.state == 'granted'))).mappings().one()
+    assert grant['id'] != 'reservation' and grant['deadline_at'] > NOW + 400
+    assert (await env.db.get_task('owner')).assigned_agent_id == action.agent_id
+    assert (await intent(env))['resume_state'] == 'reserved'
+
+
+async def test_reserved_seat_with_expired_grant_returns_to_the_capacity_queue(env):
+    """smart-rapids-92: the scheduler must not relaunch on a lapsed grant."""
+    from dataclasses import replace
+
+    from src.database.tables import admission_reservations
+
+    service, action, now = await workspace_resume(env)
+    driver = service.lifecycle.resume
+    assert await driver.reserve('c', 1) == action  # A live grant keeps its seat.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(admission_reservations).values(deadline_at=NOW + 60))
+    await env.db.create_session(replace(await env.db.get_session('fresh'), id='live',
+                                        state='running', desired_state='running'))
+    now[0] = NOW + 400
+    assert await driver.reserve('c', 1) == action  # So does a live process.
+    await env.db.update_session('live', state='stopped', desired_state='stopped')
+    assert await driver.reserve('c', 1) is None
+    assert (await intent(env))['resume_state'] == 'queued'
+    assert await released_resume_seat(env) == ('cancelled', None, 'IDLE', (None, None))
+
+
+async def test_reconciler_expires_only_held_grants_past_their_deadline(env):
+    from src.database.tables import admission_reservations
+
+    service, _, now = await workspace_resume(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(
+            resume_state='held', hold_reason='resume_workspace_failed'))
+    service.command = AsyncMock()
+
+    async def grant():
+        async with env.db._engine.connect() as conn:
+            return await conn.scalar(select(admission_reservations.c.state))
+
+    await service.lifecycle.resume_pending()
+    assert await grant() == 'granted'  # NOW + 300 has not passed.
+    now[0] = NOW + 301
+    await service.lifecycle.resume_pending()
+    assert await grant() == 'cancelled'
+    assert (await intent(env))['resume_state'] == 'held'
 
 
 @pytest.mark.parametrize('failure', ['graph_busy', 'cancel_after_write'])
