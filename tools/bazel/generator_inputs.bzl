@@ -4132,6 +4132,7 @@ GENERATOR_INPUTS = [
     "src/integration/reconciler_repair_close.py",
     "src/integration/records.py",
     "src/integration/regeneration.py",
+    "src/integration/regeneration_settings.py",
     "src/integration/release.py",
     "src/integration/removal_guard.py",
     "src/integration/repair.py",
