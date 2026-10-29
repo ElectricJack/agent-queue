@@ -933,6 +933,52 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'integration_train_visit_carry_composition': {'authorized_engine_delta': 183,
+                                               'authorized_owned_delta': 183,
+                                               'authorized_shared_owned_delta': 0,
+                                               'authorized_table_delta': 0,
+                                               'charged_files': {'src/integration/batches.py': 6,
+                                                                 'src/integration/train.py': 39,
+                                                                 'src/integration/visit_carry.py': 138},
+                                               'dev_source_revision': '0ce9a88d9b85d2d401486739ce5d13138ae81621',
+                                               'evidence_path': 'docs/reports/2026-10-28-integration-train-visit-carry-ownership.json',
+                                               'fix_task_id': 'bright-flare-38',
+                                               'measured_engine_lines': 84746,
+                                               'measured_owned_total': 161486,
+                                               'measured_table_count': 45,
+                                               'operator_decision': 'msg-75ec9aee51674df4ac606e7977e71fe6',
+                                               'previous_measured_engine_lines': 84563,
+                                               'previous_measured_owned_total': 161303,
+                                               'previous_measured_table_count': 45,
+                                               'reason': 'Exact measured +183 owned/+183 engine/+0 '
+                                                         'shared/+0 tables over the '
+                                                         'integration_train_epic_visits_composition '
+                                                         'tree (wise-current-35, PR 2173 head '
+                                                         '24cbc4537 over dev 0ce9a88d9) for '
+                                                         'carrying long integration-train stages '
+                                                         'across visits so large epic targets '
+                                                         'progress (bright-flare-38). New '
+                                                         'visit_carry.py StageCarries runs a '
+                                                         'deterministic stage past its visit '
+                                                         'deadline, lets the next visit with the '
+                                                         'same identity adopt it once while fresh, '
+                                                         'settles a replaced run before restarting '
+                                                         'and cancels at 3x the visit budget (+138 '
+                                                         'engine); train.py carries fetch_snapshot '
+                                                         'and select_batch, holds the repository '
+                                                         'slot while a carry runs and cancels '
+                                                         'carries on lane retirement and stop (+39 '
+                                                         'engine); batches.py carries '
+                                                         'build_candidate merge_sources, never for '
+                                                         'speculative runs (+6 engine). No new '
+                                                         'table or migration. Preserve the '
+                                                         'original baseline, every historical '
+                                                         'grant and ownership classification, zero '
+                                                         'remaining headroom, the s4_modules '
+                                                         'expiry and existing storage categories.',
+                                               'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                               'source_revision': '29006f477f5c9fe4322f622833fedffb978963b1',
+                                               'task_id': 'bright-flare-38'},
  'integration_train_epic_visits_composition': {'authorized_engine_delta': 207,
                                                'authorized_owned_delta': 207,
                                                'authorized_shared_owned_delta': 0,
@@ -1888,7 +1934,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 5840,
+ 'authorized_owned_delta': 6023,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2496,8 +2542,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84563,
- 'measured_owned_total': 161339,
+ 'measured_engine_lines': 84746,
+ 'measured_owned_total': 161522,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,

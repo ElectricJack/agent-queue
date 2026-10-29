@@ -8849,7 +8849,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:09a42b7ab6dafcfdb5d415063c914e614bc3aa15ae9a7e1f26cffc5d2a3d5b28",
+      "digest": "sha256:0ea81059e6592b701903b33bc532b1d9451e638791e498c7f076f5baebb4834a",
       "imports": [
         "src.commands",
         "src.config",
@@ -8871,6 +8871,7 @@
         "src.integration.repository_recovery",
         "src.integration.train",
         "src.integration.train_sources",
+        "src.integration.visit_carry",
         "src.models",
         "src.waits.sources"
       ],
@@ -10515,7 +10516,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:c9fdf038f75b1bb8873dc8d42fd384c53062557eec95d215f8cf64035827d33d",
+      "digest": "sha256:185f9cda47b8d508a80fd93364ec82f0055e10c3f7f1192bb3a6905297fc919b",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -10539,6 +10540,7 @@
         "src.integration.stall_alerts",
         "src.integration.train",
         "src.integration.train_sources",
+        "src.integration.visit_carry",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
