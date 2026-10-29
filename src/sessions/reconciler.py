@@ -370,6 +370,7 @@ class SessionReconciler:
             self._step_flock_audit,
             self._step_claim_refusals,
             self._step_drain_ack,
+            self._step_stopped_claim_phases,
             self._step_stopped_idle_workspaces,
             self._step_prepare_timeout,
             self._step_missing_pool_claim_file,
@@ -388,6 +389,15 @@ class SessionReconciler:
                 await step(live, now)
             except Exception:
                 logger.exception("Session reconciler step %s failed", step.__name__)
+
+    async def _step_stopped_claim_phases(self, live, now: float) -> None:
+        """Repair stopped claim history, including status changes after stop."""
+        from src.workspace_ownership import clear_stale_stopped_claim_phases
+
+        async with self.db.immediate() as conn:
+            repaired = await clear_stale_stopped_claim_phases(conn)
+        if repaired:
+            logger.info("Cleared stale claim phases on %s stopped sessions", repaired)
 
     async def _step_stopped_idle_workspaces(self, live, now: float) -> None:
         """Recover taskless stopped pool locks, including history across restarts."""

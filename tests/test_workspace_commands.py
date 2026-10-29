@@ -1474,6 +1474,124 @@ class TestWorkspaceOwnershipControls:
         assert hold["session"]["id"] == "holder-session"
         assert await db.count_available_workspaces("p1", kind_id="project-repo") == 0
 
+    @pytest.mark.parametrize("change,retained", [
+        ({"status": "COMPLETED"}, False),
+        ({"status": "FAILED"}, False),
+        ({"assigned_agent_id": "successor"}, False),
+        ({"claim_epoch": 8}, False),
+        ({"status": "PAUSED"}, True),
+        ({"status": "PAUSED", "assigned_agent_id": None}, True),
+        ({}, True),
+    ])
+    @pytest.mark.parametrize("phase", ["active", "preparing"])
+    async def test_stopped_claim_protection_requires_current_unfinished_task(
+        self, setup, change, retained, phase,
+    ):
+        from sqlalchemy import update
+        from src.claim_file import remove_claim_file
+        from src.database.tables import sessions, tasks
+        from src.workspace_ownership import clear_stale_stopped_claim_phases
+
+        _handler, db, path = await self._held(setup)
+        remove_claim_file(str(path))
+        await db.create_agent(Agent(id="successor", name="successor", profile_id="p"))
+        # Model old rows written before stop cleanup existed, including an
+        # entirely unlocked slot: the production capacity-collapse shape.
+        async with db.immediate() as conn:
+            await conn.execute(update(sessions).where(sessions.c.id == "holder-session").values(
+                state="stopped", desired_state="stopped", claim_phase=phase, claim_phase_at=10,
+            ))
+            if change:
+                await conn.execute(update(tasks).where(tasks.c.id == "held").values(**change))
+        await db.update_workspace("held-ws", locked_by_agent_id=None, locked_by_task_id=None)
+        inventory = await db.list_workspaces("p1")
+        assert ("held-ws" in await db.protected_workspace_ids(inventory)) is retained
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == int(not retained)
+        async with db.immediate() as conn:
+            assert await clear_stale_stopped_claim_phases(conn) == int(not retained)
+            assert await clear_stale_stopped_claim_phases(conn) == 0
+        session = await db.get_session("holder-session")
+        assert session.task_id == "held" and session.last_claim_epoch == 7
+        assert session.claim_phase == (phase if retained else None)
+        assert session.claim_phase_at == (10 if retained else None)
+        assert (await db.get_agent("holder")).current_task_id == "held"
+        if not retained:
+            assert await db.acquire_one_unlocked(
+                "p1", "project-repo", "exclusive", None, "successor",
+            ) is not None
+
+    @pytest.mark.parametrize("phase", ["active", "preparing"])
+    async def test_stopped_taskless_phase_keeps_preparation_evidence(self, setup, phase):
+        from src.workspace_ownership import clear_stale_stopped_claim_phases
+
+        _handler, db, _path = await self._held(setup)
+        await db.update_session(
+            "holder-session", state="stopped", task_id=None,
+            claim_phase=phase, claim_phase_at=10,
+        )
+        async with db.immediate() as conn:
+            assert await clear_stale_stopped_claim_phases(conn) == 0
+        row = await db.get_session("holder-session")
+        assert (row.task_id, row.claim_phase, row.claim_phase_at) == (None, phase, 10)
+
+    @pytest.mark.parametrize("stop_first", [False, True])
+    async def test_stop_clears_terminal_phase_and_reconciliation_repairs_later_completion(
+        self, setup, stop_first,
+    ):
+        from src.claim_file import read_claim_file
+        from src.models import TaskStatus
+        from src.sessions.reconciler import SessionReconciler
+
+        handler, db, path = await self._held(setup)
+        claim = read_claim_file(str(path))
+        await db.update_session("holder-session", claim_phase_at=10)
+        if stop_first:
+            await db.update_session("holder-session", state="stopped")
+            assert (await db.get_session("holder-session")).claim_phase == "active"
+        await db.transition_task("held", TaskStatus.COMPLETED, force=True)
+        if stop_first:
+            await SessionReconciler._step_stopped_claim_phases(handler.orchestrator, [], time.time())
+        else:
+            await db.update_session("holder-session", state="stopped")
+        row = await db.get_session("holder-session")
+        assert row.claim_phase is None and row.claim_phase_at is None
+        assert row.task_id == "held"
+        # Repairing the phase must not clear real ownership or claim files.
+        assert (await db.get_workspace("held-ws")).locked_by_task_id == "held"
+        assert (await db.get_task("held")).status == TaskStatus.COMPLETED
+        assert read_claim_file(str(path)) == claim
+
+    @pytest.mark.parametrize("state", ["running", "sleeping", "draining"])
+    async def test_terminal_task_keeps_live_writer_and_phase_protected(self, setup, state):
+        from src.claim_file import remove_claim_file
+        from src.models import TaskStatus
+        from src.workspace_ownership import clear_stale_stopped_claim_phases
+
+        _handler, db, path = await self._held(setup)
+        remove_claim_file(str(path))
+        await db.update_session("holder-session", state=state)
+        await db.transition_task("held", TaskStatus.FAILED, force=True)
+        await db.update_workspace("held-ws", locked_by_agent_id=None, locked_by_task_id=None)
+        async with db.immediate() as conn:
+            assert await clear_stale_stopped_claim_phases(conn) == 0
+        assert (await db.get_session("holder-session")).claim_phase == "active"
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 0
+
+    async def test_capacity_sweep_identifies_stopped_claim_with_cleared_locks(self, setup):
+        from src.claim_file import remove_claim_file
+        from src.models import TaskStatus
+        from src.workspace_ownership import workspace_capacity_holds
+
+        _handler, db, path = await self._held(setup)
+        remove_claim_file(str(path))
+        await db.transition_task("held", TaskStatus.PAUSED, force=True)
+        await db.update_session("holder-session", state="stopped")
+        await db.update_workspace("held-ws", locked_by_agent_id=None, locked_by_task_id=None)
+        [hold] = await workspace_capacity_holds(db, "p1")
+        assert hold["reason"] == "stopped_session_retains_slot"
+        assert hold["session"]["id"] == "holder-session"
+        assert hold["control"] == {"command": "stop_task", "params": {"task_id": "held"}}
+
 
     async def test_release_preserves_taskless_agent_launch_reservation(self, setup):
         from src.claim_file import remove_claim_file
