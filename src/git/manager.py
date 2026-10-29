@@ -743,6 +743,26 @@ _RETAINED_METADATA_RE = re.compile(
 _RETAINED_INCREMENT_BYTES = 256 * 1024 * 1024
 #: The check after which a background full refresh starts, before expiry.
 _RETAINED_REFRESH_AGE_SECONDS = _RETAINED_VERIFY_TTL_SECONDS / 2
+#: Common stores whose exclusion the current context already holds.
+_RETAINED_EXCLUSIONS_HELD: ContextVar[frozenset[str]] = ContextVar(
+    "retained_store_exclusions_held", default=frozenset())
+
+
+def _repack_output_only(before: tuple, after: tuple) -> bool:
+    """Whether *after* adds nothing to *before* beyond one new pack family.
+
+    Derived metadata (repack refreshes ``info/packs``) is not object content.
+    """
+    known = {entry[0] for entry in before}
+    families = set()
+    for path, _size, _inode in set(after) - set(before):
+        if _RETAINED_METADATA_RE.fullmatch(path):
+            continue
+        match = _RETAINED_PACK_RE.fullmatch(path)
+        if path in known or match is None:
+            return False
+        families.add(match.group(1))
+    return len(families) <= 1
 
 
 def _retained_increment(previous: tuple, current: tuple) -> tuple[tuple, tuple] | None:
@@ -2702,9 +2722,17 @@ class GitManager:
     async def _aretained_store_exclusion(
         self, git_dir: str, *, deadline: float,
     ) -> AsyncIterator[None]:
-        """Serialize full checks and foreground maintenance for one common store."""
+        """Serialize full checks and foreground maintenance for one common store.
+
+        Re-entrant within the holder's own context, so maintenance it runs
+        passes; a full check's fresh context never inherits the hold.
+        """
         common = await asyncio.to_thread(_common_git_dir, git_dir)
         key = os.path.realpath(common)
+        held = _RETAINED_EXCLUSIONS_HELD.get()
+        if key in held:
+            yield
+            return
         lock = self.__dict__.setdefault("_retained_verify_locks", {}).setdefault(
             key, asyncio.Lock())
         loop = asyncio.get_running_loop()
@@ -2717,9 +2745,11 @@ class GitManager:
                 "lock_wait_timeout", elapsed=loop.time() - started_waiting,
                 budget=max(0.0, deadline - started_waiting),
             ) from exc
+        token = _RETAINED_EXCLUSIONS_HELD.set(held | {key})
         try:
             yield
         finally:
+            _RETAINED_EXCLUSIONS_HELD.reset(token)
             lock.release()
 
     async def _averify_retained_objects(
@@ -2831,7 +2861,9 @@ class GitManager:
         throughout a clean check. Files written meanwhile remain additions for
         the incremental gate. Returns None when the store could not be
         inventoried. A persistent integrity failure also discards the store's
-        earlier clean result.
+        earlier clean result. A store that, once this check holds the exclusion,
+        exactly matches a clean result not yet due for refresh (a check or a
+        carried repack finished meanwhile) is not checked again.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + RETAINED_FSCK_TIMEOUT_SECONDS
@@ -2842,6 +2874,10 @@ class GitManager:
             home.mkdir(mode=0o700)
             async with self._aretained_store_exclusion(key, deadline=deadline):
                 fingerprint = await asyncio.to_thread(_object_store_fingerprint, key)
+                cached = self._retained_baseline(key)
+                if (cached is not None and fingerprint == cached[0]
+                        and time.monotonic() - cached[1] < _RETAINED_REFRESH_AGE_SECONDS):
+                    return cached
                 started = time.monotonic()
                 try:
                     await self._afsck_retained_store(key, home=home, deadline=deadline)
@@ -3090,6 +3126,52 @@ class GitManager:
             return False
         verified[key] = (current, started)
         return True
+
+    async def arepack_retained_store(
+        self, git_dir: str, args: list[str], *, cwd: str, timeout: float,
+    ) -> subprocess.CompletedProcess:
+        """Repack *git_dir*'s common store, carrying an exact clean result across it.
+
+        A whole-store repack replaces every pack, which the incremental gate
+        cannot follow. When the store was exactly the verified one beforehand,
+        the rewrite holds only checked objects: a clean connectivity check of
+        the result carries that clean result over with its original age, so the
+        background refresh still comes due on schedule. Unverified additions,
+        a failed repack or a failed check leave the store to the full check.
+        The store exclusion is held throughout, so no full check overlaps. The
+        repack may run beside other writers, so anything added beyond its own
+        pack also leaves the store to the full check.
+        """
+        loop = asyncio.get_running_loop()
+        async with self._aretained_store_exclusion(git_dir, deadline=loop.time() + timeout):
+            key, before = await asyncio.to_thread(_retained_store_state, git_dir)
+            cached = self._retained_baseline(key)
+            result = await self.arun_git_result(
+                args, cwd=cwd, env={"LC_ALL": "C"}, timeout=timeout, low_priority=True,
+            )
+            if (result.returncode or result.stderr.strip() or cached is None
+                    or before is None or before != cached[0]):
+                return result
+            try:
+                async with _isolated_git_directory(prefix="aq-retained-repack-") as temporary:
+                    root = Path(temporary)
+                    root.chmod(0o700)
+                    home = root / "home"
+                    home.mkdir(mode=0o700)
+                    await self._run_isolated_import_git(
+                        [f"--git-dir={key}", "fsck", "--connectivity-only", "--no-dangling",
+                         "--no-reflogs", "--no-progress"],
+                        home=home, deadline=loop.time() + timeout, verify_integrity=True,
+                    )
+            except GitError as exc:
+                logger.info("retained repack left the full check due: %s", type(exc).__name__)
+                return result
+            after = await asyncio.to_thread(_object_store_fingerprint, key)
+            verified = self.__dict__.setdefault("_retained_verified", {})
+            if (after is not None and _repack_output_only(before, after)
+                    and verified.get(key) == cached):
+                verified[key] = (after, cached[1])
+        return result
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,

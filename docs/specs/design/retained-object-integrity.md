@@ -130,10 +130,38 @@ restarted the check and `owner_lease` ran out its 600 s.
   if either check fails. Removed files need no body check because connectivity
   proves what remains. A pack whose index has not been written yet is still
   arriving: Git does not use it, so it stays outside the checked inventory. Verification is never skipped, and
-  connectivity-only is never sufficient on its own. The gate keeps the baseline's
-  original timestamp.
+  connectivity-only never admits an object no full check has read. The gate keeps
+  the baseline's original timestamp.
 - **Refresh.** A caller that reuses a baseline more than half the TTL old starts
   a background refresh flight and proceeds on the still-valid baseline.
+- **Repack carry.** Task: `sound-journey-54`. The hourly background
+  `repack -a -d -k` replaces every pack with one larger than the incremental cap,
+  so every repack used to leave callers waiting on a full flight of up to 900 s.
+  `GitManager.arepack_retained_store` holds the verifier exclusion across the
+  repack and everything after it. The baseline carries only when three things
+  hold: the store matched its clean baseline exactly beforehand, the repack
+  exits zero with empty stderr, and a connectivity-only fsck of the result
+  passes. That fsck took 15 s on this repository's 1.9 GB store. The carried
+  baseline names the new files but keeps its original timestamp, so the
+  refresh still comes due on schedule and a full fsck still reads every body
+  within the TTL. A repack rewrites only objects the full check has already
+  read, and the connectivity check proves that nothing reachable was lost.
+  Nothing carries in these cases, and the full check stays due:
+  - unverified additions;
+  - anything but the repack's own pack family (and derived metadata such as
+    `info/packs`) added during the repack, which runs outside the repository
+    transaction (`calm-lantern-36`), so another writer may add objects beside it;
+  - a failed repack or a failed check;
+  - a baseline replaced meanwhile.
+
+  The exclusion is re-entrant only within its holder's context, so the repack
+  passes through it. A flight's fresh context never inherits the hold.
+- **Queued checks recheck.** A full flight that waited on the exclusion
+  fingerprints the store once it holds that exclusion. If the store exactly
+  matches a clean baseline younger than the refresh age, the flight returns
+  that baseline without running fsck, so a caller that saw the store mid-repack
+  reuses the carry. Refresh flights start only once a baseline reaches that
+  age, so they always reread the store.
 
 Admission shares a five-second snapshot-wait budget across one request's Git
 observations. A slow fetch or recovery continues as the existing shared flight

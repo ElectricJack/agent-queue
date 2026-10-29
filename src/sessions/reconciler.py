@@ -43,6 +43,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from src.claim_file import CLAIM_FILE, read_claim_file, remove_claim_file_if_matches
+from src.claim_preparation import same_session_launch
 from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
 from src.pool_claims import (
@@ -266,6 +267,12 @@ class SessionReconciler:
         #: why ``sessions.stop_intent_pending`` exists.
         self._idle_stop_intent_seen: dict[tuple[str, str], float] = {}
         self._drain_instruction_sent: set[tuple[str, str]] = set()
+        #: (session id, instance token) -> (claim epoch, result, nudged at) for
+        #: a claim preparation that settled after its worker's turn ended.
+        #: Nothing else reaches an ended turn: the result waits in
+        #: ``claim_preparation_results`` for a claim that never comes
+        #: (nimble-journey-85).
+        self._settled_claim_wakes: dict[tuple[str, str], tuple[int, str, float]] = {}
         #: session id -> its in-flight idle branch release. Off the tick: an
         #: origin refresh queued behind a preparation once held drain-ack past
         #: the stage bound, so exits and stalls never ran (2026-10-27).
@@ -367,6 +374,7 @@ class SessionReconciler:
             self._step_prepare_timeout,
             self._step_missing_pool_claim_file,
             self._step_exits,
+            self._step_settled_claim_wake,
             self._step_abandoned_pool_claim_loop,
             self._step_orphans,
             self._step_disabled_project_supervisors,
@@ -710,8 +718,9 @@ class SessionReconciler:
         """Stop a drain-acked pool worker whose held task no close can change.
 
         Each row takes exactly one proof -- a retired delegate's, else a
-        settled claim's -- so an unconfirmed stop is retried next tick under
-        the same one rather than repeated under the other.  The indexed
+        settled claim's, else an unactivated preparation's -- so an
+        unconfirmed stop is retried next tick under the same one rather than
+        repeated under another.  The indexed
         database proofs come first: a worker drained over ordinary work
         reaches this branch every tick, and the provider read is a subprocess
         call.  Returns whether a stop was confirmed.
@@ -724,7 +733,47 @@ class SessionReconciler:
         settlement = await self.db.get_settled_pool_claim(row.id)
         if settlement is not None and settlement["task_id"] == row.task_id:
             return await self._stop_settled_claim_holder(row, settlement)
+        if row.claim_phase in ("claiming", "preparing"):
+            return await self._stop_drained_preparation_holder(row)
         return False
+
+    async def _stop_drained_preparation_holder(self, row: SessionRecord) -> bool:
+        """Stop a drain-acked pool worker bound to a preparation that never activated.
+
+        A retained preparation keeps its task pointer and ``preparing`` phase,
+        and its preparation branch owner (``attached`` or ``handoff_pending``)
+        keeps ``release_displaced_pool_claim`` from detaching it.  The worker
+        acknowledged its drain and stayed at its prompt, and the owner row
+        could not be released until a supervisor killed the session, because
+        owner recovery needs the writer's stop proof (nimble-journey-85).
+        All of these must hold before anything is stopped:
+
+        * the agent itself acknowledged its drain (the provider meta key);
+        * the claim never activated, so the worker did no work on the task
+          that a close could still record; and
+        * no preparation of this exact claim is still running in this daemon,
+          and no command holds the task's control lock: either may still
+          activate or release the claim.
+
+        The teardown is the one the other drain-acked proofs use: a confirmed
+        stop first; an attached owner keeps the claim, checkout and binding
+        for owner recovery.  Returns whether the stop was confirmed.
+        """
+        preparations = getattr(self.orchestrator, "claim_preparations", {})
+        preparation = preparations.get((row.id, row.task_id, row.last_claim_epoch))
+        if (preparation is not None and not preparation.done()) or (
+            self.orchestrator._task_control_held(row.task_id)
+        ):
+            return False
+        if not await self._agent_acked_drain(row):
+            return False
+        logger.warning(
+            "Pool session %s drain-acked bound to unactivated %s claim of %s — stopping it",
+            row.id,
+            row.claim_phase,
+            row.task_id,
+        )
+        return await self._confirmed_pool_stop(row, reason="drained_preparation")
 
     async def _stop_retired_delegate_writer(self, row: SessionRecord, retirement: dict) -> bool:
         """Stop a drain-acked pool worker whose held delegate can never close.
@@ -1053,6 +1102,94 @@ class SessionReconciler:
                     claim_epoch=current.last_claim_epoch,
                 )
 
+    # -- pool: settled claim wake --------------------------------------------
+
+    async def _step_settled_claim_wake(
+        self, live: list[SessionRecord], now: float
+    ) -> None:
+        """Wake an ended turn whose claim preparation settled off-turn.
+
+        A claim that outlives its response window answers
+        ``claim_in_progress`` and keeps preparing.  ``_run_claim_preparation``
+        then activates the claim or releases it as ``prepare_failed`` and parks
+        the result in ``claim_preparation_results``, which only the worker's
+        next claim consumes.  A worker that ended its turn on
+        ``claim_in_progress`` never makes that claim, and nothing else saw it:
+        its repainting pane keeps ``last_activity`` fresh, and the completed-turn
+        backstop bounds the transcript by an activation that came after the
+        turn ended (nimble-journey-85).
+
+        The transcript is read from when the preparation started, so a turn
+        that ended on ``claim_in_progress`` counts.  It gets one nudge per
+        settled result.  An activated claim still undelivered a stall window
+        after that nudge is torn down and its task goes back to READY: the
+        worker never learned it held the claim.  A released one is the idle
+        recycle's (:meth:`_step_abandoned_pool_claim_loop`).
+        """
+        if not getattr(self.config.swarm, "enabled", True) or self.orchestrator is None:
+            return
+        results = getattr(self.orchestrator, "claim_preparation_results", None) or {}
+        pending = {(row.id, row.instance_token) for row in live if row.id in results}
+        self._settled_claim_wakes = {
+            key: wake for key, wake in self._settled_claim_wakes.items() if key in pending
+        }
+        stall_seconds = self._pool_claim_loop_stall_seconds()
+        for row in live:
+            cached = results.get(row.id)
+            if (
+                cached is None
+                or row.lifecycle != "pool"
+                or row.state != "running"
+                or row.desired_state != "running"
+                or row.claim_phase in ("claiming", "preparing")
+                or row.last_claim_epoch != cached.claim_epoch
+                or not same_session_launch(cached.session, row)
+                or self._is_deferred(row.name)
+            ):
+                continue
+            result = cached.outcome.get("result", "unknown")
+            ended = await completed_turn_at(
+                dataclasses.replace(row, claim_phase_at=cached.preparation_started_at),
+                base_dir=self.transcript_base_dir,
+            )
+            if ended is None:
+                continue
+            key = (row.id, row.instance_token)
+            wake = self._settled_claim_wakes.get(key)
+            if wake is not None and wake[:2] == (cached.claim_epoch, result):
+                if (
+                    now - wake[2] < stall_seconds
+                    or row.task_id != cached.task_id
+                    or row.claim_phase != "active"
+                ):
+                    continue
+                logger.warning(
+                    "Pool session %s never received its claim of %s (epoch %s) %.0fs "
+                    "after a wake; recycling and returning the task",
+                    row.id, cached.task_id, cached.claim_epoch, now - wake[2],
+                )
+                await self.orchestrator._terminate_pool_session(
+                    row, reason="claim_result_undelivered",
+                )
+                if results.get(row.id) is cached:
+                    results.pop(row.id)
+                continue
+            provider = self._provider_for(row)
+            if provider is None:
+                continue
+            outcome = await self._try_nudge(
+                provider, row,
+                f"Your claim preparation for task {cached.task_id} settled ({result}) "
+                "after your turn ended. Run `aq task claim --next --wait 60` now to "
+                "receive it, then continue your pool loop.",
+            )
+            if outcome.delivered:
+                self._settled_claim_wakes[key] = (cached.claim_epoch, result, now)
+                logger.info(
+                    "Pool session %s woken for its settled claim preparation of %s (%s)",
+                    row.id, cached.task_id, result,
+                )
+
     # -- pool: abandoned claim loop ----------------------------------------
 
     def _pool_claim_loop_stall_seconds(self) -> float:
@@ -1134,9 +1271,10 @@ class SessionReconciler:
                 or observed.claim_phase is not None
             ):
                 continue
-            if not idle_pool_claim_loop_stalled(
-                observed, now=now, stall_seconds=stall_seconds
-            ) or self._is_deferred(observed.name):
+            if self._is_deferred(observed.name):
+                continue
+            quiet = idle_pool_claim_loop_stalled(observed, now=now, stall_seconds=stall_seconds)
+            if not quiet and not await self._idle_pool_turn_ended(observed, stale_before):
                 continue
             waiting, _ = await self._wait_lease(observed, now)
             if waiting:
@@ -1148,7 +1286,7 @@ class SessionReconciler:
             fenced = await self.db.request_idle_pool_recycle(
                 observed.id,
                 instance_token=observed.instance_token,
-                stale_before=stale_before,
+                stale_before=stale_before if quiet else None,
             )
             if not fenced:
                 continue
@@ -1184,6 +1322,23 @@ class SessionReconciler:
                         resets_at=now + screen.retry_after if screen.retry_after else None,
                     )
             await self.orchestrator._terminate_pool_session(current, reason=reason)
+
+    async def _idle_pool_turn_ended(self, row: SessionRecord, stale_before: float) -> bool:
+        """Whether an idle pool worker's turn ended a stall window ago.
+
+        A worker in its claim loop is inside a tool call, never at an ended
+        turn, so an ended turn that old means no loop is running, even while a
+        repainting pane keeps ``last_activity`` fresh: the worker that ended
+        its turn on ``claim_in_progress`` and was then released
+        ``prepare_failed`` held a pool slot as idle supply indefinitely
+        (nimble-journey-85).  A settled-claim wake sent within the window
+        gets that window to be answered.
+        """
+        wake = self._settled_claim_wakes.get((row.id, row.instance_token))
+        if wake is not None and wake[2] > stale_before:
+            return False
+        ended = await completed_turn_at(row, base_dir=self.transcript_base_dir)
+        return ended is not None and ended <= stale_before
 
     async def _idle_pool_usage_limit_screen(self, row: SessionRecord) -> UsageLimitScreen | None:
         """The limit line if an idle pool worker's pane is its usage-limit screen.

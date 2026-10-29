@@ -2099,6 +2099,7 @@ def maintenance_packs(store):
 
 
 async def test_retained_repack_preserves_refs_and_all_unreachable_objects(setup, tmp_path):
+    from src.git.manager import _retained_store_key
     from src.integration.repository_maintenance import RetainedStoreMaintenance
 
     db, service, _source, _remote, repo = setup
@@ -2121,12 +2122,89 @@ async def test_retained_repack_preserves_refs_and_all_unreachable_objects(setup,
     assert git(store, 'cat-file', 'blob', loose) == 'loose-unreachable'
     assert git(store, 'for-each-ref') == refs
     assert not report.exists()
-    assert not await service.git.aretained_store_verified(str(store / '.git'))
+    # sound-journey-54: the exact clean result carries across, keeping its age.
+    assert await service.git.aretained_store_verified(str(store / '.git'))
+    key = _retained_store_key(str(store / '.git'))
+    assert service.git._retained_verified[key][1] == baseline[1]
     [repack] = [call for call in run.await_args_list if 'repack' in call.args[0]]
     assert '-k' in repack.args[0] and repack.kwargs['low_priority'] is True
     assert repack.kwargs['timeout'] == item['repack_budget_seconds'] == 240
     assert not repack.kwargs.get('lock_held')
     git(store, 'fsck', '--full', '--no-dangling')
+
+
+@pytest.mark.parametrize('case', ['unverified_addition', 'connectivity_failed',
+                                  'written_during_repack'])
+async def test_retained_repack_carries_only_an_exact_connected_clean_result(
+    setup, tmp_path, case,
+):
+    from src.git.manager import GitError
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    gitdir = str(store / '.git')
+    await service.git.arecord_retained_store_verified(
+        gitdir, *await service.git.aretained_store_baseline(gitdir))
+    normal = service.git._run_isolated_import_git
+    run = service.git.arun_git_result
+
+    async def isolated(args, **kwargs):
+        if case == 'connectivity_failed' and '--connectivity-only' in args:
+            raise GitError('retained Git object integrity is unavailable: missing tree')
+        return await normal(args, **kwargs)
+
+    async def repack(args, **kwargs):
+        result = await run(args, **kwargs)
+        if case == 'written_during_repack' and 'repack' in args:
+            # The repack holds no repository transaction; a writer beside it is unverified.
+            (store / 'added').write_text('written beside the repack\n')
+            git(store, 'hash-object', '-w', str(store / 'added'))
+        return result
+
+    if case == 'unverified_addition':
+        (store / 'added').write_text('added after the clean check\n')
+        git(store, 'hash-object', '-w', str(store / 'added'))
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    with patch.object(service.git, '_run_isolated_import_git', isolated), \
+            patch.object(service.git, 'arun_git_result', repack):
+        result = await maintenance.run('p', apply=True)
+    assert result['evidence']['stores'][0]['outcome'] == 'repacked'
+    assert not await service.git.aretained_store_verified(gitdir)
+
+
+async def test_full_check_queued_behind_repack_reuses_carried_result(setup, tmp_path):
+    from src.git.manager import _retained_store_key
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    gitdir = str(store / '.git')
+    await service.git.arecord_retained_store_verified(
+        gitdir, *await service.git.aretained_store_baseline(gitdir))
+    key = _retained_store_key(gitdir)
+    normal = service.git.arun_git_result
+    flights = []
+
+    async def repack_while_checked(args, **kwargs):
+        if 'repack' in args:
+            # A caller saw the store mid-rewrite and queued a full check behind it.
+            flights.append(service.git._retained_verification_flight(key))
+            await asyncio.sleep(0)
+        return await normal(args, **kwargs)
+
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    with patch.object(service.git, 'arun_git_result', repack_while_checked), \
+            patch.object(service.git, '_afsck_retained_store',
+                         wraps=service.git._afsck_retained_store) as fsck:
+        result = await maintenance.run('p', apply=True)
+        assert result['evidence']['stores'][0]['outcome'] == 'repacked'
+        [flight] = flights
+        assert await flight == service.git._retained_verified[key]
+    assert fsck.await_count == 0
+    assert await service.git.aretained_store_verified(gitdir)
 
 
 async def test_retained_maintenance_preview_and_cooldown_survive_restart(setup, tmp_path):

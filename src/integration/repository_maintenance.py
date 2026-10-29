@@ -187,11 +187,11 @@ class RetainedStoreMaintenance:
                 # base mutex claim preparation waits on for seconds, and visits must not
                 # stall for minutes. Git's nonpruning repack is safe beside fetch and
                 # readers; the full check and recovery diagnosis share the per-store
-                # exclusion the repack holds.
-                result = await self.git.arun_git_result(
-                    _REPACK, cwd=str(path), env={"LC_ALL": "C"},
-                    timeout=item["repack_budget_seconds"], low_priority=True,
-                )
+                # exclusion the repack holds. A clean check of the exact pre-repack store
+                # carries over only when nothing else wrote meanwhile.
+                result = await self.git.arepack_retained_store(
+                    str(directory), _REPACK, cwd=str(path),
+                    timeout=item["repack_budget_seconds"])
                 if result.returncode or result.stderr.strip():
                     raise GitError(safe_git_detail(result.stderr or "retained repack failed"))
                 report = directory / "gc.log"
