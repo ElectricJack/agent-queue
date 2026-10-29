@@ -7717,7 +7717,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:4978f6182fd32633f14d054123413df86a0d1c22dea46e1fb29ec2d9feb8f1e0",
+      "digest": "sha256:c79578eab59f65b78dda809743bc5e8e1125f98b2496d5cca612865dab8ef7d8",
       "imports": [
         "src.config",
         "src.git.askpass_broker",
@@ -7726,6 +7726,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.git.repository_lock",
+        "src.integration.repository_recovery",
         "src.integration.service",
         "src.logging_config",
         "src.metrics.operation_profile",
