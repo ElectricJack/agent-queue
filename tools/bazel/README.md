@@ -64,6 +64,11 @@ build-system requirements, and generated-client dependency/build metadata.
 The generated client remains source in this repository. Nothing installs it
 editable or changes the shared environment. The lock contains exact versions
 and wheel hashes; `pip.parse` uses `--require-hashes --only-binary=:all:`.
+Wheel downloads also use explicit manylinux platforms derived from the locked
+glibc 2.28 sysroot, including older compatible tags and legacy aliases. This
+keeps a newer fetch host from choosing a `manylinux_2_34` wheel which cannot
+load inside H2. `download_only = True` enables pip's cross-platform selection;
+unversioned `linux_x86_64` wheels cannot establish sysroot compatibility.
 Review input/hash changes, generated MODULE and Bzlmod lock together. Updating
 a native version requires an explicit Linux-64 conda-forge solve outside Bazel,
 then reviewing and recording every closure URL, SHA-256, MD5, version, build and
