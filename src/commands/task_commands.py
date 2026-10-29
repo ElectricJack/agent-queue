@@ -32,6 +32,7 @@ from src.database.queries.task_queries import (
     TaskProjectMoveError,
     task_repository_id,
 )
+from src.database.queries.task_recovery_queries import OWNER_RETAINED_ASSIGNMENT
 from src.deliverables import REVIEW_TARGETS
 from src.notifications.render import classify_error
 from src.models import (
@@ -4774,6 +4775,9 @@ class TaskCommandsMixin:
                 )
             }
         scope = self._current_scope or {}
+        continuation_recovery = await self.recover_continuation_incident(args)
+        if continuation_recovery is not None:
+            return continuation_recovery
         stopped_session = None
         operator_handoff = False
         if decision == "retry":
@@ -4831,7 +4835,7 @@ class TaskCommandsMixin:
 
     @staticmethod
     def _task_recovery_refused(error: str, task_id: str, operator_release: bool) -> dict:
-        if operator_release and error == "Task still has an active claim or attempt":
+        if operator_release and error == OWNER_RETAINED_ASSIGNMENT:
             # The dead worker's claim is cleared only once no branch owner retains it.
             error += (
                 f"; run `aq integration release-owner --task-id {task_id} --apply` "

@@ -286,10 +286,12 @@ aq task recover --task-id <task> --incident-id <incident> --decision retry \
 
 `aq task resume <task>` on a held task now refuses with these two commands,
 with the incident id and the hold timestamp filled in. The exact-hold retry
-clears the assignment only after it confirms the same stopped worker (its
-instance, attempt and claim epoch) and finds no live session for that agent.
-It then requeues the task READY on its existing branch. While an owner row
-is still unreleased, the retry refuses and names `release-owner`.
+first confirms the incident's own worker session stopped, then clears the
+assignment as dangling when no live agent, session or claim record backs it,
+and requeues the task READY on its existing branch. While an integration
+branch owner row is still unreleased, the retry refuses and names
+`release-owner`; a live assignment still refuses with `Task still has an
+active claim or attempt`.
 
 `aq task restart` and `aq task stop` without a terminal now refuse at once
 and ask for `--yes`. `aq task restart` reports the previous status and

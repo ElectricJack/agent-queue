@@ -89,6 +89,9 @@ RETRYABLE_REASONS = frozenset(
     }
 )
 ROUTING_FIELDS = ("profile_id", "intelligence_class", "affinity_agent_id", "preferred_workspace_id")
+OWNER_RETAINED_ASSIGNMENT = (
+    "Task still has an active claim or attempt: an integration branch owner retains it"
+)
 #: A terminal ``BLOCKED`` close leg (``blocked_terminal``) is one failure the
 #: ``task.failed`` event reports. A terminal ``FAILED`` transition can have
 #: no worker attempt at all, so it uses its durable failure-transition clock as the
@@ -1268,6 +1271,7 @@ class TaskRecoveryQueryMixin:
         """Atomically fence, record and optionally requeue one failed attempt."""
         result = None
         handoff = None
+        dangling_agent_id = None
         async with self.immediate() as conn:
             if operator_handoff:
                 identity = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
@@ -1309,15 +1313,15 @@ class TaskRecoveryQueryMixin:
                 raise ValueError("Incident is stale or already has a decision")
             if operator_release and not releasing_hold:
                 raise ValueError("operator_release requires the exact prior hold")
-            if operator_release and task["assigned_agent_id"] and (
-                    await self._clear_stopped_recovery_assignment_on(
-                        conn, task, meta, attempt, incident, stopped_session)):
-                task = {**task, "assigned_agent_id": None}  # a dead worker's retained claim
             if decision == "release":
                 if not operator_release or not releasing_hold:
                     raise ValueError("Hold release requires explicit operator authority and exact hold")
                 if task["status"] not in ("READY", "BLOCKED", "FAILED", "PAUSED"):
                     raise ValueError("Cannot release a hold on an active or completed task")
+                if task["assigned_agent_id"]:
+                    await self._clear_stopped_recovery_assignment_on(
+                        conn, task, meta, attempt, incident, stopped_session,
+                    )
             elif not _incident_is_current(task, meta, attempt, incident):
                 raise ValueError("Task or execution attempt changed; incident is stale")
             elif incident.get("reason") != incident_reason(meta, task):
@@ -1345,7 +1349,7 @@ class TaskRecoveryQueryMixin:
                         conn, task, meta, attempt, incident, stopped_session,
                         releasing_hold=releasing_hold,
                     )
-                await self._guard_task_recovery(
+                dangling_agent_id = await self._guard_task_recovery(
                     conn, task, meta, attempt, incident, stopped_session,
                     releasing_hold=releasing_hold, operator_handoff=bool(handoff),
                     operator_release=operator_release,
@@ -1420,6 +1424,11 @@ class TaskRecoveryQueryMixin:
                         + f").\n{reason}"
                         + ("\nExplicit operator hold release." if operator_release else "")
                         + (
+                            f"\nCleared dangling assignment to agent {dangling_agent_id} "
+                            "(no live claim, session or agent hold on this task)."
+                            if dangling_agent_id else ""
+                        )
+                        + (
                             f"\nOperator handoff evidence: {json.dumps(handoff, sort_keys=True)}"
                             if decision == "retry" and handoff
                             else ""
@@ -1449,6 +1458,16 @@ class TaskRecoveryQueryMixin:
             "decided_at": now,
         }
 
+    async def _recovery_owner_retains(self, conn, task, session_id):  # live or unreleased
+        from src.integration.delegate_release import live_integration_owner
+        return await live_integration_owner(conn, [task["id"]]) is not None or await conn.scalar(
+            select(integration_branch_owners.c.id).where(or_(
+                integration_branch_owners.c.owner_id == task["id"],
+                integration_branch_owners.c.session_id == session_id,
+                integration_branch_owners.c.workspace_id.in_(select(workspaces.c.id).where(
+                    workspaces.c.locked_by_task_id == task["id"])),
+            ), integration_branch_owners.c.handoff_state != "released").limit(1)) is not None
+
     async def _clear_stopped_recovery_assignment_on(
         self, conn, task, meta, attempt, incident, stopped_session,
     ):
@@ -1458,19 +1477,7 @@ class TaskRecoveryQueryMixin:
         evidence was gathered before the transaction; revalidate its instance,
         attempt and claim generation here before removing any authority.
         """
-        from src.integration.delegate_release import live_integration_owner
-
-        if await live_integration_owner(conn, [task["id"]]) is not None:
-            return
-        owner = await conn.scalar(select(integration_branch_owners.c.id).where(
-            or_(integration_branch_owners.c.owner_id == task["id"],
-                integration_branch_owners.c.session_id == incident.get("session_id"),
-                integration_branch_owners.c.workspace_id.in_(select(workspaces.c.id).where(
-                    workspaces.c.locked_by_task_id == task["id"],
-                ))),
-            integration_branch_owners.c.handoff_state != "released",
-        ).limit(1))
-        if owner is not None:
+        if await self._recovery_owner_retains(conn, task, incident.get("session_id")):
             return
         if stopped_session and "error" in stopped_session:
             raise ValueError(stopped_session["error"])
@@ -1500,11 +1507,11 @@ class TaskRecoveryQueryMixin:
             or_(sessions.c.state != "stopped", sessions.c.desired_state == "running"),
         ).limit(1)) is not None:
             raise ValueError("Task or assigned agent still has a live or retained session")
-        return (await conn.execute(update(tasks).where(
+        await conn.execute(update(tasks).where(
             tasks.c.id == task["id"],
             tasks.c.assigned_agent_id == row["agent_id"],
             tasks.c.claim_epoch == task["claim_epoch"],
-        ).values(assigned_agent_id=None))).rowcount
+        ).values(assigned_agent_id=None))
 
     async def _guard_operator_handoff(
         self, conn, task, meta, attempt, incident, stopped_session, *, releasing_hold=False,
@@ -1688,8 +1695,16 @@ class TaskRecoveryQueryMixin:
             raise ValueError("Session exit was not a recoverable operational failure")
         if "manual_pause" in meta or task["resume_after"] is not None:
             raise ValueError("Task is paused or cooling down")
-        if task["assigned_agent_id"] or attempt["state"] not in ("stopped", "quarantined"):
+        if attempt["state"] not in ("stopped", "quarantined"):
             raise ValueError("Task still has an active claim or attempt")
+        dangling_agent_id = None
+        if task["assigned_agent_id"]:
+            if await self._recovery_owner_retains(conn, task, attempt["session_id"]):
+                raise ValueError(OWNER_RETAINED_ASSIGNMENT)  # release-owner hands it off
+            if await self._recovery_assignment_is_live(conn, task, meta, attempt):
+                raise ValueError("Task still has an active claim or attempt")
+            # Nothing backs it: the caller's READY transition clears it.
+            dangling_agent_id = task["assigned_agent_id"]
         if not operator_handoff and any(
             task[key] != incident["routing"].get(key) for key in ROUTING_FIELDS
         ):
@@ -1739,3 +1754,33 @@ class TaskRecoveryQueryMixin:
                 raise ValueError(
                     "Task has an active session, resource claim, or unanswered question"
                 )
+        return dangling_agent_id
+
+    async def _recovery_assignment_is_live(self, conn, task, meta, attempt):
+        """Whether the task's assigned agent still holds it, or might again.
+
+        A soft-deleted agent, one whose sessions all stopped, or a pool agent
+        reused for another task leaves an assignment nothing here can act on
+        (steady-impact-12, wise-glacier-45). It is live while the agent row
+        names this task, or while a session that is not stopped and not bound
+        to another task is the claim record's holder or the agent's own (bound
+        here, or unbound while the agent is free). The caller already
+        confirmed the incident's own session.
+        """
+        agent_id = task["assigned_agent_id"]
+        agent = (await conn.execute(select(agents.c.current_task_id).where(
+            agents.c.id == agent_id, agents.c.deleted_at.is_(None),
+        ))).first()
+        if agent is not None and agent.current_task_id == task["id"]:
+            return True
+        here = sessions.c.task_id == task["id"]
+        free = agent is None or agent.current_task_id is None
+        holder = meta.get("claimed_by_session")
+        return await conn.scalar(select(sessions.c.id).where(
+            sessions.c.id != attempt["session_id"],
+            or_(sessions.c.state.not_in(("stopped", "quarantined")),
+                sessions.c.desired_state == "running"),
+            or_(here, sessions.c.task_id.is_(None)),
+            or_(and_(sessions.c.agent_id == agent_id, *([] if free else [here])),
+                *([sessions.c.id == holder] if isinstance(holder, str) else [])),
+        ).limit(1)) is not None
