@@ -157,11 +157,14 @@ the exact commit is reachable from the default target; missing or equivalent
 sources remain unproven.
 
 Epic cleanup refuses deletion while a completed code-bearing child lacks a
-retained delivery witness for its current completion and task version. This
+retained delivery witness for its current immutable completion and exact source. This
 fence applies to retirement, sweep and train cleanup, including archived task
 identities. Normal Git truth reconciliation retains the source, target and
-completion identity before recording the witness used by this deletion fence.
-A reclose restores the hold. Audited lifecycle dispositions and organizational
+completion identity before emitting `integration.git_truth_reconciled`. This
+audit event indexes retention for the deletion fence without consulting delivery
+receipts; missing or mismatched events conservatively hold the branch. Ordinary
+task edits do not invalidate immutable retention, but a reclose restores the hold.
+Audited lifecycle dispositions and organizational
 children carry no source obligation. The witness permits cleanup only; admission
 continues to prove containment against the current target.
 
