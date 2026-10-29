@@ -10363,7 +10363,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:474a8c515e74cd29463bfa47beb19e686ab43eb9368a808d00daf22ee3138653",
+      "digest": "sha256:8576c17326432fcf6429ec9c80c7c11d736bba92c5f4e876ce1ddbcdab76a7d0",
       "imports": [
         "src.database.queries.claim_queries",
         "src.database.tables",
@@ -10371,8 +10371,10 @@
         "src.git.manager",
         "src.integration.batches",
         "src.integration.branch_materialization",
+        "src.integration.fixer_runtime",
         "src.integration.gitops",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.provenance",
         "src.integration.stacked_branches",
         "src.integration.train",

@@ -40,7 +40,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchStore
-from src.integration.delivery_observer import DeliveryTarget, prerequisite_observer
+from src.integration.delivery_observer import DeliveryTarget, delivery_targets, prerequisite_observer
 from src.integration.train import TrainTarget
 
 
@@ -181,6 +181,7 @@ async def _inputs(conn, project_id, task_id=None, *, task_ids=None, source_ids=N
             source.c.updated_at,
             completion.c.id.label("completion_id"),
             completion.c.outcome.label("completion_outcome"),
+            cast(completion.c.commits, JSONB).label("completion_commits"),
             completion.c.completed_at.label("completed_at"),
             select(task_metadata.c.value).where(
                 task_metadata.c.task_id == source.c.id,
@@ -406,7 +407,8 @@ async def ordered_sources(conn, ids):
     return result
 
 def _identity(row):
-    return {key: value for key, value in row.items() if key != "dependent"} | {"retained": True}
+    return {key: value for key, value in row.items()
+            if key not in {"dependent", "completion_commits"}} | {"retained": True}
 
 
 def _binding(proof):
@@ -414,7 +416,7 @@ def _binding(proof):
     # locator and cannot replace that OID or make its absence a new gate.
     return None if proof is None else {
         key: value for key, value in proof.items()
-        if key not in {"checkpoint_sha", "generation", "version"}
+        if key not in {"checkpoint_sha", "generation", "version", "checkpoint_bound"}
     }
 
 
@@ -459,6 +461,7 @@ class StackView:
     proofs: dict[str, dict] = field(default_factory=dict)
     delivered_refs: dict[str, tuple[str, str]] = field(default_factory=dict)
     watched_refs: dict[str, str | None] = field(default_factory=dict)
+    contained_targets: dict[str, DeliveryTarget] = field(default_factory=dict)
     snapshot: object = None
     ref_cache: dict = field(default_factory=dict, repr=False)
     fresh_max_age: float = 0
@@ -550,6 +553,10 @@ class StackView:
         wanted = set(self.proofs) if ids is None else set(self.proofs).intersection(ids)
         if not wanted:
             return {}
+        if self.contained_targets:
+            targets = await delivery_targets(conn, self.contained_targets, reduced=True)
+            if any(targets.get(tid) != target for tid, target in self.contained_targets.items()):
+                return {}  # the child no longer consumes the observed delivery target
         # A display read must not re-authorize every historical stack in the
         # project to validate a handful of current proofs. Scheduler passes
         # retain their explicitly shared snapshot; other callers load only
@@ -564,6 +571,8 @@ class StackView:
             tid: proof
             for tid, proof in self.proofs.items()
             if (ids is None or tid in ids) and _binding(current.get(tid)) == _binding(proof)
+            and (not proof.get("checkpoint_bound")
+                 or current[tid]["checkpoint_sha"] == proof["checkpoint_sha"])
         }
 
     def required(self, task_id):
@@ -571,7 +580,8 @@ class StackView:
 
 
 async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snapshot=None,
-                         cached_only=False, require_snapshot=False, task_ids=None):
+                         cached_only=False, require_snapshot=False, task_ids=None,
+                         source_sha=None):
     """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id,
@@ -602,6 +612,7 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
     from src.integration.provenance import CompletionIdentity
 
     truth = GitTruthSnapshot(observer.truth, view.snapshot, cached_only=cached_only)
+    targets = None
     for row in rows:
         proof = _identity(row)
         if (row["status"] != "COMPLETED" or row["abandoned"] or not row["authorized"]
@@ -621,6 +632,43 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
                 continue
             record = await truth.read_completion(identity)
             head = record["source_oid"] if record is not None else None
+            commits = row["completion_commits"]
+            reported = commits[-1] if commits else None
+            if record is not None and reported is not None and head != reported:
+                continue  # conflicting immutable source bindings never supply a stack
+            candidate = head if record else (
+                reported if reported is not None else row["checkpoint_sha"])
+            if record is None and reported is None:
+                proof["checkpoint_bound"] = True
+            if is_valid_git_oid(candidate or "") and (record is None or source_sha is not None):
+                # Legacy closes can predate retained Git markers. Only their
+                # exact final source contained in a delivery target can replace
+                # that locator. Source-less closes may use the checkpoint only
+                # with the same positive containment proof.
+                if targets is None:
+                    async with observer.db._engine.connect() as conn:
+                        targets = await delivery_targets(
+                            conn, {item["dependent"] for item in rows}, reduced=True,
+                        )
+                dependent_target = targets.get(row["dependent"])
+                refs = {target.target_ref}
+                if (dependent_target is not None
+                        and dependent_target.repository_id == repository["id"]):
+                    refs.add(dependent_target.target_ref)
+                for ref in sorted(refs):
+                    delivered = truth.for_target(ref)
+                    if await delivered.strictly_contains_source(candidate) is True:
+                        head = candidate
+                        view.delivered_refs[row["task_id"]] = (
+                            ref.removeprefix("refs/heads/"), delivered.target_oid,
+                        )
+                        view.watched_refs[ref.removeprefix("refs/heads/")] = delivered.target_oid
+                        if ref != target.target_ref:
+                            view.contained_targets[row["dependent"]] = dependent_target
+                        break
+                if (head is None and source_sha and await view.snapshot.git.ais_ancestor(
+                        view.snapshot.store, candidate, source_sha, strict=True)):
+                    head = candidate
             if (is_valid_git_oid(head or "")
                     and await observer.truth.exact(view.snapshot, head, cached_only=cached_only)):
                 view.proofs[row["task_id"]] = {**proof, "checkpoint_sha": head}
@@ -1056,32 +1104,35 @@ class StackedBranches:
             ),
             task_id,
         )
-        if not stack:
-            # With a lost stack projection, verify the current prerequisites
-            # directly. An older green child cannot conceal a new completion.
-            from src.integration.delivery_truth import load_delivery_requests
-
-            observed = snapshot.observation
-            requests = await load_delivery_requests(
-                self.db, tuple(row["task_id"] for row in rows),
-                repository_id=observed.repository_id, target_ref=observed.target_ref,
-                conn=conn, reduced=True,
-            )
-            for row in rows:
-                request = requests.get(row["task_id"])
-                source = request.reported_source if request else None
-                if (not row["completion_current"] or row["abandoned"] or not row["authorized"]
-                        or not source
-                        or not await self.completed_source_matches(
-                            row["task_id"], source, snapshot, conn=conn)
-                        or not ((included_sources or {}).get(row["task_id"]) == source
-                                or await observed.git.ais_ancestor(
-                                    observed.store, source, source_sha, strict=True)
-                                or observed.target_oid and await observed.git.ais_ancestor(
-                                    observed.store, source, observed.target_oid, strict=True))):
-                    return False
+        if not stack and not rows:
             return True
         proofs = {row["task_id"]: _identity(row) for row in rows}
+        if (not stack or _bindings(proofs) != _bindings(stack["prerequisites"])
+                or any(proof.get("checkpoint_bound") and proof["checkpoint_sha"] !=
+                       proofs[tid]["checkpoint_sha"]
+                       for tid, proof in stack["prerequisites"].items())):
+            if (self.observer is None or snapshot is None or source_sha is None
+                    or stack and (stack.get("hold") or stack.get("repair_task_id"))):
+                return False
+            # Reclose/retirement changes the identity, not necessarily the work
+            # owed by this child. Re-prove the current sources, never old tips.
+            observed = snapshot.observation
+            view = await observe_stacks(
+                self.observer, observed.project_id, task_id=task_id,
+                snapshot=observed, source_sha=source_sha,
+            )
+            verified = await view.verified_on(conn, {row["task_id"] for row in rows})
+            if set(verified) != {row["task_id"] for row in rows} or not await view.fresh():
+                return False
+            for tid, proof in verified.items():
+                source = proof["checkpoint_sha"]
+                if not ((included_sources or {}).get(tid) == source
+                        or tid in view.delivered_refs
+                        or await observed.git.ais_ancestor(
+                            observed.store, source, source_sha, strict=True)
+                        or await snapshot.strictly_contains_source(source) is True):
+                    return False
+            return await view.fresh()
         checkpoint = await conn.scalar(
             select(task_integration_checkpoints.c.checkpoint_sha).where(
                 task_integration_checkpoints.c.task_id == task_id,

@@ -65,7 +65,7 @@
       "thread_id": "eager-stone-76-ci-size"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 6306,
+    "authorized_owned_delta": 6370,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -882,8 +882,51 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 84825,
-    "measured_owned_total": 161805,
+    "legacy_stack_containment_composition": {
+      "authorized_engine_delta": 34,
+      "authorized_owned_delta": 34,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/integration/stacked_branches.py": 34
+      },
+      "decision_message_id": "msg-638b9b5121704677b422ee767b531238",
+      "dev_source_revision": "0cc15c4a7cf031a9e20a79dd3c3524be5539dcc3",
+      "measured_engine_lines": 83687,
+      "measured_owned_total": 159200,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 83653,
+      "previous_measured_owned_total": 159166,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved containment proof for delivered legacy stack prerequisites after branch cleanup. Preserve every historical grant, baseline and ownership classification; zero remaining headroom and no new storage.",
+      "recomposition_message_id": "msg-245ae393b72b41ed8408886d15c5b2d9",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "steady-vault-53",
+      "thread_id": "steady-vault-53-size"
+    },
+    "legacy_stack_recompletion_composition": {
+      "authorized_engine_delta": 17,
+      "authorized_owned_delta": 30,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/database/queries/hierarchy_queries.py": 13,
+        "src/integration/stacked_branches.py": 17
+      },
+      "decision_message_id": "msg-5cc8eba6d38647c8ab3160f6c56873e7",
+      "dev_source_revision": "2bbf568cd0cd1545ff46dd739141231d31138e1c",
+      "measured_engine_lines": 83704,
+      "measured_owned_total": 159272,
+      "measured_table_count": 45,
+      "merged_dev_revision": "c00df14336a31dc9576fd4466f19d8084676a1b7",
+      "previous_measured_engine_lines": 83687,
+      "previous_measured_owned_total": 159242,
+      "previous_measured_table_count": 45,
+      "reason": "Exact incremental current-source containment and source-less checkpoint fallback for re-completed/retired stack prerequisites, plus preparation stack proof and optional-observer promotion handling. Composed on dev 159208/83653/45 after original approved +34 owned/+34 engine. Within pre-approved +60 owned/+60 engine/+0 tables; zero remaining headroom or new storage.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "task_id": "steady-vault-53"
+    },
+    "measured_engine_lines": 84876,
+    "measured_owned_total": 161869,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,

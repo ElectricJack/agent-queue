@@ -320,8 +320,9 @@ async def test_hand_landed_epics_with_retired_origins_and_mixed_child_refs(
     for child in children:
         await db.add_dependency("dependent", child)
     service = SimpleNamespace(delivery_observer=db._delivery_observer)
-    assert (await observe_admission(db, ["dependent"], service)).allowed == (
-        {"dependent"} if retained else set())
+    # Exact delivery containment supplies legacy stack prerequisites even
+    # before backfill creates their retained completion markers.
+    assert (await observe_admission(db, ["dependent"], service)).allowed == {"dependent"}
     preview = await backfill_legacy_deliveries(db, "p", snapshot=stale_snapshot)
     assert {r["task_id"]: r["delivered_sha"] for r in preview["results"]} == children
     assert preview["proven"] == 4 and preview["recorded"] == 0
@@ -563,10 +564,12 @@ async def test_deleted_epic_backfill_admits_only_proven_child(world, recorded, m
     async def admission():
         return await observe_admission(db, ["dependent", "withheld"], service)
 
-    assert (await admission()).allowed == set()
+    # Train stacks can prove the completed child's exact source on main before backfill.
+    before_backfill = {"dependent"} if mode == "train" else set()
+    assert (await admission()).allowed == before_backfill
     preview = await backfill_legacy_deliveries(db, "p")
     assert "child" in {r["task_id"] for r in preview["results"]}
-    assert (await admission()).allowed == set()
+    assert (await admission()).allowed == before_backfill
     applied = await backfill_legacy_deliveries(db, "p", dry_run=False, reason="hand landed")
     assert "child" in {r["task_id"] for r in applied["results"]}
     assert "unproven" in {r["task_id"] for r in applied["unproven"]}
