@@ -1,0 +1,6 @@
+{
+  "data": [
+    "dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"
+  ],
+  "reason": "tests.playbook_v2_helpers reads the dashboard graph contract fixture through assembled paths."
+}

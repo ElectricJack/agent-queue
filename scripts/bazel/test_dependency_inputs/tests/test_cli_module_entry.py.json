@@ -1,0 +1,9 @@
+{
+  "data": [
+    "src/cli/*.py"
+  ],
+  "imports": [
+    "src.cli.app"
+  ],
+  "reason": "Subprocess -m, runpy and embedded Python execute the CLI; the duplicate-registration check enumerates its modules."
+}

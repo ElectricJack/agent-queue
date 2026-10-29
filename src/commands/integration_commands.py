@@ -162,6 +162,37 @@ class IntegrationCommandsMixin:
 
         return await record_incident(self, state, load=load)
 
+    async def retained_store_maintenance_tick(self, now):
+        """Internal background port; acquisition never performs pack maintenance."""
+        from src.integration.repository_maintenance import maintenance_for
+
+        return await maintenance_for(self.orchestrator).tick(now)
+
+    async def _cmd_integration_store_maintenance(self, args: dict) -> dict:
+        """Preview or consolidate only the project's configured retained stores."""
+        from src.commands.contracts.integration import IntegrationStoreMaintenanceArgs
+        from src.integration.repository_maintenance import maintenance_for
+
+        request = IntegrationStoreMaintenanceArgs.model_validate(args)
+        _, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        if await self.db.get_project(request.project_id) is None:
+            return _failure("not_found", "project is not configured")
+        service = maintenance_for(self.orchestrator)
+
+        async def run():
+            result = await service.run(request.project_id, apply=not request.dry_run)
+            return {"success": result["outcome"] != "unavailable",
+                    "project_id": request.project_id, **result}
+
+        if request.dry_run:
+            return await run()
+        return await detached_operations(self.orchestrator).run(
+            f"store-maintenance:{request.project_id}", run,
+            poll=f"aq integration store-maintenance --project-id {request.project_id} --apply",
+        )
+
     async def _cmd_integration_clear_retained_recovery(self, args: dict) -> dict:
         """Lift a retained-cache admission hold after the store passes a full fsck."""
 

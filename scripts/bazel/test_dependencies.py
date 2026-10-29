@@ -18,6 +18,9 @@ from scripts.bazel.dependency_paths import repository_data, repository_files
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _DATA_ROOTS = {"src", "tests", "docs", "scripts", "tools", "dashboard", "packages",
                "migrations", "vault"}
+ALLOWED_DECLARATION_KEYS = {
+    "resolves", "imports", "import_globs", "data", "docs", "broad", "mode", "reason",
+}
 
 
 def _name(node: ast.AST) -> str:
@@ -184,11 +187,28 @@ class DependencyAnalyzer:
         self.relative_data_paths: dict[tuple[str, str], frozenset[str]] = {}
         self.parents: dict[str, dict[int, ast.AST]] = {}
         self.subprocess_trees: dict[str, ast.Module] = {}
-        declarations = self.root / "scripts/bazel/test_dependency_inputs.json"
-        self.declarations = (
-            json.loads(declarations.read_text(encoding="utf-8"))
-            if "scripts/bazel/test_dependency_inputs.json" in self.repository_files else {}
-        )
+        declarations_prefix = "scripts/bazel/test_dependency_inputs/"
+        self.declarations: dict = {}
+        for shard_path in sorted(self.repository_files):
+            if not shard_path.startswith(declarations_prefix) or not shard_path.endswith(".json"):
+                continue
+            declared_path = shard_path[len(declarations_prefix):-len(".json")]
+            if declared_path in self.declarations:
+                raise ValueError(f"{declared_path}: duplicate declaration shard {shard_path}")
+            self.declarations[declared_path] = json.loads(
+                (self.root / shard_path).read_text(encoding="utf-8")
+            )
+        for declared_path, declaration in self.declarations.items():
+            unknown_keys = set(declaration) - ALLOWED_DECLARATION_KEYS
+            if unknown_keys:
+                raise ValueError(f"{declared_path}: unknown declaration keys {sorted(unknown_keys)}")
+            if declaration.get("docs") is False and not declaration.get("reason"):
+                raise ValueError(f"{declared_path}: docs: false requires reason")
+            if declaration.get("mode") == "legacy" and not declaration.get("reason"):
+                raise ValueError(f"{declared_path}: mode: legacy requires reason")
+        self.observed_reasons: dict[str, set[str]] = {}
+        self._declared_import_cache: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+        self._declared_data_cache: dict[str, frozenset[str]] = {}
 
     def tree(self, path: str) -> ast.Module:
         if path not in self.trees:
@@ -206,6 +226,60 @@ class DependencyAnalyzer:
                 if (prefix := ".".join(pieces[:i])) in self.known
             )
         return self.import_paths[name]
+
+    def _glob_matches(self, path: str, pattern: str, *, label: str) -> frozenset[str]:
+        matches = {
+            p.relative_to(self.root).as_posix()
+            for p in self.root.glob(pattern)
+            if p.is_file() and p.name not in {"BUILD", "BUILD.bazel"}
+            and p.relative_to(self.root).as_posix() in self.repository_files
+        }
+        if not matches:
+            raise ValueError(f"{path}: declared {label} matches no files: {pattern}")
+        return frozenset(matches)
+
+    def _declared_resolution(self, path: str) -> tuple[frozenset[str], frozenset[str]]:
+        """Resolve a path's declared resolves/imports/import_globs, memoized."""
+        if path not in self._declared_import_cache:
+            declaration = self.declarations.get(path, {})
+            resolves = frozenset(declaration.get("resolves", []))
+            imports: set[str] = set()
+            for name in declaration.get("imports", []):
+                if name not in self.known:
+                    raise ValueError(f"{path}: unknown declared import {name}")
+                imports.update(self._resolve(name))
+            for pattern in declaration.get("import_globs", []):
+                imports.update(self._glob_matches(path, pattern, label="import_globs"))
+            self._declared_import_cache[path] = (resolves, frozenset(imports))
+        return self._declared_import_cache[path]
+
+    def _declared_data(self, path: str) -> frozenset[str]:
+        """Resolve a path's declared `data` globs, memoized."""
+        if path not in self._declared_data_cache:
+            found: set[str] = set()
+            for pattern in self.declarations.get(path, {}).get("data", []):
+                found.update(self._glob_matches(path, pattern, label="data"))
+            self._declared_data_cache[path] = frozenset(found)
+        return self._declared_data_cache[path]
+
+    def check_stale_declarations(self) -> dict[str, list[str]]:
+        """Flag declared `resolves` entries never observed as a natural reason."""
+        stale = {}
+        for path, declaration in self.declarations.items():
+            resolves = set(declaration.get("resolves", []))
+            if not resolves:
+                continue
+            unmatched = sorted(resolves - self.observed_reasons.get(path, set()))
+            if unmatched:
+                stale[path] = unmatched
+        return stale
+
+    def _docs_literal_active(self, path: str) -> bool:
+        """A docs-matching literal defaults active for tests, inactive for src."""
+        declared = self.declarations.get(path, {}).get("docs")
+        if declared is not None:
+            return declared
+        return not path.startswith("src/")
 
     def _reference_mask(self, names: set[str] | frozenset[str]) -> int:
         """Intern scan-name sets once; discoveries retain their exact union as bits."""
@@ -229,7 +303,7 @@ class DependencyAnalyzer:
         seen.add(target)
         module, _, binding = target.rpartition(".")
         path = self.known.get(module, "")
-        if not path.startswith("tests/"):
+        if not path.startswith(("tests/", "src/")):
             return set()
         names = {binding}
         package = module.split(".")
@@ -248,6 +322,21 @@ class DependencyAnalyzer:
                         base.rstrip(".") + "." + alias.name, seen,
                     ))
         return names
+
+    def _dunder_all(self, module: str) -> frozenset[str] | None:
+        """Literal __all__ contents; None when absent or not a plain string list/tuple."""
+        path = self.known.get(module)
+        if not path:
+            return None
+        for node in self.tree(path).body:
+            if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "__all__"):
+                continue
+            if not isinstance(node.value, (ast.List, ast.Tuple)):
+                return None
+            names = [_literal(elt) for elt in node.value.elts]
+            return frozenset(names) if all(name is not None for name in names) else None
+        return None
 
     def _data_files(self, value: str) -> set[str]:
         """Keep literal files; directory membership requires an explicit reader."""
@@ -456,9 +545,13 @@ class DependencyAnalyzer:
                     ) + (node.module or "")
                     base = base.rstrip(".")
                     targets = [base] + [base + "." + alias.name for alias in node.names]
-                    if (any(alias.name == "*" for alias in node.names)
-                            and self.known.get(base, "").startswith("tests/")):
-                        reasons.add(f"{path}: unresolved dynamic import in wildcard test helpers")
+                    if any(alias.name == "*" for alias in node.names):
+                        exported = self._dunder_all(base)
+                        if exported is not None:
+                            targets.extend(base + "." + name for name in exported)
+                            names.update(exported)
+                        elif self.known.get(base, "").startswith(("tests/", "src/")):
+                            reasons.add(f"{path}: unresolved dynamic import in wildcard import")
                 elif isinstance(node, ast.Call):
                     function = _name(node.func)
                     function = aliases.get(function, function)
@@ -507,7 +600,7 @@ class DependencyAnalyzer:
                                 module = literal
                         if module in self.known:
                             targets.append(module + "." + (attribute or "*"))
-                            if self.known[module].startswith("tests/"):
+                            if self.known[module].startswith(("tests/", "src/")):
                                 if attribute is not None:
                                     names.update(self._support_references(module + "." + attribute))
                                 else:
@@ -578,7 +671,7 @@ class DependencyAnalyzer:
                 # read by a helper. Docstrings and bare messages do not count.
                 if isinstance(node, (ast.BinOp, ast.Call, ast.Assign, ast.AnnAssign)):
                     for value in _data_literals(node):
-                        if value == "docs" or value.startswith("docs/"):
+                        if (value == "docs" or value.startswith("docs/")) and self._docs_literal_active(path):
                             docs = True
                         if "/" in value and value.split("/", 1)[0] in _DATA_ROOTS | {"fixtures"}:
                             data.update(self._path_data(path, value))
@@ -609,6 +702,11 @@ class DependencyAnalyzer:
             context=aliases_from if aliases_from is not None else self.tree(path),
             source_files=self.repository_files, context_cache=self.path_contexts,
         ))
+        self.observed_reasons.setdefault(path, set()).update(reasons)
+        resolves, declared_imports = self._declared_resolution(path)
+        reasons = reasons - resolves
+        imports = imports | declared_imports
+        data = data | self._declared_data(path)
         return imports, names, fixture_names, reasons, data, docs
 
     def _imported_fixtures(self, path: str, seen: set[str] | None = None) -> dict:
@@ -793,7 +891,7 @@ class DependencyAnalyzer:
             if not pending:
                 continue
             current = pending.pop()
-            if current.startswith("tests/") and current not in special:
+            if (current.startswith("tests/") or current.startswith("src/")) and current not in special:
                 register_support(current)
             if current in special:
                 nodes = special[current]
@@ -819,10 +917,17 @@ class DependencyAnalyzer:
             docs |= reads_docs
             if any("unresolved fixture request" in reason for reason in unknown):
                 requested.update(fixtures)
-        if any("dynamic import" in reason or "file import" in reason for reason in reasons):
+        broad_reasons = {
+            reason for reached_path in reached
+            if (reason := self.declarations.get(reached_path, {}).get("broad"))
+        }
+        if broad_reasons or any(
+            "dynamic import" in reason or "file import" in reason for reason in reasons
+        ):
             # Unknown Python execution can reach any repository module. Preserve a
             # visible reason rather than silently claiming a narrow complete graph.
             reached.update(self.files)
+            reasons.update(broad_reasons)
             docs = True
         return {
             "source_files": sorted(p for p in reached if p.startswith("src/")),
