@@ -1,0 +1,5 @@
+{
+  "resolves": [
+    "tests/test_cli_dashboard_server.py: unresolved dynamic import in subprocess Python execution"
+  ]
+}

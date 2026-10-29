@@ -1,0 +1,8 @@
+{
+  "resolves": [
+    "tests/test_dashboard_server_app.py: unresolved file import"
+  ],
+  "imports": [
+    "scripts.build_release_artifact"
+  ]
+}

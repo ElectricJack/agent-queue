@@ -1,0 +1,9 @@
+{
+  "reason": "lookup() resolves a SQLAlchemy Table by name (getattr(tables, table_name)) where tables is src/database/tables.py imported inline; the table name is a runtime string, not a literal, but the module is already fully known.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ],
+  "imports": [
+    "src.database.tables"
+  ]
+}

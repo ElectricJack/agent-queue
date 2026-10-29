@@ -1,0 +1,9 @@
+{
+  "resolves": [
+    "tests/test_bazel_metrics.py: unresolved file import"
+  ],
+  "imports": [
+    "scripts.bazel.inventory",
+    "scripts.bazel.report_metrics"
+  ]
+}

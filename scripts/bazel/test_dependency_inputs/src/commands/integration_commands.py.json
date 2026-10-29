@@ -1,0 +1,9 @@
+{
+  "reason": "_train_control and _repair_request dispatch on a request-model class name forwarded as a parameter (getattr(contracts, model_name)); every caller passes a literal class name from src/commands/contracts/integration.py, so the module is fully known even though the attribute name is not a string literal at the getattr call site.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ],
+  "imports": [
+    "src.commands.contracts.integration"
+  ]
+}
