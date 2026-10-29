@@ -1,0 +1,29 @@
+{
+  "source_base": "9a9b8e8ef992d1ff699755a9383ed3c91e2844ea",
+  "command": "maintenance_preflight",
+  "explicit_entry": {
+    "name": "maintenance_preflight",
+    "description": "Authenticate and audit global supervisor update or database backup with a live session inventory.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "update",
+            "update.check",
+            "db.backup"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "tool_category": "system",
+  "contract_fingerprint": "sha256:28c167c6c7afe1e1ceb6d82f2c8b9e1345d622cb2db2e54592355fa590df162e",
+  "previous_cli_catalogue_sha256": "aa2600fb235efe2803b3b476eca4f49e1911a6f627218ec2622308251726c9b1",
+  "cli_catalogue_sha256": "16c1a223de82bd0b5d92f60ca3e97f67d85d4685f11f6b32b940d71a3f9df9a1"
+}
