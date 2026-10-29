@@ -2475,6 +2475,9 @@ class Orchestrator(
             return await settle_orphaned_parent_operations(
                 self.db, now, legacy_engine_gone=True,
             )
+
+        async def maintain_retained_stores(now):
+            return await self._command_handler.retained_store_maintenance_tick(now)
         self.parent_subject_runtime = None
         self.development_subject_runtime = None
         self.integration_service = IntegrationService(
@@ -2499,6 +2502,7 @@ class Orchestrator(
                 "delivered PR cleanup": PullRequestReconciler(
                     self.db, self.git, commands=lambda: self._command_handler,
                 ).tick,
+                "retained store maintenance": maintain_retained_stores,
             },
             source_timeout_seconds=self.config.integration.service_source_timeout_seconds,
             item_timeout_seconds=self.config.integration.service_item_timeout_seconds,
