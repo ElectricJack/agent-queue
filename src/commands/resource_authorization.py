@@ -10,7 +10,7 @@ from __future__ import annotations
 # These names operate on installation-wide state, even if they happen to accept
 # project_id as a display filter. A filter is not proof of scoped execution.
 SYSTEM_COMMANDS = frozenset("""
-operational_retention archive_settings claude_usage create_agent create_profile delete_agent delete_profile
+maintenance_preflight operational_retention archive_settings claude_usage create_agent create_profile delete_agent delete_profile
 edit_agent edit_profile export_profile get_config get_config_schema
 get_github_auth_status get_profile get_status import_profile install_profile
 list_github_owners list_intelligence_classes list_profiles list_project_roots

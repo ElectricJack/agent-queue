@@ -182,6 +182,7 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "maintenance_preflight",
     "schedule_register",
     "schedule_get",
     "schedule_list",

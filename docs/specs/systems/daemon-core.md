@@ -373,7 +373,7 @@ Verification never grants permission to upgrade production.
 in which worker sessions stamped the production database with revisions that
 had not been merged. It separates two questions:
 
-- **Who is asking** is the process scope: DAEMON, OPERATOR, WORKER, CLI or
+- **Who is asking** is the process scope: DAEMON, OPERATOR, WORKER, GLOBAL_SUPERVISOR, CLI or
   TEST. The scope comes from the `AQ_DB_SCOPE` environment variable, which
   overrides `set_process_scope`. Worker sessions are launched with
   `AQ_DB_SCOPE=worker` and a refusal sentinel in place of the database URL.

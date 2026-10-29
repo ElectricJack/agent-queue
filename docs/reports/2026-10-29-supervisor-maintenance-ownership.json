@@ -1,0 +1,41 @@
+{
+  "after": {
+    "engine": 84825,
+    "owned": 161845,
+    "revision": "3319dbae54faf81af25b8472b7dde23e21ba23b1",
+    "tables": 45
+  },
+  "before": {
+    "engine": 84825,
+    "owned": 161805,
+    "revision": "b7fc79d107710a46d5bbf16af02cd3de19d0404e",
+    "tables": 45
+  },
+  "charged_files": {
+    "src/commands/system_commands.py": {
+      "after": 224,
+      "before": 197,
+      "delta": 27
+    },
+    "src/sessions/env.py": {
+      "after": 144,
+      "before": 134,
+      "delta": 10
+    },
+    "src/sessions/spec.py": {
+      "after": 213,
+      "before": 210,
+      "delta": 3
+    }
+  },
+  "delta": {
+    "engine": 0,
+    "owned": 40,
+    "tables": 0
+  },
+  "inventory": "tests.integration_ownership.inventory",
+  "method": "Complete src, dashboard/src and migration source trees from git archive origin/dev compared with the merged worktree, using unchanged ownership classifications. Physical charged lines include comments and blank lines.",
+  "new_storage_categories": [],
+  "supervisor_decision_message_id": "msg-2d9ea71ae8c24c24973bf7575c1af011",
+  "task_id": "nimble-pinnacle-47"
+}

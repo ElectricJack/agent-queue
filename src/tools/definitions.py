@@ -304,6 +304,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_chat_analyzer_metrics": "system",
     "reload_config": "system",
     "operational_retention": "system",
+    "maintenance_preflight": "system",
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",
@@ -9528,6 +9529,11 @@ from src.commands.operator_authority import (  # noqa: E402
 )
 
 _ALL_TOOL_DEFINITIONS.extend([
+    {"name": "maintenance_preflight",
+     "description": "Authenticate and audit global supervisor update or database backup with a live session inventory.",
+     "input_schema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["update", "update.check", "db.backup"]}},
+         "required": ["action"], "additionalProperties": False}},
     {"name": "operator_execute",
      "description": "Run an audited project setup action from a live operator claim, retaining session identity.",
      "input_schema": _OperatorExecuteArgs.model_json_schema()},

@@ -143,6 +143,9 @@ markers, then launch extras.
 - `session_db_isolation` sets `AQ_DB_SCOPE=worker` and points `AQ_DATABASE_URL` and
   `AGENT_QUEUE_DB` at the refusal sentinel `aq-worker-no-direct-db://`, so an agent can
   reach state only through the API with its scoped token.
+  Only the canonical global named supervisor receives `AQ_DB_SCOPE=global-supervisor`;
+  it retains both URL sentinels and may use authenticated, audited update and backup
+  preflights. Project supervisors retain worker scope.
 
 **Hooks.** For harnesses with `supports_hooks: true`, `SessionSpecBuilder._hook_files`
 renders `src/prime/templates/hooks/claude.json` or `codex.json` into the work folder, and

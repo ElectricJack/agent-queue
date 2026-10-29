@@ -210,6 +210,7 @@ def build_session_env(
     base: Mapping[str, str] | None = None,
     prompt_delivered: bool = False,
     extra_env: Mapping[str, str] | None = None,
+    global_supervisor: bool = False,
 ) -> dict[str, str]:
     """Build the full child environment for one session launch.
 
@@ -221,6 +222,9 @@ def build_session_env(
     a key in a harness file means it and it survives.  ``extra_env`` is
     applied last, after the markers and before scrubbing — e.g.
     ``AQ_CLAIM_EPOCH`` for a push launch joining the claim fence.
+    ``global_supervisor`` is supplied only by the canonical global named
+    supervisor spec; it replaces the scope with ``global-supervisor`` after
+    layering, retaining the database URL refusal sentinels.
 
     ``config`` is the daemon :class:`~src.config.AppConfig`.  Passing it is
     what makes ``security.env_scrub_enabled`` / ``security.env_allowlist``
@@ -265,6 +269,12 @@ def build_session_env(
         explicit[STARTUP_PROMPT_DELIVERED] = "1"
     if extra_env:
         explicit.update({str(k): str(v) for k, v in extra_env.items()})
+
+    # Only the spec builder's canonical global named supervisor gets this
+    # maintenance identity. Keep both direct-DB refusal sentinels; this scope
+    # still receives VERIFY, never MIGRATE, against production.
+    if global_supervisor:
+        explicit["AQ_DB_SCOPE"] = "global-supervisor"
 
     for key in tuple(explicit):
         if key.startswith(_DAEMON_ONLY_INTEGRATION_PREFIX):

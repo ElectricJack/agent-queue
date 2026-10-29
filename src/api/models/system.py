@@ -387,7 +387,24 @@ class OperationalRetentionResponse(BaseModel):
     error: str | None = None
 
 
+class MaintenanceSession(BaseModel):
+    id: str
+    state: str
+    lifecycle: str
+
+
+class MaintenancePreflightResponse(BaseModel):
+    """Admission after authenticating, inventorying sessions, and recording an audit."""
+
+    success: bool
+    actor: str | None = None
+    audit_id: int | None = None
+    sessions: list[MaintenanceSession] | None = None
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "maintenance_preflight": MaintenancePreflightResponse,
     "operational_retention": OperationalRetentionResponse,
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,

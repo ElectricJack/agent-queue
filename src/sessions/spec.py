@@ -782,6 +782,9 @@ class SessionSpecBuilder:
             config=self.config,
             prompt_delivered=prompt is not None,
             extra_env=launch_env,
+            global_supervisor=(
+                lifecycle == "named" and profile_id == "supervisor" and not project_id
+            ),
         )
 
         dialogs = harness.dialogs

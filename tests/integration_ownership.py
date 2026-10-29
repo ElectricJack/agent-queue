@@ -933,6 +933,32 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+'supervisor_maintenance_composition': {
+    'task_id': 'nimble-pinnacle-47',
+    'referenced_decision': 'size-cap-delegation-2026-10-23',
+    'operator_decision': '6679052c',
+    'supervisor_decision_message_id': 'msg-2d9ea71ae8c24c24973bf7575c1af011',
+    'source_revision': '3319dbae54faf81af25b8472b7dde23e21ba23b1',
+    'dev_source_revision': 'b7fc79d107710a46d5bbf16af02cd3de19d0404e',
+    'previous_measured_owned_total': 161805,
+    'previous_measured_engine_lines': 84825,
+    'previous_measured_table_count': 45,
+    'authorized_owned_delta': 40,
+    'authorized_shared_owned_delta': 40,
+    'authorized_engine_delta': 0,
+    'authorized_table_delta': 0,
+    'measured_owned_total': 161845,
+    'measured_engine_lines': 84825,
+    'measured_table_count': 45,
+    'charged_files': {'src/commands/system_commands.py': 27,
+                      'src/sessions/env.py': 10,
+                      'src/sessions/spec.py': 3},
+    'evidence_path': 'docs/reports/2026-10-29-supervisor-maintenance-ownership.json',
+    'reason': 'Exact supervisor-global approval under Jack\'s standing directive for PR 2189: '
+              'bounded authenticated and audited global-supervisor maintenance. Preserve every '
+              'historical grant, original baseline and ownership classification, zero remaining '
+              'headroom, s4_modules expiry and existing storage categories. No code trimming, '
+              'test weakening or automatic cap growth.'},
 'wait_source_pr2183_final_refresh_composition': {'authorized_engine_delta': 79,
                                                   'authorized_owned_delta': 283,
                                                   'authorized_shared_owned_delta': 204,
@@ -1997,7 +2023,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6306,
+ 'authorized_owned_delta': 6346,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2606,7 +2632,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 84825,
- 'measured_owned_total': 161805,
+ 'measured_owned_total': 161845,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,

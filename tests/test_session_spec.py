@@ -1036,6 +1036,16 @@ class TestEnvMarkers:
         assert env["AQ_DATABASE_URL"] == "aq-worker-no-direct-db://"
         assert env["AGENT_QUEUE_DB"] == env["AQ_DATABASE_URL"]
 
+    @pytest.mark.parametrize("project_id,scope", [(None, "global-supervisor"), ("proj-1", "worker")])
+    def test_only_global_named_supervisor_gets_maintenance_scope(self, builder, project_id, scope):
+        spec = builder.build_named_spec(
+            profile=_Profile(id="supervisor"), harness=CLAUDE, project_id=project_id,
+            work_dir="/wd", session_id="supervisor", instance_token="launch",
+        )
+        assert spec.env["AQ_DB_SCOPE"] == scope
+        assert spec.env["AQ_DATABASE_URL"] == "aq-worker-no-direct-db://"
+        assert spec.env["AGENT_QUEUE_DB"] == spec.env["AQ_DATABASE_URL"]
+
     def test_a_harness_may_pin_its_own_database_url(self, builder):
         """Isolation is a default, not a cage: an explicit pin still wins."""
         harness = replace(CLAUDE, env=(("AGENT_QUEUE_DB", "/pinned.db"),))

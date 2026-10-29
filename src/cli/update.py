@@ -14,6 +14,34 @@ import click
 from .app import cli, console
 
 
+def _authorize_supervisor_maintenance(action: str) -> dict:
+    """Fail closed unless the daemon authenticates this live global supervisor."""
+    import os
+
+    from .app import _get_client, _run
+
+    if os.environ.get("AQ_DB_SCOPE") != "global-supervisor" or not os.environ.get("AQ_API_TOKEN"):
+        raise click.ClickException("maintenance requires a global supervisor launch and bearer")
+
+    async def authorize():
+        async with _get_client() as client:
+            return await client.execute("maintenance_preflight", {"action": action})
+
+    try:
+        result = _run(authorize())
+    except Exception as exc:
+        # Do not print arbitrary transport details (which may contain credentials).
+        raise click.ClickException("maintenance preflight unavailable or refused") from exc
+    if (result.get("success") is not True or not result.get("audit_id")
+            or not isinstance(result.get("sessions"), list)):
+        raise click.ClickException("maintenance preflight did not authorize and audit the action")
+    console.print(
+        f"Maintenance audit {result['audit_id']}: "
+        f"{len(result['sessions'])} session(s) will be preserved.", markup=False,
+    )
+    return result
+
+
 def _host():
     from src.install.platform import describe_host
     from src.install.state import default_state_dir
@@ -95,6 +123,20 @@ def update(
         _refused(UpdateRefused(
             "aq update does not run inside an agent's worker slot",
             "Run aq update from the operator's terminal.",
+        ))
+        raise SystemExit(EXIT_REFUSED)
+    if os.environ.get("AQ_DB_SCOPE") == "global-supervisor":
+        if no_backup or automatic:
+            _refused(UpdateRefused(
+                "supervisor updates require backup and explicit maintenance",
+                "Run aq update --yes without --no-backup or --automatic.",
+            ))
+            raise SystemExit(EXIT_REFUSED)
+        _authorize_supervisor_maintenance("update.check" if check else "update")
+    elif os.environ.get("AQ_API_TOKEN") or os.environ.get("AQ_SESSION_ID"):
+        _refused(UpdateRefused(
+            "only the global supervisor may update AQ from a session",
+            "Ask the global supervisor or local operator to update AQ.",
         ))
         raise SystemExit(EXIT_REFUSED)
     checkout = source_checkout_root()

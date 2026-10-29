@@ -303,6 +303,22 @@ The tag annotation's `AQ-Migration-Admission:` lines feed that decision.
 It also refuses in a worker slot, under `AQ_DB_SCOPE=worker`, and on a package
 install (exit 10).
 
+The canonical global named supervisor may run `aq update` (including `--check`)
+and `aq db backup`. Its launch scope is `global-supervisor`; project supervisors,
+task workers, pools and jobs retain `worker`. Database URL refusal sentinels remain
+in every session, and the supervisor scope only verifies production schema.
+Before maintenance, the CLI authenticates its bearer through
+`maintenance_preflight`. CommandHandler requires a live, elevated global named
+supervisor with matching launch instance, inventories running sessions, and writes
+an attributed `maintenance.preflight` event before granting admission. A stale token,
+missing daemon, missing audit or project elevation fails closed. Environment scope
+alone never authorizes maintenance. Supervisor updates cannot skip schema backups
+or use automatic mode; recovery verification and deployment holds still apply.
+Update preserves running sessions through `stop --keep-sessions` and re-adoption.
+Restore and direct `aq db upgrade` remain local operator workflows.
+Existing supervisor processes acquire the new scope on their next launch;
+re-adopting an existing terminal does not rewrite its environment.
+
 **Apply.**
 
 1. Create `update.lock` with `O_EXCL` and re-check the plan.
