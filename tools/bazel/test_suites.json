@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "f9b55b1f61e10c449448620e1e136e06ab3ba3af",
+      "source_head": "986919581ffff7259797a2286ef30846dcd9ed82",
       "tool_sha256": "edf71529d50a5c985c9ca33513ebee75a078b8d021bf06ea1b00a6a51e7cddf7"
     },
     "nodes": [
@@ -40254,7 +40254,7 @@
       "tests/test_integration_delivered_parent_adoption.py": "cf1c49aa9396d43cf7e5e71125a239abc2c957bef1def13080a78094e41cdd5c",
       "tests/test_integration_delivery_watchdog.py": "1394ff7a20db7f190206c411b81a1799c9c2f29c740142ec49a79dc5bac7bac7",
       "tests/test_integration_delivery_watchdog_regressions.py": "c8553f1ba432058fbf8a2e1210451ac65b90dcb091fbcab14a37001cf0de0049",
-      "tests/test_integration_dispatch_waits.py": "6e6cabf51369fddd95aaa596c7f67c8335ddd271e3d4a2b4b98a89f60ada6927",
+      "tests/test_integration_dispatch_waits.py": "fd90956caa0fc58a0f6a5ec42aefb0325437ec7185bd096fe4d77c5d1ad67571",
       "tests/test_integration_eject.py": "ae7b6f9735633c512f49e3ad46108ab16879bcc648dcf890b8a354a8cd02b8e6",
       "tests/test_integration_epics.py": "0c9c62610f67de4b74c0293712b2e7336d7c05c917ead6b5bff2cc0d337c381b",
       "tests/test_integration_failure_groups.py": "84b728099f4323d7dc64a98166481c08b6e761bea2d19fbfdb73b37cd1f26544",

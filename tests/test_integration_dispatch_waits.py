@@ -366,6 +366,14 @@ async def test_stalled_ci_verification_releases_graph_for_supervisor_controls(wo
     await completed(world, "first")
     await case.train.visit(MAIN)
     wait = (await rows(world))[0]
+    condition = Condition.from_record(wait["condition"])
+    watcher = case.orch.wait_ci_watcher
+    # The short deadline exercises a stalled provider, not SQL preparation on
+    # a busy test server. Verify the real binding before starting that clock.
+    async with world.db._engine.connect() as conn:
+        prepared = await watcher._prepare(conn, condition)
+    assert prepared is not None and prepared[2] is case.exact
+    monkeypatch.setattr(watcher, "_prepare", AsyncMock(return_value=prepared))
     started = asyncio.Event()
 
     async def stalled(*args, **kwargs):
@@ -379,14 +387,18 @@ async def test_stalled_ci_verification_releases_graph_for_supervisor_controls(wo
         with pytest.raises(WaitError, match="temporarily unavailable") as error:
             async with world.db._engine.begin() as conn:
                 await lock_graph(conn)
-                await case.service.registry.observe(conn, Condition.from_record(wait["condition"]))
+                await case.service.registry.observe(conn, condition)
         assert error.value.code == "wait.unavailable"
 
     observation = asyncio.create_task(verify_under_graph())
-    await started.wait()
-    async with world.db._engine.begin() as conn:
-        await lock_graph(conn, timeout=1)
-    await observation
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        async with world.db._engine.begin() as conn:
+            await lock_graph(conn, timeout=1)
+        await observation
+    finally:
+        observation.cancel()
+        await asyncio.gather(observation, return_exceptions=True)
     assert (await rows(world))[0]["outcome"] == "pending"
 
 
