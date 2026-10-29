@@ -33,6 +33,46 @@
     "shared": 0,
     "tables": 0
   },
+  "final_sync_measurement": {
+    "after": {
+      "engine": 84746,
+      "owned": 161486,
+      "shared": 63899,
+      "tables": 45
+    },
+    "before": {
+      "engine": 84563,
+      "owned": 161303,
+      "shared": 63899,
+      "tables": 45
+    },
+    "budget_errors": [],
+    "charged_files": {
+      "src/integration/batches.py": {
+        "after": 1182,
+        "before": 1176
+      },
+      "src/integration/train.py": {
+        "after": 1527,
+        "before": 1488
+      },
+      "src/integration/visit_carry.py": {
+        "after": 138,
+        "before": 0
+      }
+    },
+    "delta": {
+      "engine": 183,
+      "owned": 183,
+      "shared": 0,
+      "tables": 0
+    },
+    "dev_source_revision": "8dacd8ffc08422d40279e2cfd1e1bd5161d022bf",
+    "measured_merge_revision": "284aeb3809c9b4d026e52e1af44739c35d458c3f",
+    "method": "Fresh complete archives of final-sync dev 8dacd8ffc and merged tree 284aeb380, both scored with the merged manifest's unchanged classifications. The original operator-approved +183 owned/+183 engine/+0 shared/0 tables delta and zero headroom remain unchanged. Preserve all historical measurements, grants, classifications and original pins; no ceiling changes.",
+    "pr_source_revision": "110afef258fb5b472466a778b58e0a1b4839c7ea",
+    "task_id": "agile-impact-64"
+  },
   "method": "Complete archives of PR 2173 head 24cbc4537 (wise-current-35 over dev 0ce9a88d9) and of the merged bright-flare-38 tree, both scored with the merged manifest's unchanged classifications. Exact measured +183 owned/+183 engine/+0 shared/0 tables; only the engine group changes and the 45 tables are identical. Approved by operator decision msg-75ec9aee51674df4ac606e7977e71fe6 under size-cap-delegation-2026-10-23 for exactly this delta, landing after PR 2173, with zero headroom; preserve all historical grants and original pins.",
   "operator_decision": "msg-75ec9aee51674df4ac606e7977e71fe6",
   "referenced_decision": "size-cap-delegation-2026-10-23",
