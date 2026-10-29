@@ -346,13 +346,14 @@ def _alembic_config(ctx_db_url: str, *, extra_version_locations: list[Path] = ()
     for revision files.  Setting ``version_locations`` at all replaces the
     implicit ``<script_location>/versions``, so that directory is always
     listed first.  Values go through ``ConfigParser`` interpolation, hence the
-    ``%`` escaping — a temp dir under an unusual ``TMPDIR`` must not turn into
-    an interpolation error.
+    ``%`` escaping — a temp dir under an unusual ``TMPDIR``, or a unix-socket
+    DSN's percent-encoded ``host=%2Ftmp%2F...``, must not turn into an
+    interpolation error.
     """
     from alembic.config import Config
 
     cfg = Config(str(_PROJECT_ROOT / "alembic.ini"))
-    cfg.set_main_option("sqlalchemy.url", ctx_db_url)
+    cfg.set_main_option("sqlalchemy.url", ctx_db_url.replace("%", "%%"))
     if extra_version_locations:
         locations = [_VERSIONS_DIR, *extra_version_locations]
         cfg.set_main_option(
