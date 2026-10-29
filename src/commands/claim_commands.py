@@ -57,6 +57,13 @@ _MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_chang
 # limit passes it takes no task: a claim made after the caller gave up is orphaned.
 _CLAIM_OBSERVATION_GRACE_SECONDS = 60.0
 _CLAIM_REQUEST_LIMIT_SECONDS = 150.0
+# Progress, never a held result: a worker that ended its turn on it sat idle at
+# its prompt while the preparation settled off-turn (nimble-journey-85).
+CLAIM_IN_PROGRESS_INSTRUCTIONS = (
+    "Preparation is still running. Run `aq task claim --next --wait 60` again now, "
+    "in this same turn, to receive its result. Do not end the turn, run `aq prime`, "
+    "or await inbox delivery."
+)
 
 
 def _retryable_preparation_error(exc: Exception, *, stage: str | None = None) -> bool:
@@ -328,7 +335,9 @@ class ClaimCommandsMixin:
         token = current_claim_timing.set(timing)
         try:
             outcome = await self._claim_request(args)
-            if outcome.get("result") != ClaimResult.CLAIM_IN_PROGRESS.value:
+            if outcome.get("result") == ClaimResult.CLAIM_IN_PROGRESS.value:
+                outcome.setdefault("instructions", CLAIM_IN_PROGRESS_INSTRUCTIONS)
+            else:
                 if timing.finished is None:
                     timing.finish(outcome.get("result", "refused"))
                 outcome.setdefault("claim_timing", timing.snapshot())
