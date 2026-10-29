@@ -1097,6 +1097,117 @@ async def test_minimum_interval_is_per_lane_and_changed_target_inputs_bypass_it(
     assert runtime.visit.await_count == 3
 
 
+#: Epic refs discovered (alphabetically) ahead of a starved epic target.
+AHEAD = tuple(TrainTarget("p", "r", f"refs/heads/aq/epic/a-{i}", "epic") for i in range(5))
+TAIL = TrainTarget("p", "r", "refs/heads/aq/epic/plan-narrow", "epic")
+
+
+def saturated_epics(**kwargs):
+    """Four slow epic visits fill the repository; TAIL's lane holds a completed child."""
+    gates = {target.key: asyncio.Event() for target in AHEAD}
+    batches = Batches({TAIL.key: (batch("child-batch", TAIL.target_ref), MEMBERS)})
+    lanes = {target.key: lane(Service(), fetch=gates[target.key].wait) for target in AHEAD}
+    lanes[TAIL.key] = lane(Service("delivered"))
+    return train(Targets(*AHEAD, TAIL), batches, lanes, event_driven=True, **kwargs), gates, batches
+
+
+def label(target):
+    return "/".join(target.key)
+
+
+@pytest.mark.parametrize("request_kind", ["train_visit_requested", "refresh_epic"])
+async def test_requested_epic_visit_takes_the_next_slot_and_collects_its_child(request_kind):
+    t, gates, batches = saturated_epics()
+    first = await t.tick()
+    assert first["started"] == [label(target) for target in AHEAD[:4]]
+    assert label(TAIL) in first["deferred"]
+    if request_kind == "train_visit_requested":
+        # ChildDelivery's Git-first redrive wakes only the parent's target lane.
+        t.wake(*TAIL.key)
+    else:
+        # refresh-epic/reverify request the visit while the repository is full.
+        assert await t.request_visit(TAIL) is None
+    gates[AHEAD[0].key].set()
+    await t._lanes[AHEAD[0].key].task
+    second = await t.tick()
+    # The requested target goes ahead of an earlier-discovered, never-visited one.
+    assert second["started"] == [label(TAIL)]
+    assert label(AHEAD[4]) in second["deferred"]
+    await t._lanes[TAIL.key].task
+    assert batches.settled == [("child-batch", "delivered")]
+    for gate in gates.values():
+        gate.set()
+    await t.drain()
+
+
+async def test_targeted_wake_before_the_lane_exists_is_retained():
+    t, gates, _batches = saturated_epics()
+    # A redrive can arrive before the train has ever discovered the target.
+    t.wake(*TAIL.key)
+    first = await t.tick()
+    assert first["started"] == [label(TAIL), *(label(target) for target in AHEAD[:3])]
+    for gate in gates.values():
+        gate.set()
+    await t.drain()
+    # Project-wide readiness wakes keep discovery order; only targeted ones are urgent.
+    t.wake("p", "r")
+    assert not any(lane.urgent for lane in t._lanes.values())
+
+
+class Ledger:
+    """An in-memory stand-in for the durable lane ledger."""
+
+    def __init__(self):
+        self.rows = {}
+
+    async def load(self):
+        return list(self.rows.values())
+
+    async def record(self, row):
+        self.rows[row.key] = row
+
+    async def forget(self, keys):
+        for key in keys:
+            self.rows.pop(key, None)
+
+
+async def test_visit_history_survives_restart_and_orders_longest_waiting_first():
+    now = [100.0]
+    ledger = Ledger()
+
+    def daemon(*targets):
+        lanes = {target.key: lane(Service()) for target in targets}
+        runtime = train(Targets(*targets), Batches(), lanes, event_driven=True, ledger=ledger)
+        runtime.clock = lambda: now[0]
+        return runtime
+
+    before = daemon(*AHEAD, TAIL)
+    assert (await before.tick(now[0]))["started"] == [label(t) for t in AHEAD[:4]]
+    await before.drain()
+    now[0] = 200.0
+    assert (await before.tick(now[0]))["started"] == [label(AHEAD[4]), label(TAIL)]
+    await before.drain()
+    now[0] = 300.0
+    before.wake("p", "r")
+    assert (await before.tick(now[0]))["started"] == [label(t) for t in AHEAD[:4]]
+    await before.drain()
+    assert ledger.rows[TAIL.key].started_at == 200.0
+
+    # A restart: new targets first, then the longest-waiting lanes, not discovery order.
+    fresh = TrainTarget("p", "r", "refs/heads/aq/epic/0-new", "epic")
+    now[0] = 400.0
+    after = daemon(fresh, *AHEAD, TAIL)
+    started = (await after.tick(now[0]))["started"]
+    assert started == [label(fresh), label(AHEAD[4]), label(TAIL), label(AHEAD[0])]
+    await after.drain()
+    rows = {row["target_ref"]: row for row in after.status()}
+    assert rows[TAIL.target_ref]["visits"] == 2
+    assert rows[TAIL.target_ref]["observed_at"] == 400.0
+    waiting = rows[AHEAD[1].target_ref]
+    assert waiting["state"] == "unvisited" and waiting["visits"] == 2
+    assert waiting["observed_at"] == 300.0 and waiting["previous_state"] == "idle"
+
+
 async def test_tick_lanes_share_one_snapshot_even_when_their_arrivals_are_staggered(setup):
     from src.integration.git_truth import GitTruth
 

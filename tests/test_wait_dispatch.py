@@ -1849,10 +1849,24 @@ async def test_slow_source_rolls_back_and_later_event_commits_before_retry(runti
 
 @pytest.mark.parametrize("failure_kind", ["budget", "unavailable", "exception", "timeout"])
 async def test_dispatch_quarantine_survives_restart_and_does_not_block_later_sources(
-    runtime_env, failure_kind,
+    runtime_env, failure_kind, monkeypatch,
 ):
-    from sqlalchemy import func
+    from unittest.mock import Mock
     from src.waits.listener import WaitSourceListener
+
+    # Expire the real graph-work timeout after dispatch writes. SQL latency
+    # must not decide whether this exercises the intended failure or setup.
+    original_timeout = asyncio.timeout
+    budgets = []
+
+    def controlled_timeout(seconds):
+        budget = original_timeout(None)
+        budgets.append(budget)
+        return budget
+
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.side_effect = controlled_timeout
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
 
     env = runtime_env
     receipt = await register(env)
@@ -1879,11 +1893,11 @@ async def test_dispatch_quarantine_survives_restart_and_does_not_block_later_sou
                 raise ValueError("invalid source-specific state")
             if failure_kind == "timeout":
                 raise TimeoutError("source observation timed out")
-            await conn.execute(select(func.pg_sleep(60)))
+            budgets[-1].reschedule(asyncio.get_running_loop().time())
+            await asyncio.Event().wait()
         return await original(conn, event)
 
     for failure in range(1, 4):
-        service.listener.event_budget_seconds = 0.1
         service.listener._dispatch = stall
         later = await env.db.wait_source_commit(source_key="test:later", generation=0,
             revision=str(failure), outcome_ref="later", payload={})
@@ -1899,7 +1913,6 @@ async def test_dispatch_quarantine_survives_restart_and_does_not_block_later_sou
         # A new leader must not bypass durable backoff.
         await service.listener.lease(release=True)
         service.listener = WaitSourceListener(service, clock=lambda: now[0])
-        service.listener.event_budget_seconds = 0.1
         service.listener._dispatch = stall
         await service.listener.tick()
         assert len(calls) == failure
@@ -2315,6 +2328,113 @@ async def test_manual_redispatch_rechecks_after_waiting_for_listener(runtime_env
     lease.assert_not_awaited()
 
 
+@pytest.mark.parametrize("owner_kind", ["task", "integration"])
+async def test_manual_redispatch_queues_past_apply_budget_then_resolves_ci(
+    runtime_env, monkeypatch, owner_kind,
+):
+    from src.commands.principal import TRUSTED_LOCAL
+
+    env = runtime_env
+    scope = Scope("p", "integration", "batch", principal="service") if owner_kind != "task" else None
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch, scope=scope)
+    state["value"] = "satisfied"
+    seq = await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    listener = service.listener
+    original = listener._redispatch_event
+    read = asyncio.Event()
+
+    async def observed(conn, args):
+        event = await original(conn, args)
+        read.set()
+        return event
+
+    monkeypatch.setattr(listener, "_redispatch_event", observed)
+    # Scale only the old combined deadline while a real tick lock is held.
+    # Restore normal SQL/apply time before releasing it, avoiding a DB latency test.
+    listener.event_budget_seconds = 0.01
+    async with listener._tick_lock:
+        with principal_context(TRUSTED_LOCAL):
+            request = asyncio.create_task(service.orch._command_handler.execute(
+                "wait_source_redispatch", {
+                    "project_id": "p", "source_seq": seq, "note": "recover contended CI"}))
+        try:
+            await read.wait()
+            await asyncio.sleep(0.03)
+            assert not request.done(), "listener contention consumed the apply budget"
+            listener.event_budget_seconds = 5
+        except BaseException:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            raise
+    result = await request
+    assert result["success"], result
+    assert result["result"]["redispatched"]
+    assert reader.await_count == 1
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    assert next(r for r in await records(env, wait_source_events) if r["seq"] == seq)[
+        "dispatched_at"] is not None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
+
+
+@pytest.mark.parametrize("failure", ["timeout", "cancelled"])
+async def test_manual_redispatch_listener_queue_refusal_preserves_lock_owner(
+    runtime_env, monkeypatch, failure,
+):
+    from unittest.mock import Mock
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.database.tables import events as audit_events
+
+    env = runtime_env
+    service = runtime(env)
+    listener = service.listener
+    seq = await env.db.wait_source_commit(source_key="test:queued", generation=0,
+        revision="1", outcome_ref="hint", payload={})
+    queued = asyncio.Event()
+    lock_budget = asyncio.timeout(None)
+
+    def controlled_timeout(seconds):
+        if seconds == listener.redispatch_lock_seconds:
+            queued.set()
+            return lock_budget
+        return asyncio.timeout(seconds)
+
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.side_effect = controlled_timeout
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+    lease = AsyncMock(side_effect=AssertionError("queued requests cannot acquire a lease"))
+    monkeypatch.setattr(service, "lease", lease)
+    async with listener._tick_lock:
+        with principal_context(TRUSTED_LOCAL):
+            request = asyncio.create_task(service.orch._command_handler.execute(
+                "wait_source_redispatch", {
+                    "project_id": "p", "source_seq": seq, "note": "recover queued source"}))
+        try:
+            await queued.wait()
+            if failure == "timeout":
+                lock_budget.reschedule(asyncio.get_running_loop().time())
+                result = await request
+                assert result["error_code"] == "wait.unavailable"
+                assert result["phase"] == "listener_lock"
+                assert result["budget_seconds"] == listener.redispatch_lock_seconds
+                assert result["dispatch_attempts"] == result["candidate_waits"] == 0
+            else:
+                request.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await request
+            assert listener._tick_lock.locked(), "request released another tick's lock"
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    lease.assert_not_awaited()
+    assert not await records(env, wait_listener_cursors)
+    assert not [r for r in await records(env, audit_events)
+                if r["event_type"] == "wait.source_redispatched"]
+    assert next(r for r in await records(env, wait_source_events) if r["seq"] == seq)[
+        "dispatched_at"] is None
+
+
 async def test_manual_source_redispatch_reobserves_without_moving_cursor(runtime_env):
     from src.commands.principal import TRUSTED_LOCAL
     from src.database.tables import events as audit_events
@@ -2461,7 +2581,8 @@ async def test_manual_redispatch_budget_rolls_back_without_cursor_or_audit(
     # regression does not measure how busy the shared host happens to be.
     budget = asyncio.timeout(None)
     listener_asyncio = Mock(wraps=asyncio)
-    listener_asyncio.timeout.side_effect = [asyncio.timeout(None), budget]
+    listener_asyncio.timeout.side_effect = lambda seconds: (
+        budget if seconds == service.listener.preparation_budget_seconds else asyncio.timeout(None))
     monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
     seq = await env.db.wait_source_commit(source_key="test:manual-timeout", generation=0,
         revision="1", outcome_ref="test", payload={})
@@ -2533,7 +2654,7 @@ async def test_quarantine_never_advances_after_cancellation_or_lease_loss(
     assert (await records(env, wait_listener_cursors))[0]["last_seq"] == 0
 
 
-async def ci_listener(env, monkeypatch, *, now=None):
+async def ci_listener(env, monkeypatch, *, now=None, scope=None):
     from src.waits.graph import graph_locked
     from src.waits.watchers.ci import CheckWatcher
     from tests.test_wait_queries import SHA, ci_snapshot, seed_batch, seed_repo
@@ -2544,7 +2665,8 @@ async def ci_listener(env, monkeypatch, *, now=None):
     reader = AsyncMock(side_effect=lambda conn, cond: ci_snapshot(cond, state=state["value"]))
     registry = build_registry(ci_reader=reader)
     receipt = await register(env, {"kind": "ci_check", "repository_id": "repo", "head_sha": SHA,
-                                   "check_name": "tests"}, registry=registry)
+                                   "check_name": "tests"}, registry=registry,
+                             scope=scope or env.scope)
     service = runtime(env, registry=registry, clock=lambda: now[0] if now else NOW)
     service.orch.wait_dispatcher = service._dispatcher
     watcher = CheckWatcher(env.db, None, None, checks=None, repository=None)
@@ -2561,6 +2683,103 @@ async def ci_listener(env, monkeypatch, *, now=None):
 
     reader.side_effect = observe
     return service, receipt, reader, state, f"ci_check:repo:{SHA}:tests"
+
+
+async def test_ci_preparation_can_outlast_apply_budget(runtime_env, monkeypatch):
+    env = runtime_env
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch)
+    listener = service.listener
+    seq = await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    state["value"] = "satisfied"
+    original = reader.side_effect
+
+    async def slow_preparation(conn, cond):
+        await asyncio.sleep(0.03)
+        # Restore the ordinary SQL/apply allowance after exceeding the small
+        # apply deadline. Remote preparation spends the adaptive work budget.
+        listener.event_budget_seconds = 5
+        return await original(conn, cond)
+
+    reader.side_effect = slow_preparation
+    listener.event_budget_seconds = 0.01
+    monkeypatch.setattr(listener, "_work_budget", lambda: 5)
+    assert await listener.tick()
+    assert reader.await_count == 1
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    assert next(r for r in await records(env, wait_source_events) if r["seq"] == seq)[
+        "dispatched_at"] is not None
+
+
+async def test_ci_preparation_deferral_under_listener_contention_can_be_redispatched(
+    runtime_env, monkeypatch, caplog,
+):
+    from unittest.mock import Mock
+    from src.commands.principal import TRUSTED_LOCAL
+
+    env = runtime_env
+    service, receipt, reader, state, key = await ci_listener(env, monkeypatch)
+    listener = service.listener
+    state["value"] = "satisfied"
+    seq = await env.db.wait_source_commit(source_key=key, generation=0, revision="terminal",
+        outcome_ref="hint", payload={"conclusion": "success"})
+    preparation_budget = asyncio.timeout(None)
+    budgets = []
+
+    def controlled_timeout(seconds):
+        budgets.append(seconds)
+        return preparation_budget if len(budgets) == 2 else asyncio.timeout(None)
+
+    # The first timeout is retry retirement; the second owns source preparation.
+    listener_asyncio = Mock(wraps=asyncio)
+    listener_asyncio.timeout.side_effect = controlled_timeout
+    monkeypatch.setattr("src.waits.listener.asyncio", listener_asyncio)
+    observing, queued = asyncio.Event(), asyncio.Event()
+    original_read = reader.side_effect
+    original_event = listener._redispatch_event
+
+    async def first_observation_stalls(conn, cond):
+        if reader.await_count == 1:
+            observing.set()
+            await queued.wait()
+            preparation_budget.reschedule(asyncio.get_running_loop().time())
+            await asyncio.Event().wait()
+        return await original_read(conn, cond)
+
+    async def queue_recovery(conn, args):
+        event = await original_event(conn, args)
+        queued.set()
+        return event
+
+    reader.side_effect = first_observation_stalls
+    monkeypatch.setattr(listener, "_redispatch_event", queue_recovery)
+    tick = asyncio.create_task(listener.tick())
+    request = None
+    try:
+        await observing.wait()
+        assert listener._tick_lock.locked()
+        with principal_context(TRUSTED_LOCAL):
+            request = asyncio.create_task(service.orch._command_handler.execute(
+                "wait_source_redispatch", {
+                    "project_id": "p", "source_seq": seq, "note": "recover deferred CI"}))
+        assert await tick
+        result = await request
+    finally:
+        for pending in (tick, request):
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+    assert result["success"], result
+    assert reader.await_count == 2
+    assert next(r for r in await records(env) if r["id"] == receipt["wait_id"])[
+        "outcome"] == "satisfied"
+    assert next(r for r in await records(env, wait_source_events) if r["seq"] == seq)[
+        "dispatched_at"] is not None
+    assert (await records(env, wait_listener_cursors))[0]["last_seq"] == seq
+    assert "wait.source_dispatch_deferred" in caplog.text
+    assert "phase=observation_preparation reason=work_budget" in caplog.text
+    assert "candidate_waits=1" in caplog.text
 
 
 @pytest.mark.parametrize("conflict", [DeadlockDetectedError, SerializationError])
