@@ -1,0 +1,12 @@
+{
+  "reason": "spec_from_file_location loads one migration module by a Path variable rather than an inline literal; the target file is fixed and enumerable from the call site. The module also reads named JSON fixtures (including a nested building-blocks/ subdirectory) via FIXTURES = Path(__file__).parent / \"fixtures/reports/morning\".",
+  "resolves": [
+    "tests/test_morning_reports.py: unresolved file import"
+  ],
+  "imports": [
+    "migrations.versions.a00000000033_outbound_cancellation"
+  ],
+  "data": [
+    "tests/fixtures/reports/morning/**/*.json"
+  ]
+}
