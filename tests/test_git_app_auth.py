@@ -724,6 +724,9 @@ async def test_isolated_directory_removal_failure_warns_without_replacing_outcom
     attempts = []
 
     def failed_rmtree(cls, name, **kwargs):
+        if not Path(name).is_relative_to(tmp_path):
+            # Another test's TemporaryDirectory finalised by GC during this one.
+            return original_rmtree(name, **kwargs)
         attempts.append(name)
         if error_number is None:
             raise RuntimeError("injected removal failure")
