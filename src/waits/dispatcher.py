@@ -189,10 +189,19 @@ class WakeDispatcher:
                         "retry_after": max(1, exc.details.get("retry_after", 30))}
         if observed.state == "unsatisfied":
             return {"success": True, "committed": False}
+        return await self.settle(
+            conn, row, observed, event=event, task=task, continuation=continuation,
+            changed_keys=changed_keys,
+        )
+
+    async def settle(self, conn, row, observed, *, event, task, continuation, changed_keys):
+        """Finish a fenced wait from a fresh satisfied or unavailable observation."""
+        cond = Condition.from_record(row["condition"])
+        adapter = self.registry.adapter(cond.kind)
         outcome = "satisfied" if observed.state == "satisfied" else "source_unavailable"
         result_ref = adapter.project_result(cond, SourceEvent(
-            source, observed.revision, observed.result_ref or f"wait:{row['id']}:unavailable",
-            dict(observed.facts),
+            adapter.source_key(cond), observed.revision,
+            observed.result_ref or f"wait:{row['id']}:unavailable", dict(observed.facts),
         ))
         return await self.finish(
             conn, row, outcome=outcome, result_ref=result_ref, event=event,

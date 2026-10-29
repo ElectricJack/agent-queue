@@ -17648,6 +17648,30 @@
         "type": "object"
       }
     },
+    "integration_store_maintenance": {
+      "name": "integration_store_maintenance",
+      "description": "Preview or consolidate configured retained stores while keeping unreachable objects.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationStoreMaintenanceArgs",
+        "type": "object"
+      }
+    },
     "integration_supersede_completion": {
       "name": "integration_supersede_completion",
       "description": "Operator or owning supervisor retires an exact stopped Subject with original verified human evidence.",
