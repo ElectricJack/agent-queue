@@ -224,6 +224,16 @@ intact and their released slots are disabled, including clean checkouts, until
 their unknown commits can be reviewed. A slot whose sentinel names another task is
 never a push source, even when its detached HEAD holds commits origin lacks.
 
+A slot stopped part-way through a merge (`MERGE_HEAD` set, conflicts resolved but not
+committed) is preserved as a snapshot whose parents are its HEAD and every `MERGE_HEAD`;
+the preview lists it under `evidence.operations_in_progress` and plans a `quit_merge`
+step before the `detach`. `--apply` runs `git merge --quit` only after that snapshot is
+published, so the staged resolution stays on disk and the merge itself lives on origin.
+Commits the merge brings in must be on origin already or made after the claim. A merge
+with unmerged paths, a rebase, a cherry-pick or a revert in progress is refused as
+`operation_in_progress` in both the preview and `--apply`, as is a merge with
+`--no-push`; nothing in the checkout is touched.
+
 `--no-push` releases without publishing anything, combined with either the preview or
 `--apply`. Nothing is proved, snapshotted or pushed, so unpublished work does not
 refuse the release with `unproven_task_work`. Each unpublished source appears in
@@ -271,6 +281,8 @@ as the recovery result. Dry runs do not write an audit row.
 | `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. A drain-acked pool worker holding a retired repair delegate, or still bound to a task whose close already committed, is stopped automatically (see the repair-delegate section and the paragraph below this table). |
 | `checkout_in_use` | A live session holds the worktree the branch is checked out in. | Close that session or hand it off, then retry. |
 | `unproven_task_work` | Unpublished work lacks the recorded origin, claim time, matching slot sentinel or task-ref ancestry. | Inspect the preview evidence and preserve the work under its actual task. Do not substitute the slot HEAD for a missing task ref. To release without publishing, rerun with `--no-push`. |
+| `operation_in_progress` | A checkout the release must detach or snapshot is part-way through a rebase, cherry-pick or revert, or a merge with unmerged paths (or any merge under `--no-push`). `evidence.operations_in_progress` names the worktree and operation. | Finish or abort the operation in that checkout (for example `git merge --abort`, or resolve and `git add`), then retry. |
+| `recovery_failed` | The check raised outside the named refusals, usually a local Git command failing; `evidence.detail` carries the error. The row still exists and was not released. | Fix the cause named in `evidence.detail`, then retry. |
 | `origin_unreachable` | `git fetch` or the preservation push failed (network, auth, rate limit). | Fix connectivity or auth, then retry. |
 | `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
 | `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Preview the current task with `aq integration release-owner --task-id TASK_ID --dry-run`. |

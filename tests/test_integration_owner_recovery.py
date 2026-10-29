@@ -766,6 +766,119 @@ async def test_a_dry_run_plans_the_preservation_and_changes_nothing(env):
     assert (await env.row("o10"))["handoff_state"] == "attached"
 
 
+async def _mid_merge_slot(env, task_id: str, *, resolve: bool = True):
+    """A writer stopped between resolving a merge conflict and committing it."""
+    old_main = git(env.base, "rev-parse", "main")
+    env.branch(f"aq/{task_id}")
+    (env.base / "base.txt").write_text("main moved\n")
+    git(env.base, "commit", "-qam", "main moves")
+    git(env.base, "push", "-q", "origin", "main")
+    incoming = git(env.base, "rev-parse", "main")
+    slot = await env.slot("slot", f"aq/{task_id}")
+    (slot / "base.txt").write_text("branch edit\n")
+    git(slot, "commit", "-qam", "branch edits base")
+    head = git(slot, "rev-parse", "HEAD")
+    git(slot, "push", "-q", "origin", f"aq/{task_id}")
+    with pytest.raises(subprocess.CalledProcessError):
+        git(slot, "merge", "--no-edit", "main")
+    if resolve:
+        (slot / "base.txt").write_text("resolved\n")
+        git(slot, "add", "base.txt")
+    await env.task(task_id)
+    await env.session(f"s-{task_id}", work_dir=slot)
+    await env.owner(
+        f"o-{task_id}", f"aq/{task_id}", task_id, session_id=f"s-{task_id}",
+        workspace_id="ws-slot", origin_base=old_main,
+    )
+    return slot, head, incoming
+
+
+def _merging(path) -> bool:
+    merge_head = Path(git(path, "rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"))
+    return merge_head.exists()
+
+
+async def test_a_resolved_uncommitted_merge_is_preserved_with_both_parents_then_detached(env):
+    slot, head, incoming = await _mid_merge_slot(env, "tm")
+
+    preview = await env.service().recover("o-tm", principal="sweep", dry_run=True)
+
+    assert preview.outcome == "preserved_and_released"
+    assert preview.evidence["operations_in_progress"] == [
+        {"worktree": str(slot), "operation": "merge", "merge_heads": [incoming],
+         "unmerged": False},
+    ]
+    assert {"action": "quit_merge", "worktree": str(slot)} in (
+        preview.evidence["planned"]
+    )
+    assert _merging(slot) and not detached(slot)
+
+    result = await env.service().recover("o-tm", principal="sweep")
+
+    assert result.outcome == "preserved_and_released", result.evidence.get("detail")
+    preserved = remote_sha(env.origin, "aq/tm")
+    assert preserved == result.evidence["preserved_sha"]
+    assert git(env.origin, "rev-list", "--parents", "-n1", preserved).split()[1:] == [
+        head, incoming,
+    ]
+    assert git(env.origin, "show", f"{preserved}:base.txt") == "resolved"
+    # Only the merge bookkeeping is forgotten; the resolution stays on disk and staged.
+    assert not _merging(slot)
+    assert (slot / "base.txt").read_text() == "resolved\n"
+    assert git(slot, "diff", "--cached", "--name-only") == "base.txt"
+    assert git(slot, "rev-parse", "HEAD") == head
+    assert detached(slot)
+    assert result.evidence["merges_quit"] == [str(slot)]
+    assert (await env.row("o-tm"))["handoff_state"] == "released"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_an_unresolved_merge_is_refused_before_any_git_mutation(env, dry_run):
+    slot, head, _incoming = await _mid_merge_slot(env, "tu", resolve=False)
+
+    result = await env.service().recover("o-tu", principal="sweep", dry_run=dry_run)
+
+    assert (result.outcome, result.reason) == ("not_eligible", "operation_in_progress")
+    assert "unmerged" in result.evidence["detail"]
+    assert result.evidence["operations_in_progress"][0]["unmerged"] is True
+    assert remote_sha(env.origin, "aq/tu") == head
+    assert _merging(slot) and not detached(slot)
+    assert (await env.row("o-tu"))["handoff_state"] == "attached"
+
+
+async def test_a_merge_is_never_quit_without_publishing_it(env):
+    slot, head, _incoming = await _mid_merge_slot(env, "tn")
+
+    result = await env.service().recover("o-tn", principal="sweep", no_push=True)
+
+    assert (result.outcome, result.reason) == ("not_eligible", "operation_in_progress")
+    assert "--no-push" in result.evidence["detail"]
+    assert remote_sha(env.origin, "aq/tn") == head
+    assert _merging(slot) and not detached(slot)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_a_cherry_pick_in_progress_is_refused(env, dry_run):
+    env.branch("aq/tc")
+    (env.base / "base.txt").write_text("main moved\n")
+    git(env.base, "commit", "-qam", "main moves")
+    picked = git(env.base, "rev-parse", "main")
+    slot = await env.slot("slot", "aq/tc")
+    (slot / "base.txt").write_text("branch edit\n")
+    git(slot, "commit", "-qam", "branch edits base")
+    with pytest.raises(subprocess.CalledProcessError):
+        git(slot, "cherry-pick", picked)
+    await env.task("tc")
+    await env.session("s-tc", work_dir=slot)
+    await env.owner("o-tc", "aq/tc", "tc", session_id="s-tc", workspace_id="ws-slot")
+
+    result = await env.service().recover("o-tc", principal="sweep", dry_run=dry_run)
+
+    assert (result.outcome, result.reason) == ("not_eligible", "operation_in_progress")
+    assert result.evidence["operations_in_progress"][0]["operation"] == "cherry_pick"
+    assert not detached(slot)
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("dirty", [False, True])
 @pytest.mark.parametrize("matching_sentinel", [False, True])
@@ -1667,6 +1780,29 @@ async def test_recover_many_runs_each_row(env):
         ("oa", "released", None),
         ("nope", "not_eligible", "not_found"),
     ]
+
+
+async def test_recover_many_reports_a_row_whose_check_raised(env, monkeypatch):
+    from src.git.manager import GitError
+
+    service = env.service()
+    real = service.recover
+
+    async def recover(owner_row_id, **kwargs):
+        if owner_row_id == "boom":
+            raise GitError("fatal: cannot switch branch while merging")
+        return await real(owner_row_id, **kwargs)
+
+    monkeypatch.setattr(service, "recover", recover)
+
+    results = await service.recover_many(["boom", "nope"], principal="sweep", dry_run=True)
+
+    # A row that exists is never reported as missing, or dropped from the result.
+    assert [(r.owner_row_id, r.outcome, r.reason, r.dry_run) for r in results] == [
+        ("boom", "not_eligible", "recovery_failed", True),
+        ("nope", "not_eligible", "not_found", True),
+    ]
+    assert "cannot switch branch while merging" in results[0].evidence["detail"]
 
 
 # ---------------------------------------------------------------------------

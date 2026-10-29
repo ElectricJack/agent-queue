@@ -1,0 +1,7 @@
+{
+  "generic_dependencies": {
+    "src/git/worktree_operation.py::_OPERATIONS": "Generic vocabulary of per-worktree Git operation state files; no integration state or authority.",
+    "src/git/worktree_operation.py::operation_in_progress": "Generic read of a worktree's in-progress merge, rebase, cherry-pick or revert state files; no integration state, policy or ref mutation.",
+    "src/git/worktree_operation.py::unkeepable": "Generic predicate naming an in-progress Git operation a snapshot commit cannot keep; no integration state or authority."
+  }
+}
