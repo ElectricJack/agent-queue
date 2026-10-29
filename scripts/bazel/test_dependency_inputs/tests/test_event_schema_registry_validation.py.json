@@ -1,0 +1,4 @@
+{
+  "reason": "The only docs-prefixed literal is the sample event payload \"rel_path\": \"docs/specs/thing.md\" under workspace.spec.changed in the fixture of example payloads used to validate the event schema registry; it is a synthetic placeholder value, not a path this test reads, so no docs/ file is needed.",
+  "docs": false
+}

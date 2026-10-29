@@ -1,0 +1,7 @@
+{
+  "reason": "The only docs-tree literal is the __file__-relative Path join to a single named file, docs/reference/cli-command-inventory.json, read once as a committed fixture for the nudge-command assertion; it is not a directory read, so the whole docs/ tree is not needed.",
+  "docs": false,
+  "data": [
+    "docs/reference/cli-command-inventory.json"
+  ]
+}

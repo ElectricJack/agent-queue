@@ -1,0 +1,6 @@
+{
+  "reason": "lookup() resolves getattr(tables, table_name) dynamically, where tables is the already-imported src.database.tables module; every call site in this file passes one of four literal Table names already defined there, so the module is already in this file's import closure via its own static import.",
+  "resolves": [
+    "src/messages/submission.py: unresolved dynamic import in test helper lookup"
+  ]
+}

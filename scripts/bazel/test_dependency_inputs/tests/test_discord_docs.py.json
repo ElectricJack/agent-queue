@@ -1,0 +1,7 @@
+{
+  "reason": "_current_docs() recursively globs every docs/**/*.md file as a genuine directory read (filtering superpowers/plans and archive paths in Python afterward); the narrowest static declaration is every markdown file under docs/, not the whole docs/ data tree (which also carries non-markdown assets this test never opens).",
+  "docs": false,
+  "data": [
+    "docs/**/*.md"
+  ]
+}

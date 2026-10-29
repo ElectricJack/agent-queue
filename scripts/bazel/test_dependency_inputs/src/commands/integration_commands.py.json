@@ -1,0 +1,6 @@
+{
+  "reason": "_train_control and _repair_request resolve getattr(contracts, model_name) dynamically, where contracts is the already-imported src.commands.contracts.integration module; every call site passes one of a fixed set of literal Pydantic request class names already defined there, so the module is already in this file's import closure via its own static import.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}
