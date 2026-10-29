@@ -53,6 +53,13 @@ log = logging.getLogger(__name__)
 PROMOTION_CONTEXT = "promotion_intent"
 PROMOTION_RESULT = "promotion_result"
 PROMOTION_PUBLISH = "promotion_publish_intent"
+PROMOTION_SOURCE_DEFERRED = "integration.promotion_source_deferred"
+
+
+def promotion_source_retry_scope(repository_id, step, source):
+    """Bind a request-time CI refusal to the exact continuous source and flow."""
+    return json.dumps({"repository_id": repository_id, "step": step, "source_sha": source},
+                      sort_keys=True)
 
 
 async def backmerge_ledger(conn, repository_id):
@@ -1022,6 +1029,78 @@ async def fail_stranded_promotion_tasks_on(db, conn, *, now, **scope) -> list[st
         await db._record_recovery_failure_generation_on(
             conn, task_id, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, now)
     return ids
+
+
+async def supersede_promotion_tasks_on(db, conn, *, batch_id, source, actor, now):
+    """Retire a cancelled continuous predecessor without creating a failed attempt."""
+    from src.database.queries.blocked_state import OBSOLETE_META_KEY
+
+    rows = (await conn.execute(stranded_promotion_tasks(batch_id=batch_id)
+        .with_for_update(of=tasks))).mappings().all()
+    for row in rows:
+        task_id = row["task_id"]
+        reason = f"Superseded by continuous source {source}"
+        result = {"disposition": "superseded", "batch_id": batch_id,
+                  "source_sha": row["policy_snapshot"][PROMOTION_CONTEXT]["source_sha"],
+                  "superseded_by_source": source}
+        await db._upsert_meta(task_id, PROMOTION_RESULT, result, conn=conn)
+        await db._upsert_meta(task_id, "work_outcome", "abandoned", conn=conn)
+        await db._upsert_meta(task_id, OBSOLETE_META_KEY, {
+            "reason": reason, "closed_by": actor, "closed_at": now,
+            "previous_status": "IN_PROGRESS", "cleanup": {"state": "clear"},
+        }, conn=conn)
+        await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id == task_id)
+            .values(status="COMPLETED", updated_at=now))
+        await conn.execute(insert(task_completion_records).values(
+            id=f"promotion-superseded:{task_id}", task_id=task_id,
+            outcome="pass", work_outcome="abandoned", summary=reason,
+            notes=json.dumps(result, sort_keys=True), completed_at=now,
+        ))
+    return [row["task_id"] for row in rows]
+
+
+async def link_superseded_promotions_on(db, conn, *, batch, member, meta):
+    """Attach retired predecessors to their first successfully authored successor."""
+    from src.database.queries.blocked_state import OBSOLETE_META_KEY
+
+    rows = (await conn.execute(select(tasks.c.id, task_metadata.c.value,
+        integration_batches.c.policy_snapshot).select_from(
+            integration_batches.join(integration_batch_members,
+                integration_batch_members.c.batch_id == integration_batches.c.id)
+            .join(tasks, tasks.c.id == integration_batch_members.c.task_id)
+            .join(task_metadata, task_metadata.c.task_id == tasks.c.id)).where(
+                integration_batches.c.project_id == batch.project_id,
+                integration_batches.c.repository_id == batch.repository_id,
+                integration_batches.c.target_ref == batch.target_ref,
+                integration_batches.c.trigger == "promotion",
+                integration_batches.c.intent == "aborted",
+                tasks.c.status == "COMPLETED", tasks.c.task_type == "promotion",
+                task_metadata.c.key == PROMOTION_RESULT,
+            ).order_by(tasks.c.id).with_for_update(of=tasks))).mappings().all()
+    linked = []
+    for row in rows:
+        result = json.loads(row["value"])
+        previous = row["policy_snapshot"][PROMOTION_CONTEXT]
+        if (result.get("disposition") != "superseded" or result.get("successor_task_id")
+                or any(previous["step"][key] != meta["step"][key]
+                       for key in ("id", "source", "target"))
+                or previous.get("kind", "promotion") != meta.get("kind", "promotion")):
+            continue
+        task_id = row["id"]
+        result.update(successor_task_id=member.task_id, successor_batch_id=batch.id,
+                      successor_request_id=meta["request_id"],
+                      superseded_by_source=meta["source_sha"])
+        await db._upsert_meta(task_id, PROMOTION_RESULT, result, conn=conn)
+        obsolete = json.loads(await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == OBSOLETE_META_KEY)))
+        obsolete["replacement_task_id"] = member.task_id
+        await db._upsert_meta(task_id, OBSOLETE_META_KEY, obsolete, conn=conn)
+        await conn.execute(update(task_completion_records).where(
+            task_completion_records.c.id == f"promotion-superseded:{task_id}",
+        ).values(notes=json.dumps(result, sort_keys=True)))
+        await db.add_dependency(member.task_id, task_id, "supersedes", conn=conn)
+        linked.append(task_id)
+    return linked
 
 
 class PromotionIntentInvalid(ValueError):

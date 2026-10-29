@@ -27,6 +27,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
     archived_tasks,
+    events,
     integration_batch_members,
     integration_batches,
     integration_check_evidence,
@@ -3503,9 +3504,11 @@ class DaemonLanes:
         """Notify reviewed continuous policy when exact source push CI becomes green."""
         from src.integration.promotion_steps import (
             FlowSchema,
+            PROMOTION_SOURCE_DEFERRED,
             PromotionSourceRefusal,
             check_source_green,
             promotion_policy_event,
+            promotion_source_retry_scope,
             step_required_checks,
         )
         from src.playbooks.services import resolve_integration_route
@@ -3530,6 +3533,14 @@ class DaemonLanes:
             flow = await conn.scalar(select(projects.c.promotion_flow).where(
                 projects.c.id == target.project_id,
                 projects.c.integration_repository_id == target.repository_id))
+            retry = await conn.scalar(select(func.max(events.c.id)).where(
+                events.c.project_id == target.project_id,
+                events.c.event_type == PROMOTION_SOURCE_DEFERRED,
+                events.c.payload == promotion_source_retry_scope(
+                    target.repository_id, target.step, source),
+            ))
+        if retry is not None:
+            identity += f":retry:{retry}"
         # The source cannot supply its own trust anchors or check set.
         default = snapshot.observation.source_heads.get(
             "refs/remotes/origin/" + retained.default_branch)

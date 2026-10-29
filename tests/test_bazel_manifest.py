@@ -235,7 +235,10 @@ def test_graph_is_reproducible_and_matches_catalogue():
         assert manifest["modules"][path]["areas"] == entry["areas"]
         assert manifest["modules"][path]["markers"] == entry["markers"]
     for relative, rendered in targets.generate(ROOT).items():
-        assert (ROOT / relative).read_text() == rendered, relative
+        # Keep pytest from diffing multi-megabyte manifests on drift: rendering
+        # that diff can time out and hide the path that actually needs repair.
+        matches = (ROOT / relative).read_text() == rendered
+        assert matches, f"Bazel target drift: {relative} (run generate_targets.py)"
 
 
 def test_workflow_obligations_preserve_splits_overlap_and_performance():
