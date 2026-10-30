@@ -2,5 +2,8 @@
   "resolves": [
     "tests/test_ci_trigger_policy.py: unresolved dynamic import in test helper lookup"
   ],
-  "reason": "_evaluate() calls eval() on a GitHub Actions if: expression translated to a restricted boolean Python expression ({'__builtins__': {}}); it never imports or loads a module."
+  "data": [
+    "src/integration/hosted_attestation.py"
+  ],
+  "reason": "_evaluate() calls eval() on a GitHub Actions if: expression translated to a restricted boolean Python expression ({'__builtins__': {}}); it never imports or loads a module. test_main_attestation_is_the_specified_audit_workflow additionally asserts Path('src/integration/hosted_attestation.py').is_file() against a path string it extracts at runtime from parsed workflow YAML, which static import analysis cannot see."
 }

@@ -1,0 +1,6 @@
+{
+  "data": [
+    "src/prompts/task_templates/*.md"
+  ],
+  "reason": "render_task_template() builds SHIPPED_TASK_TEMPLATES / f'{name}.md' from a runtime string and reads it with Path.is_file()/read_text(); static import analysis never sees which shipped template a caller needs, so every caller of render_task_template/render_repair_task (test_ci_main_sentinel.py, test_ci_baseline_status.py, test_file_command_handlers.py, test_prompt_task_templates.py) needs the whole shipped templates directory available."
+}
