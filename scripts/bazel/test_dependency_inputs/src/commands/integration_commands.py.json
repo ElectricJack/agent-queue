@@ -1,0 +1,7 @@
+{
+  "imports": ["src.commands.contracts.integration"],
+  "reason": "_train_control() calls getattr(contracts, model_name) where contracts is the locally imported src.commands.contracts.integration module and model_name is a caller-supplied literal naming one of its request model classes; the target module is already in this file's import closure.",
+  "resolves": [
+    "src/commands/integration_commands.py: unresolved dynamic import in test helper lookup"
+  ]
+}

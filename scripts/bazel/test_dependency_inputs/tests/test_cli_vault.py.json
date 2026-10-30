@@ -1,0 +1,4 @@
+{
+  "imports": ["src.vault"],
+  "reason": "runner.invoke(cli, [\"vault\", \"migrate\", ...]) dispatches Click's 'vault migrate' command by name at runtime; src/cli/vault.py's handler does a function-local `from src.vault import run_vault_migration` that the closure's lazy per-function activation never statically reaches (the function is only referenced through Click's command registry, not a direct name reference), and the test also mocks `src.vault.run_vault_migration` via a string-based unittest.mock.patch target."
+}

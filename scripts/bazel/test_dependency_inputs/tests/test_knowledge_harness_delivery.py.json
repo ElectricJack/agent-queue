@@ -1,0 +1,4 @@
+{
+  "data": ["tests/fixtures/knowledge/manifest.schema.json"],
+  "reason": "runpy.run_path(str(script)) executes scripts/evaluate-knowledge.py at runtime; the closure includes that script as a data file but never scans its body, so load_schema()'s read of FIXTURES / \"manifest.schema.json\" is invisible to this test's data-file discovery even though the sibling integrated fixtures (referenced directly in this test file) are found."
+}

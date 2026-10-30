@@ -1,0 +1,14 @@
+{
+  "data": [
+    "src/prompts/default_playbooks/*.md",
+    "src/prompts/reviewed_playbooks/default-assignment-routing/*",
+    "src/prompts/reviewed_playbooks/provider-usage-probe/*",
+    "src/prompts/reviewed_playbooks/provider-failover/*",
+    "src/prompts/reviewed_playbooks/supervisor-failure-triage/*",
+    "src/prompts/reviewed_playbooks/default-pipeline/*",
+    "src/prompts/reviewed_playbooks/morning-report/*",
+    "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
+    "src/prompts/reviewed_playbooks/supervisor-digest/source.md"
+  ],
+  "reason": "ensure_default_playbooks (src/vault.py) does sorted(os.listdir(defaults_dir)) over src/prompts/default_playbooks/ (defaults_dir built from Path(__file__).parent, not a literal), then for each non-excluded *.md file copies reviewed_playbooks/{id}/source.md; the analyzer's literal-string data-file heuristic only ever sees default-pipeline.md (referenced literally elsewhere) and misses the other 5 default_playbooks/*.md files. ensure_vault_layout -> install_initial_playbooks -> ensure_reviewed_playbook_bundles(ids=INITIAL_SYSTEM_PLAYBOOK_IDS) shutil.copytree()s each bundle directory in full (src/playbooks/required.py), and ensure_default_playbooks copies each id's source.md; both iterate module-level id tuples (REQUIRED_SYSTEM_PLAYBOOK_IDS, DEFAULT_SYSTEM_PLAYBOOK_IDS, INITIAL_SYSTEM_PLAYBOOK_IDS) via a loop variable joined onto a Path rather than a literal string, so the static analyzer's literal-string data-file heuristic never sees these reviewed_playbooks/<id> paths either. This test also reads morning-report/supervisor-hourly-report/supervisor-digest source.md directly by iterating a literal tuple at test_vault.py's module level."
+}
