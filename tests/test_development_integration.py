@@ -2128,11 +2128,13 @@ async def test_retained_repack_preserves_refs_and_all_unreachable_objects(setup,
     assert service.git._retained_verified[key][1] == baseline[1]
     [repack] = [call for call in run.await_args_list if 'repack' in call.args[0]]
     assert '-k' in repack.args[0] and repack.kwargs['low_priority'] is True
-    assert repack.kwargs['timeout'] == 240
+    assert repack.kwargs['timeout'] == item['repack_budget_seconds'] == 240
+    assert not repack.kwargs.get('lock_held')
     git(store, 'fsck', '--full', '--no-dangling')
 
 
-@pytest.mark.parametrize('case', ['unverified_addition', 'connectivity_failed'])
+@pytest.mark.parametrize('case', ['unverified_addition', 'connectivity_failed',
+                                  'written_during_repack'])
 async def test_retained_repack_carries_only_an_exact_connected_clean_result(
     setup, tmp_path, case,
 ):
@@ -2146,17 +2148,27 @@ async def test_retained_repack_carries_only_an_exact_connected_clean_result(
     await service.git.arecord_retained_store_verified(
         gitdir, *await service.git.aretained_store_baseline(gitdir))
     normal = service.git._run_isolated_import_git
+    run = service.git.arun_git_result
 
     async def isolated(args, **kwargs):
         if case == 'connectivity_failed' and '--connectivity-only' in args:
             raise GitError('retained Git object integrity is unavailable: missing tree')
         return await normal(args, **kwargs)
 
+    async def repack(args, **kwargs):
+        result = await run(args, **kwargs)
+        if case == 'written_during_repack' and 'repack' in args:
+            # The repack holds no repository transaction; a writer beside it is unverified.
+            (store / 'added').write_text('written beside the repack\n')
+            git(store, 'hash-object', '-w', str(store / 'added'))
+        return result
+
     if case == 'unverified_addition':
         (store / 'added').write_text('added after the clean check\n')
         git(store, 'hash-object', '-w', str(store / 'added'))
     maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
-    with patch.object(service.git, '_run_isolated_import_git', isolated):
+    with patch.object(service.git, '_run_isolated_import_git', isolated), \
+            patch.object(service.git, 'arun_git_result', repack):
         result = await maintenance.run('p', apply=True)
     assert result['evidence']['stores'][0]['outcome'] == 'repacked'
     assert not await service.git.aretained_store_verified(gitdir)
@@ -2290,15 +2302,82 @@ async def test_retained_maintenance_tick_rotates_without_acquisition(setup, tmp_
     await service.git.acreate_bare_checkout(repo.url, str(bare))
     unreachable = maintenance_packs(bare)
     maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
-    first = await maintenance.tick(10000)
+
+    async def visit(now):
+        assert await maintenance.tick(now) is None
+        return await maintenance._pass
+
+    first = await visit(10000)
     assert first['outcome'] == 'repacked' and first['cache'] == str(store)
-    assert await maintenance.tick(10001) is None
-    second = await maintenance.tick(10300)
+    finished = maintenance._pass
+    await maintenance.tick(10001)
+    assert maintenance._pass is finished and not maintenance._run_lock.locked()
+    second = await visit(10300)
     assert second['outcome'] == 'repacked' and second['cache'] == str(observer)
-    third = await maintenance.tick(10600)
+    third = await visit(10600)
     assert third['outcome'] == 'repacked' and third['cache'] == str(bare)
     for oid in unreachable:
         assert git(bare, 'cat-file', '-t', oid) == 'blob'
+
+
+def test_retained_repack_budget_scales_with_store_bytes():
+    from src.integration.repository_maintenance import (
+        REPACK_MAX_TIMEOUT_SECONDS,
+        REPACK_TIMEOUT_SECONDS,
+        repack_budget,
+    )
+
+    gib = 1024 ** 3
+    assert repack_budget(0, 0) == REPACK_TIMEOUT_SECONDS
+    assert repack_budget(20 * 1024 ** 2, 8 * 1024 ** 2) == REPACK_TIMEOUT_SECONDS
+    # Measured live stores (calm-lantern-36): every one exceeds the former flat 240 s.
+    bare = repack_budget(1_496_742_884, 0)
+    development = repack_budget(1_434_255_424, 1_206_604 * 1024)
+    observer = repack_budget(1_398_137_630, 2_316_644 * 1024)
+    assert REPACK_TIMEOUT_SECONDS > 59 * 2 and bare >= REPACK_TIMEOUT_SECONDS
+    assert REPACK_TIMEOUT_SECONDS < development < observer < REPACK_MAX_TIMEOUT_SECONDS
+    assert repack_budget(100 * gib, 100 * gib) == REPACK_MAX_TIMEOUT_SECONDS
+
+
+async def test_retained_maintenance_tick_repacks_in_background_without_store_mutex(
+    setup, tmp_path,
+):
+    import asyncio
+
+    from src.git.repository_lock import repository_lock_wait_limit
+    from src.integration.repository_maintenance import RetainedStoreMaintenance
+
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    maintenance_packs(store)
+    maintenance = RetainedStoreMaintenance(db, service.git, tmp_path / 'data')
+    entered, reaped = asyncio.Event(), asyncio.Event()
+    normal = service.git.arun_git_result
+
+    async def blocked(args, **kwargs):
+        if 'repack' in args:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                reaped.set()
+        return await normal(args, **kwargs)
+
+    with patch.object(service.git, 'arun_git_result', blocked):
+        # The integration source returns at once; the repack runs as its own task.
+        assert await asyncio.wait_for(maintenance.tick(10000), 1) is None
+        await asyncio.wait_for(entered.wait(), 30)
+        # Claim preparation's short wait on the store's mutex still succeeds.
+        with repository_lock_wait_limit(0.05):
+            async with service.git.arepository_transaction(str(store)):
+                pass
+        await maintenance.tick(10300)
+        assert not maintenance._pass.done()  # One visit at a time.
+        await maintenance.stop()
+    assert reaped.is_set() and maintenance._pass.cancelled()
+    assert not maintenance._run_lock.locked()
+    result = await maintenance.run('p', apply=True)
+    assert result['evidence']['stores'][0]['outcome'] == 'cooldown'
 
 
 async def test_retained_maintenance_cancellation_releases_writer_and_keeps_cooldown(setup, tmp_path):
