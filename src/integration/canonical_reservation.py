@@ -112,7 +112,13 @@ async def reserve_canonical_task_branch(db, task_id: str) -> dict:
         held_workspace = await conn.scalar(select(workspaces.c.id).where(
             workspaces.c.locked_by_task_id == task_id,
         ).limit(1))
-        if task["assigned_agent_id"] or live_session or held_workspace:
+        live_assignment = False
+        if task["assigned_agent_id"]:
+            meta, _ = await db._recovery_context(conn, task)
+            live_assignment = await db._recovery_assignment_is_live(
+                conn, task, meta, stopped_states=("stopped",),
+            )
+        if live_assignment or live_session or held_workspace:
             return {"outcome": "not_eligible", "reason": "task still has a writer or workspace"}
         # Verifiers and repair delegates can share their parent's branch. A
         # missing owner row must not let this producer override their turn.
