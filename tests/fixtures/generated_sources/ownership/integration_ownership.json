@@ -2308,7 +2308,7 @@
       "task_id": "crisp-dune-85"
     },
     "authority": "size-cap-delegation-2026-10-23",
-    "authorized_owned_delta": 6383,
+    "authorized_owned_delta": 6387,
     "bazel_backend_selection_composition": {
       "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
       "authorized_engine_delta": 0,
@@ -3150,8 +3150,8 @@
       "source_revision": "9ee11420309902aafda1d7a81f93866df50896af",
       "task_id": "keen-harbor-84"
     },
-    "measured_engine_lines": 84876,
-    "measured_owned_total": 161882,
+    "measured_engine_lines": 84882,
+    "measured_owned_total": 161886,
     "measured_table_count": 45,
     "missing_target_abort_composition": {
       "authorized_engine_delta": 59,
@@ -3898,6 +3898,32 @@
       "source_revision": "9e41b32405627c58ae6c7232f87f8c907c0f53b0",
       "supervisor_decision_message_id": "msg-8ee61fa011464ba8adc22d6b879d99ca",
       "task_id": "keen-willow-36"
+    },
+    "reused_agent_recovery_assignment_composition": {
+      "authorized_engine_delta": 6,
+      "authorized_owned_delta": 4,
+      "authorized_shared_owned_delta": -2,
+      "authorized_table_delta": 0,
+      "charged_files": {
+        "src/database/queries/task_recovery_queries.py": -2,
+        "src/integration/canonical_reservation.py": 6
+      },
+      "dev_source_revision": "cc998fdde8437d4198ac3f4bac00e471a1a5bb27",
+      "measured_engine_lines": 84882,
+      "measured_owned_total": 161886,
+      "measured_table_count": 45,
+      "operator_decision": "6679052c",
+      "previous_measured_engine_lines": 84876,
+      "previous_measured_owned_total": 161882,
+      "previous_measured_table_count": 45,
+      "reason": "Exact supervisor-approved +4 owned/+6 engine/-2 shared/+0 tables for task-scoped reused-agent liveness during restart and recovery hold release. Preserve every historical grant, original baseline and ownership classification, zero remaining headroom, s4_modules expiry and existing storage categories.",
+      "referenced_decision": "size-cap-delegation-2026-10-23",
+      "request_message_id": "msg-853691efb2424ba7bf261d4dda8a2b9c",
+      "source_revision": "b515cc0fa24d99bca175c56a813b44201a3960aa",
+      "supervisor_decision": "SUP-2026-10-29-bright-ember-50-size",
+      "supervisor_decision_message_id": "msg-5edb1c10e0d340699bece69b1c301043",
+      "task_id": "bright-ember-50",
+      "thread_id": "bright-ember-50-size-cap"
     },
     "review_followup_composition": {
       "authorized_engine_delta": 0,

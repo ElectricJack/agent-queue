@@ -1500,11 +1500,9 @@ class TaskRecoveryQueryMixin:
                          and meta.get("claimed_by_session") == row["id"]))
         ):
             raise ValueError("The exact stale assignment's stopped worker must be confirmed")
-        if await conn.scalar(select(sessions.c.id).where(
-            or_(sessions.c.task_id == task["id"],
-                sessions.c.agent_id == task["assigned_agent_id"]),
-            or_(sessions.c.state != "stopped", sessions.c.desired_state == "running"),
-        ).limit(1)) is not None:
+        if await self._recovery_assignment_is_live(
+            conn, task, meta, attempt, stopped_states=("stopped",),
+        ):
             raise ValueError("Task or assigned agent still has a live or retained session")
         await conn.execute(update(tasks).where(
             tasks.c.id == task["id"],
@@ -1753,16 +1751,20 @@ class TaskRecoveryQueryMixin:
                 )
         return dangling_agent_id
 
-    async def _recovery_assignment_is_live(self, conn, task, meta, attempt):
+    async def _recovery_assignment_is_live(
+        self, conn, task, meta, attempt=None, *, stopped_states=("stopped", "quarantined"),
+    ):
         """Whether the task's assigned agent still holds it, or might again.
 
         A soft-deleted agent, one whose sessions all stopped, or a pool agent
         reused for another task leaves an assignment nothing here can act on
         (steady-impact-12, wise-glacier-45). It is live while the agent row
-        names this task, or while a session that is not stopped and not bound
-        to another task is the claim record's holder or the agent's own (bound
-        here, or unbound while the agent is free). The caller already
-        confirmed the incident's own session.
+        names this task, or while a session that is not stopped is bound here.
+        An unbound session is live if it is the claim record's holder, or the
+        agent's own while the agent is free. The caller already
+        confirmed the incident's own session when it passes an attempt. Hold
+        release and canonical reservation require strictly stopped sessions;
+        retry retains its existing quarantined-session policy.
         """
         agent_id = task["assigned_agent_id"]
         agent = (await conn.execute(select(agents.c.current_task_id).where(
@@ -1774,10 +1776,10 @@ class TaskRecoveryQueryMixin:
         free = agent is None or agent.current_task_id is None
         holder = meta.get("claimed_by_session")
         return await conn.scalar(select(sessions.c.id).where(
-            sessions.c.id != attempt["session_id"],
-            or_(sessions.c.state.not_in(("stopped", "quarantined")),
+            *([sessions.c.id != attempt["session_id"]] if attempt else []),
+            or_(sessions.c.state.not_in(stopped_states),
                 sessions.c.desired_state == "running"),
             or_(here, sessions.c.task_id.is_(None)),
-            or_(and_(sessions.c.agent_id == agent_id, *([] if free else [here])),
+            or_(here, and_(sessions.c.agent_id == agent_id, *([] if free else [here])),
                 *([sessions.c.id == holder] if isinstance(holder, str) else [])),
         ).limit(1)) is not None

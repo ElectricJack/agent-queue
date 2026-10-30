@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +24,7 @@ from src.database.tables import (
     task_integration_checkpoints,
 )
 from src.integration.canonical_reservation import reserve_canonical_task_branch
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import Agent, Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
 
 
@@ -97,6 +98,70 @@ async def test_restart_restores_missing_canonical_reservation_before_ready(db):
         "reserved",
     )
     assert (await reserve_canonical_task_branch(db, "producer"))["outcome"] == "already_reserved"
+
+
+@pytest.mark.parametrize("bound", ["elsewhere", "working_here", "session_here", "unbound"])
+async def test_restart_scopes_reused_agent_assignment_to_the_producer(db, bound):
+    await db.create_agent(Agent(id="reused", name="Reused", profile_id="worker"))
+    await db.create_task(Task(
+        id="next", project_id="p", title="Next", description="", status=TaskStatus.IN_PROGRESS,
+        assigned_agent_id="reused",
+    ))
+    await db.update_task("producer", assigned_agent_id="reused")
+    await db.update_agent(
+        "reused", current_task_id="producer" if bound == "working_here" else (
+            None if bound == "unbound" else "next"
+        ),
+    )
+    await db.create_session(SessionRecord(
+        id="stopped", name="stopped", task_id="producer", project_id="p", agent_id="reused",
+        profile_id="worker", harness="fake", provider="fake", lifecycle="pool",
+        state="stopped", desired_state="stopped", epoch="test", instance_token="stopped",
+        work_dir="/never-used", started_at=50,
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="released", repository_id="repo", ref="aq/producer", owner_id="producer",
+            owner_role="worker", handoff_state="released", fence_token=8,
+            created_at=50, updated_at=100,
+        ))
+    for sid, task_id in (("live", "producer" if bound == "session_here" else "next"),
+                         ("idle", None)):
+        await db.create_session(SessionRecord(
+            id=sid, name=sid, task_id=task_id, project_id="p", agent_id="reused",
+            profile_id="worker", harness="fake", provider="fake", lifecycle="pool",
+            state="running" if task_id else "sleeping",
+            desired_state="running" if task_id else "sleeping", epoch="test",
+            instance_token=sid, work_dir="/never-used", started_at=100,
+        ))
+    await db.set_task_meta("producer", "claimed_by_session", "live")
+    await db.set_task_meta("producer", "supervisor_recovery_incident", {
+        "id": "held", "decision": "hold", "decided_at": 200,
+    })
+    other_task = asdict(await db.get_task("next"))
+    other_agent = asdict(await db.get_agent("reused"))
+    other_sessions = [asdict(await db.get_session(sid)) for sid in ("live", "idle")]
+
+    result = await TaskCommandsMixin._cmd_restart_task(SimpleNamespace(db=db), {
+        "task_id": "producer", "override_hold": True,
+        "reason": "Restart the released producer after pool agent reuse",
+    })
+
+    assert asdict(await db.get_task("next")) == other_task
+    assert asdict(await db.get_agent("reused")) == other_agent
+    assert [asdict(await db.get_session(sid)) for sid in ("live", "idle")] == other_sessions
+    task = await db.get_task("producer")
+    if bound == "elsewhere":
+        assert result["success"], result
+        assert task.status is TaskStatus.READY and task.assigned_agent_id is None
+        assert (await _owner(db))["owner_id"] == "producer"
+        assert (await _owner(db))["fence_token"] == 9
+    else:
+        assert "writer or workspace" in result["error"], result
+        assert task.status is TaskStatus.BLOCKED and task.assigned_agent_id == "reused"
+        assert (await db.get_task_meta("producer", "supervisor_recovery_incident"))["decision"] == "hold"
+        assert (await _owner(db))["handoff_state"] == "released"
+        assert (await _owner(db))["fence_token"] == 8
 
 
 async def test_restart_refuses_a_competing_owner_and_keeps_task_blocked(db):

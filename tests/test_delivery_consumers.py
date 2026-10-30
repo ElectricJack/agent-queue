@@ -2221,38 +2221,55 @@ async def test_unknown_delivery_observation_withholds_edge_consumers(
     orch = Orchestrator(config)
     orch.db, orch.git, orch.development_integration = db, observer.git, service
     orch.integration_service = IntegrationService(db, None, development_subject_runtime=object())
-    with monkeypatch.context() as unavailable:
-        if observation == "fetch_error":
-            unavailable.setattr(observer.git, "afetch_origin",
-                                AsyncMock(side_effect=GitError("offline")))
-        view = await observe_admission(
-            db, ["waiting", "independent"], service, cached_only=observation == "cold",
-        )
-        assert view.allowed == {"independent"}
-        why = view.reasons["waiting"][0]
-        assert why["code"] == "prerequisite_delivery" and why["ref"] == "done"
-        assert "unproven" in why["detail"]
-        assert {"absent": "observer absent", "cold": "cache cold",
-                "fetch_error": "fetch failed"}[observation] in why["detail"]
-        assert not await view.is_fresh("waiting")
-        assert not await view.matches(task_id="waiting")
-        if observation != "absent":
-            changed = view._snapshot.reasons["waiting"][-1]
-            assert changed["code"] == "admission_delivery_changed"
-            assert "done" in changed["detail"]
-        assert await view.matches(task_id="independent")
-        assert await view.counts("p") == {"worker": 1}
-        explained = await CommandHandler(orch, config)._cmd_explain_task({"task_id": "waiting"})
-        assert any(reason["code"] == "prerequisite_delivery" and "unproven" in reason["detail"]
-                   for reason in explained["reasons"])
+    refreshing = db._prerequisite_observer
+    refresh_started, release_refresh = asyncio.Event(), asyncio.Event()
+    if refreshing is not None:
+        refresh_delivery = refreshing._refresh_delivery
+
+        async def blocked_refresh():
+            refresh_started.set()
+            await release_refresh.wait()
+            await refresh_delivery()
+
+        monkeypatch.setattr(refreshing, "_refresh_delivery", blocked_refresh)
+    try:
+        with monkeypatch.context() as unavailable:
+            if observation == "fetch_error":
+                unavailable.setattr(observer.git, "afetch_origin",
+                                    AsyncMock(side_effect=GitError("offline")))
+            view = await observe_admission(
+                db, ["waiting", "independent"], service, cached_only=observation == "cold",
+            )
+            if refreshing is not None:
+                # Keep the cache cold across diagnostic DB awaits, regardless of runner speed.
+                await asyncio.wait_for(refresh_started.wait(), 10)
+            assert view.allowed == {"independent"}
+            why = view.reasons["waiting"][0]
+            assert why["code"] == "prerequisite_delivery" and why["ref"] == "done"
+            assert "unproven" in why["detail"]
+            assert {"absent": "observer absent", "cold": "cache cold",
+                    "fetch_error": "fetch failed"}[observation] in why["detail"]
+            assert not await view.is_fresh("waiting")
+            assert not await view.matches(task_id="waiting")
+            if observation != "absent":
+                changed = view._snapshot.reasons["waiting"][-1]
+                assert changed["code"] == "admission_delivery_changed"
+                assert "done" in changed["detail"]
+            assert await view.matches(task_id="independent")
+            assert await view.counts("p") == {"worker": 1}
+            explained = await CommandHandler(orch, config)._cmd_explain_task({"task_id": "waiting"})
+            assert any(reason["code"] == "prerequisite_delivery" and "unproven" in reason["detail"]
+                       for reason in explained["reasons"])
+    finally:
+        release_refresh.set()
 
     if observation == "absent":
         # Missing configuration is a visible blocker, not a spinning retry.
         assert observer._delivery_refresh_task is None
         return
-    refreshing = db._prerequisite_observer
     refresh = refreshing._delivery_refresh_task
     assert refresh is not None
+    assert not refresh.done()
     # Repeated cold reads coalesce; no train tick or new admission fetch runs.
     refreshing.request_delivery_refresh({"done"})
     assert refreshing._delivery_refresh_task is refresh

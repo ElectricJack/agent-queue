@@ -422,9 +422,17 @@ vetoes release. For an assignment stranded after its sessions stopped, the exist
 `aq task recover --decision release --operator-release --expected-hold-at …`
 control clears it while releasing the exact recovery hold, provided the incident's
 worker is confirmed stopped by its provider, its instance and claim generation
-still match, all sessions for that task and agent are stopped, and no integration
-owner remains. It preserves task status, retry budgets, workspaces and other
-frontier guards; releasing an integration-owned hold never clears its assignment.
+still match, no live or retained session or agent still holds that task, and no
+integration owner remains. A persistent pool agent reassigned to another task
+does not make the old assignment live: its sessions bound elsewhere, and its
+unbound sibling sessions while it holds another task, do not block cleanup.
+Sessions bound to the old task and agents still naming it continue to refuse
+cleanup. Canonical branch reservation during restart uses the same task-scoped
+assignment check, alongside its session, workspace and branch-owner guards;
+the successful restart clears the stale assignment without changing the agent
+or its new task. Hold release preserves task status, retry budgets, workspaces
+and other frontier guards; releasing an integration-owned hold never clears its
+assignment.
 
 `aq project recover-retained-holder` repairs historical stopped-holder bindings
 left by failed publication. It is an operator/live global supervisor control, with a
