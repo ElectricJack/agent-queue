@@ -534,7 +534,8 @@ def prefetch_explains(rows):
         global _explain_batches
         if not _explain_batches:
             return chunk
-        data = observe("task", "explain", "--task-ids", json.dumps(chunk), quiet=True)
+        data = observe("task", "explain", "--task-ids", json.dumps(chunk), "--task-id", chunk[0],
+                       quiet=True)
         if data is None:
             _explain_batches = False
             return chunk

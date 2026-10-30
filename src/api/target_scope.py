@@ -98,6 +98,11 @@ TARGET_REFERENCE_NAMES: Final[frozenset[str]] = frozenset({"depends_on", "artifa
 #: through.
 VALUE_ARGUMENTS: Final[frozenset[str]] = frozenset({"external_message_id"})
 
+#: Command-scoped arguments that name more of another reference's rows.  A
+#: batch explain reads every task it names, so each is fenced exactly as a lone
+#: ``task_id`` is; ``task_ids`` is no generic reference name.
+REFERENCE_ALIASES: Final[dict[tuple[str, str], str]] = {("explain_task", "task_ids"): "task_id"}
+
 #: Preserve the named row's existence independently of its resolved project.
 #: A present row with no owner must never inherit the missing-row allowance.
 Ownership = tuple[bool, str | None]
@@ -441,6 +446,7 @@ def target_references(args: dict, *, command: str | None = None) -> dict[str, li
         # This resolver key labels a nested path, never a top-level argument.
         if name == "receive_new_work.project_id":
             continue
+        name = REFERENCE_ALIASES.get((command, name), name)
         if name in VALUE_ARGUMENTS or not (
             name.endswith(TARGET_REFERENCE_SUFFIX) or name in TARGET_REFERENCE_NAMES
         ):
@@ -448,15 +454,7 @@ def target_references(args: dict, *, command: str | None = None) -> dict[str, li
         values = value if isinstance(value, list | tuple) else [value]
         ids = [item for item in values if isinstance(item, str) and item]
         if ids:
-            found[name] = ids
-    # A batch explain reads every task it names: fence each one exactly as a
-    # lone task_id is. ``task_ids`` is no generic reference name; other
-    # commands that take one authorize it through their own gates.
-    batch = args.get("task_ids") if command == "explain_task" else None
-    batch_ids = [item for item in batch if isinstance(item, str) and item] if isinstance(
-        batch, list | tuple) else []
-    if batch_ids:
-        found.setdefault("task_id", []).extend(batch_ids)
+            found.setdefault(name, []).extend(ids)
     receive = args.get("receive_new_work") if command == "provider_allocation_preview" else None
     if isinstance(receive, dict):
         project_id = receive.get("project_id")

@@ -1173,7 +1173,7 @@ def test_sweep_reads_each_blocker_once_and_skips_unused_explanations(tmp_path):
     assert len(gets) == 13
     # One project's twelve explains are one batch read, and no paused task's.
     assert explains == [["aq", "task", "explain", "--task-ids",
-                         json.dumps([f"ready-{i}" for i in range(12)])]]
+                         json.dumps([f"ready-{i}" for i in range(12)]), "--task-id", "ready-0"]]
     assert calls.count(["aq", "task", "get", "--task-id", "delivered"]) == 1
     assert "SWEEP-TIMING total" in proc.stderr
     assert "aq --json task get: 13 calls" in proc.stderr

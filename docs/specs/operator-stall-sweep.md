@@ -87,8 +87,9 @@ uses an explanation request one. Each identical observation, including a failed
 read, is cached for this invocation; many dependents sharing a blocker need only
 one completion read. Scoped patrols do not prefetch foreign-project blockers.
 
-Explanations are read in batches: one `aq task explain --task-ids '<json list>'`
-per project, at most 100 tasks per batch (the daemon's bound); a project with a
+Explanations are read in batches: one `aq task explain --task-ids '<json list>'
+--task-id <first>` per project (`task_id` stays required; the batch is the
+union of both), at most 100 tasks per batch (the daemon's bound); a project with a
 single candidate keeps the per-task read. The daemon answers explains one at a
 time, about a second each under load, and most of that cost is the admission and
 pool observation that a batch shares across one project's tasks. Before batching,

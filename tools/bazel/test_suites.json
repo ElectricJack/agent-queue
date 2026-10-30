@@ -49,7 +49,7 @@
       "configuration_sha256": "256559293c1108fc12e324f773f429c1fff77b71a4047d671532f4128324c6f3",
       "pytest_version": "9.1.1",
       "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
-      "source_head": "cc998fdde8437d4198ac3f4bac00e471a1a5bb27",
+      "source_head": "59f97b05a0c23c9da9b3c5e38232b4f1683bbccc",
       "tool_sha256": "edf71529d50a5c985c9ca33513ebee75a078b8d021bf06ea1b00a6a51e7cddf7"
     },
     "nodes": [
@@ -40060,7 +40060,7 @@
       "tests/test_collaboration_waits.py": "9f0a5b896815b860dcd0f5341afb2662acfc188e23b2179f0531b7d1e896c19e",
       "tests/test_command_capability_authorization.py": "d24845cb1d8d04a5a081e7428edbe58f5f9fe6a47c7477476946acb4ea75a7d0",
       "tests/test_command_contracts_registry.py": "a566426fe94bf41ab64730836f88d469cbb806316013f5856adda484df9096c0",
-      "tests/test_command_descriptors.py": "ecb17506f4377e000ea24567c570e4227ebd180b9c3d4067b961f85cedfd905e",
+      "tests/test_command_descriptors.py": "e8dce0525768fce4ee5a586a8176de3c02a9d256a47dbf0ab284766e3b23790e",
       "tests/test_command_dispatch.py": "97f12e9d17082604920b02e9eb63ae1865ae362c630458a076fb6dd0bdfdeb20",
       "tests/test_command_docs.py": "d4ee8b23febde7f454d095621903b7a3509aaca1c626bc8ba63612e6017f8e22",
       "tests/test_command_executor.py": "14746b7b6d3556a252537e0f8b4f58904f1350f59a36e174d7e891617505f2ff",

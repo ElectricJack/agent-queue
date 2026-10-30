@@ -1161,11 +1161,11 @@ class TestExplainBatch:
 
         observe = AsyncMock(wraps=admission.observe_admission)
         monkeypatch.setattr(admission, "observe_admission", observe)
-        result = await handler._cmd_explain_task({"task_ids": ids})
+        result = await handler._cmd_explain_task({"task_id": ids[0], "task_ids": ids[1:]})
 
         assert result["success"] is True
         entries = result["explanations"]
-        # Duplicates collapse; order is the caller's.
+        # task_id leads; duplicates collapse; order is the caller's.
         assert [e["task_id"] for e in entries] == ids[:-1]
         # One cached observation per project and one fleet measurement, where
         # five single explains pay for each once per task.
@@ -1194,7 +1194,7 @@ class TestExplainBatch:
         # A pool worker token: no task pinned, fenced to its project.
         handler._current_scope = {"kind": "session", "project_id": PROJECT_ID}
 
-        result = await handler._cmd_explain_task({"task_ids": ["mine", "theirs"]})
+        result = await handler._cmd_explain_task({"task_id": "mine", "task_ids": ["theirs"]})
 
         assert result["success"] is True
         mine, theirs = result["explanations"]
@@ -1207,20 +1207,27 @@ class TestExplainBatch:
 
     @pytest.mark.parametrize("task_ids", [[], "a,b", ["a", ""], ["a", 3]])
     async def test_malformed_batch_is_refused(self, handler, task_ids):
-        result = await handler._cmd_explain_task({"task_ids": task_ids})
+        result = await handler._cmd_explain_task({"task_id": "a", "task_ids": task_ids})
         assert result == {
             "success": False, "error": "task_ids must be a non-empty list of task ids",
         }
+
+    async def test_a_batch_still_requires_task_id(self, handler):
+        result = await handler._cmd_explain_task({"task_ids": ["a", "b"]})
+        assert result == {"success": False, "error": "task_id is required"}
 
     async def test_batch_is_bounded(self, handler):
         from src.commands.task_commands import EXPLAIN_BATCH_LIMIT
 
         ids = [f"t{i}" for i in range(EXPLAIN_BATCH_LIMIT + 1)]
-        result = await handler._cmd_explain_task({"task_ids": ids})
+        result = await handler._cmd_explain_task({"task_id": ids[0], "task_ids": ids[1:]})
         assert result["success"] is False
-        assert f"at most {EXPLAIN_BATCH_LIMIT}" in result["error"]
-        ids[-1] = ids[0]  # duplicates do not count against the bound
-        assert (await handler._cmd_explain_task({"task_ids": ids}))["success"] is True
+        assert result["error"] == (
+            f"the batch names {EXPLAIN_BATCH_LIMIT + 1} tasks; at most {EXPLAIN_BATCH_LIMIT}"
+        )
+        ids[-1] = ids[0]  # duplicates, task_id included, do not count against the bound
+        batch = {"task_id": ids[0], "task_ids": ids[1:]}
+        assert (await handler._cmd_explain_task(batch))["success"] is True
 
 
 async def test_explain_includes_shared_operator_decision(handler, db):

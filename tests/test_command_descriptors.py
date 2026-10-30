@@ -2175,7 +2175,9 @@ def test_explain_batch_only_adds_optional_task_ids():
     batch = current["input_schema"]["properties"].pop("task_ids")
     assert (batch["type"], batch["items"], batch["minItems"], batch["maxItems"]) == (
         "array", {"type": "string"}, 1, 100)
-    current["input_schema"]["required"] = ["task_id"]
+    assert current["input_schema"]["required"] == ["task_id"]
+    batch_only = "Also explain these tasks in the same request (at most 100 with task_id)"
+    assert batch["description"].startswith(batch_only)
     assert current == evidence["previous_transport_definition"]
     previous = json.dumps(_before_explain_batch_catalogue(), indent=2) + "\n"
     assert hashlib.sha256(previous.encode()).hexdigest() == (

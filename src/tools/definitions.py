@@ -518,11 +518,12 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
                 "minItems": 1,
                 "maxItems": 100,
                 "description": (
-                    "Explain these tasks in one request instead (at most 100); "
-                    "returns one entry per task under explanations"
+                    "Also explain these tasks in the same request (at most 100 with "
+                    "task_id); returns one entry per task under explanations"
                 ),
             },
         },
+        "required": ["task_id"],
     },
     # ``project_ready`` used to live here too.  It now carries a real entry in
     # ``_ALL_TOOL_DEFINITIONS`` (so the auto-generated CLI exposes

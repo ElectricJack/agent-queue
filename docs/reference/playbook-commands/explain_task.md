@@ -14,14 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:d3f41824b88d321193f4aa44cc86dd800643ab8787866f1b2608417c5f4e0120` |
+| Contract fingerprint | `sha256:23c85aa1e23eabcde48d799c60dda4e3bc14acf85a1f4ca2ff9013623a580f27` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `task_id` | `string` | no | — | Task id to explain |
-| `task_ids` | `string[]` | no | — | Explain these tasks in one request instead (at most 100); returns one entry per task under explanations |
+| `task_id` | `string` | yes | — | Task id to explain |
+| `task_ids` | `string[]` | no | — | Also explain these tasks in the same request (at most 100 with task_id); returns one entry per task under explanations |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `fallback`; quality: `declared`; coarse effect: `read`.

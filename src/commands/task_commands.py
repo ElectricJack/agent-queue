@@ -5850,52 +5850,46 @@ class TaskCommandsMixin:
         Graph reasons first (persistent blockers), then capacity reasons
         (transient — from the last scheduler tick's cached snapshot).
         Cross-project blocking deps name the other project in ``detail``.
-        ``task_ids`` explains a batch instead (``_explain_tasks``).
         See docs/specs/design/work-graph.md §9.
         """
-        if args.get("task_ids") is not None:
-            return await self._explain_tasks(args["task_ids"])
         task_id = args.get("task_id")
         if not task_id:
             return {"success": False, "error": "task_id is required"}
+        if args.get("task_ids") is not None:  # one batch: task_id, then these
+            return await self._explain_tasks(str(task_id), args["task_ids"])
         return await self._explain_task(str(task_id))
 
-    async def _explain_tasks(self, task_ids) -> dict:
-        """Explain each of *task_ids*, sharing the reads one explain repeats.
+    async def _explain_tasks(self, task_id: str, task_ids) -> dict:
+        """Explain *task_id* then *task_ids*, one entry each, in one request.
 
-        Admission evaluates the shared frontier SQL and pool measurement scans
-        every active project: pay for each once per project per request, as
-        ``_cmd_project_ready`` does, instead of once per task. Each entry is
+        Each project's tasks share one admission observation and the batch
+        shares one pool measurement (``_explain_project_tasks``). Each entry is
         exactly what ``task_id`` alone answers, so a missing or out-of-scope
         task fails its own entry, never the batch.
         """
         if (not isinstance(task_ids, list) or not task_ids
                 or not all(isinstance(tid, str) and tid for tid in task_ids)):
             return {"success": False, "error": "task_ids must be a non-empty list of task ids"}
-        ids = list(dict.fromkeys(task_ids))
+        ids = list(dict.fromkeys([task_id, *task_ids]))
         if len(ids) > EXPLAIN_BATCH_LIMIT:
             return {"success": False,
-                    "error": f"task_ids names {len(ids)} tasks; at most {EXPLAIN_BATCH_LIMIT}"}
-        from src.integration.admission import observe_admission
-        from src.routing.readiness import orchestrator_router_ready
-
+                    "error": f"the batch names {len(ids)} tasks; at most {EXPLAIN_BATCH_LIMIT}"}
         by_project: dict[str, list[str]] = {}
+        entries: dict[str, dict] = {}
         for tid in ids:
             task = await self.db.get_task(tid)
             if task is not None and not self._assert_task_in_scope(task):
                 by_project.setdefault(task.project_id, []).append(tid)
-        admission_for: dict[str, object] = {}
+            else:
+                entries[tid] = {"task_id": tid, **await self._explain_task(tid)}
+        pool_measure = self._shared_pool_measure()
         for project_id, project_ids in by_project.items():
-            admission = await observe_admission(
-                self.db,
-                project_ids,
-                self._development_integration(),
-                cached_only=True,
-                default_mode=self.config.integration.default_mode,
-                router_ready_projects=({project_id} if await orchestrator_router_ready(
-                    self.orchestrator, project_id) else set()),
-            )
-            admission_for.update(dict.fromkeys(project_ids, admission))
+            for entry in await self._explain_project_tasks(project_id, project_ids, pool_measure):
+                entries[entry["task_id"]] = entry
+        return {"success": True, "explanations": [entries[tid] for tid in ids]}
+
+    def _shared_pool_measure(self):
+        """A pool measurement taken once on first use, never kept past the request."""
         measurement = None
 
         async def measure_pools():
@@ -5904,13 +5898,29 @@ class TaskCommandsMixin:
                 measurement = await self.orchestrator._measure_pools(for_display=True)
             return measurement
 
-        explanations = []
-        for tid in ids:
-            result = await self._explain_task(
-                tid, admission=admission_for.get(tid), pool_measure=measure_pools,
-            )
-            explanations.append({"task_id": tid, **result})
-        return {"success": True, "explanations": explanations}
+        return measure_pools
+
+    async def _explain_project_tasks(self, project_id: str, task_ids: list[str],
+                                     pool_measure=None) -> list[dict]:
+        """Explain *project_id*'s *task_ids*, one ``task_id``-keyed entry each.
+
+        Admission runs the shared frontier SQL and pool measurement scans every
+        active project: pay for each once per request, never across requests.
+        """
+        if not task_ids:
+            return []
+        from src.integration.admission import observe_admission
+        from src.routing.readiness import orchestrator_router_ready
+
+        admission = await observe_admission(
+            self.db, task_ids, self._development_integration(), cached_only=True,
+            default_mode=self.config.integration.default_mode,
+            router_ready_projects=({project_id} if await orchestrator_router_ready(
+                self.orchestrator, project_id) else set()),
+        )
+        pool_measure = pool_measure or self._shared_pool_measure()
+        return [{"task_id": tid, **await self._explain_task(
+            tid, admission=admission, pool_measure=pool_measure)} for tid in task_ids]
 
     async def _explain_task(self, task_id: str, *, admission=None, pool_measure=None) -> dict:
         """Explain one task, optionally using a project read's shared observations."""
@@ -6721,37 +6731,12 @@ class TaskCommandsMixin:
                         continue
                 withheld_tasks.append(task)
 
-        # Admission evaluates the shared frontier SQL; pool measurement scans
-        # demand across every active project. Pay for each once per request,
-        # rather than once per withheld task, without retaining stale results
-        # on the handler between requests.
-        withheld: list[dict] = []
-        if withheld_tasks:
-            from src.routing.readiness import orchestrator_router_ready
-
-            withheld_admission = await observe_admission(
-                self.db,
-                [task.id for task in withheld_tasks],
-                self._development_integration(),
-                cached_only=True,
-                default_mode=self.config.integration.default_mode,
-                router_ready_projects=({str(project_id)} if await orchestrator_router_ready(
-                    self.orchestrator, str(project_id)) else set()),
-            )
-            measurement = None
-
-            async def measure_pools():
-                nonlocal measurement
-                if measurement is None:
-                    measurement = await self.orchestrator._measure_pools(for_display=True)
-                return measurement
-
-            for task in withheld_tasks:
-                res = await self._explain_task(
-                    task.id, admission=withheld_admission, pool_measure=measure_pools,
-                )
-                if res.get("success") and res.get("reasons"):
-                    withheld.append({"task_id": task.id, "reasons": res["reasons"]})
+        withheld = [
+            {"task_id": entry["task_id"], "reasons": entry["reasons"]}
+            for entry in await self._explain_project_tasks(
+                str(project_id), [task.id for task in withheld_tasks])
+            if entry.get("success") and entry.get("reasons")
+        ]
 
         return {"success": True, "ready": ready, "withheld": withheld}
 

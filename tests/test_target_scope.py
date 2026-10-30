@@ -1172,10 +1172,10 @@ def test_target_references_classify_by_argument_name():
 
 
 def test_a_batch_explain_names_each_task_it_reads():
-    args = {"task_ids": ["a", "b", ""]}
+    args = {"task_id": "c", "task_ids": ["a", "b", ""]}
 
-    assert target_references(args, command="explain_task") == {"task_id": ["a", "b"]}
-    assert target_references(args, command="task_get") == {}
+    assert target_references(args, command="explain_task") == {"task_id": ["c", "a", "b"]}
+    assert target_references(args, command="task_get") == {"task_id": ["c"]}
 
 
 @pytest.mark.parametrize(
@@ -1188,7 +1188,7 @@ async def test_a_batch_explain_is_fenced_like_a_lone_one(db, task_ids, admitted)
         "explain_task", {"task_id": "foreign"}, _scope("p"), db=db
     )
     error = await check_request_scope(
-        "explain_task", {"task_ids": task_ids}, _scope("p"), db=db
+        "explain_task", {"task_id": "own", "task_ids": task_ids}, _scope("p"), db=db
     )
 
     assert lone is not None

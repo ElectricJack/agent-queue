@@ -39591,14 +39591,7 @@
       "ExplainTaskRequest": {
         "properties": {
           "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Task Id",
             "description": "Task id to explain"
           },
@@ -39613,10 +39606,13 @@
               }
             ],
             "title": "Task Ids",
-            "description": "Explain these tasks in one request instead (at most 100); returns one entry per task under explanations"
+            "description": "Also explain these tasks in the same request (at most 100 with task_id); returns one entry per task under explanations"
           }
         },
         "type": "object",
+        "required": [
+          "task_id"
+        ],
         "title": "ExplainTaskRequest"
       },
       "ExplainTaskResponse": {

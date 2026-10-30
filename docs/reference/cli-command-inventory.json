@@ -20829,9 +20829,10 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [],
+        "required": [
+          "--task-id"
+        ],
         "optional": [
-          "--task-id",
           "--task-ids",
           "--json",
           "--brief",

@@ -15,21 +15,17 @@ T = TypeVar("T", bound="ExplainTaskRequest")
 class ExplainTaskRequest:
     """
     Attributes:
-        task_id (None | str | Unset): Task id to explain
-        task_ids (list[Any] | None | Unset): Explain these tasks in one request instead (at most 100); returns one entry
-            per task under explanations
+        task_id (str): Task id to explain
+        task_ids (list[Any] | None | Unset): Also explain these tasks in the same request (at most 100 with task_id);
+            returns one entry per task under explanations
     """
 
-    task_id: None | str | Unset = UNSET
+    task_id: str
     task_ids: list[Any] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        task_id: None | str | Unset
-        if isinstance(self.task_id, Unset):
-            task_id = UNSET
-        else:
-            task_id = self.task_id
+        task_id = self.task_id
 
         task_ids: list[Any] | None | Unset
         if isinstance(self.task_ids, Unset):
@@ -42,9 +38,11 @@ class ExplainTaskRequest:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if task_id is not UNSET:
-            field_dict["task_id"] = task_id
+        field_dict.update(
+            {
+                "task_id": task_id,
+            }
+        )
         if task_ids is not UNSET:
             field_dict["task_ids"] = task_ids
 
@@ -53,15 +51,7 @@ class ExplainTaskRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-
-        def _parse_task_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        task_id = _parse_task_id(d.pop("task_id", UNSET))
+        task_id = d.pop("task_id")
 
         def _parse_task_ids(data: object) -> list[Any] | None | Unset:
             if data is None:

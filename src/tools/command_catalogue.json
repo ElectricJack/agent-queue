@@ -14503,9 +14503,12 @@
             },
             "minItems": 1,
             "maxItems": 100,
-            "description": "Explain these tasks in one request instead (at most 100); returns one entry per task under explanations"
+            "description": "Also explain these tasks in the same request (at most 100 with task_id); returns one entry per task under explanations"
           }
-        }
+        },
+        "required": [
+          "task_id"
+        ]
       }
     },
     "gate_create": {
