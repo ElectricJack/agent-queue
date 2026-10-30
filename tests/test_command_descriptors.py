@@ -552,6 +552,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = _unread_inbox_changes()["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
+        if name in _explain_batch_changes()["transport_definitions"]:
+            approved = _explain_batch_changes()["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
     actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()
@@ -1969,7 +1973,7 @@ def _before_wait_source_recovery_catalogue(catalogue=None):
         catalogue = _before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(
                 _before_claim_abort_catalogue(
-                    _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+                    _before_store_maintenance_catalogue(_before_explain_batch_catalogue())
                 )
             )
         )
@@ -1996,7 +2000,7 @@ def test_wait_source_recovery_only_extends_existing_scoped_command():
     catalogue = _before_unread_inbox_catalogue(
         _before_batch_authority_catalogue(_before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue(
-                _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+                _before_store_maintenance_catalogue(_before_explain_batch_catalogue())
             ))
         ))
     )
@@ -2075,7 +2079,7 @@ def _store_maintenance_changes():
 
 def _before_store_maintenance_catalogue(catalogue=None):
     if catalogue is None:
-        catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+        catalogue = _before_wait_source_recovery_catalogue(_before_explain_batch_catalogue())
     evidence = _store_maintenance_changes()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
@@ -2087,7 +2091,7 @@ def test_store_maintenance_catalogue_only_adds_scoped_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+    catalogue = _before_wait_source_recovery_catalogue(_before_explain_batch_catalogue())
     assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
@@ -2143,3 +2147,37 @@ def test_publication_hold_only_adds_fenced_continuation_retirement():
         _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue()), indent=2
     ) + "\n"
     assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+
+
+def _explain_batch_changes():
+    return json.loads(
+        (ROOT / "tests/fixtures/contracts/explain-batch-contract-changes.json").read_text()
+    )
+
+
+def _before_explain_batch_catalogue(catalogue=None):
+    catalogue = json.loads(render_command_catalogue()) if catalogue is None else catalogue
+    evidence = _explain_batch_changes()
+    definition = catalogue["fallback"][evidence["command"]]
+    assert definition == evidence["transport_definition"]
+    catalogue["fallback"][evidence["command"]] = evidence["previous_transport_definition"]
+    return catalogue
+
+
+def test_explain_batch_only_adds_optional_task_ids():
+    evidence = _explain_batch_changes()
+    rendered = render_command_catalogue()
+    assert hashlib.sha256(rendered.encode()).hexdigest() == evidence["cli_catalogue_sha256"]
+    digests = evidence["transport_definitions"][evidence["command"]]
+    assert _digest(evidence["transport_definition"]) == digests["sha256"]
+    assert _digest(evidence["previous_transport_definition"]) == digests["previous_sha256"]
+    current = json.loads(json.dumps(evidence["transport_definition"]))
+    batch = current["input_schema"]["properties"].pop("task_ids")
+    assert (batch["type"], batch["items"], batch["minItems"], batch["maxItems"]) == (
+        "array", {"type": "string"}, 1, 100)
+    current["input_schema"]["required"] = ["task_id"]
+    assert current == evidence["previous_transport_definition"]
+    previous = json.dumps(_before_explain_batch_catalogue(), indent=2) + "\n"
+    assert hashlib.sha256(previous.encode()).hexdigest() == (
+        evidence["previous_cli_catalogue_sha256"]
+    )

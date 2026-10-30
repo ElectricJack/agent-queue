@@ -1171,6 +1171,30 @@ def test_target_references_classify_by_argument_name():
     assert target_references(args) == {"task_id": ["t"], "depends_on": ["a", "b"]}
 
 
+def test_a_batch_explain_names_each_task_it_reads():
+    args = {"task_ids": ["a", "b", ""]}
+
+    assert target_references(args, command="explain_task") == {"task_id": ["a", "b"]}
+    assert target_references(args, command="task_get") == {}
+
+
+@pytest.mark.parametrize(
+    ("task_ids", "admitted"),
+    [(["own"], True), (["own", "missing"], True), (["own", "foreign"], False)],
+)
+async def test_a_batch_explain_is_fenced_like_a_lone_one(db, task_ids, admitted):
+    """One foreign task refuses the whole batch, as ``task_id=foreign`` alone is."""
+    lone = await check_request_scope(
+        "explain_task", {"task_id": "foreign"}, _scope("p"), db=db
+    )
+    error = await check_request_scope(
+        "explain_task", {"task_ids": task_ids}, _scope("p"), db=db
+    )
+
+    assert lone is not None
+    assert error == (None if admitted else lone)
+
+
 # ---------------------------------------------------------------------------
 # Scopes that must not move
 # ---------------------------------------------------------------------------

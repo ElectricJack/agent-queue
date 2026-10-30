@@ -980,6 +980,24 @@ class ClaimTimingDetail(BaseModel):
     result: str | None = None
 
 
+class ExplainTaskEntry(BaseModel):
+    """One ``task_ids`` batch entry: the single-task answer, keyed by task.
+
+    A missing or out-of-scope task carries ``success: false`` and ``error``
+    in its own entry; the batch itself still succeeds.
+    """
+
+    task_id: str
+    success: bool = True
+    error: str | None = None
+    reasons: list[ExplainReason] = []
+    reason_codes: list[str] = []
+    assignment_route: AssignmentRouteDetail | None = None
+    provider_hold: ProviderHoldDetail | None = None
+    phase_hold: PhaseHoldDetail | None = None
+    claim_timing: ClaimTimingDetail | None = None
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
@@ -988,6 +1006,7 @@ class ExplainTaskResponse(BaseModel):
     provider_hold: ProviderHoldDetail | None = None
     phase_hold: PhaseHoldDetail | None = None
     claim_timing: ClaimTimingDetail | None = None
+    explanations: list[ExplainTaskEntry] | None = None
 
 
 class ReadyTask(BaseModel):

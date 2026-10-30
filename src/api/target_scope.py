@@ -449,6 +449,14 @@ def target_references(args: dict, *, command: str | None = None) -> dict[str, li
         ids = [item for item in values if isinstance(item, str) and item]
         if ids:
             found[name] = ids
+    # A batch explain reads every task it names: fence each one exactly as a
+    # lone task_id is. ``task_ids`` is no generic reference name; other
+    # commands that take one authorize it through their own gates.
+    batch = args.get("task_ids") if command == "explain_task" else None
+    batch_ids = [item for item in batch if isinstance(item, str) and item] if isinstance(
+        batch, list | tuple) else []
+    if batch_ids:
+        found.setdefault("task_id", []).extend(batch_ids)
     receive = args.get("receive_new_work") if command == "provider_allocation_preview" else None
     if isinstance(receive, dict):
         project_id = receive.get("project_id")

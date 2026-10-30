@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.assignment_route_detail import AssignmentRouteDetail
     from ..models.claim_timing_detail import ClaimTimingDetail
     from ..models.explain_reason import ExplainReason
+    from ..models.explain_task_entry import ExplainTaskEntry
     from ..models.phase_hold_detail import PhaseHoldDetail
     from ..models.provider_hold_detail import ProviderHoldDetail
 
@@ -30,6 +31,7 @@ class ExplainTaskResponse:
         provider_hold (None | ProviderHoldDetail | Unset):
         phase_hold (None | PhaseHoldDetail | Unset):
         claim_timing (ClaimTimingDetail | None | Unset):
+        explanations (list[ExplainTaskEntry] | None | Unset):
     """
 
     success: bool | Unset = True
@@ -39,6 +41,7 @@ class ExplainTaskResponse:
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
     phase_hold: None | PhaseHoldDetail | Unset = UNSET
     claim_timing: ClaimTimingDetail | None | Unset = UNSET
+    explanations: list[ExplainTaskEntry] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -92,6 +95,18 @@ class ExplainTaskResponse:
         else:
             claim_timing = self.claim_timing
 
+        explanations: list[dict[str, Any]] | None | Unset
+        if isinstance(self.explanations, Unset):
+            explanations = UNSET
+        elif isinstance(self.explanations, list):
+            explanations = []
+            for explanations_type_0_item_data in self.explanations:
+                explanations_type_0_item = explanations_type_0_item_data.to_dict()
+                explanations.append(explanations_type_0_item)
+
+        else:
+            explanations = self.explanations
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -109,6 +124,8 @@ class ExplainTaskResponse:
             field_dict["phase_hold"] = phase_hold
         if claim_timing is not UNSET:
             field_dict["claim_timing"] = claim_timing
+        if explanations is not UNSET:
+            field_dict["explanations"] = explanations
 
         return field_dict
 
@@ -117,6 +134,7 @@ class ExplainTaskResponse:
         from ..models.assignment_route_detail import AssignmentRouteDetail
         from ..models.claim_timing_detail import ClaimTimingDetail
         from ..models.explain_reason import ExplainReason
+        from ..models.explain_task_entry import ExplainTaskEntry
         from ..models.phase_hold_detail import PhaseHoldDetail
         from ..models.provider_hold_detail import ProviderHoldDetail
 
@@ -202,6 +220,28 @@ class ExplainTaskResponse:
 
         claim_timing = _parse_claim_timing(d.pop("claim_timing", UNSET))
 
+        def _parse_explanations(data: object) -> list[ExplainTaskEntry] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                explanations_type_0 = []
+                _explanations_type_0 = data
+                for explanations_type_0_item_data in _explanations_type_0:
+                    explanations_type_0_item = ExplainTaskEntry.from_dict(explanations_type_0_item_data)
+
+                    explanations_type_0.append(explanations_type_0_item)
+
+                return explanations_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[ExplainTaskEntry] | None | Unset, data)
+
+        explanations = _parse_explanations(d.pop("explanations", UNSET))
+
         explain_task_response = cls(
             success=success,
             reasons=reasons,
@@ -210,6 +250,7 @@ class ExplainTaskResponse:
             provider_hold=provider_hold,
             phase_hold=phase_hold,
             claim_timing=claim_timing,
+            explanations=explanations,
         )
 
         explain_task_response.additional_properties = d

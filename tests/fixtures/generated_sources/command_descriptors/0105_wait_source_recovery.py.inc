@@ -11,7 +11,7 @@ def _before_wait_source_recovery_catalogue(catalogue=None):
         catalogue = _before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(
                 _before_claim_abort_catalogue(
-                    _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+                    _before_store_maintenance_catalogue(_before_explain_batch_catalogue())
                 )
             )
         )
@@ -38,7 +38,7 @@ def test_wait_source_recovery_only_extends_existing_scoped_command():
     catalogue = _before_unread_inbox_catalogue(
         _before_batch_authority_catalogue(_before_publication_hold_catalogue(
             _before_retained_holder_repair_catalogue(_before_claim_abort_catalogue(
-                _before_store_maintenance_catalogue(json.loads(render_command_catalogue()))
+                _before_store_maintenance_catalogue(_before_explain_batch_catalogue())
             ))
         ))
     )

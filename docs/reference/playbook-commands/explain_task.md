@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:de93a8b989e8ea7e967e24b006e0cdafcf4754a24e409517ca4b16912d324e85` |
+| Contract fingerprint | `sha256:d3f41824b88d321193f4aa44cc86dd800643ab8787866f1b2608417c5f4e0120` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `task_id` | `string` | yes | — | Task id to explain |
+| `task_id` | `string` | no | — | Task id to explain |
+| `task_ids` | `string[]` | no | — | Explain these tasks in one request instead (at most 100); returns one entry per task under explanations |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
 Schema source: `fallback`; quality: `declared`; coarse effect: `read`.
@@ -45,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using task_id | — | always |
+| Read using task_id, task_ids | — | always |
 
 <!-- aq:generated:end -->
 

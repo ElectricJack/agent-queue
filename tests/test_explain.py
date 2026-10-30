@@ -1141,6 +1141,88 @@ class TestExplainABlockedTaskNothingHolds:
         assert "blocked_unheld" not in res["reason_codes"]
 
 
+class TestExplainBatch:
+    """``task_ids``: one request per patrol chunk, not one per task (stall-sweep.py)."""
+
+    async def test_entries_match_single_explains_and_share_observations(
+        self, handler, db, spill_pool, monkeypatch,
+    ):
+        from src.integration import admission
+
+        await db.create_project(Project(id="proj-other", name="Other"))
+        await spill_task(db, "spill-a", intent="pinned")
+        await spill_task(db, "spill-b")
+        await db.add_task_label("spill-b", "hold:operator")
+        await mktask(db, "dep", status=TaskStatus.READY)
+        await mktask(db, "waits", status=TaskStatus.DEFINED)
+        await db.add_dependency("waits", "dep")
+        await mktask(db, "elsewhere", project_id="proj-other", status=TaskStatus.READY)
+        ids = ["spill-a", "spill-b", "waits", "elsewhere", "missing", "spill-a"]
+
+        observe = AsyncMock(wraps=admission.observe_admission)
+        monkeypatch.setattr(admission, "observe_admission", observe)
+        result = await handler._cmd_explain_task({"task_ids": ids})
+
+        assert result["success"] is True
+        entries = result["explanations"]
+        # Duplicates collapse; order is the caller's.
+        assert [e["task_id"] for e in entries] == ids[:-1]
+        # One cached observation per project and one fleet measurement, where
+        # five single explains pay for each once per task.
+        assert observe.await_count == 2
+        assert all(call.kwargs["cached_only"] for call in observe.await_args_list)
+        assert sorted(sorted(call.args[1]) for call in observe.await_args_list) == [
+            ["elsewhere"], ["spill-a", "spill-b", "waits"],
+        ]
+        handler.orchestrator._measure_pools.assert_awaited_once_with(for_display=True)
+
+        by_id = {e["task_id"]: e for e in entries}
+        assert by_id["missing"] == {
+            "task_id": "missing", "success": False, "error": "task 'missing' not found",
+        }
+        assert "held" in by_id["spill-b"]["reason_codes"]
+        assert "blocked_dependency" in by_id["waits"]["reason_codes"]
+        for tid in ("spill-a", "spill-b", "waits", "elsewhere"):
+            single = await handler._cmd_explain_task({"task_id": tid})
+            assert by_id[tid]["reasons"] == single["reasons"], tid
+            assert by_id[tid]["reason_codes"] == single["reason_codes"], tid
+
+    async def test_an_out_of_scope_task_fails_only_its_entry(self, handler, db):
+        await db.create_project(Project(id="proj-other", name="Other"))
+        await mktask(db, "mine", status=TaskStatus.READY)
+        await mktask(db, "theirs", project_id="proj-other", status=TaskStatus.READY)
+        # A pool worker token: no task pinned, fenced to its project.
+        handler._current_scope = {"kind": "session", "project_id": PROJECT_ID}
+
+        result = await handler._cmd_explain_task({"task_ids": ["mine", "theirs"]})
+
+        assert result["success"] is True
+        mine, theirs = result["explanations"]
+        assert mine["success"] is True
+        assert theirs == {
+            "task_id": "theirs",
+            **await handler._cmd_explain_task({"task_id": "theirs"}),
+        }
+        assert theirs["success"] is False
+
+    @pytest.mark.parametrize("task_ids", [[], "a,b", ["a", ""], ["a", 3]])
+    async def test_malformed_batch_is_refused(self, handler, task_ids):
+        result = await handler._cmd_explain_task({"task_ids": task_ids})
+        assert result == {
+            "success": False, "error": "task_ids must be a non-empty list of task ids",
+        }
+
+    async def test_batch_is_bounded(self, handler):
+        from src.commands.task_commands import EXPLAIN_BATCH_LIMIT
+
+        ids = [f"t{i}" for i in range(EXPLAIN_BATCH_LIMIT + 1)]
+        result = await handler._cmd_explain_task({"task_ids": ids})
+        assert result["success"] is False
+        assert f"at most {EXPLAIN_BATCH_LIMIT}" in result["error"]
+        ids[-1] = ids[0]  # duplicates do not count against the bound
+        assert (await handler._cmd_explain_task({"task_ids": ids}))["success"] is True
+
+
 async def test_explain_includes_shared_operator_decision(handler, db):
     from src.operator_decisions import OperatorDecisions
 

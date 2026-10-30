@@ -7296,10 +7296,11 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:4c7791fcc1e328105aedf50d39bc480cd843d1bbbb056ca59c5e7843999b90fd",
+      "digest": "sha256:594bb1baa82495e22fcf2b2792bf6e53c07a3ec0c9f1955a37c10861c2c76842",
       "imports": [
         "src.claim_timing",
         "src.commands.handler",
+        "src.commands.task_commands",
         "src.config",
         "src.database.tables",
         "src.explain",
