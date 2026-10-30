@@ -925,3 +925,77 @@ async def test_selective_policy_observation_rechecks_ingestion_hold(env):
             assert second.identity("policy_hold") == first.identity("policy_hold")
             assert second.constraints["policy_hold"]["blocked"]
             assert "ingest_held" in second.constraints["policy_hold"]["reasons"]
+
+
+
+async def park_scheduler_owner(env, now):
+    """bold-rapids-90.36: a branch owner's slot wait outlives its move to RESUME_PENDING."""
+    assert (await sync(env, now))["success"]
+    [wait] = [r for r in await rows(env, wait_records)
+              if r["outcome"] == "pending" and r["condition"].get("blocker") == "slot"]
+    assert wait["owner_kind"] == "scheduler" and wait["origin"] == "scheduler"
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "holder").values(
+            status="RESUME_PENDING"))
+    return wait["id"]
+
+
+async def test_bounded_scheduler_pass_reaches_every_owner_across_rollbacks(env):
+    """A pass that keeps running out of time resumes behind the owners it already
+    reached, so neither a long project nor one slow owner starves the tail."""
+    await park_scheduler_owner(env, NOW)
+    for task_id in ("t-a", "t-b", "t-c"):
+        await env.db.create_task(Task(id=task_id, project_id="p", title=task_id, description="",
+                                      status=TaskStatus.READY))
+    env.service = SchedulerWaitService(env.o, clock=lambda: NOW)
+    visited = []
+
+    async def sync_task(project_id, task_id, args, *, now):
+        visited.append(task_id)
+        if len(visited) % 2 == 0:
+            raise TimeoutError("bounded pass interrupted")
+        return set()
+
+    env.service.sync_task = sync_task
+    passes = []
+    for i in range(4):
+        visited.clear()
+        with pytest.raises(TimeoutError):
+            await sync(env, NOW + i)
+        passes.append(list(visited))
+    # The parked owner's retraction leads; each interrupted pass then starts
+    # from owners not yet attempted, and the interrupted owner retries last.
+    # A fixed sorted order would repeat ["holder", "t-a"] forever.
+    assert passes == [["holder", "t-a"], ["t-b", "t-c"], ["holder", "t-a"], ["t-b", "t-c"]]
+
+
+async def test_stale_scheduler_wait_behind_resume_pending_owner_is_surfaced_once(env):
+    from src.database.tables import messages
+    from src.wait_runtime.scheduler import STALE_SCHEDULER_EVIDENCE_SECONDS
+
+    wait_id = await park_scheduler_owner(env, NOW - STALE_SCHEDULER_EVIDENCE_SECONDS)
+    env.service._dirty.clear()
+    env.service._sync_failures["p"] = {"consecutive_failures": 7,
+                                       "error_code": "wait.scheduler_sync_timeout"}
+
+    fresh = await env.service.report_stale_evidence(now=NOW - 1)
+    assert fresh == {"success": True, "stale": 0, "projects": []}
+    assert not await rows(env, messages)
+
+    for _ in range(2):  # Replayed ticks reuse the episode's one notice.
+        result = await env.service.report_stale_evidence(now=NOW)
+        # The slot wait and its workspace sibling share the owner and the episode.
+        assert result == {"success": True, "stale": 2, "projects": ["p"]}
+    [notice] = await rows(env, messages)
+    assert notice["to_id"] == "supervisor-p"
+    assert notice["id"].startswith("wait:") and ":scheduler-stale:" in notice["id"]
+    assert f"{wait_id} owner holder (RESUME_PENDING, continuation none" in notice["body"]
+    assert "wait.scheduler_sync_timeout" in notice["body"]
+    assert "p" in env.service._dirty
+
+    # A completed pass retracts the row its non-READY owner left behind.
+    assert (await sync(env))["success"]
+    assert not [r for r in await rows(env, wait_records) if r["outcome"] == "pending"]
+    [row] = [r for r in await rows(env, wait_records) if r["id"] == wait_id]
+    assert row["cleared_at"] == NOW
+    assert (await env.service.report_stale_evidence(now=NOW + 1))["stale"] == 0
