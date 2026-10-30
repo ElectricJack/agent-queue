@@ -16,7 +16,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import (
-    admission_reservations, escalations, tasks, wait_deadlines, wait_escalations, wait_records,
+    admission_reservations, continuations, escalations, messages, tasks, wait_deadlines,
+    wait_escalations, wait_records,
 )
 from src.integration.stacked_branches import shared_stack_inputs
 from src.waits.admission import AdmissionReader, admission_pass, branch_holders
@@ -26,6 +27,7 @@ from src.waits.graph import (
 )
 from src.waits.registry import build_registry
 from src.waits.reservations import SchedulerPolicy, enabled
+from src.waits.sources import insert_message_with_source_event
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,8 @@ class SchedulerWaitService:
         self._all_dirty = True
         self._last_sync = {}
         self._sync_failures = {}
+        # Per project: owners in sync_task attempt order, least recent first.
+        self._owner_attempted = {}
         bus = getattr(orchestrator, "bus", None)
         if callable(getattr(bus, "subscribe", None)):
             self._unsubscribe = bus.subscribe("*", self._changed)
@@ -100,6 +104,75 @@ class SchedulerWaitService:
                           else result.get("error_code", "wait.scheduler_sync_failed"),
         }
 
+    async def observe_projects(self, live_projects):
+        """Forget removed projects' pass state, then surface stale scheduler evidence."""
+        for state in (self._sync_failures, self._owner_attempted):
+            for removed in state.keys() - live_projects:
+                del state[removed]
+        try:
+            await self.report_stale_evidence()
+        except Exception:
+            logger.exception("Could not report stale scheduler wait evidence")
+
+    async def report_stale_evidence(self, *, now=None):
+        """Surface pending scheduler waits the bounded pass has stopped re-verifying.
+
+        Each completed visit either re-verifies a scheduler row or retracts it
+        once its owner leaves READY, so evidence older than
+        STALE_SCHEDULER_EVIDENCE_SECONDS means the project's pass is not
+        reaching that owner. Such a row has no continuation of its own; an
+        owner parked in RESUME_PENDING behind it reads as blocked on a slot
+        that nothing re-observes. One supervisor notice per project names the
+        oldest stale row and marks the project dirty; it decides nothing.
+        """
+        now = self.clock() if now is None else now
+        async with self.db._engine.begin() as conn:
+            stale = (await conn.execute(select(
+                wait_records.c.id, wait_records.c.project_id, wait_records.c.owner_id,
+                wait_records.c.version, wait_records.c.verified_at, tasks.c.status,
+            ).outerjoin(tasks, tasks.c.id == wait_records.c.owner_id).where(
+                wait_records.c.origin == "scheduler", wait_records.c.owner_kind == "scheduler",
+                wait_records.c.outcome == "pending",
+                wait_records.c.verified_at <= now - STALE_SCHEDULER_EVIDENCE_SECONDS,
+            ).order_by(wait_records.c.project_id, wait_records.c.verified_at,
+                       wait_records.c.id))).mappings().all()
+            by_project = {}
+            for row in stale:
+                by_project.setdefault(row["project_id"], []).append(row)
+            resumable = {}
+            if stale:
+                resumable = dict((await conn.execute(select(
+                    continuations.c.task_id, continuations.c.resume_state,
+                ).where(
+                    continuations.c.task_id.in_({r["owner_id"] for r in stale}),
+                    continuations.c.resume_state.in_(
+                        ("sleeping", "queued", "reserved", "launching", "delivered", "held")),
+                ))).all())
+            for project_id, rows in by_project.items():
+                self._dirty.add(project_id)
+                oldest = rows[0]
+                listed = "; ".join(
+                    f"{r['id']} owner {r['owner_id']} ({r['status'] or 'missing'}, "
+                    f"continuation {resumable.get(r['owner_id'], 'none')}, "
+                    f"evidence age {int(now - r['verified_at'])}s)" for r in rows[:10])
+                failure = self._sync_failures.get(project_id)
+                # The oldest row's identity keeps the notice to one per episode
+                # across ticks, restarts and archived mail.
+                await insert_message_with_source_event(conn, pg_insert(messages).values(
+                    id=f"wait:{oldest['id']}:scheduler-stale:{oldest['version']}",
+                    project_id=project_id, from_kind="system", from_id="wait-service",
+                    to_kind="session", to_id=f"supervisor-{project_id}", created_at=now,
+                    subject=f"Scheduler waits not re-observed: {project_id}",
+                    body=(f"{len(rows)} pending scheduler wait(s) in {project_id} have not been "
+                          f"re-observed for over {int(STALE_SCHEDULER_EVIDENCE_SECONDS)}s: "
+                          f"{listed}. Scheduler sync health: "
+                          f"{failure or 'no recorded failure'}. A completed scheduler pass "
+                          "retracts rows whose owner left READY; until then an owner with no "
+                          "resumable continuation has no automatic path. Inspect with "
+                          "aq wait explain; recover the owner through its supported command."),
+                ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        return {"success": True, "stale": len(stale), "projects": sorted(by_project)}
+
     @shared_stack_inputs()
     @background_graph_work()
     @admission_pass("reader")
@@ -113,7 +186,7 @@ class SchedulerWaitService:
         # The contract carries a candidate list, never authoritative verdicts.
         # A fresh project scan also retracts stale rows after a missed cycle.
         async with self.db._engine.connect() as conn:
-            candidate_ids = set((await conn.execute(select(tasks.c.id).where(
+            listed = set((await conn.execute(select(tasks.c.id).where(
                 tasks.c.project_id == project_id,
                 tasks.c.status.in_(("READY", "DEFINED", "PAUSED"))
                 if args.get("initial_audit") else tasks.c.status == "READY",
@@ -122,18 +195,32 @@ class SchedulerWaitService:
             # no longer a task row to join. Claim-bound resource waits belong
             # to the dispatcher even when their origin is scheduler. Each item
             # re-reads its durable state after taking the graph fence.
-            candidate_ids.update((await conn.execute(select(wait_records.c.owner_id).where(
+            orphaned = set((await conn.execute(select(wait_records.c.owner_id).where(
                 wait_records.c.project_id == project_id, wait_records.c.origin == "scheduler",
                 wait_records.c.owner_kind == "scheduler",
                 wait_records.c.outcome == "pending",
-            ))).scalars())
+            ))).scalars()) - listed
+            candidate_ids = listed | orphaned
             candidate_ids.update((await conn.execute(select(admission_reservations.c.task_id).where(
                 admission_reservations.c.project_id == project_id,
                 admission_reservations.c.task_id.is_not(None),
                 admission_reservations.c.state.in_(("pending", "overdue", "granted")),
             ))).scalars())
         changed = set()
-        for task_id in sorted(candidate_ids):
+        # A pass bounded by SCHEDULER_SYNC_TIMEOUT rolls back its in-flight
+        # owner and the next one starts over. Visit owners never attempted
+        # first (rows of owners that left the frontier ahead of the rest), then
+        # the least recently attempted, so a project that keeps timing out
+        # still reaches every owner in turn and one slow owner moves behind
+        # the rest instead of heading the pass.
+        attempted = self._owner_attempted.setdefault(project_id, {})
+        for gone in attempted.keys() - candidate_ids:
+            del attempted[gone]
+        fresh = sorted(candidate_ids - attempted.keys(),
+                       key=lambda owner: (owner not in orphaned, owner))
+        for task_id in [*fresh, *attempted]:
+            attempted.pop(task_id, None)
+            attempted[task_id] = None
             changed.update(await self.sync_task(project_id, task_id, args, now=now))
         return {"success": True, "changed": len(changed), "cycle_id": args["cycle_id"]}
 
@@ -427,6 +514,9 @@ class SchedulerWaitService:
 # interrupted owner's transaction rolls back; earlier owners remain committed
 # and the next cycle re-scans authoritative rows.
 SCHEDULER_SYNC_TIMEOUT = 30.0
+# Fifteen missed 60s recovery passes: past any one slow cycle, well before a
+# parked owner is forgotten.
+STALE_SCHEDULER_EVIDENCE_SECONDS = 900.0
 
 
 async def bounded_sync(handler, args, *, timeout=None):
@@ -475,9 +565,7 @@ async def scheduler_tick(handler):
     with principal_context(ExecutionPrincipal.service("scheduler-waits")):
         cycle_id = str(uuid.uuid4())
         projects = await o.db.list_projects()
-        live_projects = {p.id for p in projects}
-        for removed in service._sync_failures.keys() - live_projects:
-            del service._sync_failures[removed]
+        await service.observe_projects({p.id for p in projects})
         for project in service.due(_rotated(projects)):
             # Consume before awaiting, so events arriving during sync survive.
             service._dirty.discard(project.id)
