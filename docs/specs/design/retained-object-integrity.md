@@ -115,6 +115,13 @@ restarted the check and `owner_lease` ran out its 600 s.
   `retry_after`; this does not count toward quarantine. Any other caller receives
   a Git preparation error with reason `verification_pending`. The flight continues
   in both cases, and the next attempt reuses its result.
+- **Recovery preserves pending checks.** If an acquisition fails while its shared
+  full check remains active, the recovery wrapper propagates that failure without
+  starting a second diagnostic fsck or opening an incident. In particular, a
+  claim's `RetainedVerificationPending` remains a bounded repository-wait refusal,
+  rather than becoming a generic acquisition timeout. Diagnostic fsck commands,
+  including incident checks, share the common-store verifier exclusion with full
+  checks and maintenance, so their subprocesses cannot overlap.
 - **Recording under concurrent writes.** The flight fingerprints the store before
   and after its check and records only the files that are present and unchanged in
   both. An object written mid-scan lives in a file absent from the first
@@ -148,6 +155,9 @@ restarted the check and `owner_lease` ran out its 600 s.
   read, and the connectivity check proves that nothing reachable was lost.
   Nothing carries in these cases, and the full check stays due:
   - unverified additions;
+  - anything but the repack's own pack family (and derived metadata such as
+    `info/packs`) added during the repack, which runs outside the repository
+    transaction (`calm-lantern-36`), so another writer may add objects beside it;
   - a failed repack or a failed check;
   - a baseline replaced meanwhile.
 
@@ -260,3 +270,38 @@ inconsistent readback retain the original store and unavailable observations.
 Any future applying seam must record durable operation intent and replay evidence
 through CommandHandler; neither a successful unit test nor a timer is a receipt.
 See the [incident procedure](../../guides/retained-git-corruption.md).
+
+### Missing-object origin acquisition
+
+Task `nimble-horizon-50`, supervisor decision
+`msg-a5d78ac44d89465892ad1823287a5083`, permits one bounded additive import
+inside an already authorized origin acquisition. The read-only verifier reports
+typed missing-object evidence only when every diagnostic is either an exact
+`missing <commit|tree|blob|tag> <oid>` line or a well-formed broken-link pair
+whose target type and OID match one of those absences. Standalone or unexplained
+broken links, errors, warnings, corruption, truncated objects and all other
+diagnostics retain unavailable evidence without attempting an import.
+
+Under common retained-store exclusion, recheck the evidence, then acquire a
+complete isolated origin store without borrowing
+retained objects, and prove every named object is available with its expected
+type. Import only those OIDs and their reachable closure, with incoming object
+checking, without changing destination refs or FETCH_HEAD. Preserve every local
+and unpublished object, the checkout, saved head and saved branch identity.
+Never replace the store or delete an object. A full clean destination fsck is
+required before lending objects; unavailable upstream objects, transport failure
+or a second integrity failure propagate to the existing workspace hold. There
+is one recovery attempt per acquisition, bounded by the retained integrity
+deadline, with no new workspace retry classification or relaxation of
+`verify_saved_branch`.
+
+Ordinary acquisition keeps every full integrity check and isolated network
+staging outside repository exclusion, preserving the bounded lock wait of claims.
+Only the additive import takes repository exclusion, followed by common-store
+exclusion. Revalidate the object-store fingerprint before importing; a changed
+store retains unavailable evidence. Release repository exclusion before the final
+full integrity check. An explicit enclosing transaction passed with
+`lock_held=True` retains its caller's existing stronger exclusion guarantee.
+The recovery deadline includes lock waits, and the additive local import disables
+automatic maintenance. This preserves the claim-lock guarantee of `ce8dc58cb`
+under supervisor decision `msg-3a67a988804742469c386795c725cd62`.

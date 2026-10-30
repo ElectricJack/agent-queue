@@ -1,0 +1,60 @@
+{
+  "approval": {
+    "authority": "size-cap-delegation-2026-10-23",
+    "decision_message_id": "msg-8ee61fa011464ba8adc22d6b879d99ca",
+    "remaining_headroom": 0
+  },
+  "base_revision": "3cf46dd30f5e45eba97f8fd32637e9361c2da752",
+  "charged_files": {
+    "src/integration/repository_maintenance.py": {
+      "after": 219,
+      "before": 173,
+      "delta": 46
+    },
+    "src/orchestrator/core.py": {
+      "after": 2927,
+      "before": 2924,
+      "delta": 3
+    }
+  },
+  "delta": {
+    "engine": 46,
+    "owned": 49,
+    "shared": 3,
+    "tables": 0
+  },
+  "dev": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84830,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64162,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161833,
+    "unknown_count": 67,
+    "unknown_sinks_count": 59
+  },
+  "merged": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84876,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64165,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161882,
+    "unknown_count": 67,
+    "unknown_sinks_count": 59
+  },
+  "method": "Complete origin/dev archive and merged source tree measured with unchanged merged scanner and dev classifications. Preserve all dev ledger entries and original repack grant. Exact carry-forward of the approved +49/+46/+3/0 footprint; no new allowance.",
+  "old_head": "9e41b32405627c58ae6c7232f87f8c907c0f53b0",
+  "original_task_id": "calm-lantern-36",
+  "task_id": "keen-willow-36"
+}

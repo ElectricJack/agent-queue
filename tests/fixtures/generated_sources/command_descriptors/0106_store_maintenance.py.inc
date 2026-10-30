@@ -4,8 +4,9 @@ def _store_maintenance_changes():
     )
 
 
-def _before_store_maintenance_catalogue():
-    catalogue = json.loads(render_command_catalogue())
+def _before_store_maintenance_catalogue(catalogue=None):
+    if catalogue is None:
+        catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
     evidence = _store_maintenance_changes()
     assert catalogue["fallback"].pop(evidence["command"]) == evidence["transport_definition"]
     return catalogue
@@ -17,7 +18,8 @@ def test_store_maintenance_catalogue_only_adds_scoped_control():
     assert CONTRACTS.require(evidence["command"]).contract.fingerprint() == (
         evidence["contract_fingerprint"]
     )
-    assert hashlib.sha256(render_command_catalogue().encode()).hexdigest() == (
+    catalogue = _before_wait_source_recovery_catalogue(json.loads(render_command_catalogue()))
+    assert hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest() == (
         evidence["cli_catalogue_sha256"]
     )
     previous = json.dumps(_before_store_maintenance_catalogue(), indent=2) + "\n"
