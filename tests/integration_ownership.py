@@ -933,6 +933,38 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'daemon_regeneration_timeout_composition': {'task_id': 'brisk-apex-10',
+                                             'pull_request': 'https://github.com/ElectricJack/agent-queue/pull/2196',
+                                             'referenced_decision': 'size-cap-delegation-2026-10-23',
+                                             'operator_decision': '6679052c',
+                                             'decision_id': 'SUP-2026-10-29-brisk-apex-10-size-57',
+                                             'supervisor_decision_message_id': 'msg-efd573a19fd84aad9eea7aeed094e201',
+                                             'dev_source_revision': 'cc998fdde8437d4198ac3f4bac00e471a1a5bb27',
+                                             'source_revision': '79322d939a0ef2e7d2ef52e4812f6a6493e07c05',
+                                             'previous_measured_owned_total': 161882,
+                                             'previous_measured_engine_lines': 84876,
+                                             'previous_measured_table_count': 45,
+                                             'measured_owned_total': 161939,
+                                             'measured_engine_lines': 84933,
+                                             'measured_table_count': 45,
+                                             'authorized_owned_delta': 57,
+                                             'authorized_engine_delta': 57,
+                                             'authorized_shared_owned_delta': 0,
+                                             'authorized_table_delta': 0,
+                                             'charged_files': {'src/integration/development.py': 1,
+                                                               'src/integration/gitops.py': 1,
+                                                               'src/integration/regeneration.py': 26,
+                                                               'src/integration/regeneration_settings.py': 29},
+                                             'evidence_path': 'docs/reports/2026-10-29-daemon-regeneration-timeout-ownership.json',
+                                             'reason': 'One-off exact supervisor approval for the '
+                                                       '1800s regeneration default, daemon '
+                                                       'environment override and detached timeout '
+                                                       'scratch/cache reuse. Preserve all '
+                                                       'historical grants, original baselines, '
+                                                       'classifications, zero remaining headroom '
+                                                       'and s4_modules expiry. No new table or '
+                                                       'storage category; further growth requires '
+                                                       'a fresh measurement and decision.'},
  'retained_store_repack_refresh_composition': {'task_id': 'keen-willow-36',
  'original_task_id': 'calm-lantern-36',
  'pull_request': 2175,
@@ -2353,7 +2385,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6383,
+ 'authorized_owned_delta': 6440,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2961,8 +2993,8 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'referenced_decision': 'size-cap-delegation-2026-10-23',
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
- 'measured_engine_lines': 84876,
- 'measured_owned_total': 161882,
+ 'measured_engine_lines': 84933,
+ 'measured_owned_total': 161939,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,

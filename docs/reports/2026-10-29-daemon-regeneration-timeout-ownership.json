@@ -1,0 +1,68 @@
+{
+  "approval": {
+    "authority": "size-cap-delegation-2026-10-23",
+    "decision_id": "SUP-2026-10-29-brisk-apex-10-size-57",
+    "decision_message_id": "msg-efd573a19fd84aad9eea7aeed094e201",
+    "expires_at": "s4_modules",
+    "operator_decision": "6679052c",
+    "remaining_headroom": 0
+  },
+  "base": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84876,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64165,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161882
+  },
+  "base_revision": "cc998fdde8437d4198ac3f4bac00e471a1a5bb27",
+  "charged_files": {
+    "src/integration/development.py": {
+      "after": 785,
+      "before": 784,
+      "delta": 1
+    },
+    "src/integration/gitops.py": {
+      "after": 705,
+      "before": 704,
+      "delta": 1
+    },
+    "src/integration/regeneration.py": {
+      "after": 645,
+      "before": 619,
+      "delta": 26
+    },
+    "src/integration/regeneration_settings.py": {
+      "after": 29,
+      "before": 0,
+      "delta": 29
+    }
+  },
+  "delta": {
+    "engine": 57,
+    "owned": 57,
+    "shared": 0,
+    "tables": 0
+  },
+  "method": "Complete base archive and source checkout measured with the unchanged ownership scanner and base classifications. New ledger row records only the exact approved timeout/cache-reuse footprint. All historical grants remain unchanged.",
+  "source": {
+    "groups": {
+      "companions": 10432,
+      "engine": 84933,
+      "guards": 633,
+      "policy": 493,
+      "policy_sources": 1021,
+      "shared": 64165,
+      "ui": 262
+    },
+    "table_count": 45,
+    "total": 161939
+  },
+  "source_revision": "79322d939a0ef2e7d2ef52e4812f6a6493e07c05",
+  "task_id": "brisk-apex-10"
+}

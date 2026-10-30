@@ -109700,6 +109700,7 @@ aq_module_tests(
         "//:docs/reports/2026-10-28-integration-train-visit-carry-ownership.json",
         "//:docs/reports/2026-10-28-retained-store-maintenance-landing-ownership.json",
         "//:docs/reports/2026-10-28-retained-store-repack-budget-ownership.json",
+        "//:docs/reports/2026-10-29-daemon-regeneration-timeout-ownership.json",
         "//:docs/reports/2026-10-29-held-resume-grants-ownership.json",
         "//:docs/reports/2026-10-29-pr2100-refresh-ownership.json",
         "//:docs/reports/2026-10-29-pr2175-refresh-ownership.json",
