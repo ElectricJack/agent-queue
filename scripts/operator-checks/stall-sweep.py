@@ -140,16 +140,18 @@ def prefetch(reads, *, missing_ok=False):
         list(pool.map(lambda args: aq(*args, missing_ok=missing_ok), reads))
 
 
-def observe(*args, timeout=60, missing_ok=False):
+def observe(*args, timeout=60, missing_ok=False, quiet=False):
+    """One validated read; *quiet* reports nothing for a read with a fallback."""
     global _auth_failed
     with _auth_lock:
         if _auth_failed:
             raise SystemExit(2)
 
     def failed(reason):
-        findings.append(
-            f"SWEEP-ERROR aq {' '.join(args)}: {reason} -> this check is incomplete"
-        )
+        if not quiet:
+            findings.append(
+                f"SWEEP-ERROR aq {' '.join(args)}: {reason} -> this check is incomplete"
+            )
         return None
 
     try:
@@ -268,14 +270,14 @@ def observe(*args, timeout=60, missing_ok=False):
             stamp = row.get("activated_at")
             if stamp is not None and (type(stamp) not in (int, float) or not math.isfinite(stamp)):
                 return failed("malformed activation timestamp")
-    if args[:2] == ("task", "explain"):
-        reasons = data.get("reasons")
-        if not isinstance(reasons, list) or any(
-            not isinstance(row, dict)
-            or any(not isinstance(row.get(key), str) for key in ("code", "detail"))
-            for row in reasons
+    if args[:3] == ("task", "explain", "--task-ids"):
+        rows = data.get("explanations")
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict) or not isinstance(row.get("task_id"), str) for row in rows
         ):
-            return failed("malformed explain reasons")
+            return failed("malformed explain batch")
+    elif args[:2] == ("task", "explain") and (problem := explain_problem(data)):
+        return failed(problem)
     if args[:2] == ("integration", "status"):
         # The legacy subject control projection has no readiness blockers.
         if isinstance(data, dict) and data.get("projection_kind") == "subjects":
@@ -320,6 +322,17 @@ def observe(*args, timeout=60, missing_ok=False):
                     or row["kind"] not in {"job", "task", "message", "timer"}):
                 return failed("malformed wait identity")
     return data
+
+
+def explain_problem(data):
+    reasons = data.get("reasons")
+    if not isinstance(reasons, list) or any(
+        not isinstance(row, dict)
+        or any(not isinstance(row.get(key), str) for key in ("code", "detail"))
+        for row in reasons
+    ):
+        return "malformed explain reasons"
+    return None
 
 
 def sh(cmd, timeout=30):
@@ -495,12 +508,59 @@ def explain(tid):
     return aq("task", "explain", "--task-id", tid)
 
 
+EXPLAIN_BATCH = 100  # the daemon's explain_task task_ids bound
+_explain_batches = True
+
+
+def prefetch_explains(rows):
+    """Explain each (project, task) in one ``--task-ids`` read per project chunk.
+
+    The daemon serializes explains at about a second each under load, most of
+    it admission and pool observations a batch shares across one project's
+    tasks (2026-10-29: hundreds per sweep spent the whole 55s budget). Entries
+    seed explain()'s per-task cache. A failed entry, or a CLI or daemon without
+    ``--task-ids``, falls back to the per-task read and reports through it.
+    """
+    by_project: dict[str, dict[str, None]] = {}
+    for pid, tid in rows:
+        if (("task", "explain", "--task-id", tid), False) not in _read_cache:
+            by_project.setdefault(pid or "", {})[tid] = None
+    chunks = [list(ids)[i:i + EXPLAIN_BATCH] for ids in by_project.values()
+              for i in range(0, len(ids), EXPLAIN_BATCH)]
+    single = [tid for chunk in chunks if len(chunk) == 1 for tid in chunk]
+    chunks = [chunk for chunk in chunks if len(chunk) > 1]
+
+    def batch(chunk):
+        global _explain_batches
+        if not _explain_batches:
+            return chunk
+        data = observe("task", "explain", "--task-ids", json.dumps(chunk), quiet=True)
+        if data is None:
+            _explain_batches = False
+            return chunk
+        unexplained = set(chunk)
+        for row in data["explanations"]:
+            tid = row["task_id"]
+            if tid in unexplained and row.get("success") is not False:
+                if problem := explain_problem(row):
+                    findings.append(f"SWEEP-ERROR aq task explain --task-id {tid}: {problem} "
+                                    "-> this check is incomplete")
+                    row = None
+                _read_cache[(("task", "explain", "--task-id", tid), False)] = row
+                unexplained.discard(tid)
+        return [tid for tid in chunk if tid in unexplained]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rest = [tid for left in pool.map(batch, chunks) for tid in left]
+    prefetch(("task", "explain", "--task-id", tid) for tid in single + rest)
+
+
 queued = [t for _, t in candidates if t["status"] in ("READY", "DEFINED")]
 open_rows = [t for _, t in candidates if t["status"] in ("BLOCKED", "FAILED", "PAUSED")
              and t["id"] not in HOLDS
              and not (t["status"] == "FAILED" and t["id"] in SETTLED_FAILED)]
-prefetch([("task", "explain", "--task-id", t["id"]) for t in queued]
-         + [("task", "get", "--task-id", t["id"]) for t in open_rows])
+prefetch(("task", "get", "--task-id", t["id"]) for t in open_rows)
+prefetch_explains((pid, t["id"]) for pid, t in candidates if t["status"] in ("READY", "DEFINED"))
 # Dependencies form a second read wave. Repeated dependents share one blocker
 # observation, including completion time; foreign-project refs remain untouched.
 blockers = set()
@@ -511,10 +571,10 @@ for t in queued:
         if row["code"] == "blocked_dependency" and match and not foreign_blocker(row["detail"]):
             blockers.add(match.group(1))
 prefetch(("task", "get", "--task-id", bid) for bid in sorted(blockers))
-prefetch(("task", "explain", "--task-id", bid) for bid in sorted(blockers)
-         if (b := aq("task", "get", "--task-id", bid) or {}).get("status")
-         in ("BLOCKED", "FAILED", "PAUSED")
-         and b.get("updated_at") and NOW - float(b["updated_at"]) >= BLOCKER_STALE_S)
+prefetch_explains((b.get("project_id"), bid) for bid in sorted(blockers)
+                  if (b := aq("task", "get", "--task-id", bid) or {}).get("status")
+                  in ("BLOCKED", "FAILED", "PAUSED")
+                  and b.get("updated_at") and NOW - float(b["updated_at"]) >= BLOCKER_STALE_S)
 prefetch((("task", "get", "--task-id", m.group(1))
           for t in open_rows if t["status"] in ("BLOCKED", "FAILED")
           and t["id"].startswith("verify-") and (m := VERIFIER_TITLE.match(t["title"]))),
@@ -958,13 +1018,14 @@ def development_checks():
     sh(["docker", "exec", "aq-postgres", "psql", "-U", "agent_queue", "-d", "agent_queue", "-At",
         "-F", " ", "-o", "/tmp/strand.txt", "-c", STRAND_SQL])
 
-    for line in sh(["docker", "exec", "aq-postgres", "cat", "/tmp/strand.txt"]).splitlines():
-        parts = line.split()
-        if len(parts) != 3:
-            continue
-        blocker, dependent, sha = parts
-        if sh(["git", "-C", DAEMON_CHECKOUT, "rev-parse", "--verify", "-q", f"origin/aq/{blocker}"]).strip():
-            continue
+    stranded = [
+        parts for line in sh(["docker", "exec", "aq-postgres", "cat", "/tmp/strand.txt"]).splitlines()
+        if len(parts := line.split()) == 3
+        and not sh(["git", "-C", DAEMON_CHECKOUT, "rev-parse", "--verify", "-q",
+                    f"origin/aq/{parts[0]}"]).strip()
+    ]
+    prefetch_explains((DEV_PROJECT, dependent) for _, dependent, _ in stranded)
+    for blocker, dependent, sha in stranded:
         # A dependent that has simply not been claimed yet is NOT stranded: the SQL
         # only proves it has no delivery of its own, which is true of all unstarted
         # work. Ask the daemon whether it is actually held by THIS blocker

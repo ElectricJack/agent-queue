@@ -39502,18 +39502,121 @@
         ],
         "title": "ExplainReason"
       },
-      "ExplainTaskRequest": {
+      "ExplainTaskEntry": {
         "properties": {
           "task_id": {
             "type": "string",
-            "title": "Task Id",
-            "description": "Task id to explain"
+            "title": "Task Id"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "reasons": {
+            "items": {
+              "$ref": "#/components/schemas/ExplainReason"
+            },
+            "type": "array",
+            "title": "Reasons",
+            "default": []
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reason Codes",
+            "default": []
+          },
+          "assignment_route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssignmentRouteDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phase_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claim_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimTimingDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
         "required": [
           "task_id"
         ],
+        "title": "ExplainTaskEntry",
+        "description": "One ``task_ids`` batch entry: the single-task answer, keyed by task.\n\nA missing or out-of-scope task carries ``success: false`` and ``error``\nin its own entry; the batch itself still succeeds."
+      },
+      "ExplainTaskRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id to explain"
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids",
+            "description": "Explain these tasks in one request instead (at most 100); returns one entry per task under explanations"
+          }
+        },
+        "type": "object",
         "title": "ExplainTaskRequest"
       },
       "ExplainTaskResponse": {
@@ -39578,6 +39681,20 @@
                 "type": "null"
               }
             ]
+          },
+          "explanations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExplainTaskEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanations"
           }
         },
         "type": "object",

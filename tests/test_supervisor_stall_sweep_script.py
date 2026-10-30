@@ -33,8 +33,35 @@ if " ".join(args).startswith(os.environ.get("FAKE_DELAY_PREFIX", "")):
     if os.environ.get("FAKE_CHILD"):
         subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     time.sleep(float(os.environ.get("FAKE_DELAY", "0")))
+if name == "aq" and args[:2] == ["task", "explain"] and os.environ.get("FAKE_EXPLAIN_SERIAL"):
+    # The daemon serializes explains; a batch shares admission and pool
+    # observations, measured at 46% of a lone explain's cost per task.
+    import fcntl
+    with open(os.environ["FAKE_LOG"] + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        tasks = len(json.loads(args[3])) * 0.46 if args[2] == "--task-ids" else 1
+        time.sleep(float(os.environ["FAKE_EXPLAIN_SERIAL"]) * tasks)
 if name == "aq":
     key = " ".join(args)
+    if args[:3] == ["task", "explain", "--task-ids"] and key not in responses:
+        # Answer a batch from the per-task replies, as the daemon does: an
+        # authorization refusal refuses the batch; any other failing reply
+        # fails only its entry, which the sweep then reads on its own.
+        if os.environ.get("FAKE_NO_BATCH"):
+            print(json.dumps({"schema_version": 1, "data": None, "error": {
+                "code": "usage_error", "message": "No such option '--task-ids'."}}))
+            sys.exit(2)
+        entries = []
+        for tid in json.loads(args[3]):
+            data = responses.get("task explain --task-id " + tid)
+            if isinstance(data, dict) and "_stdout" in data:
+                if '"out_of_scope"' in data["_stdout"]:
+                    sys.stdout.write(data["_stdout"])
+                    sys.exit(data.get("_exit", 0))
+                data = None
+            entries.append({"task_id": tid, **data} if isinstance(data, dict) else
+                           {"task_id": tid, "success": False, "error": "fake_missing"})
+        responses[key] = {"explanations": entries}
     if key in responses:
         data = responses[key]
         if isinstance(data, dict) and "_stdout" in data:
@@ -75,7 +102,7 @@ def _run(tmp_path, responses, *args, missing_commands=(), session_id=None, extra
         "playbook activation-health", {"success": True, "activations": [], "count": 0},
     )
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(parents=True)
     fake = tmp_path / "fake.py"
     fake.write_text(FAKE)
     for name in COMMANDS:
@@ -753,7 +780,10 @@ def test_project_scope_error_keeps_project_fix(tmp_path):
     assert calls == [["aq", "project", "list"]]
 
 
-def test_parallel_auth_failures_report_once_and_stop_patrol(tmp_path):
+@pytest.mark.parametrize("batch", [True, False])
+def test_parallel_auth_failures_report_once_and_stop_patrol(tmp_path, batch):
+    # With batches the refusal names the batch read; without, the per-task
+    # reads race and only the first is reported.
     tasks = [_task(f"ready-{i}", "READY") for i in range(8)]
     responses = _scoped_responses(tasks)
     for task in tasks:
@@ -761,10 +791,12 @@ def test_parallel_auth_failures_report_once_and_stop_patrol(tmp_path):
             "schema_version": 1, "data": None,
             "error": {"code": "out_of_scope", "message": "invalid or expired token"},
         }, exit_code=4)
-    proc, calls = _run(tmp_path, responses, "--project", "rom", session_id="supervisor-id")
+    proc, calls = _run(tmp_path, responses, "--project", "rom", session_id="supervisor-id",
+                       extra_env=None if batch else {"FAKE_NO_BATCH": "1"})
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert len(proc.stdout.splitlines()) == 1
     assert proc.stdout.count("SWEEP-AUTH") == 1
+    assert ("--task-ids" in proc.stdout) is batch
     assert "aq session token supervisor-id --json" in proc.stdout
     assert not any(call[1:3] in (["pool", "status"], ["session", "list"]) for call in calls)
 
@@ -1139,11 +1171,82 @@ def test_sweep_reads_each_blocker_once_and_skips_unused_explanations(tmp_path):
     gets = [c for c in calls if c[1:3] == ["task", "get"]]
     explains = [c for c in calls if c[1:3] == ["task", "explain"]]
     assert len(gets) == 13
-    assert len(explains) == 12
+    # One project's twelve explains are one batch read, and no paused task's.
+    assert explains == [["aq", "task", "explain", "--task-ids",
+                         json.dumps([f"ready-{i}" for i in range(12)])]]
     assert calls.count(["aq", "task", "get", "--task-id", "delivered"]) == 1
-    assert all(c[-1].startswith("ready-") for c in explains)
     assert "SWEEP-TIMING total" in proc.stderr
     assert "aq --json task get: 13 calls" in proc.stderr
+
+
+def _explain_calls(calls):
+    return [c[3:] for c in calls if c[1:3] == ["task", "explain"]]
+
+
+def test_sweep_without_batch_explain_falls_back_to_per_task_reads(tmp_path):
+    responses = _large_patrol_responses(12)
+    responses["aq"]["task explain --task-id ready-0"] = {"reasons": [{
+        "code": "blocked_dependency", "detail": "dep 'gone' status=BLOCKED",
+    }]}
+    responses["aq"]["task get --task-id gone"] = {
+        "status": "BLOCKED", "project_id": "rom", "updated_at": time.time() - 3 * 3600,
+    }
+    responses["aq"]["task explain --task-id gone"] = {"reasons": []}
+    batched, _ = _run(tmp_path / "batched", responses, "--project", "rom")
+    proc, calls = _run(tmp_path / "old", responses, "--project", "rom",
+                       extra_env={"FAKE_NO_BATCH": "1"})
+    assert proc.returncode == batched.returncode == 0, proc.stdout + proc.stderr
+    # An older CLI or daemon refuses --task-ids: the probe reports nothing, the
+    # sweep falls back once and its findings are the batched sweep's.
+    assert "SWEEP-ERROR" not in proc.stdout
+    assert proc.stdout == batched.stdout
+    assert "BLOCKER-STALLED" in proc.stdout
+    explains = _explain_calls(calls)
+    assert sum(c[0] == "--task-ids" for c in explains) == 1
+    assert sorted(c[1] for c in explains if c[0] == "--task-id") == sorted(
+        [f"ready-{i}" for i in range(12)] + ["gone"])
+
+
+@pytest.mark.parametrize("response,error", [
+    ({"_stdout": "", "_exit": 3}, "no JSON response (exit 3)"),
+    ({"reasons": "nope"}, "malformed explain reasons"),
+])
+def test_a_failed_batch_entry_reports_as_its_own_read(tmp_path, response, error):
+    responses = _large_patrol_responses(6)
+    responses["aq"]["task explain --task-id ready-2"] = response
+    proc, calls = _run(tmp_path / "batched", responses, "--project", "rom")
+    lone, _ = _run(tmp_path / "old", responses, "--project", "rom",
+                   extra_env={"FAKE_NO_BATCH": "1"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    line = f"SWEEP-ERROR aq task explain --task-id ready-2: {error} -> this check is incomplete"
+    assert proc.stdout.count(line) == lone.stdout.count(line) == 1
+    assert proc.stdout == lone.stdout
+    singles = [c for c in _explain_calls(calls) if c[0] == "--task-id"]
+    # A failed entry is read again on its own; a malformed one already reported.
+    assert singles == ([["--task-id", "ready-2"]] if "_exit" in response else [])
+
+
+def test_batch_explains_group_by_project_and_chunk_at_the_daemon_bound(tmp_path):
+    responses = {"aq": {
+        "project list": [{"id": pid, "status": "ACTIVE"} for pid in ("rom", "matter", "solo")],
+        "task list -p rom": [_task(f"rom-{i}", "READY") for i in range(205)],
+        "task list -p matter": [_task(f"matter-{i}", "DEFINED") for i in range(3)],
+        "task list -p solo": [_task("solo-0", "READY")],
+        "pool status": [], "session list": [],
+    }}
+    for pid, count in (("rom", 205), ("matter", 3), ("solo", 1)):
+        for i in range(count):
+            responses["aq"][f"task explain --task-id {pid}-{i}"] = {"reasons": []}
+    proc, calls = _run(tmp_path, responses)
+    assert "SWEEP-ERROR" not in proc.stdout, proc.stdout
+    batches = sorted(json.loads(c[1]) for c in _explain_calls(calls) if c[0] == "--task-ids")
+    assert batches == sorted([
+        [f"rom-{i}" for i in range(100)], [f"rom-{i}" for i in range(100, 200)],
+        [f"rom-{i}" for i in range(200, 205)], [f"matter-{i}" for i in range(3)],
+    ])
+    # A project with one candidate keeps the per-task read.
+    assert [c for c in _explain_calls(calls) if c[0] == "--task-id"] == [
+        ["--task-id", "solo-0"]]
 
 
 def test_sweep_caches_failed_blocker_reads(tmp_path):
@@ -1211,3 +1314,20 @@ def test_large_sweep_completes_within_patrol_budget(perf_strict, tmp_path):
     assert "SWEEP-ERROR" not in proc.stdout and "SWEEP-INCOMPLETE" not in proc.stdout
     assert len([c for c in calls if c[1:3] == ["task", "get"]]) == 65
     assert elapsed < 60, (elapsed, proc.stderr)
+
+
+@pytest.mark.perf
+def test_serialized_explains_complete_well_inside_the_patrol_budget(perf_strict, tmp_path):
+    # 2026-10-29: the daemon answered one explain at a time, about a second each
+    # under load, so per-task explains of a busy project spent the whole 55s
+    # budget. Batches share each project's admission and pool observations.
+    started = time.monotonic()
+    proc, calls = _run(
+        tmp_path, _large_patrol_responses(64), "--project", "rom", "--timings",
+        extra_env={"FAKE_DELAY": "1", "FAKE_EXPLAIN_SERIAL": "0.5"},
+    )
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SWEEP-ERROR" not in proc.stdout and "SWEEP-INCOMPLETE" not in proc.stdout
+    assert len([c for c in calls if c[1:3] == ["task", "explain"]]) == 1
+    assert elapsed < 40, (elapsed, proc.stderr)

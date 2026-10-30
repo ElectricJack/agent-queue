@@ -86,13 +86,29 @@ verifier parents, and current worker claim identities. Only rows whose diagnosis
 uses an explanation request one. Each identical observation, including a failed
 read, is cached for this invocation; many dependents sharing a blocker need only
 one completion read. Scoped patrols do not prefetch foreign-project blockers.
+
+Explanations are read in batches: one `aq task explain --task-ids '<json list>'`
+per project, at most 100 tasks per batch (the daemon's bound); a project with a
+single candidate keeps the per-task read. The daemon answers explains one at a
+time, about a second each under load, and most of that cost is the admission and
+pool observation that a batch shares across one project's tasks. Before batching,
+per-task explains of one busy project used up the whole 55-second budget. Each
+batch entry seeds the per-task cache, so findings are unchanged. An entry that
+failed is re-read on its own and reports exactly as a lone read would. A CLI or
+daemon without `--task-ids` gets one silent probe, then the sweep falls back to
+per-task reads for the rest of the run. A foreign task in a batch refuses the
+whole batch the way it refuses a lone explain, so authorization still produces
+one `SWEEP-AUTH` line and exits 2.
 `--skip-pools` preserves the installed patrol's option to leave pool checks to a
 global supervisor. `--timings` writes total elapsed time and per-command call
 counts/cumulative subprocess time to stderr; concurrent durations overlap.
 
 The focused suite verifies call counts, caching, scope and deadline cleanup with
 isolated fake commands. Its opt-in timing check models 128 stale tasks with one
-second of CLI/daemon latency per read and requires a complete sweep under 60s:
+second of CLI/daemon latency per read and requires a complete sweep under 60s; a
+second models daemon-serialized explains (0.5s each, a batch costing 46% per task,
+as benchmarked) for 64 queued tasks and requires under 40s, where per-task reads
+exhaust the budget:
 `AQ_PERF_STRICT=1 aq test -m perf -p no:xdist tests/test_supervisor_stall_sweep_script.py`.
 This synthetic workload is repeatable evidence of batching, not a live-daemon
 latency measurement. Use `--timings` from the authorized patrol session to locate

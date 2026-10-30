@@ -41,6 +41,10 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
             approved = _unread_inbox_changes()["transport_definitions"][name]
             assert approved["previous_sha256"] == digest
             digest = approved["sha256"]
+        if name in _explain_batch_changes()["transport_definitions"]:
+            approved = _explain_batch_changes()["transport_definitions"][name]
+            assert approved["previous_sha256"] == digest
+            digest = approved["sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     catalogue = _revert_structure_catalogue(_before_restart_hold_catalogue())
     actual = hashlib.sha256((json.dumps(catalogue, indent=2) + "\n").encode()).hexdigest()

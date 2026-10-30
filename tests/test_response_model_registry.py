@@ -148,8 +148,8 @@ def test_message_model_from_alias_round_trips() -> None:
 
 
 _REQUIRED_FIELDS_BY_COMMAND: dict[str, set[str]] = {
-    # explain + ready frontier
-    "explain_task": {"task_id"},
+    # explain + ready frontier; explain takes task_id or a task_ids batch
+    "explain_task": set(),
     # project_ready has no required args (project_id falls back to active)
     "project_ready": set(),
     # gate operator surface
@@ -171,7 +171,7 @@ _REQUIRED_FIELDS_BY_COMMAND: dict[str, set[str]] = {
 
 
 _PRESENT_PROPERTIES_BY_COMMAND: dict[str, set[str]] = {
-    "explain_task": {"task_id"},
+    "explain_task": {"task_id", "task_ids"},
     "project_ready": {"project_id", "labels", "any_label", "profile_id", "brief"},
     "gate_create": {"project_id", "gate_type", "title"},
     "gate_show": {"gate_id"},

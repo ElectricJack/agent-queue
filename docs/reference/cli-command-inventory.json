@@ -20829,16 +20829,18 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--task-id"
-        ],
+        "required": [],
         "optional": [
+          "--task-id",
+          "--task-ids",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--task-ids"
+        ],
         "nullable": []
       }
     },

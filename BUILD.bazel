@@ -2549,6 +2549,7 @@ exports_files([
         "packages/aq-client/agent_queue_api_client/models/execute_request_args.py",
         "packages/aq-client/agent_queue_api_client/models/execution_requirements_dto.py",
         "packages/aq-client/agent_queue_api_client/models/explain_reason.py",
+        "packages/aq-client/agent_queue_api_client/models/explain_task_entry.py",
         "packages/aq-client/agent_queue_api_client/models/explain_task_request.py",
         "packages/aq-client/agent_queue_api_client/models/explain_task_response.py",
         "packages/aq-client/agent_queue_api_client/models/explain_task_response_422.py",

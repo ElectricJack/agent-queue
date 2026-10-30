@@ -1,0 +1,50 @@
+{
+  "source_base": "cc998fdde8437d4198ac3f4bac00e471a1a5bb27",
+  "command": "explain_task",
+  "transport_definition": {
+    "name": "explain_task",
+    "description": "Return the ordered list of reasons *task_id* isn't running.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Task id to explain"
+        },
+        "task_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "description": "Explain these tasks in one request instead (at most 100); returns one entry per task under explanations"
+        }
+      }
+    }
+  },
+  "previous_transport_definition": {
+    "name": "explain_task",
+    "description": "Return the ordered list of reasons *task_id* isn't running.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Task id to explain"
+        }
+      },
+      "required": [
+        "task_id"
+      ]
+    }
+  },
+  "cli_catalogue_sha256": "0bf7f201c4637e7f38b7cd7cf8a46de3461925e8d822d6e9070350182d4901b6",
+  "previous_cli_catalogue_sha256": "aa2600fb235efe2803b3b476eca4f49e1911a6f627218ec2622308251726c9b1",
+  "transport_definitions": {
+    "explain_task": {
+      "previous_sha256": "6474e40c0273f41ef14844bde15a51838a5a77d37ae0b65e0e2c3012af55c8ba",
+      "sha256": "ad89b48a34e5fd8f13ef1d9aa6443cec82fd71bc6f00b4f262f438ffe040498e"
+    }
+  }
+}

@@ -88,6 +88,11 @@ _PUSH_ONLY_REASON_CODES = frozenset({
     "no_idle_agent", "no_compatible_agent", "project_agent_cap",
 })
 
+#: Most tasks one ``explain_task`` batch may name. A patrol explains each
+#: project's stale queue in chunks of this size (scripts/operator-checks/
+#: stall-sweep.py); the bound keeps one request short enough to time out cleanly.
+EXPLAIN_BATCH_LIMIT = 100
+
 #: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
 #: resolver (graph-visibility A2).  Deliberately **not**
 #: ``HIERARCHY_LOCK_NAMESPACE``: the resolver holds its lock across a whole
@@ -5845,12 +5850,67 @@ class TaskCommandsMixin:
         Graph reasons first (persistent blockers), then capacity reasons
         (transient — from the last scheduler tick's cached snapshot).
         Cross-project blocking deps name the other project in ``detail``.
+        ``task_ids`` explains a batch instead (``_explain_tasks``).
         See docs/specs/design/work-graph.md §9.
         """
+        if args.get("task_ids") is not None:
+            return await self._explain_tasks(args["task_ids"])
         task_id = args.get("task_id")
         if not task_id:
             return {"success": False, "error": "task_id is required"}
         return await self._explain_task(str(task_id))
+
+    async def _explain_tasks(self, task_ids) -> dict:
+        """Explain each of *task_ids*, sharing the reads one explain repeats.
+
+        Admission evaluates the shared frontier SQL and pool measurement scans
+        every active project: pay for each once per project per request, as
+        ``_cmd_project_ready`` does, instead of once per task. Each entry is
+        exactly what ``task_id`` alone answers, so a missing or out-of-scope
+        task fails its own entry, never the batch.
+        """
+        if (not isinstance(task_ids, list) or not task_ids
+                or not all(isinstance(tid, str) and tid for tid in task_ids)):
+            return {"success": False, "error": "task_ids must be a non-empty list of task ids"}
+        ids = list(dict.fromkeys(task_ids))
+        if len(ids) > EXPLAIN_BATCH_LIMIT:
+            return {"success": False,
+                    "error": f"task_ids names {len(ids)} tasks; at most {EXPLAIN_BATCH_LIMIT}"}
+        from src.integration.admission import observe_admission
+        from src.routing.readiness import orchestrator_router_ready
+
+        by_project: dict[str, list[str]] = {}
+        for tid in ids:
+            task = await self.db.get_task(tid)
+            if task is not None and not self._assert_task_in_scope(task):
+                by_project.setdefault(task.project_id, []).append(tid)
+        admission_for: dict[str, object] = {}
+        for project_id, project_ids in by_project.items():
+            admission = await observe_admission(
+                self.db,
+                project_ids,
+                self._development_integration(),
+                cached_only=True,
+                default_mode=self.config.integration.default_mode,
+                router_ready_projects=({project_id} if await orchestrator_router_ready(
+                    self.orchestrator, project_id) else set()),
+            )
+            admission_for.update(dict.fromkeys(project_ids, admission))
+        measurement = None
+
+        async def measure_pools():
+            nonlocal measurement
+            if measurement is None:
+                measurement = await self.orchestrator._measure_pools(for_display=True)
+            return measurement
+
+        explanations = []
+        for tid in ids:
+            result = await self._explain_task(
+                tid, admission=admission_for.get(tid), pool_measure=measure_pools,
+            )
+            explanations.append({"task_id": tid, **result})
+        return {"success": True, "explanations": explanations}
 
     async def _explain_task(self, task_id: str, *, admission=None, pool_measure=None) -> dict:
         """Explain one task, optionally using a project read's shared observations."""

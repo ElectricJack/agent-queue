@@ -475,6 +475,7 @@ from .execute_request import ExecuteRequest
 from .execute_request_args import ExecuteRequestArgs
 from .execution_requirements_dto import ExecutionRequirementsDTO
 from .explain_reason import ExplainReason
+from .explain_task_entry import ExplainTaskEntry
 from .explain_task_request import ExplainTaskRequest
 from .explain_task_response import ExplainTaskResponse
 from .explain_task_response_422 import ExplainTaskResponse422
@@ -2775,6 +2776,7 @@ __all__ = (
     "ExecuteRequestArgs",
     "ExecutionRequirementsDTO",
     "ExplainReason",
+    "ExplainTaskEntry",
     "ExplainTaskRequest",
     "ExplainTaskResponse",
     "ExplainTaskResponse422",
