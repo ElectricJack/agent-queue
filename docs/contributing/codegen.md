@@ -214,6 +214,18 @@ credentials, and retains worker database refusal sentinels. The scripts still
 refuse missing tools and an incorrect generator version; regeneration never
 installs or relocates the toolchain.
 
+Daemon regeneration runs one command at a time with a default 1800-second
+budget, stretched under CPU load. Set `AQ_REGENERATION_TIMEOUT_SECONDS` to a
+positive integer in the daemon environment to override repository budgets;
+invalid values log a warning and retain the configured budget. Apply environment
+changes when restarting/updating the daemon. Queue time is excluded. Callers may
+stop waiting while the run continues; identical calls rejoin that run. After a
+detached subprocess times out, an identical retry reuses its scratch tree's
+partial generated output and ignored caches, then reruns and validates the
+command. Up to 64 such worktrees are retained per event loop, with oldest-first
+eviction; success or terminal failure removes them. This cache does not survive
+a daemon restart.
+
 To merge the way the development publisher does locally, define the driver
 once per clone:
 

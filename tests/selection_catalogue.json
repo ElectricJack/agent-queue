@@ -7623,7 +7623,7 @@
         "generated-artifacts"
       ],
       "default_arm": true,
-      "digest": "sha256:6f76ae780549b3b393b4ce9dc4f8f039f65efe64361aba32079c753d4c131a2a",
+      "digest": "sha256:ae14b2fe294457fbdeb695c92e4bde7fc5f0d6959fef8cd687ce6532ab619c9a",
       "imports": [
         "src.git.manager",
         "src.integration",
@@ -7631,6 +7631,7 @@
         "src.integration.development",
         "src.integration.gitops",
         "src.integration.regeneration",
+        "src.integration.regeneration_settings",
         "src.integration.runtime_contracts",
         "src.test_selection",
         "src.test_selection.catalogue"

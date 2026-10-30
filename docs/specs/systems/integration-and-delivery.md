@@ -286,9 +286,20 @@ Each visit to a target (`_visit_target`, then `DatabaseBatches.open_batch`, then
 4. **Regenerate generated files.** A conflict in a path that `.gitattributes` marks
    `merge=aq-generated` is never hand-merged. The merge keeps the current side.
    `scripts/regenerate-generated.sh` then runs **once** after all members are merged
-   (`regeneration.py`, 600 s timeout), and the regenerated tree becomes part of the
+   (`regeneration.py`, 1800 s default timeout), and the regenerated tree becomes part of the
    candidate. A failure is reported as `RegenerationFailure` or `GeneratedMergeConflict`
    ([codegen](../../contributing/codegen.md#one-command-and-never-a-hand-merge)).
+   The daemon environment variable `AQ_REGENERATION_TIMEOUT_SECONDS` overrides
+   the repository budget with a positive integer number of seconds. Invalid
+   values warn and keep the configured budget. Load scaling applies afterward;
+   queue time does not consume the budget, and concurrency remains one.
+   A detached run that reaches its subprocess deadline retains its scratch
+   worktree for an identical retry (repository, merged tree, command, restoration
+   inputs and verified merges). Partial generated outputs and ignored caches
+   survive; the retry reruns the command and validates all changes against the
+   original merged tree. Success and terminal failures remove the scratch tree.
+   At most 64 timed-out worktrees are retained per daemon event loop; oldest
+   entries are removed on eviction. Retention is in memory, not restart recovery.
 5. **Publish the candidate.** `LeasedPublish` (`train_sources.py`) pushes the
    candidate ref under the branch lock with an expected-old compare-and-swap.
 6. **Check.** CI runs on the candidate ref. Which refs trigger CI is described in
