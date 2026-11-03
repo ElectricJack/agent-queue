@@ -933,6 +933,7 @@ TS_START = re.compile(
 
 # Separate operator-approved reconciliation; historical exceptions above remain retired.
 HAND_INTEGRATION_RECONCILIATION = {
+ 'scheduler_active_project_admission_composition': {'authorized_owned_delta': 9, 'authorized_engine_delta': 0, 'authorized_shared_owned_delta': 0, 'authorized_table_delta': 0, 'charged_files': {'src/orchestrator/core.py': 9}, 'dev_source_revision': 'a644aeb166bd2aed30560f6f3c141a9a153d3234', 'previous_measured_owned_total': 161882, 'previous_measured_engine_lines': 84876, 'previous_measured_table_count': 45, 'measured_owned_total': 161891, 'measured_engine_lines': 84876, 'measured_table_count': 45, 'operator_decision': 'owner-fast-track-2026-11-03', 'referenced_decision': 'size-cap-delegation-2026-10-23', 'pull_request': 2201, 'reason': "Owner-directed operator fast-track (2026-11-03: 'fast track the AQ scheduler fix yourself'). Exact +9 owned/+0 engine/+0 tables in src/orchestrator/core.py: scope the cycle frontier and scheduler delivery admission to ACTIVE projects so a paused project's Git evidence never holds a scheduler cycle. Preserve every historical grant, original baseline, classification, zero remaining headroom, s4_modules expiry and existing storage categories."},
  'retained_store_repack_refresh_composition': {'task_id': 'keen-willow-36',
  'original_task_id': 'calm-lantern-36',
  'pull_request': 2175,
@@ -2353,7 +2354,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                        'task_id': 'eager-stone-76',
                                        'thread_id': 'eager-stone-76-ci-size'},
  'authority': 'size-cap-delegation-2026-10-23',
- 'authorized_owned_delta': 6383,
+ 'authorized_owned_delta': 6392,
  'bazel_backend_selection_composition': {'approval_confirmation_message_id': 'msg-bc567eb39d9449478f981a7d74f9048d',
                                          'authorized_engine_delta': 0,
                                          'authorized_owned_delta': 51,
@@ -2962,7 +2963,7 @@ HAND_INTEGRATION_RECONCILIATION = {
                                       'source_revision': '9ee11420309902aafda1d7a81f93866df50896af',
                                       'task_id': 'keen-harbor-84'},
  'measured_engine_lines': 84876,
- 'measured_owned_total': 161882,
+ 'measured_owned_total': 161891,
  'measured_table_count': 45,
  'missing_target_abort_composition': {'authorized_engine_delta': 59,
                                       'authorized_owned_delta': 59,

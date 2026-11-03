@@ -524,16 +524,9 @@ async def hierarchy_frontier_modes(
         if (project := await db.get_project(pid)) is not None
     ]
     modes = {}
-    unscoped = task_id is None and task_ids is None
     for project in candidates:
         mode = ProjectIntegrationMode.of(project)
         if not mode.hierarchical:
-            continue
-        if unscoped and not cached_only and _project_inactive(project):
-            # A paused or archived project schedules, sizes and claims nothing, so
-            # a cycle-wide read must not pay its Git view. One large paused repo
-            # otherwise held every scheduler cycle for the full timeout
-            # (2026-11-03: 1,182 frontier timeouts on a paused project).
             continue
         timeout = (FRONTIER_DISPLAY_TIMEOUT_SECONDS if cached_only
                    else FRONTIER_MODE_TIMEOUT_SECONDS)
@@ -558,11 +551,6 @@ async def hierarchy_frontier_modes(
         finally:
             _BACKGROUND_READ.reset(token)
     return modes
-
-
-def _project_inactive(project) -> bool:
-    status = getattr(project, "status", None)
-    return getattr(status, "value", status) not in (None, "ACTIVE")
 
 
 #: Wall-clock bound on one project's Git prerequisite view in a scheduler,
