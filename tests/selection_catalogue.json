@@ -13421,7 +13421,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:86ba06f660411688076c131aa4c08f89a7d1e40108a422d9ccead98ba8ea1b8a",
+      "digest": "sha256:e9660b144a019886afedf505717e42d8b02d68941735d00aa08f7962272c1be0",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -13440,6 +13440,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.core",
+        "src.orchestrator.monitoring",
         "src.orchestrator.pools",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
