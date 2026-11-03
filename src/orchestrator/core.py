@@ -100,6 +100,7 @@ from src.models import (
     DAEMON_AUTHORED_TASK_TYPES,
     AgentProfile,
     AgentState,
+    ProjectStatus,
     RepoSourceType,
     Task,
     TaskStatus,
@@ -3638,7 +3639,9 @@ class Orchestrator(
             # 5. Schedule READY tasks onto idle agents (skipped when paused).
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self.db, background=True)
+            hierarchy_modes = await hierarchy_frontier_modes(
+                self.db, project_ids=await self._active_project_ids(), background=True,
+            )
             if not self._paused:
                 actions = await self._schedule(hierarchy_modes=hierarchy_modes)
             else:
@@ -4857,6 +4860,11 @@ class Orchestrator(
             transition.provider, transition.generation
         )
 
+    async def _active_project_ids(self) -> set[str]:
+        """Projects that can schedule; paused ones must cost a cycle no Git I/O."""
+        return {project.id for project in await self.db.list_projects()
+                if project.status == ProjectStatus.ACTIVE}
+
     async def _schedule(self, *, hierarchy_modes=None) -> list[AssignAction]:
         """Build scheduler state snapshot and compute task-to-agent assignments.
 
@@ -4910,12 +4918,19 @@ class Orchestrator(
                 task for task in await self.db.list_active_tasks(exclude_held_ready=True)
                 if task.id not in withheld and not is_supervisor_profile(task.profile_id)
             ]
-        if hierarchy_modes is None:
-            from src.integration.delivery_observer import hierarchy_frontier_modes
+        from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self.db, background=True)
+        # A paused or archived project schedules nothing, so its READY work never
+        # pays delivery admission: that walks PR and Git evidence for every
+        # source, and a large paused repository otherwise holds the whole cycle.
+        active = await self._active_project_ids()
+        if hierarchy_modes is None:
+            hierarchy_modes = await hierarchy_frontier_modes(
+                self.db, project_ids=active, background=True,
+            )
         delivery_admission = await self._delivery_admission(
-            [task.id for task in task_snapshot if task.status == TaskStatus.READY],
+            [task.id for task in task_snapshot
+             if task.status == TaskStatus.READY and task.project_id in active],
             hierarchy_modes=hierarchy_modes,
             router_ready_projects=await self.router_readiness.ready_projects(),
         )

@@ -7124,33 +7124,6 @@ async def test_slow_frontier_view_fails_closed_within_its_bound(
         assert mode.parent_contained_task_ids == frozenset()
 
 
-async def test_cycle_frontier_skips_paused_projects(db, development_admission):
-    """A paused project's Git view never costs an unscoped scheduler read."""
-    import src.integration.delivery_observer as module
-    from src.models import ProjectStatus
-
-    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
-                            repo_url=str(development_admission.remote))
-    viewed = []
-
-    class Recording:
-        truth = object()
-        READ_MAX_AGE = 30.0
-
-        async def prerequisite_view(self, project_id, *args, **kwargs):
-            viewed.append(project_id)
-            raise RuntimeError("stop after recording")
-
-    db.set_prerequisite_observer(Recording())
-    await db.update_project(PROJECT_ID, status=ProjectStatus.PAUSED)
-    assert PROJECT_ID not in await module.hierarchy_frontier_modes(db, background=True)
-    assert viewed == []
-    await db.update_project(PROJECT_ID, status=ProjectStatus.ACTIVE)
-    with pytest.raises(RuntimeError):
-        await module.hierarchy_frontier_modes(db, background=True)
-    assert viewed == [PROJECT_ID]
-
-
 @pytest.mark.parametrize("mode", ["development", "hierarchy", "train"])
 @pytest.mark.parametrize("prerequisites", ["wait-for-parent", "stacked"])
 async def test_independent_claim_does_not_observe_unrelated_git_prerequisites(

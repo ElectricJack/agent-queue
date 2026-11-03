@@ -300,7 +300,7 @@
         "task_id": "crisp-dune-85"
       },
       "authority": "size-cap-delegation-2026-10-23",
-      "authorized_owned_delta": 6383,
+      "authorized_owned_delta": 6392,
       "bazel_backend_selection_composition": {
         "approval_confirmation_message_id": "msg-bc567eb39d9449478f981a7d74f9048d",
         "authorized_engine_delta": 0,
@@ -1143,7 +1143,7 @@
         "task_id": "keen-harbor-84"
       },
       "measured_engine_lines": 84876,
-      "measured_owned_total": 161882,
+      "measured_owned_total": 161891,
       "measured_table_count": 45,
       "missing_target_abort_composition": {
         "authorized_engine_delta": 59,
@@ -1908,6 +1908,26 @@
         "source_revision": "9f4d979c54865bdaf06d85c036796f64b803991c",
         "task_id": "amber-journey-18"
       },
+      "scheduler_active_project_admission_composition": {
+        "authorized_engine_delta": 0,
+        "authorized_owned_delta": 9,
+        "authorized_shared_owned_delta": 0,
+        "authorized_table_delta": 0,
+        "charged_files": {
+          "src/orchestrator/core.py": 9
+        },
+        "dev_source_revision": "a644aeb166bd2aed30560f6f3c141a9a153d3234",
+        "measured_engine_lines": 84876,
+        "measured_owned_total": 161891,
+        "measured_table_count": 45,
+        "operator_decision": "owner-fast-track-2026-11-03",
+        "previous_measured_engine_lines": 84876,
+        "previous_measured_owned_total": 161882,
+        "previous_measured_table_count": 45,
+        "pull_request": 2201,
+        "reason": "Owner-directed operator fast-track (2026-11-03: 'fast track the AQ scheduler fix yourself'). Exact +9 owned/+0 engine/+0 tables in src/orchestrator/core.py: scope the cycle frontier and scheduler delivery admission to ACTIVE projects so a paused project's Git evidence never holds a scheduler cycle. Preserve every historical grant, original baseline, classification, zero remaining headroom, s4_modules expiry and existing storage categories.",
+        "referenced_decision": "size-cap-delegation-2026-10-23"
+      },
       "settled_claim_wake_composition": {
         "authorized_engine_delta": 0,
         "authorized_owned_delta": 5,
@@ -2401,7 +2421,7 @@
       }
     },
     "original_owned_total_cap": 155499,
-    "owned_total_cap": 161882,
+    "owned_total_cap": 161891,
     "phase": "transition",
     "pre_reconciliation_batch_exception": {
       "amendments": [
