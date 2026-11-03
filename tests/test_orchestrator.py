@@ -3949,3 +3949,31 @@ async def test_disabled_train_dispatches_worker_without_integration_owner(sessio
     orch._hierarchy_origin_and_fence.assert_not_awaited()
     async with orch.db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(integration_branch_owners)) == 0
+
+
+async def test_container_sweep_isolates_one_unsettleable_container():
+    """One container whose settlement raises cannot abort the scheduler cycle."""
+    from src.orchestrator.monitoring import MonitoringMixin
+
+    class Sweeper(MonitoringMixin):
+        pass
+
+    sweeper = Sweeper()
+    sweeper.config = MagicMock()
+    sweeper.config.work_graph.container_sweep_interval_seconds = 1
+    sweeper.release_stale_container_claims = AsyncMock(return_value=[])
+    sweeper.reconcile_stale_containers = AsyncMock()
+    sweeper.db = MagicMock()
+    sweeper.db.settle_candidates = AsyncMock(return_value=["bad", "good"])
+    calls = []
+
+    async def settle(seeds, **kwargs):
+        calls.append(set(seeds))
+        if "bad" in seeds:
+            raise RuntimeError("subtasks open")
+        return list(seeds)
+
+    sweeper._settle_seeds = settle
+    await sweeper._sweep_container_completion()
+    assert calls == [{"bad", "good"}, {"bad"}, {"good"}]
+    sweeper.reconcile_stale_containers.assert_awaited_once()
