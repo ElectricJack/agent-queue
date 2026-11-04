@@ -268,8 +268,8 @@ class PoolsMixin:
         One ``list_profiles()`` and one ``list_sessions()`` serve the whole
         tick.  The same rows are available to the status endpoint, which
         needs the full pool session list even when no project is active.
-        Sizing reads delivery evidence from the observer's cache, refreshed by the
-        scheduler's admission pass; claim admission keeps its fresh checks.
+        ``for_display`` restricts Git evidence to the observer's cache; actual
+        sizing and claim admission retain their existing freshness checks.
         """
         measurement = PoolMeasurement()
         if hierarchy_modes is None:
@@ -352,7 +352,7 @@ class PoolsMixin:
                 batch = await self._delivery_admission(
                     await structural_candidates(self.db, project.id),
                     hierarchy_modes=hierarchy_modes, router_ready_projects=ready_projects,
-                    cached_only=True,  # sizing estimates; claims re-verify fresh
+                    **({"cached_only": True} if for_display else {}),
                 )
                 allowed = batch.allowed
             # Ordinary demand is claimable work only (mandatory routing §9.1): an
