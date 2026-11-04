@@ -459,8 +459,14 @@ async def observe_pr_admission(db, ids, service, *, default_mode, cached_only=Fa
             )
             if contained is not None:
                 proof = (head, oid, contained is True, observation, repo)
-        except Exception:  # Unavailable observations permit worker preparation.
-            pass
+        except Exception as _exc:  # Unavailable observations permit worker preparation.
+            if proof is False:  # Diagnostic (2026-11-04 claim stall); revert once diagnosed.
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "pr_admission.withheld source=%s pr=%s status=%s branch=%s url=%s: %s: %s",
+                    source_id, row["pr_url"], row["status"], row["branch_name"], url,
+                    type(_exc).__name__, str(_exc)[:300],
+                )
         proofs[source_id] = proof
     for task_id, deps in required.items():
         for source_id in sorted(deps):
