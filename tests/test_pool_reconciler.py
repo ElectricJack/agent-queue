@@ -2642,3 +2642,26 @@ async def test_reconciler_recovers_stopped_history_without_a_live_session(orch, 
     await orch.session_reconciler._step_stopped_idle_workspaces([], time.time())
     assert (await db.get_workspace(slot.id)).locked_by_agent_id is None
     assert await stopped_idle_workspace_sessions(db) == []
+
+
+async def test_pool_sizing_reads_cached_delivery_evidence_only(orch, db):
+    """Pool sizing never pays fresh delivery I/O; claims keep the fresh checks.
+
+    2026-11-04: fresh PR/Git admission inside sizing outgrew the 30 s reconcile
+    bound, so no pool session started even with READY work queued.
+    """
+    await ready(db, "candidate")
+    await db.create_task(Task(
+        id="source", project_id=PROJECT_ID, title="source", description="",
+        status=TaskStatus.COMPLETED, branch_name="aq/source",
+    ))
+    await db.add_dependency("candidate", "source")
+    seen = []
+
+    async def spy(task_ids, **kwargs):
+        seen.append(kwargs.get("cached_only"))
+        return MagicMock(allowed=set(), counts=AsyncMock(return_value={}))
+
+    orch._delivery_admission = spy
+    await orch._measure_pools()
+    assert seen and all(flag is True for flag in seen)
