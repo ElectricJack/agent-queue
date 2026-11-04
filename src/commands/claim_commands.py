@@ -1183,19 +1183,6 @@ class ClaimCommandsMixin:
             return self._simple(
                 ClaimResult.NO_READY_WORK, "delivery_observation_timeout", row, cap
             )
-        # Diagnostic (2026-11-04 claim stall): name what an empty frontier excluded.
-        _ids = locals().get("ids") or []
-        _allowed = admission.allowed if admission is not None else None
-        logger.warning(
-            "claim.empty session=%s project=%s profile=%s kind=%s routing=%s "
-            "independent_pass=%s candidates=%d allowed=%s withheld=%s reasons=%s",
-            session.id, project.id, session.profile_id,
-            (locals().get("workspace_binding") or {}).get("kind_id"), routing,
-            independent_pass, len(_ids), None if _allowed is None else sorted(_allowed)[:12],
-            sorted(withheld_source_repairs)[:6],
-            {t: [r.get("code") for r in rs][:3] for t, rs in
-             list(getattr(admission, "reasons", {}).items())[:12]} if admission else None,
-        )
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
     async def _recover_stale_binding(
